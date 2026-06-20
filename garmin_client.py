@@ -7,9 +7,13 @@ garmin_client.py — фетч + агрегація даних Garmin через 
 import os
 import time
 import warnings
+import logging
 import datetime as dt
+import time as _time
 from collections import Counter
 from typing import Optional
+
+logger = logging.getLogger("garmin")
 
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
@@ -41,9 +45,16 @@ def _date_range(days: int):
 
 
 def _safe(fn, *a, **kw):
+    label = a[0] if a else getattr(fn, "__name__", "call")
+    t0 = _time.perf_counter()
     try:
-        return fn(*a, **kw)
+        r = fn(*a, **kw)
+        dt_ms = (_time.perf_counter() - t0) * 1000
+        logger.info(f"GARMIN OK  {label}  {dt_ms:.0f}ms")
+        return r
     except Exception as e:
+        dt_ms = (_time.perf_counter() - t0) * 1000
+        logger.warning(f"GARMIN ERR {label}  {dt_ms:.0f}ms  {type(e).__name__}: {e}")
         return {"_error": str(e)}
 
 

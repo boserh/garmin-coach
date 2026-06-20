@@ -1,3 +1,12 @@
-garth>=0.4.47
+# Garmin доступ (два провайдери, перемикач GARMIN_PROVIDER)
+garth>=0.4.47            # старий, deprecated — працює поки валідний токен
+garminconnect>=0.2.0     # новий, нативний auth (провайдер gconn)
+
+# Claude API
 anthropic>=0.40.0
-python-telegram-bot>=21.0
+
+# Telegram-бот (з job-queue для розкладу)
+python-telegram-bot[job-queue]>=21.0
+
+# .env
+python-dotenv>=1.0.0

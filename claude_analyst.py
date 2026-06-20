@@ -7,12 +7,19 @@ import os
 import json
 import warnings
 import datetime as dt
+import logging, time as _time
+
+logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 from anthropic import Anthropic, APIStatusError, APIConnectionError
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+PRICES = {
+    "claude-sonnet-4-6": (3.0, 15.0),   # (вхід, вихід) $/1M
+    "claude-opus-4-8":   (15.0, 75.0),
+}
 MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
 
@@ -96,6 +103,15 @@ def analyze(payload: dict, question: str = "", deep: bool = False) -> str:
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
         )
+        model = MODEL_DEEP if deep else MODEL_DAILY
+        usage = getattr(msg, "usage", None)
+        if usage:
+            pin, pout = PRICES.get(model, (0, 0))
+            cost = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
+            logger.info(
+                f"CLAUDE OK  {model}  in={usage.input_tokens} out={usage.output_tokens} "
+                f"~${cost:.4f}"
+            )
         return "".join(b.text for b in msg.content if b.type == "text")
 
     except APIStatusError as e:
@@ -113,6 +129,7 @@ def analyze(payload: dict, question: str = "", deep: bool = False) -> str:
             raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")
         if status == 529:
             raise AnalystError("🛠 Сервіс Anthropic тимчасово перевантажений. Спробуй пізніше.")
+        logger.error(f"CLAUDE ERR {status}: {body[:150]}")
         raise AnalystError(f"Помилка API ({status}): {body[:200]}")
 
     except APIConnectionError:

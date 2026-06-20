@@ -2,12 +2,13 @@
 bot.py — Telegram-бот для аналізу Garmin через Claude.
 
 Команди:
-  /report   — звіт за 7 днів + порада до наступної пробіжки
-  /deep ... — глибокий аналіз (Opus), напр.: /deep як вело впливає на HRV
+  /report    — звіт за 7 днів + статус/порада
+  /deep ...  — глибокий аналіз (Opus), напр.: /deep як вело впливає на HRV
+  /test_on N — тестова джоба кожні N хв (для відладки), /test_off — вимкнути
 
 Ранковий автозвіт:
-  Кожні 20 хв у вікні 7:00–12:00 бот перевіряє, чи синканулись дані за сьогодні.
-  Щойно дані з'явились — надсилає звіт ОДИН раз. Якщо до 12:00 даних нема —
+  Кожні 20 хв у вікні від MORNING_START_HOUR бот перевіряє, чи синканулись дані.
+  Щойно дані за сьогодні є — надсилає звіт один раз. Якщо до дедлайну немає —
   надсилає з приміткою (за останній доступний день).
 
 Відповідає лише власнику (TELEGRAM_CHAT_ID).
@@ -17,33 +18,44 @@ import os
 import datetime as dt
 from dotenv import load_dotenv
 
-load_dotenv()  # підвантажує .env у змінні оточення
+load_dotenv()
 
+import logging_setup
+logging_setup.setup()
+import logging
+logger = logging.getLogger("bot")
+
+from zoneinfo import ZoneInfo
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, Defaults
 
 import garmin_client
 import claude_analyst
 
 ALLOWED_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
+TZ = ZoneInfo("Europe/Warsaw")
 
-# межі ранкового вікна перевірки
-MORNING_START_HOUR = 5
-MORNING_DEADLINE_HOUR = 10
-CHECK_INTERVAL_MIN = 10
+# ранкове вікно перевірки синку
+MORNING_START_HOUR = 7
+MORNING_DEADLINE_HOUR = 12
+CHECK_INTERVAL_MIN = 20
 
 # щоб не слати ранковий звіт двічі за день
 _sent_today = {"date": None}
 
 
 def _guard(update: Update) -> bool:
-    return update.effective_chat and update.effective_chat.id == ALLOWED_CHAT_ID
+    ok = update.effective_chat and update.effective_chat.id == ALLOWED_CHAT_ID
+    if not ok and update.effective_chat:
+        logger.warning(f"DENIED chat_id={update.effective_chat.id}")
+    return ok
 
 
 def _analyze(payload: dict, question: str = "", deep: bool = False) -> str:
     try:
         return claude_analyst.analyze(payload, question=question, deep=deep)
     except claude_analyst.AnalystError as e:
+        logger.error(f"ANALYST {e}")
         return str(e)
 
 
@@ -52,6 +64,7 @@ def _analyze(payload: dict, question: str = "", deep: bool = False) -> str:
 async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
+    logger.info("CMD /report")
     await update.message.reply_text("Тягну дані з Garmin...")
     payload = garmin_client.build_payload(days=7, activity_limit=20)
     note = ""
@@ -65,6 +78,7 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
     question = " ".join(ctx.args) or "Глибокий розбір сну, HRV і навантаження за два тижні."
+    logger.info(f"CMD /deep {question[:60]}")
     await update.message.reply_text("Думаю глибше...")
     payload = garmin_client.build_payload(days=14, activity_limit=30)
     text = _analyze(payload, question=question, deep=True)
@@ -74,45 +88,54 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------- РАНКОВИЙ АВТОЗВІТ ----------
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
-    today = dt.date.today().isoformat()
-    if _sent_today["date"] == today:
-        return  # вже відправили сьогодні
+    try:
+        now = dt.datetime.now(TZ)
+        today = now.date().isoformat()
 
-    now_hour = dt.datetime.now().hour
-    payload = garmin_client.build_payload(days=3, activity_limit=20)
+        if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
+            return
 
-    if not payload.get("synced_today"):
-        # дані ще не синканулись
-        if now_hour < MORNING_DEADLINE_HOUR:
-            return  # ще рано, чекаємо наступної перевірки
-        note = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
-    else:
-        note = ""
+        if _sent_today["date"] == today:
+            return
 
-    text = _analyze(
-        payload,
-        question="Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
-    )
-    await ctx.bot.send_message(ALLOWED_CHAT_ID, "Доброго ранку.\n\n" + note + text)
-    _sent_today["date"] = today
+        payload = garmin_client.build_payload(days=3, activity_limit=20)
 
+        if not payload.get("synced_today"):
+            if now.hour < MORNING_DEADLINE_HOUR:
+                return  # даних ще нема і ще не дедлайн — чекаємо наступної перевірки
+            note = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
+        else:
+            note = ""
+
+        text = _analyze(
+                payload,
+                question="Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
+        )
+        await ctx.bot.send_message(ALLOWED_CHAT_ID, "Доброго ранку.\n\n" + note + text)
+        _sent_today["date"] = today
+        logger.info(f"MORNING sent for {today}")
+
+    except Exception:
+        logger.exception("MORNING job failed")
+
+
+# ---------- ТЕСТОВА ДЖОБА ----------
 
 async def test_job(ctx: ContextTypes.DEFAULT_TYPE):
     payload = garmin_client.build_payload(days=7, activity_limit=20)
-    text = _analyze(payload, question="Щоденний статус. Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра.")
+    text = _analyze(payload)
     await ctx.bot.send_message(ALLOWED_CHAT_ID, "🧪 [тест]\n\n" + text)
+
 
 async def test_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
-    # знімаємо попередні тестові джоби, якщо були
     for j in ctx.job_queue.get_jobs_by_name("test"):
         j.schedule_removal()
-    minutes = 2
-    if ctx.args and ctx.args[0].isdigit():
-        minutes = int(ctx.args[0])
+    minutes = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 2
     ctx.job_queue.run_repeating(test_job, interval=minutes * 60, first=5, name="test")
-    await update.message.reply_text(f"🧪 Тестова джоба увімкнена: кожні {minutes} хв (перша через 5 сек).")
+    logger.info(f"CMD /test_on {minutes}")
+    await update.message.reply_text(f"🧪 Тестова джоба: кожні {minutes} хв (перша через 5 сек).")
 
 
 async def test_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -122,26 +145,31 @@ async def test_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for j in ctx.job_queue.get_jobs_by_name("test"):
         j.schedule_removal()
         removed += 1
+    logger.info(f"CMD /test_off removed={removed}")
     await update.message.reply_text(f"🧪 Тестову джобу вимкнено (знято {removed}).")
 
 
 # ---------- ЗАПУСК ----------
 
 def main():
-    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
+    defaults = Defaults(tzinfo=TZ)
+    app = (Application.builder()
+           .token(os.environ["TELEGRAM_BOT_TOKEN"])
+           .defaults(defaults)
+           .build())
+
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("deep", deep))
     app.add_handler(CommandHandler("test_on", test_on))
     app.add_handler(CommandHandler("test_off", test_off))
 
-    # перевіряти кожні CHECK_INTERVAL_MIN хв, починаючи з ранку;
-    # morning_job сам вирішує, чи вже час слати
     app.job_queue.run_repeating(
         morning_job,
         interval=CHECK_INTERVAL_MIN * 60,
-        first=dt.time(hour=MORNING_START_HOUR, minute=0),
+        first=dt.time(hour=MORNING_START_HOUR, minute=0, tzinfo=TZ),
     )
 
+    logger.info("Бот запущено")
     print("Бот запущено. Ctrl+C для зупинки.")
     app.run_polling()
 
