@@ -14,9 +14,8 @@ database that stores history, caches immutable days, and tracks cost.
 
 ## Running
 
-Always use the venv interpreter. NOTE: the venv was created at an old path, so the
-`./venv/bin/pip` / `./venv/bin/alembic` wrapper shebangs are broken — invoke tools
-through the working python binary with `-m`:
+Always use the venv interpreter — the system Python is aliased and won't find the
+installed packages:
 
 ```bash
 # Install (editable, with dev extras):

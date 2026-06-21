@@ -130,9 +130,8 @@ Subsequent runs typically do not require manual login.
 
 ## Running
 
-Use the virtual environment interpreter explicitly. NOTE: `./venv/bin/pip` and
-`./venv/bin/alembic` have broken shebangs (the venv was created at an old path), so
-call tools via `./venv/bin/python -m ...`.
+Use the virtual environment interpreter explicitly (the system Python won't find
+the installed packages).
 
 ```bash
 # Apply migrations (once, and after model changes):
