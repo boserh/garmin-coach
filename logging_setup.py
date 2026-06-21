@@ -18,8 +18,9 @@ def setup():
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
 
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(getattr(logging, level, logging.INFO))
     root.handlers.clear()
     root.addHandler(fh)
     root.addHandler(ch)

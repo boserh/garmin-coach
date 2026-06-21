@@ -125,7 +125,7 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         if _sent_today["date"] == today:
-            logger.info("MORNING skip: already sent today")
+            logger.debug("MORNING skip: already sent today")
             return
 
         payload = garmin_client.build_payload(days=3, activity_limit=20)
@@ -210,7 +210,7 @@ def main():
         first=10,
     )
 
-    logger.info("Бот запущено")
+    logger.info("Bot started")
     print("Бот запущено. Ctrl+C для зупинки.")
     app.run_polling()
 

@@ -47,6 +47,12 @@ The aggregation layer is the most important part of the project. Raw Garmin resp
 
 This significantly reduces token usage and cost.
 
+Stable, ID-keyed responses (past-day metrics, strength exercise sets, planned-workout details) are cached on disk in `garmin_cache.json` to avoid refetching on every report.
+
+### `exercise_names.py`
+
+A standalone dictionary mapping Garmin exercise name codes (e.g. `DUMBBELL_BULGARIAN_SPLIT_SQUAT`) to readable Ukrainian names. `garmin_client.py` reads Garmin's specific exercise `name` (not the coarse category) and maps it through this dict; unknown codes are logged so you can add them.
+
 ### `claude_analyst.py`
 
 Handles communication with the Claude API.
@@ -124,7 +130,9 @@ os.environ["ANTHROPIC_API_KEY"]
 | --- | --- | --- |
 | `GARTH_TOKEN_DIR` | `~/.garth` | Garmin token storage |
 | `LOG_FILE` | `bot.log` | Log file path |
+| `LOG_LEVEL` | `INFO` | Root log level (`DEBUG` shows skip-reason logs) |
 | `CLAUDE_CACHE_FILE` | `claude_cache.json` | Claude response cache |
+| `GARMIN_CACHE_FILE` | `garmin_cache.json` | Garmin stable-fetch cache |
 | `STATE_FILE` | `state.json` | Morning-report status |
 
 ## Garmin Authentication
@@ -274,16 +282,31 @@ Potential future improvements:
 
 ## Caching and Persistence
 
-To avoid paying for identical Claude requests, `claude_analyst.py` keeps a dedup cache.
+Three small JSON files persist state across restarts. All use atomic writes, prune expired entries on save, and tolerate an empty/corrupt file (they just start fresh).
+
+### Claude dedup cache (`claude_cache.json`)
+
+To avoid paying for identical Claude requests:
 
 * The cache key is a hash of the meaningful payload (daily metrics, recent activities, planned runs), the current date, the question, and the model. The volatile `generated` timestamp is excluded, so fresh Garmin data invalidates the cache automatically.
 * `/report` (Sonnet) and `/deep` (Opus) are cached separately, since the model is part of the key.
-* Entries have a one-week TTL and are pruned on every save.
-* The cache is persisted to `claude_cache.json` with atomic writes, so it survives restarts.
+* One-week TTL. A hit logs `CLAUDE CACHE HIT`.
 
-The morning-report status is persisted to `state.json`, so restarting the bot mid-morning does not re-send a report that was already delivered.
+### Garmin stable-fetch cache (`garmin_cache.json`)
 
-Both paths can be overridden via `CLAUDE_CACHE_FILE` and `STATE_FILE`.
+Only fetches keyed on stable Garmin IDs, to cut request volume:
+
+* `daily:<date>` — past days only (30-day TTL); today is never cached, since its data is still changing.
+* `exercise:v2:<id>` — a completed activity's exercise sets (365-day TTL; immutable).
+* `workout:<id>` — planned-workout details (7-day TTL; plans can be edited).
+
+A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are mapped to Ukrainian at read time, so labels can change without invalidating the cache.
+
+### Morning-report status (`state.json`)
+
+Persists the date the morning report was last sent, so restarting the bot mid-morning does not re-send a report that was already delivered.
+
+Paths can be overridden via `CLAUDE_CACHE_FILE`, `GARMIN_CACHE_FILE`, and `STATE_FILE`.
 
 ## Time Zones
 
