@@ -36,8 +36,8 @@ def _load_cache() -> dict:
     try:
         with open(CACHE_FILE, encoding="utf-8") as f:
             raw = json.load(f)
-    except FileNotFoundError:
-        return {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}  # missing or empty/corrupt — start fresh
     except Exception as e:
         logger.warning(f"CACHE load failed: {e}")
         return {}
@@ -86,8 +86,9 @@ SYSTEM = """Ти персональний аналітик тренувань і
 - Пульс спокою недоступний (Garmin не віддає). ГОЛОВНИЙ маркер відновлення — hrv_avg + hrv_status.
   BALANCED = відновлений; падіння HRV або нижче балансу = недовідновлення.
 - sleep_score 75+ норм, 85+ добре. stress_avg до ~30 норм.
-- Силові: групи у exercises.muscle_groups. Ноги (LUNGE/SQUAT/LEG_CURL/LEG_RAISE) перед бігом
-  важать більше, ніж верх.
+- Силові: конкретні вправи у exercises.sets (ключ — назва вправи українською, значення — к-сть
+  сетів). Вправи на ноги (присідання, випади, спліт-присідання, згинання ніг) перед бігом важать
+  більше, ніж верх.
 - planned_runs[].detail.steps: dist_m = відстань кроку, pace_min_km = [швидший, повільніший]
   у ДЕСЯТКОВИХ хвилинах на км. ПЕРЕВОДЬ у формат хв:сек (напр. 6.58 -> 6:35).
   Якщо pace_min_km = null, плану темпу немає — НЕ вигадуй конкретний темп. Можеш дати

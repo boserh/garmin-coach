@@ -20,6 +20,8 @@ warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 import garth
 
+from exercise_names import EXERCISE_NAMES
+
 TOKEN_DIR = os.environ.get("GARTH_TOKEN_DIR", os.path.expanduser("~/.garth"))
 
 
@@ -82,8 +84,8 @@ def _cache_load() -> dict:
     try:
         with open(GARMIN_CACHE_FILE, encoding="utf-8") as f:
             raw = json.load(f)
-    except FileNotFoundError:
-        return {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}  # missing or empty/corrupt — start fresh
     except Exception as e:
         logger.warning(f"GCACHE load failed: {e}")
         return {}
@@ -151,30 +153,52 @@ def fetch_activities(limit: int = 30) -> list:
     )
 
 
+# Garmin exercise NAME codes → readable names, mapped at return time so the cache
+# stays language-neutral. Unknown names are logged once (so they can be added to
+# exercise_names.py) and fall back to a prettified form.
+_unmapped: set = set()
+
+
+def _exercise_name(code: str) -> str:
+    name = EXERCISE_NAMES.get(code)
+    if name:
+        return name
+    if code not in _unmapped:
+        _unmapped.add(code)
+        logger.info(f"EXERCISE unmapped: {code} (add it to exercise_names.py)")
+    return code.strip("_").replace("_", " ").lower()
+
+
 def fetch_exercise_summary(activity_id) -> dict:
-    """Which muscle groups and how many active sets in a strength workout."""
-    key = f"exercise:{activity_id}"
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-    d = _safe(garth.connectapi, f"/activity-service/activity/{activity_id}/exerciseSets")
-    if isinstance(d, dict) and "_error" in d:
-        return {}  # transient error — don't cache
-    sets = _g(d, "exerciseSets") or []
-    groups = Counter()
-    total_active = 0
-    for s in sets:
-        if s.get("setType") != "ACTIVE":
-            continue
-        total_active += 1
-        ex = (s.get("exercises") or [{}])[0]
-        cat = ex.get("category")
-        if cat and cat not in ("RUN", "UNKNOWN"):
-            groups[cat] += 1
-    result = {} if not groups else {"active_sets": total_active,
-                                    "muscle_groups": dict(groups.most_common())}
-    _cache_put(key, result, EXERCISE_TTL_S)
-    return result
+    """Specific exercises and how many active sets done in a strength workout."""
+    key = f"exercise:v2:{activity_id}"
+    raw = _cache_get(key)
+    if raw is None:
+        d = _safe(garth.connectapi, f"/activity-service/activity/{activity_id}/exerciseSets")
+        if isinstance(d, dict) and "_error" in d:
+            return {}  # transient error — don't cache
+        sets = Counter()
+        total_active = 0
+        for s in (_g(d, "exerciseSets") or []):
+            if s.get("setType") != "ACTIVE":
+                continue
+            ex = (s.get("exercises") or [{}])[0]
+            cat = ex.get("category")
+            if cat in (None, "RUN", "UNKNOWN"):
+                continue  # skip the warm-up jog / unrecognized sets
+            total_active += 1
+            sets[ex.get("name") or cat] += 1
+        raw = {} if not sets else {"active_sets": total_active,
+                                   "sets": dict(sets.most_common())}
+        _cache_put(key, raw, EXERCISE_TTL_S)
+    if not raw:
+        return {}
+    # Map raw name codes → readable names at return time (sum on collisions).
+    named: dict[str, int] = {}
+    for code, n in raw["sets"].items():
+        label = _exercise_name(code)
+        named[label] = named.get(label, 0) + n
+    return {"active_sets": raw["active_sets"], "sets": named}
 
 
 def fetch_workout_detail(workout_id) -> dict:

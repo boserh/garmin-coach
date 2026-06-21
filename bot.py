@@ -51,8 +51,8 @@ def _load_sent_date():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             return json.load(f).get("morning_sent_date")
-    except FileNotFoundError:
-        return None
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None  # missing or empty/corrupt — start fresh
     except Exception as e:
         logger.warning(f"STATE load failed: {e}")
         return None
@@ -60,8 +60,10 @@ def _load_sent_date():
 
 def _save_sent_date(date: str) -> None:
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"morning_sent_date": date}, f)
+        os.replace(tmp, STATE_FILE)
     except Exception as e:
         logger.warning(f"STATE save failed: {e}")
 

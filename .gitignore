@@ -4,5 +4,6 @@ bot.log
 claude_cache.json
 claude_cache.json.tmp
 state.json
+state.json.tmp
 garmin_cache.json
 garmin_cache.json.tmp
