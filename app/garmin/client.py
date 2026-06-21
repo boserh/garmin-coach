@@ -5,13 +5,12 @@ details), and the exercise-name mapping are all preserved exactly from the old
 ``garmin_client``. Day-level caching now lives in the database (see repository),
 so the per-day disk cache was dropped here.
 """
+import datetime as dt
 import json
 import logging
 import os
 import time as _time
-import datetime as dt
 from collections import Counter
-from typing import Optional
 
 from app.core.config import settings
 from app.garmin.exercise_names import EXERCISE_NAMES

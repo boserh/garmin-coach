@@ -30,6 +30,11 @@ PRICES = {
 MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
 
+_DEFAULT_DAILY_Q = (
+    "Дай щоденний статус відновлення. "
+    "Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра."
+)
+
 CACHE_FILE = settings.CLAUDE_CACHE_FILE
 CACHE_TTL_S = 7 * 24 * 3600  # one week
 
@@ -120,7 +125,7 @@ def analyze_with_stats(
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
     data = _as_dict(payload)
-    effective_q = question or "Дай щоденний статус відновлення. Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра."
+    effective_q = question or _DEFAULT_DAILY_Q
 
     key = _cache_key(data, effective_q, model)
     cached = _cache.get(key)

@@ -37,7 +37,9 @@ async def status(session: AsyncSession = Depends(get_session)) -> dict:
     history_days = (await session.execute(select(func.count(DailyMetric.id)))).scalar_one()
     last_metric = (await session.execute(select(func.max(DailyMetric.date)))).scalar_one()
     reports_total = (await session.execute(select(func.count(ReportLog.id)))).scalar_one()
-    cost_total = (await session.execute(select(func.coalesce(func.sum(ReportLog.cost_usd), 0.0)))).scalar_one()
+    cost_total = (
+        await session.execute(select(func.coalesce(func.sum(ReportLog.cost_usd), 0.0)))
+    ).scalar_one()
     last_morning = await get_state(session, MORNING_STATE_KEY)
 
     return {

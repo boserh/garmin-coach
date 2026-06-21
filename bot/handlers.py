@@ -4,11 +4,11 @@ Business logic lives in the shared core (app.garmin.service / app.analysis.servi
 handlers only orchestrate fetch → analyze → reply, each within a DB session.
 """
 import logging
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
-from zoneinfo import ZoneInfo
 
 from app.analysis.service import AnalystError, run_analysis
 from app.core.config import settings

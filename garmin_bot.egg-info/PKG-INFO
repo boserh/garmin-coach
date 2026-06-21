@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: garmin-bot
+Version: 1.0.0
+Summary: Garmin → Claude analysis: a Telegram bot + FastAPI web layer over a shared core.
+Requires-Python: >=3.9
+Requires-Dist: fastapi
+Requires-Dist: uvicorn[standard]
+Requires-Dist: jinja2
+Requires-Dist: pydantic
+Requires-Dist: pydantic-settings
+Requires-Dist: sqlalchemy[asyncio]
+Requires-Dist: alembic
+Requires-Dist: aiosqlite
+Requires-Dist: asyncpg
+Requires-Dist: anthropic
+Requires-Dist: python-telegram-bot[job-queue]
+Requires-Dist: garth
+Requires-Dist: garminconnect
+Requires-Dist: python-dotenv
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: httpx; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
