@@ -1,10 +1,11 @@
 """
-garmin_client.py — фетч + агрегація даних Garmin через garth (0.4.47).
-Тягне: сон, HRV, стрес, body battery, активності (+вправи силових), план Runna.
-Пульс спокою недоступний через garth (403), тож головний маркер відновлення — HRV.
+garmin_client.py — fetch + aggregation of Garmin data via garth (0.4.47).
+Pulls: sleep, HRV, stress, body battery, activities (+strength exercise sets), Runna plan.
+Resting heart rate is unavailable via garth (403), so the main recovery marker is HRV.
 """
 
 import os
+import json
 import time
 import warnings
 import logging
@@ -22,7 +23,7 @@ import garth
 TOKEN_DIR = os.environ.get("GARTH_TOKEN_DIR", os.path.expanduser("~/.garth"))
 
 
-# ---------- АВТОРИЗАЦІЯ ----------
+# ---------- AUTH ----------
 
 def login(email: Optional[str] = None, password: Optional[str] = None) -> None:
     try:
@@ -37,7 +38,7 @@ def login(email: Optional[str] = None, password: Optional[str] = None) -> None:
     garth.save(TOKEN_DIR)
 
 
-# ---------- ДОПОМІЖНЕ ----------
+# ---------- HELPERS ----------
 
 def _date_range(days: int):
     today = dt.date.today()
@@ -67,7 +68,54 @@ def _g(obj, *keys, default=None):
     return cur if cur is not None else default
 
 
-# ---------- FETCH-И ----------
+# ---------- DISK CACHE (stable, ID-keyed fetches) ----------
+# Workout details and strength exercise sets are keyed on stable Garmin IDs and
+# rarely (exercise sets: never) change, so we cache them on disk to skip refetching
+# on every report. Keyed by "<kind>:<id>"; values are [data, expires_at].
+GARMIN_CACHE_FILE = os.environ.get("GARMIN_CACHE_FILE", "garmin_cache.json")
+EXERCISE_TTL_S = 365 * 24 * 3600   # a completed activity's sets are immutable
+WORKOUT_TTL_S = 7 * 24 * 3600      # a planned workout can be edited; refresh weekly
+DAILY_TTL_S = 30 * 24 * 3600       # past days are final once synced (today is never cached)
+
+
+def _cache_load() -> dict:
+    try:
+        with open(GARMIN_CACHE_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.warning(f"GCACHE load failed: {e}")
+        return {}
+    now = _time.time()
+    return {k: v for k, v in raw.items() if v[1] > now}
+
+
+_disk_cache = _cache_load()
+
+
+def _cache_get(key: str):
+    hit = _disk_cache.get(key)
+    if hit and hit[1] > _time.time():
+        logger.info(f"GARMIN CACHE  {key}")
+        return hit[0]
+    return None
+
+
+def _cache_put(key: str, value, ttl_s: float) -> None:
+    _disk_cache[key] = [value, _time.time() + ttl_s]
+    now = _time.time()
+    alive = {k: v for k, v in _disk_cache.items() if v[1] > now}
+    try:
+        tmp = GARMIN_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(alive, f, ensure_ascii=False)
+        os.replace(tmp, GARMIN_CACHE_FILE)
+    except Exception as e:
+        logger.warning(f"GCACHE save failed: {e}")
+
+
+# ---------- FETCHERS ----------
 
 def fetch_sleep(date: dt.date) -> dict:
     return _safe(
@@ -104,8 +152,14 @@ def fetch_activities(limit: int = 30) -> list:
 
 
 def fetch_exercise_summary(activity_id) -> dict:
-    """Які групи м'язів і скільки активних підходів у силовій."""
+    """Which muscle groups and how many active sets in a strength workout."""
+    key = f"exercise:{activity_id}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
     d = _safe(garth.connectapi, f"/activity-service/activity/{activity_id}/exerciseSets")
+    if isinstance(d, dict) and "_error" in d:
+        return {}  # transient error — don't cache
     sets = _g(d, "exerciseSets") or []
     groups = Counter()
     total_active = 0
@@ -117,16 +171,23 @@ def fetch_exercise_summary(activity_id) -> dict:
         cat = ex.get("category")
         if cat and cat not in ("RUN", "UNKNOWN"):
             groups[cat] += 1
-    if not groups:
-        return {}
-    return {"active_sets": total_active, "muscle_groups": dict(groups.most_common())}
+    result = {} if not groups else {"active_sets": total_active,
+                                    "muscle_groups": dict(groups.most_common())}
+    _cache_put(key, result, EXERCISE_TTL_S)
+    return result
 
 
 def fetch_workout_detail(workout_id) -> dict:
-    """Структура запланованого тренування: кроки з цільовим темпом (хв/км)."""
+    """Structure of a planned workout: steps with target pace (min/km)."""
     if not workout_id:
         return {}
+    key = f"workout:{workout_id}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
     d = _safe(garth.connectapi, f"/workout-service/workout/{workout_id}")
+    if isinstance(d, dict) and "_error" in d:
+        return {}  # transient error — don't cache
     seg = (_g(d, "workoutSegments") or [{}])[0]
     steps = []
     for st in (seg.get("workoutSteps") or []):
@@ -139,11 +200,13 @@ def fetch_workout_detail(workout_id) -> dict:
             "dist_m": dist,
             "pace_min_km": [pace(hi), pace(lo)] if lo and hi else None,
         })
-    return {"steps": steps}
+    result = {"steps": steps}
+    _cache_put(key, result, WORKOUT_TTL_S)
+    return result
 
 
 def fetch_planned(days_ahead: int = 14) -> list:
-    """Найближчі заплановані тренування з календаря Garmin (Runna кладе сюди)."""
+    """Upcoming planned workouts from the Garmin calendar (Runna puts them here)."""
     today = dt.date.today()
     end = (today + dt.timedelta(days=days_ahead)).isoformat()
     months = {(today.year, today.month),
@@ -167,9 +230,18 @@ def fetch_planned(days_ahead: int = 14) -> list:
     return uniq
 
 
-# ---------- АГРЕГАЦІЯ ----------
+# ---------- AGGREGATION ----------
 
 def daily_summary(date: dt.date) -> dict:
+    # Past days are immutable once synced; cache the whole aggregate. Today is
+    # volatile (body battery, late sleep sync) — never cache it.
+    is_past = date < dt.date.today()
+    key = f"daily:{date.isoformat()}"
+    if is_past:
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+
     sleep = fetch_sleep(date)
     hrv = fetch_hrv(date)
     stress = fetch_stress(date)
@@ -196,6 +268,8 @@ def daily_summary(date: dt.date) -> dict:
     }
     result["has_data"] = any(result[k] is not None
                              for k in ("sleep_score", "hrv_avg", "stress_avg"))
+    if is_past and result["has_data"]:
+        _cache_put(key, result, DAILY_TTL_S)
     return result
 
 

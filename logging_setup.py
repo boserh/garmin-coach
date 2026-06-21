@@ -1,4 +1,4 @@
-"""logging_setup.py — єдине налаштування логів для всього проєкту."""
+"""logging_setup.py — single logging configuration for the whole project."""
 import logging
 import os
 from logging.handlers import RotatingFileHandler
@@ -10,11 +10,11 @@ def setup():
     fmt = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
     formatter = logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S")
 
-    # у файл з ротацією (щоб не розпухав): 5 файлів по 1 МБ
+    # rotating file (so it doesn't bloat): 5 files of 1 MB each
     fh = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=5, encoding="utf-8")
     fh.setFormatter(formatter)
 
-    # і в консоль
+    # and to console
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
 
@@ -24,7 +24,7 @@ def setup():
     root.addHandler(fh)
     root.addHandler(ch)
 
-    # приглушити шумні бібліотеки
+    # silence noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)

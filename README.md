@@ -25,6 +25,8 @@ Telegram report
 * On-demand reports via Telegram commands
 * Deep analysis mode using a larger Claude model
 * Aggressive data aggregation to minimize token usage and API cost
+* Response caching to avoid duplicate Claude API calls
+* Persistent state so the cache and morning-report status survive restarts
 
 ## Project Structure
 
@@ -55,6 +57,7 @@ Features:
 * Deep reports using `claude-opus-4-8`
 * System prompts for health and training analysis
 * Structured error handling through `AnalystError`
+* Persistent dedup cache to skip identical requests (see Caching and Persistence)
 
 ### `bot.py`
 
@@ -114,6 +117,15 @@ Example:
 ```python
 os.environ["ANTHROPIC_API_KEY"]
 ```
+
+### Optional environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GARTH_TOKEN_DIR` | `~/.garth` | Garmin token storage |
+| `LOG_FILE` | `bot.log` | Log file path |
+| `CLAUDE_CACHE_FILE` | `claude_cache.json` | Claude response cache |
+| `STATE_FILE` | `state.json` | Morning-report status |
 
 ## Garmin Authentication
 
@@ -243,6 +255,8 @@ The aggregation layer dramatically reduces token usage.
 
 Typical Sonnet report cost is approximately $0.02–0.03 per report.
 
+Identical requests are served from the local cache, so repeated reports on the same data cost nothing (see Caching and Persistence).
+
 Avoid sending raw Garmin data to the LLM.
 
 ### Model State
@@ -257,6 +271,19 @@ Potential future improvements:
 * "Today vs normal" comparisons
 * Weekly summaries
 * Post-workout analysis
+
+## Caching and Persistence
+
+To avoid paying for identical Claude requests, `claude_analyst.py` keeps a dedup cache.
+
+* The cache key is a hash of the meaningful payload (daily metrics, recent activities, planned runs), the current date, the question, and the model. The volatile `generated` timestamp is excluded, so fresh Garmin data invalidates the cache automatically.
+* `/report` (Sonnet) and `/deep` (Opus) are cached separately, since the model is part of the key.
+* Entries have a one-week TTL and are pruned on every save.
+* The cache is persisted to `claude_cache.json` with atomic writes, so it survives restarts.
+
+The morning-report status is persisted to `state.json`, so restarting the bot mid-morning does not re-send a report that was already delivered.
+
+Both paths can be overridden via `CLAUDE_CACHE_FILE` and `STATE_FILE`.
 
 ## Time Zones
 

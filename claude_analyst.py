@@ -1,10 +1,11 @@
 """
-claude_analyst.py — аналіз даних Garmin через Claude API (Sonnet).
-Бере компактний payload від garmin_client і повертає звіт + пораду до пробіжки.
+claude_analyst.py — analysis of Garmin data via the Claude API (Sonnet).
+Takes the compact payload from garmin_client and returns a report + pre-run advice.
 """
 
 import os
 import json
+import hashlib
 import warnings
 import datetime as dt
 import logging, time as _time
@@ -17,11 +18,59 @@ from anthropic import Anthropic, APIStatusError, APIConnectionError
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 PRICES = {
-    "claude-sonnet-4-6": (3.0, 15.0),   # (вхід, вихід) $/1M
+    "claude-sonnet-4-6": (3.0, 15.0),   # (input, output) $/1M
     "claude-opus-4-8":   (15.0, 75.0),
 }
 MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
+
+# Dedup cache: identical data + question + model → reuse the answer instead of
+# calling the API again. Keyed on the meaningful payload only (the volatile
+# `generated` timestamp is excluded), so fresh Garmin data invalidates it
+# automatically. Persisted to disk so it survives restarts.
+CACHE_FILE = os.environ.get("CLAUDE_CACHE_FILE", "claude_cache.json")
+CACHE_TTL_S = 7 * 24 * 3600  # one week
+
+
+def _load_cache() -> dict:
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.warning(f"CACHE load failed: {e}")
+        return {}
+    now = _time.time()
+    return {k: (v[0], v[1]) for k, v in raw.items() if v[1] > now}
+
+
+def _save_cache() -> None:
+    now = _time.time()
+    alive = {k: [v[0], v[1]] for k, v in _cache.items() if v[1] > now}
+    try:
+        tmp = CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(alive, f, ensure_ascii=False)
+        os.replace(tmp, CACHE_FILE)
+    except Exception as e:
+        logger.warning(f"CACHE save failed: {e}")
+
+
+_cache: dict[str, tuple[str, float]] = _load_cache()
+
+
+def _cache_key(payload: dict, question: str, model: str) -> str:
+    material = {
+        "today": dt.date.today().isoformat(),
+        "daily": payload.get("daily"),
+        "activities": payload.get("recent_activities"),
+        "planned": payload.get("planned_runs"),
+        "question": question,
+        "model": model,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 SYSTEM = """Ти персональний аналітик тренувань і відновлення на основі даних Garmin.
 Відповідай чистою українською (не змішуй з російською), стисло, по ділу,
@@ -86,24 +135,32 @@ SYSTEM = """Ти персональний аналітик тренувань і
 
 
 class AnalystError(Exception):
-    """Зрозуміла для користувача помилка аналізу (показуємо текст у Telegram)."""
+    """User-facing analysis error (its text is shown in Telegram)."""
 
 
 def analyze(payload: dict, question: str = "", deep: bool = False) -> str:
+    model = MODEL_DEEP if deep else MODEL_DAILY
+    effective_q = question or "Дай щоденний статус відновлення. Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра."
+
+    key = _cache_key(payload, effective_q, model)
+    cached = _cache.get(key)
+    if cached and cached[1] > _time.time():
+        logger.info(f"CLAUDE CACHE HIT  {model}")
+        return cached[0]
+
     user_content = {
         "today": dt.date.today().isoformat(),
         "data": payload,
-        "question": question or "Дай щоденний статус відновлення. Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра.",
+        "question": effective_q,
     }
     try:
         msg = client.messages.create(
-            model=MODEL_DEEP if deep else MODEL_DAILY,
+            model=model,
             max_tokens=1200,
             system=SYSTEM,
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
         )
-        model = MODEL_DEEP if deep else MODEL_DAILY
         usage = getattr(msg, "usage", None)
         if usage:
             pin, pout = PRICES.get(model, (0, 0))
@@ -112,7 +169,10 @@ def analyze(payload: dict, question: str = "", deep: bool = False) -> str:
                 f"CLAUDE OK  {model}  in={usage.input_tokens} out={usage.output_tokens} "
                 f"~${cost:.4f}"
             )
-        return "".join(b.text for b in msg.content if b.type == "text")
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        _cache[key] = (text, _time.time() + CACHE_TTL_S)
+        _save_cache()
+        return text
 
     except APIStatusError as e:
         status = getattr(e, "status_code", None)

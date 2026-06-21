@@ -1,20 +1,22 @@
 """
-bot.py — Telegram-бот для аналізу Garmin через Claude.
+bot.py — Telegram bot that analyzes Garmin data via Claude.
 
-Команди:
-  /report    — звіт за 7 днів + статус/порада
-  /deep ...  — глибокий аналіз (Opus), напр.: /deep як вело впливає на HRV
-  /test_on N — тестова джоба кожні N хв (для відладки), /test_off — вимкнути
+Commands:
+  /report    — 7-day report + status/advice
+  /deep ...  — deep analysis (Opus), e.g.: /deep how does cycling affect HRV
+  /test_on N — test job every N min (for debugging), /test_off — disable
 
-Ранковий автозвіт:
-  Кожні 20 хв у вікні від MORNING_START_HOUR бот перевіряє, чи синканулись дані.
-  Щойно дані за сьогодні є — надсилає звіт один раз. Якщо до дедлайну немає —
-  надсилає з приміткою (за останній доступний день).
+Morning auto-report:
+  Every 20 min within the window from MORNING_START_HOUR the bot checks whether
+  data has synced. As soon as today's data is available it sends the report once.
+  If there's still none by the deadline, it sends with a note (using the last
+  available day).
 
-Відповідає лише власнику (TELEGRAM_CHAT_ID).
+Responds only to the owner (TELEGRAM_CHAT_ID).
 """
 
 import os
+import json
 import datetime as dt
 from dotenv import load_dotenv
 
@@ -35,13 +37,37 @@ import claude_analyst
 ALLOWED_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 TZ = ZoneInfo("Europe/Warsaw")
 
-# ранкове вікно перевірки синку
+# morning sync-check window
 MORNING_START_HOUR = 7
 MORNING_DEADLINE_HOUR = 12
 CHECK_INTERVAL_MIN = 20
 
-# щоб не слати ранковий звіт двічі за день
-_sent_today = {"date": None}
+# Persist whether the morning report was already sent today, so a restart
+# mid-morning doesn't fire it again.
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
+
+
+def _load_sent_date():
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            return json.load(f).get("morning_sent_date")
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"STATE load failed: {e}")
+        return None
+
+
+def _save_sent_date(date: str) -> None:
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"morning_sent_date": date}, f)
+    except Exception as e:
+        logger.warning(f"STATE save failed: {e}")
+
+
+# avoid sending the morning report twice a day (survives restarts via STATE_FILE)
+_sent_today = {"date": _load_sent_date()}
 
 
 def _guard(update: Update) -> bool:
@@ -59,7 +85,7 @@ def _analyze(payload: dict, question: str = "", deep: bool = False) -> str:
         return str(e)
 
 
-# ---------- КОМАНДИ ----------
+# ---------- COMMANDS ----------
 
 async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
@@ -85,7 +111,7 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-# ---------- РАНКОВИЙ АВТОЗВІТ ----------
+# ---------- MORNING AUTO-REPORT ----------
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -93,18 +119,27 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
         today = now.date().isoformat()
 
         if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
+            logger.debug(f"MORNING skip: outside window (hour={now.hour})")
             return
 
         if _sent_today["date"] == today:
+            logger.info("MORNING skip: already sent today")
             return
 
         payload = garmin_client.build_payload(days=3, activity_limit=20)
 
         if not payload.get("synced_today"):
             if now.hour < MORNING_DEADLINE_HOUR:
-                return  # даних ще нема і ще не дедлайн — чекаємо наступної перевірки
+                # no data yet and not past the deadline — wait for the next check
+                logger.info(
+                    f"MORNING skip: not synced yet, waiting "
+                    f"(last_data={payload.get('last_data_date')}, deadline={MORNING_DEADLINE_HOUR}:00)"
+                )
+                return
+            logger.info("MORNING: deadline reached without sync — sending with stale-data note")
             note = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
         else:
+            logger.info("MORNING: today synced — sending report")
             note = ""
 
         text = _analyze(
@@ -113,13 +148,14 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
         )
         await ctx.bot.send_message(ALLOWED_CHAT_ID, "Доброго ранку.\n\n" + note + text)
         _sent_today["date"] = today
+        _save_sent_date(today)
         logger.info(f"MORNING sent for {today}")
 
     except Exception:
         logger.exception("MORNING job failed")
 
 
-# ---------- ТЕСТОВА ДЖОБА ----------
+# ---------- TEST JOB ----------
 
 async def test_job(ctx: ContextTypes.DEFAULT_TYPE):
     payload = garmin_client.build_payload(days=7, activity_limit=20)
@@ -149,7 +185,7 @@ async def test_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🧪 Тестову джобу вимкнено (знято {removed}).")
 
 
-# ---------- ЗАПУСК ----------
+# ---------- ENTRYPOINT ----------
 
 def main():
     defaults = Defaults(tzinfo=TZ)
@@ -163,10 +199,13 @@ def main():
     app.add_handler(CommandHandler("test_on", test_on))
     app.add_handler(CommandHandler("test_off", test_off))
 
+    # First check runs shortly after startup, then every CHECK_INTERVAL_MIN.
+    # morning_job enforces the time window and the once-a-day guard itself,
+    # so an early/out-of-window run just returns without doing anything.
     app.job_queue.run_repeating(
         morning_job,
         interval=CHECK_INTERVAL_MIN * 60,
-        first=dt.time(hour=MORNING_START_HOUR, minute=0, tzinfo=TZ),
+        first=10,
     )
 
     logger.info("Бот запущено")
