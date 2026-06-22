@@ -69,3 +69,33 @@ async def ui_table(
             "tables": list(TABLES), "token": request.query_params.get("token", ""),
         },
     )
+
+
+@router.get("/ui/{table}/{row_id}", response_class=HTMLResponse)
+async def ui_row(
+    table: str,
+    row_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    model = TABLES.get(table)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Unknown table")
+
+    pk = list(model.__table__.primary_key.columns)[0]
+    try:
+        key = int(row_id)  # integer PKs (most tables); bot_state uses a string key
+    except ValueError:
+        key = row_id
+    obj = (await session.execute(select(model).where(pk == key))).scalar_one_or_none()
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Row not found")
+
+    fields = [(c.name, getattr(obj, c.name)) for c in model.__table__.columns]
+    return templates.TemplateResponse(
+        "detail.html",
+        {
+            "request": request, "table": table, "fields": fields,
+            "token": request.query_params.get("token", ""),
+        },
+    )

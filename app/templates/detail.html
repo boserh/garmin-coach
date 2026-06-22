@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ table }} — рядок</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .bar { margin: .5rem 0 1rem; }
+    table { border-collapse: collapse; max-width: 60rem; }
+    th, td { border-bottom: 1px solid #2a2f3a; padding: .5rem .7rem; text-align: left; vertical-align: top; }
+    th { color: #9aa4b2; white-space: nowrap; width: 12rem; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+  </style>
+</head>
+<body>
+  {% set qf = '?token=' ~ token if token else '' %}
+  <div class="bar"><a href="/ui/{{ table }}{{ qf }}">← {{ table }}</a></div>
+  <table>
+    {% for name, value in fields %}
+      <tr>
+        <th>{{ name }}</th>
+        <td><pre>{{ value if value is not none else '' }}</pre></td>
+      </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>

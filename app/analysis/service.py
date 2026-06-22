@@ -227,5 +227,6 @@ async def run_analysis(
         output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd,
         ok=True,
+        report_text=text,
     )
     return text

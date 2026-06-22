@@ -133,10 +133,12 @@ async def log_report(
     cost_usd: float = 0.0,
     ok: bool = True,
     error: Optional[str] = None,
+    report_text: Optional[str] = None,
 ) -> None:
     session.add(ReportLog(
         kind=kind, model=model, input_tokens=input_tokens,
         output_tokens=output_tokens, cost_usd=cost_usd, ok=ok, error=error,
+        report_text=report_text,
     ))
     await session.commit()
 

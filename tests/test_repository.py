@@ -1,7 +1,7 @@
 """Repository upsert idempotency + history reads against in-memory SQLite."""
 from sqlalchemy import func, select
 
-from app.db.models import ActivityRecord, DailyMetric
+from app.db.models import ActivityRecord, DailyMetric, ReportLog
 from app.garmin import repository
 from app.garmin.schemas import DailySummary
 
@@ -51,6 +51,18 @@ async def test_upsert_activity_skips_when_no_id(session):
     await repository.upsert_activity(session, None, {"date": "2026-06-20"})
     await session.commit()
     assert await _count(session, ActivityRecord) == 0
+
+
+async def test_log_report_stores_text(session):
+    await repository.log_report(
+        session, kind="report", model="claude-sonnet-4-6",
+        input_tokens=10, output_tokens=5, cost_usd=0.001, ok=True,
+        report_text="🟢 hello report",
+    )
+    rows = (await session.execute(select(ReportLog))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].report_text == "🟢 hello report"
+    assert rows[0].kind == "report"
 
 
 async def test_read_history_orders_oldest_first(session):

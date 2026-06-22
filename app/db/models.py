@@ -7,7 +7,7 @@ lives in ``app.garmin.schemas`` and is mapped across in the repository.
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -79,6 +79,7 @@ class ReportLog(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     error: Mapped[Optional[str]] = mapped_column(String(512))
+    report_text: Mapped[Optional[str]] = mapped_column(Text)  # the delivered report
 
 
 class BotState(Base):

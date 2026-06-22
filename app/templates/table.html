@@ -44,7 +44,15 @@
       <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
       <tbody>
         {% for row in rows %}
-          <tr>{% for v in row %}<td title="{{ v if v is not none else '' }}">{{ v if v is not none else '' }}</td>{% endfor %}</tr>
+          <tr>
+            {% for v in row %}
+              {% if loop.first %}
+                <td><a href="/ui/{{ table }}/{{ v }}{{ qf }}">{{ v }}</a></td>
+              {% else %}
+                <td title="{{ v if v is not none else '' }}">{{ v if v is not none else '' }}</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
         {% endfor %}
       </tbody>
     </table>
