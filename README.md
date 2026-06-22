@@ -1,5 +1,7 @@
 # Garmin → Claude
 
+[![CI](https://github.com/boserh/garmin-coach/actions/workflows/ci.yml/badge.svg)](https://github.com/boserh/garmin-coach/actions/workflows/ci.yml)
+
 A personal Garmin Connect analyzer with a **shared core** reused by two front-ends:
 a **Telegram bot** and a **FastAPI web layer**. It pulls health and training data,
 aggregates it into compact daily summaries, sends those to Claude for analysis, and
