@@ -28,6 +28,7 @@ See `CLAUDE.md` for the full module map and design notes.
 * Runna workout plan integration through Garmin Calendar
 * Morning automated reports
 * On-demand reports via Telegram commands
+* Follow-up questions (`/ask`) answered against your recent reports
 * Deep analysis mode using a larger Claude model
 * Aggressive data aggregation to minimize token usage and API cost
 * Response caching to avoid duplicate Claude API calls
@@ -46,7 +47,7 @@ app/                 shared core + web layer
   routers/           /health, /status, /report.json, /deep, /history
   main.py            FastAPI app factory (create_app)
 bot/                 Telegram front-end
-  handlers.py        /report, /deep, /test_on, /test_off
+  handlers.py        /report, /ask, /deep, /test_on, /test_off
   jobs.py            morning_job
   main.py            entrypoint (python -m bot.main)
 alembic/             database migrations

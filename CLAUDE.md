@@ -96,7 +96,7 @@ app/
   dependencies.py      shared deps (get_session, verify_token)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /deep, /test_on, /test_off, owner _guard, error handler
+  handlers.py          /report, /ask, /deep, /test_on, /test_off, owner _guard, error handler
   jobs.py              morning_job (Europe/Warsaw window; once-a-day guard in BotState)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: garmin service (mocked provider), routers, repository
@@ -167,6 +167,13 @@ which logs its decision. The once-a-day guard persists in `bot_state`.
 
 **Models**: `/report` + morning use `claude-sonnet-4-6`; `/deep` uses `claude-opus-4-8`.
 Every call is logged to `ReportLog` (tokens, cost, ok/error).
+
+**`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
+(3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
+`repository.get_recent_reports` (filtered to `kind="report"`, so `/deep` and prior
+`/ask` answers don't pollute the context), calls `analyze_with_stats`' sibling
+`ask_with_stats` (separate `SYSTEM_ASK` prompt for free-form answers, shares the dedup
+cache), and logs a `ReportLog` row with `kind="ask"`. Bot-only — no web endpoint.
 
 **Exercise names**: `fetch_exercise_summary` reads Garmin's specific `name` code, maps it
 to Ukrainian via `app/garmin/exercise_names.py` at return time (cache stays language-

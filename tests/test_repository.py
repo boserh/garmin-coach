@@ -79,6 +79,24 @@ async def test_get_last_report(session):
     assert date == dt.date.today().isoformat()  # created_at defaults to now
 
 
+async def test_get_recent_reports_filters_and_orders(session):
+    # only ok, non-null, kind="report" rows feed /ask context; newest first
+    await repository.log_report(session, kind="report", model="m", ok=False, error="x")
+    await repository.log_report(session, kind="deep", model="m", ok=True,
+                                report_text="глибокий розбір")
+    await repository.log_report(session, kind="ask", model="m", ok=True,
+                                report_text="відповідь на питання")
+    await repository.log_report(session, kind="report", model="m", ok=True,
+                                report_text="звіт A")
+    await repository.log_report(session, kind="report", model="m", ok=True,
+                                report_text="звіт B")
+
+    recent = await repository.get_recent_reports(session, n=3)
+    texts = [r["text"] for r in recent]
+    assert texts == ["звіт B", "звіт A"]  # deep/ask/failed excluded
+    assert all("date" in r for r in recent)
+
+
 async def test_read_history_orders_oldest_first(session):
     import datetime as dt
     today = dt.date.today()

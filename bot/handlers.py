@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
-from app.analysis.service import AnalystError, run_analysis
+from app.analysis.service import AnalystError, run_analysis, run_ask
 from app.core.config import settings
 from app.db.base import async_session_maker
 from app.garmin import service
@@ -60,6 +60,26 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text = await run_analysis(
                 session, payload, question=question, deep=True, kind="deep"
             )
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            text = str(e)
+    await update.message.reply_text(text)
+
+
+async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update):
+        return
+    question = " ".join(ctx.args).strip()
+    if not question:
+        await update.message.reply_text(
+            "Напиши питання після команди, напр.:\n/ask чи варто завтра бігти інтервали?"
+        )
+        return
+    logger.info(f"CMD /ask {question[:60]}")
+    await update.message.reply_text("Дивлюсь у твої останні звіти...")
+    async with async_session_maker() as session:
+        try:
+            text = await run_ask(session, question)
         except AnalystError as e:
             logger.error(f"ANALYST {e}")
             text = str(e)
