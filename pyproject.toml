@@ -22,6 +22,10 @@ dependencies = [
     "garth",
     "garminconnect",
     "python-dotenv",
+    "cryptography",       # Fernet encryption of stored credentials
+    "bcrypt",             # password hashing for web login
+    "itsdangerous",       # signed cookie sessions (starlette SessionMiddleware)
+    "python-multipart",   # HTML form parsing (login / settings POST)
 ]
 
 [project.optional-dependencies]
