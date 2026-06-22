@@ -122,12 +122,13 @@ def analyze_with_stats(
     question: str = "",
     deep: bool = False,
     kind: Optional[str] = None,
-    previous_report: Optional[str] = None,
+    previous_report: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
-    ``previous_report`` (yesterday's report text) is passed as context for
-    day-over-day continuity; it adds ~200-400 input tokens and no output growth.
+    ``previous_report`` ({"date", "text"}) is yesterday's report passed as context
+    for day-over-day continuity (incl. did-the-planned-workout-happen checks). It
+    adds ~200-400 input tokens and no output growth.
     """
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
@@ -225,7 +226,10 @@ async def run_analysis(
     # new ReportLog is written, so it never picks up the report we're about to make.
     previous_report = None
     if kind != "deep":
-        previous_report = await repository.get_last_report_text(session)
+        last = await repository.get_last_report(session)
+        if last:
+            text_prev, date_prev = last
+            previous_report = {"date": date_prev, "text": text_prev}
 
     try:
         text, stats = await run_in_threadpool(
