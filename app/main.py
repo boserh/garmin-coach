@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from app.core import logging as app_logging
 from app.db.base import dispose_db, init_db
-from app.routers import health, history, reports
+from app.routers import admin, health, history, reports
 
 
 @asynccontextmanager
@@ -29,4 +29,5 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(reports.router)
     app.include_router(history.router)
+    app.include_router(admin.router)
     return app

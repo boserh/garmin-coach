@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ table }} — Garmin DB</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .bar { margin: .5rem 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .tabs a { padding: .2rem .5rem; border: 1px solid #2a2f3a; border-radius: 6px; }
+    .tabs a.active { background: #1a1e27; border-color: #6cb6ff; }
+    .meta { color: #9aa4b2; }
+    .wrap { overflow: auto; max-height: 78vh; border: 1px solid #2a2f3a; border-radius: 8px; }
+    table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+    th, td { border-bottom: 1px solid #2a2f3a; padding: .4rem .6rem; text-align: left;
+             white-space: nowrap; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; }
+    th { background: #1a1e27; position: sticky; top: 0; }
+    tr:nth-child(even) td { background: #12151c; }
+  </style>
+</head>
+<body>
+  {% set q = '&token=' ~ token if token else '' %}
+  {% set qf = '?token=' ~ token if token else '' %}
+  <div class="bar tabs">
+    <a href="/ui{{ qf }}">← усі таблиці</a>
+    {% for t in tables %}
+      <a class="{{ 'active' if t == table else '' }}" href="/ui/{{ t }}{{ qf }}">{{ t }}</a>
+    {% endfor %}
+  </div>
+  <div class="bar">
+    <b>{{ table }}</b>
+    <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}</span>
+    {% if offset > 0 %}
+      <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
+    {% endif %}
+    {% if offset + limit < total %}
+      <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
+    {% endif %}
+  </div>
+  <div class="wrap">
+    <table>
+      <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>{% for v in row %}<td title="{{ v if v is not none else '' }}">{{ v if v is not none else '' }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

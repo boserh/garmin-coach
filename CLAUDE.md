@@ -129,8 +129,12 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /report.json` — daily report (Sonnet). Token-gated.
 - `GET /deep?q=...` — deep analysis (Opus). Token-gated.
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Token-gated.
+- `GET /ui` + `GET /ui/{table}` — minimal server-rendered DB browser (whitelisted
+  tables: daily_metrics, activities, report_logs, bot_state). Token-gated. Templates
+  in `app/templates/`.
 
-Auth: send `WEB_TOKEN` as `Authorization: Bearer <token>` or `X-Token: <token>`.
+Auth: send `WEB_TOKEN` as `Authorization: Bearer <token>`, `X-Token: <token>`, or
+`?token=<token>` (the query-param form lets the browser UI work via plain links).
 If `WEB_TOKEN` is empty, the gate is disabled.
 
 ## Database

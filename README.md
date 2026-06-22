@@ -157,8 +157,10 @@ first `alembic upgrade head`.
 * `GET /report.json` — daily report (Sonnet), token-gated
 * `GET /deep?q=...` — deep analysis (Opus), token-gated
 * `GET /history?days=N` — HRV/sleep/stress trend from the DB, token-gated
+* `GET /ui` — simple browser UI to page through the DB tables, token-gated
 
-Token endpoints accept `Authorization: Bearer <WEB_TOKEN>` or `X-Token: <WEB_TOKEN>`.
+Token endpoints accept `Authorization: Bearer <WEB_TOKEN>`, `X-Token: <WEB_TOKEN>`,
+or `?token=<WEB_TOKEN>` (handy for opening the `/ui` pages in a browser).
 
 ## Garmin Data Sources
 

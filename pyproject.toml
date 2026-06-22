@@ -35,6 +35,9 @@ dev = [
 [tool.setuptools]
 packages = ["app", "app.core", "app.db", "app.garmin", "app.analysis", "app.routers", "bot"]
 
+[tool.setuptools.package-data]
+app = ["templates/*.html"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

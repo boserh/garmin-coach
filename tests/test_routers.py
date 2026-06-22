@@ -36,3 +36,17 @@ def test_history_requires_token(client, monkeypatch):
     monkeypatch.setattr(security.settings, "WEB_TOKEN", "secret")
     assert client.get("/history").status_code == 401
     assert client.get("/history", headers={"X-Token": "secret"}).status_code == 200
+
+
+def test_ui_browse(client):
+    assert client.get("/ui").status_code == 200
+    r = client.get("/ui/daily_metrics")
+    assert r.status_code == 200
+    assert "daily_metrics" in r.text
+    assert client.get("/ui/nope").status_code == 404
+
+
+def test_ui_token_via_query(client, monkeypatch):
+    monkeypatch.setattr(security.settings, "WEB_TOKEN", "secret")
+    assert client.get("/ui").status_code == 401
+    assert client.get("/ui?token=secret").status_code == 200
