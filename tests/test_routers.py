@@ -1,10 +1,13 @@
 """Web layer smoke tests via FastAPI TestClient (Garmin login mocked)."""
 from unittest.mock import patch
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core import security
+from app.core.crypto import hash_password
+from app.db import users
 from app.garmin import service
 from app.main import create_app
 
@@ -14,6 +17,28 @@ def client():
     with patch.object(service, "login", return_value=None):
         with TestClient(create_app()) as c:
             yield c
+
+
+def _seed_user(email="t@example.com", password="pw", is_admin=True):
+    from app.db.base import async_session_maker
+
+    async def seed():
+        async with async_session_maker() as s:
+            if not await users.get_by_email(s, email):
+                await users.create_user(
+                    s, email=email, password_hash=hash_password(password), is_admin=is_admin
+                )
+
+    anyio.run(seed)
+
+
+@pytest.fixture
+def auth_client(client):
+    """A TestClient with a logged-in session cookie."""
+    _seed_user()
+    r = client.post("/login", data={"email": "t@example.com", "password": "pw"})
+    assert r.status_code == 200  # followed the redirect to /ui
+    return client
 
 
 def test_health(client):
@@ -38,24 +63,45 @@ def test_history_requires_token(client, monkeypatch):
     assert client.get("/history", headers={"X-Token": "secret"}).status_code == 200
 
 
-def test_ui_browse(client):
-    assert client.get("/ui").status_code == 200
-    r = client.get("/ui/daily_metrics")
+def test_ui_requires_login(client):
+    # unauthenticated → redirect to /login
+    r = client.get("/ui", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login"
+
+
+def test_login_flow(client):
+    _seed_user()
+    assert client.get("/login").status_code == 200
+    bad = client.post(
+        "/login", data={"email": "t@example.com", "password": "nope"},
+        follow_redirects=False,
+    )
+    assert bad.status_code == 401
+    ok = client.post(
+        "/login", data={"email": "t@example.com", "password": "pw"},
+        follow_redirects=False,
+    )
+    assert ok.status_code == 303
+    assert ok.headers["location"] == "/ui"
+
+
+def test_ui_browse(auth_client):
+    assert auth_client.get("/ui").status_code == 200
+    r = auth_client.get("/ui/daily_metrics")
     assert r.status_code == 200
     assert "daily_metrics" in r.text
-    assert client.get("/ui/nope").status_code == 404
+    assert auth_client.get("/ui/nope").status_code == 404
 
 
-def test_ui_token_via_query(client, monkeypatch):
-    monkeypatch.setattr(security.settings, "WEB_TOKEN", "secret")
-    assert client.get("/ui").status_code == 401
-    assert client.get("/ui?token=secret").status_code == 200
+def test_logout_clears_session(auth_client):
+    assert auth_client.get("/ui", follow_redirects=False).status_code == 200
+    auth_client.get("/logout")
+    assert auth_client.get("/ui", follow_redirects=False).status_code == 303
 
 
-def test_ui_daily_metrics_has_trend_chart(client):
+def test_ui_daily_metrics_has_trend_chart(auth_client):
     import datetime as dt
-
-    import anyio
 
     from app.db.base import async_session_maker
     from app.garmin import repository
@@ -73,9 +119,9 @@ def test_ui_daily_metrics_has_trend_chart(client):
             await s.commit()
 
     anyio.run(seed)
-    body = client.get("/ui/daily_metrics").text
+    body = auth_client.get("/ui/daily_metrics").text
     assert 'class="charts"' in body
     assert "HRV avg" in body
     assert "<polyline" in body
     # other tables get no chart
-    assert 'class="charts"' not in client.get("/ui/report_logs").text
+    assert 'class="charts"' not in auth_client.get("/ui/report_logs").text

@@ -11,8 +11,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import current_user
 from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog
-from app.dependencies import get_session, verify_token
+from app.dependencies import get_session
 from app.garmin import repository
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -26,7 +27,7 @@ TABLES = {
     "bot_state": BotState,
 }
 
-router = APIRouter(tags=["ui"], dependencies=[Depends(verify_token)])
+router = APIRouter(tags=["ui"], dependencies=[Depends(current_user)])
 
 # inline-SVG sparkline geometry (no JS / no CDN — renders server-side)
 _SVG_W, _SVG_H, _SVG_PAD = 720, 120, 22
