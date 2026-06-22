@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Garmin DB</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
+    h1 { font-weight: 600; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { display: inline-block; min-width: 9rem; margin: .5rem; padding: 1rem 1.5rem;
+            border: 1px solid #2a2f3a; border-radius: 10px; background: #14171f; }
+    .card:hover { border-color: #6cb6ff; }
+    .name { color: #9aa4b2; font-size: .9rem; }
+    .n { font-size: 1.8rem; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Garmin DB</h1>
+  {% set q = '?token=' ~ token if token else '' %}
+  {% for name, n in counts.items() %}
+    <a class="card" href="/ui/{{ name }}{{ q }}">
+      <div class="name">{{ name }}</div>
+      <div class="n">{{ n }}</div>
+    </a>
+  {% endfor %}
+</body>
+</html>

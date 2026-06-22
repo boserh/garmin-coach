@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ table }} — Garmin DB</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .bar { margin: .5rem 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .tabs a { padding: .2rem .5rem; border: 1px solid #2a2f3a; border-radius: 6px; }
+    .tabs a.active { background: #1a1e27; border-color: #6cb6ff; }
+    .meta { color: #9aa4b2; }
+    .wrap { overflow: auto; max-height: 78vh; border: 1px solid #2a2f3a; border-radius: 8px; }
+    table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+    th, td { border-bottom: 1px solid #2a2f3a; padding: .4rem .6rem; text-align: left;
+             white-space: nowrap; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; }
+    th { background: #1a1e27; position: sticky; top: 0; }
+    tr:nth-child(even) td { background: #12151c; }
+    .charts { display: flex; flex-wrap: wrap; gap: 1rem; margin: .5rem 0 1rem; }
+    .chart { flex: 1 1 22rem; border: 1px solid #2a2f3a; border-radius: 8px; padding: .6rem .8rem; background: #14171f; }
+    .chead { font-size: .9rem; margin-bottom: .3rem; }
+    .chart svg { display: block; width: 100%; height: auto; }
+    .xaxis { display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+  {% set q = '&token=' ~ token if token else '' %}
+  {% set qf = '?token=' ~ token if token else '' %}
+  <div class="bar tabs">
+    <a href="/ui{{ qf }}">← усі таблиці</a>
+    {% for t in tables %}
+      <a class="{{ 'active' if t == table else '' }}" href="/ui/{{ t }}{{ qf }}">{{ t }}</a>
+    {% endfor %}
+  </div>
+  <div class="bar">
+    <b>{{ table }}</b>
+    <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}</span>
+    {% if offset > 0 %}
+      <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
+    {% endif %}
+    {% if offset + limit < total %}
+      <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
+    {% endif %}
+  </div>
+  {% if charts %}
+    <div class="charts">
+      {% for c in charts %}
+        {% set s = c.s %}
+        <div class="chart">
+          <div class="chead">
+            <span style="color: {{ c.color }}">●</span> {{ c.label }}
+            <span class="meta">— {{ '%.0f'|format(s.ymin) }}…{{ '%.0f'|format(s.ymax) }},
+              останнє {{ '%.1f'|format(s.last) }}</span>
+          </div>
+          <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img"
+               aria-label="{{ c.label }} trend">
+            <polyline fill="none" stroke="{{ c.color }}" stroke-width="2"
+                      stroke-linejoin="round" points="{{ s.points }}"/>
+            {% for x, y in s.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="{{ c.color }}"/>{% endfor %}
+          </svg>
+          <div class="meta xaxis"><span>{{ first_date }}</span><span>{{ last_date }}</span></div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+  <div class="wrap">
+    <table>
+      <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            {% for v in row %}
+              {% if loop.first %}
+                <td><a href="/ui/{{ table }}/{{ v }}{{ qf }}">{{ v }}</a></td>
+              {% else %}
+                <td title="{{ v if v is not none else '' }}">{{ v if v is not none else '' }}</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

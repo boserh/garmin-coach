@@ -7,3 +7,19 @@ state.json
 state.json.tmp
 garmin_cache.json
 garmin_cache.json.tmp
+
+# SQLite database files
+*.db
+*.db-journal
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# packaging
+*.egg-info/
+build/
+dist/

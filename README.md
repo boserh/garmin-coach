@@ -1,20 +1,23 @@
-# Garmin → Claude Telegram Bot
+# Garmin → Claude
 
-A personal Telegram bot that pulls health and training data from Garmin Connect, aggregates it into compact daily summaries, sends it to Claude for analysis, and returns a report in Telegram.
+A personal Garmin Connect analyzer with a **shared core** reused by two front-ends:
+a **Telegram bot** and a **FastAPI web layer**. It pulls health and training data,
+aggregates it into compact daily summaries, sends those to Claude for analysis, and
+persists history/cost in a database.
 
 The project is designed for personal use. Development and testing are done on macOS, with Raspberry Pi 4 (4 GB RAM) as the target deployment platform.
 
 ```text
-Telegram
+Telegram bot / Web API
     ↓
-garmin_client.py
+app.garmin.service  (fetch + aggregation, DB-backed cache)
     ↓
-Data aggregation
+Claude API (app.analysis)
     ↓
-Claude API
-    ↓
-Telegram report
+Telegram reply / JSON response   +   history & cost in the DB
 ```
+
+See `CLAUDE.md` for the full module map and design notes.
 
 ## Features
 
@@ -26,57 +29,35 @@ Telegram report
 * Deep analysis mode using a larger Claude model
 * Aggressive data aggregation to minimize token usage and API cost
 * Response caching to avoid duplicate Claude API calls
-* Persistent state so the cache and morning-report status survive restarts
+* Web API (FastAPI) for reports, status, and history trends
+* Database history (SQLite/Postgres) for trends, cost tracking, and day-level caching
+* Persistent state so caches and morning-report status survive restarts
 
 ## Project Structure
 
-### `garmin_client.py`
+```text
+app/                 shared core + web layer
+  core/              config (pydantic-settings), logging, web auth
+  db/                async SQLAlchemy engine, ORM models, session
+  garmin/            providers, low-level client, service (aggregation), repository, schemas
+  analysis/          Claude analysis (service) + SYSTEM prompt
+  routers/           /health, /status, /report.json, /deep, /history
+  main.py            FastAPI app factory (create_app)
+bot/                 Telegram front-end
+  handlers.py        /report, /deep, /test_on, /test_off
+  jobs.py            morning_job
+  main.py            entrypoint (python -m bot.main)
+alembic/             database migrations
+tests/               pytest suite
+```
 
-Handles Garmin authentication and data collection.
+The aggregation in `app/garmin/service.py` is the most important part: raw Garmin
+responses are collapsed into compact daily summaries before being sent to the LLM,
+which dramatically reduces token usage and cost. Past immutable days are served from
+the database instead of re-hitting Garmin; immutable assets (exercise sets, workout
+details) are cached on disk in `garmin_cache.json`.
 
-Data is fetched directly through Garmin Connect API endpoints using `garth.connectapi(...)` rather than garth wrapper classes.
-
-Responsibilities:
-
-* Garmin login
-* Data retrieval
-* Data aggregation
-* Payload preparation for Claude
-
-The aggregation layer is the most important part of the project. Raw Garmin responses are converted into compact daily summaries before being sent to the LLM.
-
-This significantly reduces token usage and cost.
-
-Stable, ID-keyed responses (past-day metrics, strength exercise sets, planned-workout details) are cached on disk in `garmin_cache.json` to avoid refetching on every report.
-
-### `exercise_names.py`
-
-A standalone dictionary mapping Garmin exercise name codes (e.g. `DUMBBELL_BULGARIAN_SPLIT_SQUAT`) to readable Ukrainian names. `garmin_client.py` reads Garmin's specific exercise `name` (not the coarse category) and maps it through this dict; unknown codes are logged so you can add them.
-
-### `claude_analyst.py`
-
-Handles communication with the Claude API.
-
-Features:
-
-* Standard reports using `claude-sonnet-4-6`
-* Deep reports using `claude-opus-4-8`
-* System prompts for health and training analysis
-* Structured error handling through `AnalystError`
-* Persistent dedup cache to skip identical requests (see Caching and Persistence)
-
-### `bot.py`
-
-Telegram bot implementation.
-
-Commands:
-
-* `/report` — standard report
-* `/deep` — detailed report
-
-Also contains the scheduled morning report job.
-
-The bot checks Garmin synchronization approximately every 20 minutes and only sends the morning report after fresh Garmin data becomes available.
+Both front-ends share `app.garmin` and `app.analysis` — no duplicated logic.
 
 ## Installation
 
@@ -128,12 +109,16 @@ os.environ["ANTHROPIC_API_KEY"]
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
 | `GARTH_TOKEN_DIR` | `~/.garth` | Garmin token storage |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
+| `WEB_TOKEN` | `` (empty) | Shared secret for data/cost endpoints; empty disables auth |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root log level (`DEBUG` shows skip-reason logs) |
 | `CLAUDE_CACHE_FILE` | `claude_cache.json` | Claude response cache |
-| `GARMIN_CACHE_FILE` | `garmin_cache.json` | Garmin stable-fetch cache |
-| `STATE_FILE` | `state.json` | Morning-report status |
+| `GARMIN_CACHE_FILE` | `garmin_cache.json` | Disk cache for immutable Garmin assets |
+
+The morning-report status is no longer a file — it lives in the `bot_state` table.
 
 ## Garmin Authentication
 
@@ -145,19 +130,37 @@ Subsequent runs typically do not require manual login.
 
 ## Running
 
-Because macOS may have multiple Python installations and aliases, use the virtual environment interpreter explicitly:
+Use the virtual environment interpreter explicitly (the system Python won't find
+the installed packages).
 
 ```bash
-./venv/bin/python garmin_client.py
+# Apply migrations (once, and after model changes):
+./venv/bin/python -m alembic upgrade head
+
+# Start the web API:
+./venv/bin/python -m uvicorn app.main:create_app --factory
+
+# Start the Telegram bot:
+./venv/bin/python -m bot.main
+
+# Tests:
+./venv/bin/python -m pytest -q
 ```
 
-Verify data collection.
+The web app also creates its tables on startup, so it runs zero-config before the
+first `alembic upgrade head`.
 
-Then start the bot:
+### Web endpoints
 
-```bash
-./venv/bin/python bot.py
-```
+* `GET /health` — liveness (no auth)
+* `GET /status` — Garmin auth, DB stats, last morning report, total cost (no auth)
+* `GET /report.json` — daily report (Sonnet), token-gated
+* `GET /deep?q=...` — deep analysis (Opus), token-gated
+* `GET /history?days=N` — HRV/sleep/stress trend from the DB, token-gated
+* `GET /ui` — simple browser UI to page through the DB tables, token-gated
+
+Token endpoints accept `Authorization: Bearer <WEB_TOKEN>`, `X-Token: <WEB_TOKEN>`,
+or `?token=<WEB_TOKEN>` (handy for opening the `/ui` pages in a browser).
 
 ## Garmin Data Sources
 
@@ -292,21 +295,28 @@ To avoid paying for identical Claude requests:
 * `/report` (Sonnet) and `/deep` (Opus) are cached separately, since the model is part of the key.
 * One-week TTL. A hit logs `CLAUDE CACHE HIT`.
 
-### Garmin stable-fetch cache (`garmin_cache.json`)
+### Garmin disk cache (`garmin_cache.json`)
 
-Only fetches keyed on stable Garmin IDs, to cut request volume:
+Immutable assets keyed on stable Garmin IDs, to cut request volume:
 
-* `daily:<date>` — past days only (30-day TTL); today is never cached, since its data is still changing.
 * `exercise:v2:<id>` — a completed activity's exercise sets (365-day TTL; immutable).
 * `workout:<id>` — planned-workout details (7-day TTL; plans can be edited).
 
 A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are mapped to Ukrainian at read time, so labels can change without invalidating the cache.
 
-### Morning-report status (`state.json`)
+### Database (`garmin.db` by default)
 
-Persists the date the morning report was last sent, so restarting the bot mid-morning does not re-send a report that was already delivered.
+Day-level caching, history, and cost tracking moved into the database:
 
-Paths can be overridden via `CLAUDE_CACHE_FILE`, `GARMIN_CACHE_FILE`, and `STATE_FILE`.
+* `DailyMetric` — one row per day; past days are served from here instead of Garmin (today is always refetched). Doubles as the trend source for `/history`.
+* `ActivityRecord` — one row per activity (idempotent on `activity_id`).
+* `ReportLog` — one row per Claude call (tokens, cost, ok/error).
+* `BotState` — key/value, including the morning-report-sent date (replaces `state.json`).
+
+Backend is set by `DATABASE_URL`: SQLite (zero-config) by default, Postgres by env
+var alone. Schema is managed with Alembic (`alembic upgrade head`).
+
+Cache paths can be overridden via `CLAUDE_CACHE_FILE` and `GARMIN_CACHE_FILE`.
 
 ## Time Zones
 
