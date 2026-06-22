@@ -78,6 +78,7 @@ class ReportLog(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    cached: Mapped[bool] = mapped_column(Boolean, default=False)  # served from dedup cache
     error: Mapped[Optional[str]] = mapped_column(String(512))
     report_text: Mapped[Optional[str]] = mapped_column(Text)  # the delivered report
 

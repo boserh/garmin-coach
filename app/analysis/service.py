@@ -112,6 +112,7 @@ class CallStats:
     output_tokens: int = 0
     cost_usd: float = 0.0
     ok: bool = True
+    cached: bool = False
     error: Optional[str] = None
 
 
@@ -131,7 +132,7 @@ def analyze_with_stats(
     cached = _cache.get(key)
     if cached and cached[1] > _time.time():
         logger.info(f"CLAUDE CACHE HIT  {model}")
-        return cached[0], CallStats(kind=kind, model=model)  # cache hit: no tokens
+        return cached[0], CallStats(kind=kind, model=model, cached=True)  # no tokens
 
     user_content = {
         "today": dt.date.today().isoformat(),
@@ -227,6 +228,7 @@ async def run_analysis(
         output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd,
         ok=True,
+        cached=stats.cached,
         report_text=text,
     )
     return text
