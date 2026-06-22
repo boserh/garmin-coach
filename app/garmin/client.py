@@ -183,10 +183,13 @@ def fetch_exercise_summary(activity_id) -> dict:
 
 
 def fetch_workout_detail(workout_id) -> dict:
-    """Structure of a planned workout: steps with target pace (min/km)."""
+    """Structure of a planned workout: name, coach description (Runna's free-text
+    guidance, e.g. 'no faster than 7:15/km, a limit not a target'), and steps with
+    target pace (min/km). The description often carries pace/effort cues that aren't
+    in the structured targets."""
     if not workout_id:
         return {}
-    key = f"workout:{workout_id}"
+    key = f"workout:v2:{workout_id}"  # v2: now also stores name + description
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -207,6 +210,10 @@ def fetch_workout_detail(workout_id) -> dict:
             "dist_m": dist,
             "pace_min_km": [pace(hi), pace(lo)] if lo and hi else None,
         })
-    result = {"steps": steps}
+    result = {
+        "name": _g(d, "workoutName"),
+        "description": _g(d, "description"),
+        "steps": steps,
+    }
     _cache_put(key, result, WORKOUT_TTL_S)
     return result

@@ -180,7 +180,8 @@ neutral). Unknown codes are logged once (`EXERCISE unmapped: <CODE>`). Warm-up j
   every minute and never hits (the main gotcha if you touch the key logic). 1-week TTL.
   Hit logs `CLAUDE CACHE HIT`.
 - **Garmin disk cache** (`garmin_cache.json`): immutable ID-keyed assets only —
-  `exercise:v2:<id>` (365d) and `workout:<id>` (7d). Day-level caching moved to the DB.
+  `exercise:v2:<id>` (365d) and `workout:v2:<id>` (7d; name + coach description + steps).
+Day-level caching moved to the DB.
 - **DB day-level cache** (`DailyMetric`): past days served from the DB; today refetched.
 
 ## Logging
