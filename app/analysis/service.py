@@ -87,7 +87,7 @@ def _as_dict(payload: Union[Payload, dict]) -> dict:
     return payload.model_dump() if isinstance(payload, Payload) else payload
 
 
-def _cache_key(data: dict, question: str, model: str) -> str:
+def _cache_key(data: dict, question: str, model: str, previous_report: Optional[str] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -95,6 +95,7 @@ def _cache_key(data: dict, question: str, model: str) -> str:
         "planned": data.get("planned_runs"),
         "question": question,
         "model": model,
+        "prev": previous_report,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -121,14 +122,19 @@ def analyze_with_stats(
     question: str = "",
     deep: bool = False,
     kind: Optional[str] = None,
+    previous_report: Optional[str] = None,
 ) -> Tuple[str, CallStats]:
-    """Run analysis and return (text, stats). Raises AnalystError on API failure."""
+    """Run analysis and return (text, stats). Raises AnalystError on API failure.
+
+    ``previous_report`` (yesterday's report text) is passed as context for
+    day-over-day continuity; it adds ~200-400 input tokens and no output growth.
+    """
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
     data = _as_dict(payload)
     effective_q = question or _DEFAULT_DAILY_Q
 
-    key = _cache_key(data, effective_q, model)
+    key = _cache_key(data, effective_q, model, previous_report)
     cached = _cache.get(key)
     if cached and cached[1] > _time.time():
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -139,6 +145,8 @@ def analyze_with_stats(
         "data": data,
         "question": effective_q,
     }
+    if previous_report:
+        user_content["previous_report"] = previous_report
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -211,9 +219,17 @@ async def run_analysis(
 
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
+
+    # Day-over-day continuity: feed yesterday's report as context (daily/morning
+    # only — /deep is a one-off deep dive that doesn't need it). Fetched before the
+    # new ReportLog is written, so it never picks up the report we're about to make.
+    previous_report = None
+    if kind != "deep":
+        previous_report = await repository.get_last_report_text(session)
+
     try:
         text, stats = await run_in_threadpool(
-            analyze_with_stats, payload, question, deep, kind
+            analyze_with_stats, payload, question, deep, kind, previous_report
         )
     except AnalystError as e:
         await repository.log_report(

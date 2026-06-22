@@ -123,6 +123,18 @@ async def persist_payload(session: AsyncSession, payload: Payload, act_pairs) ->
         await upsert_activity(session, activity_id, row)
 
 
+async def get_last_report_text(session: AsyncSession) -> Optional[str]:
+    """Most recent successfully delivered report text (for day-over-day context)."""
+    return (
+        await session.execute(
+            select(ReportLog.report_text)
+            .where(ReportLog.report_text.is_not(None), ReportLog.ok.is_(True))
+            .order_by(ReportLog.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def log_report(
     session: AsyncSession,
     *,
