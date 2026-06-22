@@ -3,8 +3,10 @@ the engine, and provide an isolated in-memory session fixture."""
 import os
 
 # Must run before any app.* import pulls in the engine from Settings.
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_garmin.db")
-os.environ.setdefault("WEB_TOKEN", "")
+# Hard-override (not setdefault): a DATABASE_URL exported in the shell or set in
+# .env must NEVER leak the real garmin.db into the test run.
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_garmin.db"
+os.environ["WEB_TOKEN"] = ""
 
 # Start from a clean schema each run — init_db() only create_all's, it won't ALTER a
 # stale file left over from an older schema.

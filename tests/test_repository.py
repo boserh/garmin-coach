@@ -65,6 +65,20 @@ async def test_log_report_stores_text(session):
     assert rows[0].kind == "report"
 
 
+async def test_get_last_report(session):
+    import datetime as dt
+
+    assert await repository.get_last_report(session) is None
+    # failed calls and null-text rows are ignored
+    await repository.log_report(session, kind="report", model="m", ok=False, error="boom")
+    await repository.log_report(
+        session, kind="morning", model="m", ok=True, report_text="🟢 учора все ок"
+    )
+    text, date = await repository.get_last_report(session)
+    assert text == "🟢 учора все ок"
+    assert date == dt.date.today().isoformat()  # created_at defaults to now
+
+
 async def test_read_history_orders_oldest_first(session):
     import datetime as dt
     today = dt.date.today()

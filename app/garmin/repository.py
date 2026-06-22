@@ -123,6 +123,23 @@ async def persist_payload(session: AsyncSession, payload: Payload, act_pairs) ->
         await upsert_activity(session, activity_id, row)
 
 
+async def get_last_report(session: AsyncSession):
+    """Most recent delivered report as (text, date_iso) for day-over-day context.
+    The date is when it was generated — i.e. that report's own "today"."""
+    row = (
+        await session.execute(
+            select(ReportLog.report_text, ReportLog.created_at)
+            .where(ReportLog.report_text.is_not(None), ReportLog.ok.is_(True))
+            .order_by(ReportLog.created_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None
+    text, created = row
+    return text, (created.date().isoformat() if created else None)
+
+
 async def log_report(
     session: AsyncSession,
     *,
