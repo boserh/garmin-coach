@@ -100,6 +100,68 @@ def test_logout_clears_session(auth_client):
     assert auth_client.get("/ui", follow_redirects=False).status_code == 303
 
 
+@pytest.fixture
+def crypto_key(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from app.core import crypto
+
+    monkeypatch.setattr(crypto.settings, "APP_SECRET_KEY", Fernet.generate_key().decode())
+    monkeypatch.setattr(crypto, "_fernet", None)
+
+
+def test_settings_saves_encrypted_credentials(auth_client, crypto_key):
+    from app.core import crypto
+    from app.db.base import async_session_maker
+
+    r = auth_client.post(
+        "/settings",
+        data={
+            "garmin_email": "g@example.com",
+            "garmin_password": "garminpass",
+            "anthropic_key": "sk-ant-xyz",
+            "telegram_chat_id": "123456",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings?saved=1"
+
+    async def check():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            assert u.garmin_password_enc and u.garmin_password_enc != "garminpass"
+            assert crypto.decrypt(u.garmin_password_enc) == "garminpass"
+            assert crypto.decrypt(u.anthropic_key_enc) == "sk-ant-xyz"
+            assert crypto.decrypt(u.garmin_email_enc) == "g@example.com"
+            assert u.telegram_chat_id == 123456
+
+    anyio.run(check)
+
+
+def test_admin_users_create(auth_client):
+    r = auth_client.post(
+        "/admin/users",
+        data={"email": "new@example.com", "password": "pw2"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    from app.db.base import async_session_maker
+
+    async def check():
+        async with async_session_maker() as s:
+            assert await users.get_by_email(s, "new@example.com") is not None
+
+    anyio.run(check)
+
+
+def test_admin_users_forbidden_for_non_admin(client):
+    _seed_user(email="plain@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "plain@example.com", "password": "pw"})
+    assert client.get("/admin/users").status_code == 403
+
+
 def test_ui_daily_metrics_has_trend_chart(auth_client):
     import datetime as dt
 
