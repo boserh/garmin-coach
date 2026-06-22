@@ -140,6 +140,28 @@ async def get_last_report(session: AsyncSession):
     return text, (created.date().isoformat() if created else None)
 
 
+async def get_recent_reports(session: AsyncSession, n: int = 3) -> List[dict]:
+    """Last ``n`` delivered daily reports (newest first) as [{date, text}, ...],
+    for the /ask follow-up context. Only kind="report" — /deep and /ask answers are
+    excluded so the conversational context stays the daily-report thread."""
+    rows = (
+        await session.execute(
+            select(ReportLog.report_text, ReportLog.created_at)
+            .where(
+                ReportLog.report_text.is_not(None),
+                ReportLog.ok.is_(True),
+                ReportLog.kind == "report",
+            )
+            .order_by(ReportLog.created_at.desc())
+            .limit(n)
+        )
+    ).all()
+    return [
+        {"date": created.date().isoformat() if created else None, "text": text}
+        for text, created in rows
+    ]
+
+
 async def log_report(
     session: AsyncSession,
     *,
