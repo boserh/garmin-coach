@@ -69,6 +69,36 @@ def test_build_payload_shape(monkeypatch):
     assert payload.planned_runs == []
 
 
+def test_fetch_workout_detail_parses_description(monkeypatch):
+    raw = {
+        "workoutName": "W1 Mon Easy Run - 3km Easy Run",
+        "description": "Run Further Plan (Week 1/10)\n\n3km easy run at a "
+                       "conversational pace (no faster than 7:15/km). A limit, not a target.",
+        "workoutSegments": [{"workoutSteps": [
+            {"endConditionValue": 3000.0, "targetValueOne": None, "targetValueTwo": None},
+        ]}],
+    }
+
+    class P:
+        username = "t"
+
+        def login(self):
+            pass
+
+        def connectapi(self, path, **kwargs):
+            return raw
+
+    monkeypatch.setattr(client, "get_provider", lambda: P())
+    monkeypatch.setattr(client, "_cache_get", lambda k: None)   # no disk
+    monkeypatch.setattr(client, "_cache_put", lambda k, v, ttl: None)
+
+    d = client.fetch_workout_detail(123)
+    assert d["name"] == "W1 Mon Easy Run - 3km Easy Run"
+    assert "no faster than 7:15/km" in d["description"]
+    assert d["steps"][0]["dist_m"] == 3000.0
+    assert d["steps"][0]["pace_min_km"] is None
+
+
 def test_payload_dump_keys_are_stable(monkeypatch):
     fp = FakeProvider()
     monkeypatch.setattr(client, "get_provider", lambda: fp)

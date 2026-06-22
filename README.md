@@ -302,7 +302,7 @@ To avoid paying for identical Claude requests:
 Immutable assets keyed on stable Garmin IDs, to cut request volume:
 
 * `exercise:v2:<id>` — a completed activity's exercise sets (365-day TTL; immutable).
-* `workout:<id>` — planned-workout details (7-day TTL; plans can be edited).
+* `workout:v2:<id>` — planned-workout details: name, coach description, steps (7-day TTL; plans can be edited).
 
 A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are mapped to Ukrainian at read time, so labels can change without invalidating the cache.
 
