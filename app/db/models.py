@@ -17,6 +17,32 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    """A web-login account that owns its own Garmin/Claude credentials and data.
+
+    Login is via ``email`` + bcrypt ``password_hash``. Upstream credentials are
+    stored encrypted (Fernet tokens, see ``app.core.crypto``); ``telegram_chat_id``
+    is a routing identifier (kept plaintext + indexed so the bot can look a user up
+    by an incoming chat id), not a secret."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Encrypted upstream credentials (Fernet tokens); null until the user fills them in.
+    garmin_email_enc: Mapped[Optional[str]] = mapped_column(Text)
+    garmin_password_enc: Mapped[Optional[str]] = mapped_column(Text)
+    anthropic_key_enc: Mapped[Optional[str]] = mapped_column(Text)
+    garth_token_enc: Mapped[Optional[str]] = mapped_column(Text)  # dumped garth session
+
+    telegram_chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class DailyMetric(Base):
     """One row per day of recovery/sleep metrics. Past days are immutable, so
     this doubles as the day-level cache (serve from here instead of Garmin)."""
