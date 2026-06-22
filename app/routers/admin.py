@@ -96,8 +96,14 @@ async def ui_table(
 
     cols = [c.name for c in model.__table__.columns]
     pk = list(model.__table__.primary_key.columns)[0]
+    # Order by the most meaningful recency column (newest first), not the PK,
+    # so date-based tables read chronologically instead of by insert order.
+    table_cols = model.__table__.columns
+    order_col = next(
+        (table_cols[c] for c in ("date", "created_at") if c in table_cols), pk
+    )
     result = await session.execute(
-        select(model).order_by(pk.desc()).limit(limit).offset(offset)
+        select(model).order_by(order_col.desc()).limit(limit).offset(offset)
     )
     rows = [[getattr(r, c) for c in cols] for r in result.scalars().all()]
     total = await _count(session, model)
