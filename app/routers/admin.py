@@ -75,11 +75,16 @@ async def _daily_charts(session: AsyncSession, days: int = 60):
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def ui_index(request: Request, session: AsyncSession = Depends(get_session)):
+async def ui_index(
+    request: Request,
+    user=Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
     counts = {name: await _count(session, model) for name, model in TABLES.items()}
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "counts": counts, "token": request.query_params.get("token", "")},
+        {"request": request, "counts": counts, "user": user,
+         "token": request.query_params.get("token", "")},
     )
 
 

@@ -14,9 +14,15 @@
     .card:hover { border-color: #6cb6ff; }
     .name { color: #9aa4b2; font-size: .9rem; }
     .n { font-size: 1.8rem; font-weight: 700; }
+    nav { margin-bottom: 1rem; color: #9aa4b2; }
   </style>
 </head>
 <body>
+  <nav>
+    <a href="/settings">Налаштування</a>
+    {% if user and user.is_admin %} · <a href="/admin/users">Користувачі</a>{% endif %}
+    · <a href="/logout">Вихід</a>
+  </nav>
   <h1>Garmin DB</h1>
   {% set q = '?token=' ~ token if token else '' %}
   {% for name, n in counts.items() %}
