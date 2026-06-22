@@ -5,7 +5,6 @@ import anyio
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import security
 from app.core.crypto import hash_password
 from app.db import users
 from app.garmin import service
@@ -47,8 +46,12 @@ def test_health(client):
     assert r.json() == {"status": "ok"}
 
 
-def test_status(client):
-    r = client.get("/status")
+def test_status_requires_login(client):
+    assert client.get("/status", follow_redirects=False).status_code == 303
+
+
+def test_status(auth_client):
+    r = auth_client.get("/status")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
@@ -57,10 +60,14 @@ def test_status(client):
     assert "cost_usd_total" in body
 
 
-def test_history_requires_token(client, monkeypatch):
-    monkeypatch.setattr(security.settings, "WEB_TOKEN", "secret")
-    assert client.get("/history").status_code == 401
-    assert client.get("/history", headers={"X-Token": "secret"}).status_code == 200
+def test_history_requires_login(client):
+    assert client.get("/history", follow_redirects=False).status_code == 303
+
+
+def test_history_when_logged_in(auth_client):
+    r = auth_client.get("/history")
+    assert r.status_code == 200
+    assert "trend" in r.json()
 
 
 def test_ui_requires_login(client):
@@ -171,12 +178,13 @@ def test_ui_daily_metrics_has_trend_chart(auth_client):
 
     async def seed():
         async with async_session_maker() as s:
+            user = await users.get_by_email(s, "t@example.com")
             today = dt.date.today()
             for i, hrv in enumerate([58, 61, 55, 63]):
                 d = (today - dt.timedelta(days=i)).isoformat()
                 await repository.upsert_daily(
-                    s, DailySummary(date=d, hrv_avg=hrv, sleep_h=7.0 + i * 0.2,
-                                    sleep_score=80, has_data=True)
+                    s, user.id, DailySummary(date=d, hrv_avg=hrv, sleep_h=7.0 + i * 0.2,
+                                             sleep_score=80, has_data=True)
                 )
             await s.commit()
 

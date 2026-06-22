@@ -91,13 +91,24 @@ python-dotenv
 Create a `.env` file:
 
 ```env
+# Required for auth: Fernet master key (encrypts stored creds + signs sessions)
+APP_SECRET_KEY=...
+# The single Telegram bot identity (global)
+TELEGRAM_BOT_TOKEN=xxxxxxxx
+
+# Seed-only: imported per-user by `create-user --seed-env`, then managed in /settings
 GARMIN_EMAIL=your_email
 GARMIN_PASSWORD=your_password
-
 ANTHROPIC_API_KEY=sk-ant-...
-
-TELEGRAM_BOT_TOKEN=xxxxxxxx
 TELEGRAM_CHAT_ID=123456789
+```
+
+Credentials are **per user, stored encrypted in the database**; the `.env` Garmin/
+Claude/Telegram values are only a one-time seed for the first account. Generate the
+master key with:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 The application reads configuration from environment variables.
@@ -140,6 +151,9 @@ the installed packages).
 # Apply migrations (once, and after model changes):
 ./venv/bin/python -m alembic upgrade head
 
+# Create the first admin (seeds creds from .env, claims existing data):
+./venv/bin/python -m app.cli create-user --email me@example.com --admin --seed-env
+
 # Start the web API:
 ./venv/bin/python -m uvicorn app.main:create_app --factory
 
@@ -150,20 +164,25 @@ the installed packages).
 ./venv/bin/python -m pytest -q
 ```
 
+Then log in at `/login`; manage credentials at `/settings`, users at `/admin/users`.
+
 The web app also creates its tables on startup, so it runs zero-config before the
 first `alembic upgrade head`.
 
 ### Web endpoints
 
-* `GET /health` — liveness (no auth)
-* `GET /status` — Garmin auth, DB stats, last morning report, total cost (no auth)
-* `GET /report.json` — daily report (Sonnet), token-gated
-* `GET /deep?q=...` — deep analysis (Opus), token-gated
-* `GET /history?days=N` — HRV/sleep/stress trend from the DB, token-gated
-* `GET /ui` — simple browser UI to page through the DB tables, token-gated
+* `GET /login` · `GET /logout` — cookie-session auth
+* `GET /health` — liveness (public)
+* `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost
+* `GET /report.json` — daily report (Sonnet), login required
+* `GET /deep?q=...` — deep analysis (Opus), login required
+* `GET /history?days=N` — HRV/sleep/stress trend from the DB, login required
+* `GET /settings` — manage your own Garmin/Claude/Telegram credentials
+* `GET /admin/users` — list/create users (admin only)
+* `GET /ui` — raw DB browser (admin only)
 
-Token endpoints accept `Authorization: Bearer <WEB_TOKEN>`, `X-Token: <WEB_TOKEN>`,
-or `?token=<WEB_TOKEN>` (handy for opening the `/ui` pages in a browser).
+Auth is a signed cookie session established at `/login`; there are no API tokens.
+Credentials are per user and encrypted at rest.
 
 ## Garmin Data Sources
 

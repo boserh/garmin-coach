@@ -1,9 +1,11 @@
-"""Repository upsert idempotency + history reads against in-memory SQLite."""
+"""Repository upsert idempotency, per-user isolation, and history reads."""
 from sqlalchemy import func, select
 
 from app.db.models import ActivityRecord, DailyMetric, ReportLog
 from app.garmin import repository
 from app.garmin.schemas import DailySummary
+
+U1, U2 = 1, 2  # FK enforcement is off in SQLite, so bare ids are fine for unit tests
 
 
 async def _count(session, model):
@@ -13,30 +15,45 @@ async def _count(session, model):
 async def test_upsert_daily_is_idempotent(session):
     s1 = DailySummary(date="2026-06-20", sleep_score=80, hrv_avg=55,
                       stress_avg=20, has_data=True)
-    await repository.upsert_daily(session, s1)
+    await repository.upsert_daily(session, U1, s1)
     await session.commit()
 
-    # same date, new values → update in place, not a second row
+    # same (user, date), new values → update in place, not a second row
     s2 = DailySummary(date="2026-06-20", sleep_score=90, hrv_avg=58,
                       stress_avg=22, has_data=True)
-    await repository.upsert_daily(session, s2)
+    await repository.upsert_daily(session, U1, s2)
     await session.commit()
 
     assert await _count(session, DailyMetric) == 1
-    got = await repository.read_daily_metrics(session, ["2026-06-20"])
+    got = await repository.read_daily_metrics(session, U1, ["2026-06-20"])
     assert got["2026-06-20"].sleep_score == 90
     assert got["2026-06-20"].hrv_avg == 58
+
+
+async def test_daily_metrics_isolated_per_user(session):
+    await repository.upsert_daily(
+        session, U1, DailySummary(date="2026-06-20", hrv_avg=55, has_data=True))
+    await repository.upsert_daily(
+        session, U2, DailySummary(date="2026-06-20", hrv_avg=70, has_data=True))
+    await session.commit()
+
+    # same date, two users → two rows, each sees only its own
+    assert await _count(session, DailyMetric) == 2
+    got1 = await repository.read_daily_metrics(session, U1, ["2026-06-20"])
+    got2 = await repository.read_daily_metrics(session, U2, ["2026-06-20"])
+    assert got1["2026-06-20"].hrv_avg == 55
+    assert got2["2026-06-20"].hrv_avg == 70
 
 
 async def test_upsert_activity_is_idempotent(session):
     row = {"date": "2026-06-20", "type": "strength_training", "dur_min": 45.0,
            "dist_km": 0.0, "avg_hr": 110, "max_hr": 140, "load": 60.0,
            "exercises": {"active_sets": 12, "sets": {"присідання": 4}}}
-    await repository.upsert_activity(session, 111, row)
+    await repository.upsert_activity(session, U1, 111, row)
     await session.commit()
 
     row2 = dict(row, load=75.0)
-    await repository.upsert_activity(session, 111, row2)
+    await repository.upsert_activity(session, U1, 111, row2)
     await session.commit()
 
     assert await _count(session, ActivityRecord) == 1
@@ -48,53 +65,68 @@ async def test_upsert_activity_is_idempotent(session):
 
 
 async def test_upsert_activity_skips_when_no_id(session):
-    await repository.upsert_activity(session, None, {"date": "2026-06-20"})
+    await repository.upsert_activity(session, U1, None, {"date": "2026-06-20"})
     await session.commit()
     assert await _count(session, ActivityRecord) == 0
 
 
 async def test_log_report_stores_text(session):
     await repository.log_report(
-        session, kind="report", model="claude-sonnet-4-6",
+        session, user_id=U1, kind="report", model="claude-sonnet-4-6",
         input_tokens=10, output_tokens=5, cost_usd=0.001, ok=True,
         report_text="🟢 hello report",
     )
     rows = (await session.execute(select(ReportLog))).scalars().all()
     assert len(rows) == 1
     assert rows[0].report_text == "🟢 hello report"
-    assert rows[0].kind == "report"
+    assert rows[0].user_id == U1
 
 
 async def test_get_last_report(session):
     import datetime as dt
 
-    assert await repository.get_last_report(session) is None
+    assert await repository.get_last_report(session, U1) is None
     # failed calls and null-text rows are ignored
-    await repository.log_report(session, kind="report", model="m", ok=False, error="boom")
+    await repository.log_report(session, user_id=U1, kind="report", model="m",
+                                ok=False, error="boom")
     await repository.log_report(
-        session, kind="morning", model="m", ok=True, report_text="🟢 учора все ок"
-    )
-    text, date = await repository.get_last_report(session)
+        session, user_id=U1, kind="morning", model="m", ok=True,
+        report_text="🟢 учора все ок")
+    # another user's report must not leak in
+    await repository.log_report(
+        session, user_id=U2, kind="report", model="m", ok=True, report_text="чужий")
+
+    text, date = await repository.get_last_report(session, U1)
     assert text == "🟢 учора все ок"
-    assert date == dt.date.today().isoformat()  # created_at defaults to now
+    assert date == dt.date.today().isoformat()
 
 
 async def test_get_recent_reports_filters_and_orders(session):
-    # only ok, non-null, kind="report" rows feed /ask context; newest first
-    await repository.log_report(session, kind="report", model="m", ok=False, error="x")
-    await repository.log_report(session, kind="deep", model="m", ok=True,
+    await repository.log_report(session, user_id=U1, kind="report", model="m",
+                                ok=False, error="x")
+    await repository.log_report(session, user_id=U1, kind="deep", model="m", ok=True,
                                 report_text="глибокий розбір")
-    await repository.log_report(session, kind="ask", model="m", ok=True,
+    await repository.log_report(session, user_id=U1, kind="ask", model="m", ok=True,
                                 report_text="відповідь на питання")
-    await repository.log_report(session, kind="report", model="m", ok=True,
+    await repository.log_report(session, user_id=U1, kind="report", model="m", ok=True,
                                 report_text="звіт A")
-    await repository.log_report(session, kind="report", model="m", ok=True,
+    await repository.log_report(session, user_id=U1, kind="report", model="m", ok=True,
                                 report_text="звіт B")
+    await repository.log_report(session, user_id=U2, kind="report", model="m", ok=True,
+                                report_text="чужий звіт")
 
-    recent = await repository.get_recent_reports(session, n=3)
+    recent = await repository.get_recent_reports(session, U1, n=3)
     texts = [r["text"] for r in recent]
-    assert texts == ["звіт B", "звіт A"]  # deep/ask/failed excluded
+    assert texts == ["звіт B", "звіт A"]  # deep/ask/failed/other-user excluded
     assert all("date" in r for r in recent)
+
+
+async def test_state_is_per_user(session):
+    await repository.set_state(session, U1, "morning_sent_date", "2026-06-22")
+    await repository.set_state(session, U2, "morning_sent_date", "2026-06-21")
+    assert await repository.get_state(session, U1, "morning_sent_date") == "2026-06-22"
+    assert await repository.get_state(session, U2, "morning_sent_date") == "2026-06-21"
+    assert await repository.get_state(session, U1, "missing") is None
 
 
 async def test_read_history_orders_oldest_first(session):
@@ -103,11 +135,11 @@ async def test_read_history_orders_oldest_first(session):
     for i in (2, 0, 1):  # insert out of order
         d = (today - dt.timedelta(days=i)).isoformat()
         await repository.upsert_daily(
-            session, DailySummary(date=d, hrv_avg=50 + i, has_data=True)
+            session, U1, DailySummary(date=d, hrv_avg=50 + i, has_data=True)
         )
     await session.commit()
 
-    trend = await repository.read_history(session, days=7)
+    trend = await repository.read_history(session, U1, days=7)
     dates = [r["date"] for r in trend]
     assert dates == sorted(dates)
     assert len(trend) == 3

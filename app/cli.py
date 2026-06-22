@@ -12,6 +12,8 @@ import asyncio
 import getpass
 import sys
 
+from sqlalchemy import text
+
 from app.core.config import settings
 from app.core.crypto import encrypt, hash_password
 from app.db import users
@@ -36,8 +38,17 @@ async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool
                 user.anthropic_key_enc = encrypt(settings.ANTHROPIC_API_KEY)
             if settings.TELEGRAM_CHAT_ID:
                 user.telegram_chat_id = settings.TELEGRAM_CHAT_ID
+            # Claim pre-existing single-user data (rows the migration left unowned).
+            claimed = 0
+            for tbl in ("daily_metrics", "activities", "report_logs"):
+                res = await session.execute(
+                    text(f"UPDATE {tbl} SET user_id = :uid WHERE user_id IS NULL"),
+                    {"uid": user.id},
+                )
+                claimed += res.rowcount or 0
             await session.commit()
             print("Seeded Garmin/Claude/Telegram credentials from .env (encrypted).")
+            print(f"Claimed {claimed} pre-existing data rows for this user.")
         print(f"Created user {email} (id={user.id}, admin={is_admin}).")
     return 0
 
