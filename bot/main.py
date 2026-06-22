@@ -9,6 +9,7 @@ logic. Ensures DB tables exist on startup so BotState works out of the box.
 """
 import logging
 
+from telegram import BotCommand
 from telegram.ext import Application, CommandHandler, Defaults
 
 from app.core import logging as app_logging
@@ -24,6 +25,12 @@ logger = logging.getLogger("bot")
 async def _post_init(application: Application) -> None:
     # create tables for a zero-config first run (Alembic stays the source of truth)
     await init_db()
+    # populate the Telegram "/" command menu (user-facing commands only; the
+    # test_* debug commands stay hidden)
+    await application.bot.set_my_commands([
+        BotCommand("report", "Звіт відновлення за 7 днів"),
+        BotCommand("deep", "Глибокий аналіз (Opus), напр. /deep вплив вело на HRV"),
+    ])
 
 
 def main() -> None:
