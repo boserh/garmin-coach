@@ -7,7 +7,18 @@ lives in ``app.garmin.schemas`` and is mapped across in the repository.
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -48,9 +59,11 @@ class DailyMetric(Base):
     this doubles as the day-level cache (serve from here instead of Garmin)."""
 
     __tablename__ = "daily_metrics"
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_daily_user_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    date: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    date: Mapped[str] = mapped_column(String(10), index=True)
 
     sleep_score: Mapped[Optional[int]] = mapped_column(Integer)
     sleep_h: Mapped[Optional[float]] = mapped_column(Float)
@@ -76,9 +89,11 @@ class ActivityRecord(Base):
     breakdown (muscle groups / per-exercise counts) as JSON."""
 
     __tablename__ = "activities"
+    __table_args__ = (UniqueConstraint("user_id", "activity_id", name="uq_activity_user_aid"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    activity_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    activity_id: Mapped[int] = mapped_column(BigInteger, index=True)
     date: Mapped[Optional[str]] = mapped_column(String(10), index=True)
     type: Mapped[Optional[str]] = mapped_column(String(64))
     dur_min: Mapped[Optional[float]] = mapped_column(Float)
@@ -97,8 +112,9 @@ class ReportLog(Base):
     __tablename__ = "report_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    kind: Mapped[str] = mapped_column(String(16))          # report / deep / morning
+    kind: Mapped[str] = mapped_column(String(16))          # report / deep / morning / ask
     model: Mapped[str] = mapped_column(String(64))
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -115,6 +131,7 @@ class BotState(Base):
 
     __tablename__ = "bot_state"
 
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(String(256))
     updated_at: Mapped[datetime] = mapped_column(

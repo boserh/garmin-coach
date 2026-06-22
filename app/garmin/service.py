@@ -149,13 +149,17 @@ def build_payload(days: int = 7, activity_limit: int = 30) -> Payload:
     )
 
 
-async def build_payload_cached(session, days: int = 7, activity_limit: int = 30) -> Payload:
-    """Async build that uses the DB as a day-level cache and persists results.
+async def build_payload_cached(
+    session, user_id: int, days: int = 7, activity_limit: int = 30
+) -> Payload:
+    """Async build that uses the DB as a per-user day-level cache and persists
+    results.
 
     Immutable past days already stored are served from the DB (no Garmin call);
     today is always refetched. Everything fetched is upserted back so history
-    grows over time. Blocking Garmin/aggregation calls run in a threadpool.
-    """
+    grows over time. Blocking Garmin/aggregation calls run in a threadpool. The
+    Garmin provider for ``user_id`` is taken from the runtime context (see
+    ``app.garmin.runtime.user_runtime``)."""
     from app.garmin import repository  # local import to avoid an import cycle
 
     await run_in_threadpool(login)
@@ -164,7 +168,7 @@ async def build_payload_cached(session, days: int = 7, activity_limit: int = 30)
     dates = _date_range(days)
     past_iso = [d.isoformat() for d in dates if d < today]
 
-    cached = await repository.read_daily_metrics(session, past_iso)
+    cached = await repository.read_daily_metrics(session, user_id, past_iso)
 
     daily: List[DailySummary] = []
     for d in dates:
@@ -194,6 +198,6 @@ async def build_payload_cached(session, days: int = 7, activity_limit: int = 30)
         planned_runs=planned,
     )
 
-    await repository.persist_payload(session, payload, act_pairs)
+    await repository.persist_payload(session, user_id, payload, act_pairs)
     await session.commit()
     return payload

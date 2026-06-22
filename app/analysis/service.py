@@ -288,7 +288,12 @@ def ask_with_stats(
 
 
 async def run_ask(
-    session, question: str, *, n: int = ASK_DEFAULT_N, api_key: Optional[str] = None
+    session,
+    question: str,
+    *,
+    user_id: Optional[int] = None,
+    n: int = ASK_DEFAULT_N,
+    api_key: Optional[str] = None,
 ) -> str:
     """Fetch the last ``n`` daily reports, answer ``question`` against them, persist
     a ReportLog row (kind="ask"), return the text. Raises AnalystError if there are
@@ -297,7 +302,7 @@ async def run_ask(
 
     from app.garmin import repository
 
-    reports = await repository.get_recent_reports(session, n=n)
+    reports = await repository.get_recent_reports(session, user_id, n=n)
     if not reports:
         raise AnalystError("Поки немає жодного звіту для контексту. Спершу зроби /report.")
 
@@ -305,11 +310,13 @@ async def run_ask(
         text, stats = await run_in_threadpool(ask_with_stats, reports, question, api_key)
     except AnalystError as e:
         await repository.log_report(
-            session, kind="ask", model=MODEL_ASK, ok=False, error=str(e)[:512]
+            session, user_id=user_id, kind="ask", model=MODEL_ASK, ok=False,
+            error=str(e)[:512]
         )
         raise
     await repository.log_report(
         session,
+        user_id=user_id,
         kind=stats.kind,
         model=stats.model,
         input_tokens=stats.input_tokens,
@@ -326,6 +333,7 @@ async def run_analysis(
     session,
     payload: Union[Payload, dict],
     *,
+    user_id: Optional[int] = None,
     question: str = "",
     deep: bool = False,
     kind: Optional[str] = None,
@@ -347,7 +355,7 @@ async def run_analysis(
     # new ReportLog is written, so it never picks up the report we're about to make.
     previous_report = None
     if kind != "deep":
-        last = await repository.get_last_report(session)
+        last = await repository.get_last_report(session, user_id)
         if last:
             text_prev, date_prev = last
             previous_report = {"date": date_prev, "text": text_prev}
@@ -358,11 +366,12 @@ async def run_analysis(
         )
     except AnalystError as e:
         await repository.log_report(
-            session, kind=kind, model=model, ok=False, error=str(e)[:512]
+            session, user_id=user_id, kind=kind, model=model, ok=False, error=str(e)[:512]
         )
         raise
     await repository.log_report(
         session,
+        user_id=user_id,
         kind=stats.kind,
         model=stats.model,
         input_tokens=stats.input_tokens,
