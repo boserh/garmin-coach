@@ -18,6 +18,11 @@
              white-space: nowrap; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; }
     th { background: #1a1e27; position: sticky; top: 0; }
     tr:nth-child(even) td { background: #12151c; }
+    .charts { display: flex; flex-wrap: wrap; gap: 1rem; margin: .5rem 0 1rem; }
+    .chart { flex: 1 1 22rem; border: 1px solid #2a2f3a; border-radius: 8px; padding: .6rem .8rem; background: #14171f; }
+    .chead { font-size: .9rem; margin-bottom: .3rem; }
+    .chart svg { display: block; width: 100%; height: auto; }
+    .xaxis { display: flex; justify-content: space-between; }
   </style>
 </head>
 <body>
@@ -39,6 +44,27 @@
       <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
     {% endif %}
   </div>
+  {% if charts %}
+    <div class="charts">
+      {% for c in charts %}
+        {% set s = c.s %}
+        <div class="chart">
+          <div class="chead">
+            <span style="color: {{ c.color }}">●</span> {{ c.label }}
+            <span class="meta">— {{ '%.0f'|format(s.ymin) }}…{{ '%.0f'|format(s.ymax) }},
+              останнє {{ '%.1f'|format(s.last) }}</span>
+          </div>
+          <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img"
+               aria-label="{{ c.label }} trend">
+            <polyline fill="none" stroke="{{ c.color }}" stroke-width="2"
+                      stroke-linejoin="round" points="{{ s.points }}"/>
+            {% for x, y in s.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="{{ c.color }}"/>{% endfor %}
+          </svg>
+          <div class="meta xaxis"><span>{{ first_date }}</span><span>{{ last_date }}</span></div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
   <div class="wrap">
     <table>
       <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
