@@ -1,4 +1,7 @@
 """Analysis-layer unit tests that need no API key."""
+import pytest
+
+from app.analysis import service
 from app.analysis.service import _ask_cache_key, _cache_key
 
 _DATA = {"daily": [], "recent_activities": [], "planned_runs": []}
@@ -29,3 +32,29 @@ def test_ask_cache_key_varies_with_question_and_reports():
     assert base != _ask_cache_key(_REPORTS[:1], "чи бігти?", "claude-sonnet-4-6")
     # stable for equal inputs
     assert base == _ask_cache_key(list(_REPORTS), "чи бігти?", "claude-sonnet-4-6")
+
+
+def test_get_client_caches_per_key(monkeypatch):
+    import anthropic
+
+    created = []
+
+    class FakeAnthropic:
+        def __init__(self, api_key):
+            created.append(api_key)
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeAnthropic)
+    service._clients.clear()
+
+    c1 = service._get_client("key-1")
+    c2 = service._get_client("key-1")   # cached
+    c3 = service._get_client("key-2")   # different user → different client
+    assert c1 is c2 and c1 is not c3
+    assert created == ["key-1", "key-2"]
+
+
+def test_get_client_without_key_raises(monkeypatch):
+    monkeypatch.setattr(service.settings, "ANTHROPIC_API_KEY", None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(service.AnalystError):
+        service._get_client(None)

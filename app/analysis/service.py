@@ -41,19 +41,22 @@ _DEFAULT_DAILY_Q = (
 CACHE_FILE = settings.CLAUDE_CACHE_FILE
 CACHE_TTL_S = 7 * 24 * 3600  # one week
 
-_client = None
+_clients: dict = {}
 
 
-def _get_client():
-    """Lazily build the Anthropic client so importing this module never requires
-    an API key (tests, CLI tooling)."""
-    global _client
-    if _client is None:
+def _get_client(api_key: Optional[str] = None):
+    """Lazily build (and cache per key) an Anthropic client, so importing this
+    module never requires a key. ``api_key`` is the per-user key; it falls back to
+    the global .env key for the legacy single-user path."""
+    key = api_key or settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")
+    client = _clients.get(key)
+    if client is None:
         from anthropic import Anthropic
 
-        key = settings.ANTHROPIC_API_KEY or os.environ["ANTHROPIC_API_KEY"]
-        _client = Anthropic(api_key=key)
-    return _client
+        client = _clients[key] = Anthropic(api_key=key)
+    return client
 
 
 # ---------- DEDUP CACHE ----------
@@ -126,6 +129,7 @@ def analyze_with_stats(
     deep: bool = False,
     kind: Optional[str] = None,
     previous_report: Optional[dict] = None,
+    api_key: Optional[str] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -154,7 +158,7 @@ def analyze_with_stats(
     try:
         from anthropic import APIConnectionError, APIStatusError
 
-        msg = _get_client().messages.create(
+        msg = _get_client(api_key).messages.create(
             model=model,
             max_tokens=1200,
             system=SYSTEM,
@@ -217,7 +221,9 @@ def _ask_cache_key(reports: list, question: str, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def ask_with_stats(reports: list, question: str) -> Tuple[str, CallStats]:
+def ask_with_stats(
+    reports: list, question: str, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
     """Free-form follow-up Q&A grounded in the recent daily reports (no Garmin
     payload). Returns (text, stats); raises AnalystError on API failure. Shares the
     dedup cache and the error handling with :func:`analyze_with_stats`."""
@@ -236,7 +242,7 @@ def ask_with_stats(reports: list, question: str) -> Tuple[str, CallStats]:
     try:
         from anthropic import APIConnectionError, APIStatusError
 
-        msg = _get_client().messages.create(
+        msg = _get_client(api_key).messages.create(
             model=model,
             max_tokens=1000,
             system=SYSTEM_ASK,
@@ -281,7 +287,9 @@ def ask_with_stats(reports: list, question: str) -> Tuple[str, CallStats]:
         raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
 
 
-async def run_ask(session, question: str, *, n: int = ASK_DEFAULT_N) -> str:
+async def run_ask(
+    session, question: str, *, n: int = ASK_DEFAULT_N, api_key: Optional[str] = None
+) -> str:
     """Fetch the last ``n`` daily reports, answer ``question`` against them, persist
     a ReportLog row (kind="ask"), return the text. Raises AnalystError if there are
     no reports to ground the answer in."""
@@ -294,7 +302,7 @@ async def run_ask(session, question: str, *, n: int = ASK_DEFAULT_N) -> str:
         raise AnalystError("Поки немає жодного звіту для контексту. Спершу зроби /report.")
 
     try:
-        text, stats = await run_in_threadpool(ask_with_stats, reports, question)
+        text, stats = await run_in_threadpool(ask_with_stats, reports, question, api_key)
     except AnalystError as e:
         await repository.log_report(
             session, kind="ask", model=MODEL_ASK, ok=False, error=str(e)[:512]
@@ -321,6 +329,7 @@ async def run_analysis(
     question: str = "",
     deep: bool = False,
     kind: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Analyze, persist a ReportLog row (success or failure), return the text.
 
@@ -345,7 +354,7 @@ async def run_analysis(
 
     try:
         text, stats = await run_in_threadpool(
-            analyze_with_stats, payload, question, deep, kind, previous_report
+            analyze_with_stats, payload, question, deep, kind, previous_report, api_key
         )
     except AnalystError as e:
         await repository.log_report(
