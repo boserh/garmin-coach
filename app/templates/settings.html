@@ -19,6 +19,9 @@
     button { margin-top: 1.6rem; padding: .6rem 1.4rem; border: 0; border-radius: 8px;
              background: #6cb6ff; color: #0f1115; font-weight: 700; font-size: 1rem; cursor: pointer; }
     .saved { color: #7ee787; margin: 1rem 0; }
+    .err { color: #ff7b72; margin: 1rem 0; }
+    hr { border: 0; border-top: 1px solid #2a2f3a; margin: 2.5rem 0 0; max-width: 30rem; }
+    h2 { font-weight: 600; font-size: 1.1rem; margin: 1.6rem 0 0; }
   </style>
 </head>
 <body>
@@ -52,6 +55,23 @@
     <div class="hint">Чат, у який бот шле звіти. Дізнатись свій можна в @userinfobot.</div>
 
     <button type="submit">Зберегти</button>
+  </form>
+
+  <hr>
+  <h2>Зміна пароля</h2>
+  {% if pw == "ok" %}<div class="saved">✅ Пароль змінено.</div>
+  {% elif pw == "wrong" %}<div class="err">Поточний пароль невірний.</div>
+  {% elif pw == "short" %}<div class="err">Новий пароль має бути щонайменше 6 символів.</div>{% endif %}
+  <form method="post" action="/settings/password">
+    <label for="current_password">Поточний пароль</label>
+    <input id="current_password" name="current_password" type="password"
+           autocomplete="current-password" required>
+
+    <label for="new_password">Новий пароль</label>
+    <input id="new_password" name="new_password" type="password"
+           autocomplete="new-password" minlength="6" required>
+
+    <button type="submit">Змінити пароль</button>
   </form>
 </body>
 </html>

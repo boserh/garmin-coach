@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user, require_admin
-from app.core.crypto import decrypt, encrypt, hash_password
+from app.core.crypto import decrypt, encrypt, hash_password, verify_password
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
@@ -46,6 +46,7 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "has_garth_token": bool(user.garth_token_enc),
             "telegram_chat_id": user.telegram_chat_id or "",
             "saved": request.query_params.get("saved") == "1",
+            "pw": request.query_params.get("pw"),
         },
     )
 
@@ -77,6 +78,22 @@ async def settings_save(
 
     await session.commit()
     return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@router.post("/settings/password")
+async def change_password(
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    if not verify_password(current_password, user.password_hash):
+        return RedirectResponse("/settings?pw=wrong", status_code=303)
+    if len(new_password) < 6:
+        return RedirectResponse("/settings?pw=short", status_code=303)
+    user.password_hash = hash_password(new_password)
+    await session.commit()
+    return RedirectResponse("/settings?pw=ok", status_code=303)
 
 
 @router.get("/admin/users", response_class=HTMLResponse)
