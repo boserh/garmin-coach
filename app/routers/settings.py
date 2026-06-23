@@ -33,6 +33,11 @@ def _safe_decrypt(token):
         return ""  # wrong/missing key — don't blow up the page
 
 
+@router.get("/info", response_class=HTMLResponse)
+async def info_page(request: Request, user: User = Depends(current_user)):
+    return templates.TemplateResponse(request, "info.html", {"user": user})
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_form(request: Request, user: User = Depends(current_user)):
     return templates.TemplateResponse(
