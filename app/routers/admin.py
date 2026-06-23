@@ -87,6 +87,7 @@ async def ui_index(
     return templates.TemplateResponse(
         "index.html",
         {"request": request, "counts": counts, "user": user,
+         "base": "/ui", "title": "Garmin DB",
          "token": request.query_params.get("token", "")},
     )
 

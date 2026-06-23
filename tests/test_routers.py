@@ -177,6 +177,76 @@ def test_admin_deletes_user(auth_client):
     assert _user_id("del@example.com") is None
 
 
+def _seed_two_users_with_data():
+    """alice + bob, each with one daily metric and one report. Returns their ids."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.garmin.schemas import DailySummary
+
+    _seed_user(email="alice@example.com", password="pw", is_admin=False)
+    _seed_user(email="bob@example.com", password="pw", is_admin=False)
+    aid, bid = _user_id("alice@example.com"), _user_id("bob@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.upsert_daily(
+                s, aid, DailySummary(date="2026-06-20", hrv_avg=55, has_data=True))
+            await repository.upsert_daily(
+                s, bid, DailySummary(date="2026-06-20", hrv_avg=70, has_data=True))
+            await repository.log_report(s, user_id=aid, kind="report", model="m",
+                                        ok=True, report_text="alice report")
+            await repository.log_report(s, user_id=bid, kind="report", model="m",
+                                        ok=True, report_text="bob report")
+            await s.commit()
+
+    anyio.run(seed)
+    return aid, bid
+
+
+def _report_id(user_id):
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import ReportLog
+
+    async def get():
+        async with async_session_maker() as s:
+            return (await s.execute(
+                select(ReportLog.id).where(ReportLog.user_id == user_id)
+                .order_by(ReportLog.id.desc()).limit(1)
+            )).scalar_one()
+
+    return anyio.run(get)
+
+
+def test_me_requires_login(client):
+    assert client.get("/me", follow_redirects=False).status_code == 303
+
+
+def test_me_shows_only_own_data(client):
+    _seed_two_users_with_data()
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+
+    assert client.get("/me").status_code == 200
+    rl = client.get("/me/report_logs")
+    assert rl.status_code == 200
+    assert "alice report" in rl.text
+    assert "bob report" not in rl.text          # other user's data not visible
+
+    # user-facing browser exposes only the three data tables
+    assert client.get("/me/users").status_code == 404
+    assert client.get("/me/bot_state").status_code == 404
+
+
+def test_me_row_isolation(client):
+    aid, bid = _seed_two_users_with_data()
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+
+    assert client.get(f"/me/report_logs/{_report_id(aid)}").status_code == 200
+    # alice cannot open bob's row
+    assert client.get(f"/me/report_logs/{_report_id(bid)}").status_code == 404
+
+
 def test_admin_deactivate_and_reactivate(auth_client):
     _seed_user(email="da@example.com", password="pw", is_admin=False)
     uid = _user_id("da@example.com")

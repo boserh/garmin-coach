@@ -26,22 +26,23 @@
   </style>
 </head>
 <body>
+  {% set base = base or '/ui' %}
   {% set q = '&token=' ~ token if token else '' %}
   {% set qf = '?token=' ~ token if token else '' %}
   <div class="bar tabs">
-    <a href="/ui{{ qf }}">← усі таблиці</a>
+    <a href="{{ base }}{{ qf }}">← огляд</a>
     {% for t in tables %}
-      <a class="{{ 'active' if t == table else '' }}" href="/ui/{{ t }}{{ qf }}">{{ t }}</a>
+      <a class="{{ 'active' if t == table else '' }}" href="{{ base }}/{{ t }}{{ qf }}">{{ t }}</a>
     {% endfor %}
   </div>
   <div class="bar">
     <b>{{ table }}</b>
     <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}</span>
     {% if offset > 0 %}
-      <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
+      <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
     {% endif %}
     {% if offset + limit < total %}
-      <a href="/ui/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
+      <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
     {% endif %}
   </div>
   {% if charts %}
@@ -73,7 +74,7 @@
           <tr>
             {% for v in row %}
               {% if loop.first %}
-                <td><a href="/ui/{{ table }}/{{ v }}{{ qf }}">{{ v }}</a></td>
+                <td><a href="{{ base }}/{{ table }}/{{ v }}{{ qf }}">{{ v }}</a></td>
               {% else %}
                 <td title="{{ v if v is not none else '' }}">{{ v if v is not none else '' }}</td>
               {% endif %}

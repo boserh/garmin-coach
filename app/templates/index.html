@@ -23,10 +23,11 @@
     {% if user and user.is_admin %} · <a href="/admin/users">Користувачі</a>{% endif %}
     · <a href="/logout">Вихід</a>
   </nav>
-  <h1>Garmin DB</h1>
+  <h1>{{ title }}</h1>
+  {% set base = base or '/ui' %}
   {% set q = '?token=' ~ token if token else '' %}
   {% for name, n in counts.items() %}
-    <a class="card" href="/ui/{{ name }}{{ q }}">
+    <a class="card" href="{{ base }}/{{ name }}{{ q }}">
       <div class="name">{{ name }}</div>
       <div class="n">{{ n }}</div>
     </a>

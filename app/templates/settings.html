@@ -26,8 +26,8 @@
 </head>
 <body>
   <nav>
-    <a href="/ui">← Дані</a>
-    {% if user.is_admin %} · <a href="/admin/users">Користувачі</a>{% endif %}
+    <a href="/me">Мої дані</a>
+    {% if user.is_admin %} · <a href="/ui">DB</a> · <a href="/admin/users">Користувачі</a>{% endif %}
     · <a href="/logout">Вихід</a>
   </nav>
   <h1>Налаштування — {{ user.email }}</h1>
