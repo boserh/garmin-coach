@@ -10,6 +10,7 @@
 <nav class="topnav">
   <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
   <a href="/settings"{% if active == 'settings' %} class="active"{% endif %}>Налаштування</a>
+  <a href="/info"{% if active == 'info' %} class="active"{% endif %}>Інфо</a>
   {% if user and user.is_admin %}
   <a href="/ui"{% if active == 'ui' %} class="active"{% endif %}>База даних</a>
   <a href="/admin/users"{% if active == 'users' %} class="active"{% endif %}>Користувачі</a>
