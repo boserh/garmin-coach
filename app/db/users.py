@@ -25,8 +25,16 @@ async def create_user(
     email: str,
     password_hash: str,
     is_admin: bool = False,
+    is_approved: bool = True,
 ) -> User:
-    user = User(email=email.lower().strip(), password_hash=password_hash, is_admin=is_admin)
+    """Create a user. ``is_approved`` defaults to True (admin/CLI creation); the
+    self-registration path passes False so an admin must approve first."""
+    user = User(
+        email=email.lower().strip(),
+        password_hash=password_hash,
+        is_admin=is_admin,
+        is_approved=is_approved,
+    )
     session.add(user)
     await session.commit()
     await session.refresh(user)

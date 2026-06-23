@@ -171,7 +171,8 @@ first `alembic upgrade head`.
 
 ### Web endpoints
 
-* `GET /login` · `GET /logout` — cookie-session auth
+* `GET /login` · `GET /logout` · `GET /register` — cookie-session auth + self-signup
+  (new accounts await admin approval before they can log in)
 * `GET /health` — liveness (public)
 * `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost
 * `GET /report.json` — daily report (Sonnet), login required

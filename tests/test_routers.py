@@ -107,6 +107,76 @@ def test_logout_clears_session(auth_client):
     assert auth_client.get("/ui", follow_redirects=False).status_code == 303
 
 
+def _user_id(email):
+    from app.db.base import async_session_maker
+
+    async def get():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, email)
+            return u.id if u else None
+
+    return anyio.run(get)
+
+
+def test_register_creates_pending_user_and_blocks_login(client):
+    r = client.post(
+        "/register", data={"email": "newbie@example.com", "password": "secret1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200  # login page with an "awaiting approval" notice
+
+    from app.db.base import async_session_maker
+
+    async def check():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "newbie@example.com")
+            assert u is not None
+            assert u.is_approved is False
+            assert u.is_admin is False
+
+    anyio.run(check)
+
+    # unapproved → cannot log in yet
+    login = client.post(
+        "/login", data={"email": "newbie@example.com", "password": "secret1"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 403
+
+
+def test_register_rejects_duplicate_email(auth_client):
+    # t@example.com already exists (the admin)
+    r = auth_client.post(
+        "/register", data={"email": "t@example.com", "password": "secret1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 409
+
+
+def test_admin_approves_then_user_can_login(auth_client):
+    auth_client.post("/register", data={"email": "pend@example.com", "password": "secret1"})
+    uid = _user_id("pend@example.com")
+
+    r = auth_client.post(f"/admin/users/{uid}/approve", follow_redirects=False)
+    assert r.status_code == 303
+
+    # logging in here replaces the admin session cookie with the approved user's
+    login = auth_client.post(
+        "/login", data={"email": "pend@example.com", "password": "secret1"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+    assert login.headers["location"] == "/settings"  # non-admin lands on settings
+
+
+def test_admin_deletes_user(auth_client):
+    auth_client.post("/register", data={"email": "del@example.com", "password": "secret1"})
+    uid = _user_id("del@example.com")
+    r = auth_client.post(f"/admin/users/{uid}/delete", follow_redirects=False)
+    assert r.status_code == 303
+    assert _user_id("del@example.com") is None
+
+
 @pytest.fixture
 def crypto_key(monkeypatch):
     from cryptography.fernet import Fernet
