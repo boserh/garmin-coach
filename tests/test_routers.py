@@ -219,6 +219,16 @@ def _report_id(user_id):
     return anyio.run(get)
 
 
+def test_info_requires_login(client):
+    assert client.get("/info", follow_redirects=False).status_code == 303
+
+
+def test_info_when_logged_in(auth_client):
+    r = auth_client.get("/info")
+    assert r.status_code == 200
+    assert "Як це працює" in r.text
+
+
 def test_me_requires_login(client):
     assert client.get("/me", follow_redirects=False).status_code == 303
 

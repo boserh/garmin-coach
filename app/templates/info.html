@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Інфо</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6;
+           line-height: 1.55; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-weight: 600; font-size: 1.4rem; }
+    h2 { font-weight: 600; font-size: 1.1rem; margin: 2rem 0 .5rem; }
+    .wrap { max-width: 42rem; }
+    ol, ul { padding-left: 1.3rem; }
+    li { margin: .35rem 0; }
+    code { background: #14171f; border: 1px solid #2a2f3a; border-radius: 5px;
+           padding: .1rem .4rem; font-size: .9em; }
+    .muted { color: #9aa4b2; }
+  </style>
+</head>
+<body>
+  {% set active = 'info' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <h1>Як це працює</h1>
+    <p>Сервіс читає твої дані з Garmin Connect (сон, HRV, стрес, body battery,
+       тренування), стискає їх і дає Claude проаналізувати — у Telegram або тут, у вебі.</p>
+
+    <h2>1. Налаштування</h2>
+    <p>На сторінці <a href="/settings">Налаштування</a> заповни:</p>
+    <ol>
+      <li><b>Garmin email + пароль</b> — акаунт, з якого беруться дані. Зберігаються
+          зашифровано; пароль ніколи не показується назад.</li>
+      <li><b>Claude API ключ</b> — для аналізу. Створити на
+          <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+          → Billing (потрібен поповнений баланс).</li>
+      <li><b>Telegram chat ID</b> — куди бот надсилає звіти. Дізнатися свій:
+          напиши боту <code>@userinfobot</code> — він поверне твій numeric ID.</li>
+    </ol>
+    <p class="muted">Перший звіт зробить логін у Garmin і збереже сесію — далі без повторних логінів.</p>
+
+    <h2>2. Бот у Telegram</h2>
+    <ul>
+      <li><code>/report</code> — щоденний статус відновлення й готовності (Sonnet).</li>
+      <li><code>/deep &lt;питання&gt;</code> — глибокий разовий розбір (Opus).</li>
+      <li><code>/ask &lt;питання&gt;</code> — швидке питання за останніми звітами (без нового запиту в Garmin).</li>
+    </ul>
+    <p>Щоранку (07–12) бот сам надсилає короткий звіт, щойно годинник синкнеться.</p>
+
+    <h2>3. Веб</h2>
+    <ul>
+      <li><a href="/me">Мої дані</a> — твої метрики, тренування й історія звітів, з графіками HRV/сну.</li>
+    </ul>
+
+    <h2>Приватність</h2>
+    <p class="muted">Дані й ключі зберігаються лише в цій базі (зашифровано), доступні тільки тобі
+       за логіном. У Claude передається стиснена зведена статистика, не сирі вивантаження.</p>
+  </div>
+</body>
+</html>
