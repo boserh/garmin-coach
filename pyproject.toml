@@ -19,7 +19,7 @@ dependencies = [
     "asyncpg",
     "anthropic",
     "python-telegram-bot[job-queue]",
-    "garth",
+    "garth==0.4.47",   # pinned: 0.8.x SSO flow gets 429'd by Garmin; 0.4.47 works
     "garminconnect",
     "python-dotenv",
     "cryptography",       # Fernet encryption of stored credentials
