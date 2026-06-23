@@ -85,20 +85,40 @@ async def test_log_report_stores_text(session):
 async def test_get_last_report(session):
     import datetime as dt
 
+    from sqlalchemy import select
+
+    from app.db.models import ReportLog
+
     assert await repository.get_last_report(session, U1) is None
     # failed calls and null-text rows are ignored
     await repository.log_report(session, user_id=U1, kind="report", model="m",
                                 ok=False, error="boom")
+    # today's report is NOT day-over-day context (keeps the dedup key stable on
+    # repeated same-day /report), and /deep is excluded entirely
+    await repository.log_report(session, user_id=U1, kind="report", model="m",
+                                ok=True, report_text="сьогоднішній")
+    await repository.log_report(session, user_id=U1, kind="deep", model="m",
+                                ok=True, report_text="глибокий")
+    assert await repository.get_last_report(session, U1) is None
+
+    # a daily report from yesterday IS the context
     await repository.log_report(
         session, user_id=U1, kind="morning", model="m", ok=True,
         report_text="🟢 учора все ок")
+    yesterday = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)
+    row = (await session.execute(
+        select(ReportLog).where(ReportLog.report_text == "🟢 учора все ок")
+    )).scalar_one()
+    row.created_at = yesterday
+    await session.commit()
+
     # another user's report must not leak in
     await repository.log_report(
         session, user_id=U2, kind="report", model="m", ok=True, report_text="чужий")
 
     text, date = await repository.get_last_report(session, U1)
     assert text == "🟢 учора все ок"
-    assert date == dt.date.today().isoformat()
+    assert date == yesterday.date().isoformat()
 
 
 async def test_get_recent_reports_filters_and_orders(session):
