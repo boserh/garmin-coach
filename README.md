@@ -178,9 +178,10 @@ first `alembic upgrade head`.
 * `GET /report.json` — daily report (Sonnet), login required
 * `GET /deep?q=...` — deep analysis (Opus), login required
 * `GET /history?days=N` — HRV/sleep/stress trend from the DB, login required
-* `GET /settings` — manage your own Garmin/Claude/Telegram credentials
-* `GET /admin/users` — list/create users (admin only)
-* `GET /ui` — raw DB browser (admin only)
+* `GET /settings` — manage your own Garmin/Claude/Telegram credentials + password
+* `GET /me` — browse your own metrics / activities / reports (per-user, with charts)
+* `GET /admin/users` — list/create/approve/activate/delete users (admin only)
+* `GET /ui` — raw DB browser across all users (admin only)
 
 Auth is a signed cookie session established at `/login`; there are no API tokens.
 Credentials are per user and encrypted at rest.
