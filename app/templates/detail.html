@@ -16,8 +16,9 @@
   </style>
 </head>
 <body>
+  {% set base = base or '/ui' %}
   {% set qf = '?token=' ~ token if token else '' %}
-  <div class="bar"><a href="/ui/{{ table }}{{ qf }}">← {{ table }}</a></div>
+  <div class="bar"><a href="{{ base }}/{{ table }}{{ qf }}">← {{ table }}</a></div>
   <table>
     {% for name, value in fields %}
       <tr>

@@ -106,9 +106,12 @@ Optional, with defaults:
   approved on creation. Login lands admins on `/ui`, others on `/settings`.
 - **Routes**: `/login`, `/logout`, `/register`, `/settings` (own creds +
   `POST /settings/password` to change password, verifying the current one),
-  `/admin/users` (admin: list/create/approve/activate-deactivate/delete), `/ui` (raw
-  DB browser — **admin only**). `/health` stays public; `/status`, `/report.json`,
-  `/deep`, `/history` require login and act on the current user.
+  `/admin/users` (admin: list/create/approve/activate-deactivate/delete), `/me`
+  (each user browses **their own** daily_metrics/activities/report_logs, with the
+  HRV/sleep charts), `/ui` (raw DB browser — **admin only**). `/health` stays public;
+  `/status`, `/report.json`, `/deep`, `/history` require login and act on the current
+  user. The `/me` and `/ui` browsers share `index/table/detail.html` via a `base` var
+  (`app.routers.me` is user-scoped; `app.routers.admin` spans all rows).
 - **Active flag**: `is_active` (default True) is a separate admin off-switch from
   approval — a deactivated user keeps its data but can neither log in (403 "Акаунт
   деактивовано") nor receive bot reports (`_resolve_user` and `morning_job` require

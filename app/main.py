@@ -17,7 +17,7 @@ from app.core import logging as app_logging
 from app.core.auth import RequiresLogin
 from app.core.config import settings
 from app.db.base import dispose_db, init_db
-from app.routers import admin, auth, health, history, reports
+from app.routers import admin, auth, health, history, me, reports
 from app.routers import settings as settings_router
 
 
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(settings_router.router)
+    app.include_router(me.router)
     app.include_router(health.router)
     app.include_router(reports.router)
     app.include_router(history.router)
