@@ -1,19 +1,22 @@
-"""Scheduled morning auto-report.
+"""Scheduled morning auto-report, per user.
 
-Every CHECK_INTERVAL_MIN within the Europe/Warsaw window the job checks whether
-today's Garmin data has synced; it fires once when it has (or after the deadline
-with a stale-data note). The once-a-day guard now lives in the DB (BotState),
-replacing the old in-memory flag + state.json.
+Every CHECK_INTERVAL_MIN within the Europe/Warsaw window the job loops over every
+registered user with a Telegram chat id and Garmin credentials, sending each their
+report once today's data has synced (or after the deadline with a stale-data note).
+The once-a-day guard lives in the DB (BotState), keyed per user.
 """
 import datetime as dt
 import logging
 
+from sqlalchemy import select
 from telegram.ext import ContextTypes
 
 from app.analysis.service import AnalystError, run_analysis
 from app.db.base import async_session_maker
+from app.db.models import User
 from app.garmin import repository, service
-from bot.handlers import ALLOWED_CHAT_ID, TZ
+from app.garmin.runtime import user_runtime
+from bot.handlers import TZ
 
 logger = logging.getLogger("bot")
 
@@ -26,6 +29,50 @@ _MORNING_Q = "Короткий ранковий звіт: відновлення
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
 
 
+async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
+    try:
+        if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
+            logger.debug(f"MORNING skip user={user.id}: already sent today")
+            return
+
+        async with user_runtime(session, user) as creds:
+            if not creds.has_garmin:
+                logger.debug(f"MORNING skip user={user.id}: no Garmin credentials")
+                return
+
+            payload = await service.build_payload_cached(
+                session, user.id, days=3, activity_limit=20
+            )
+
+            if not payload.synced_today:
+                if now.hour < MORNING_DEADLINE_HOUR:
+                    logger.info(
+                        f"MORNING skip user={user.id}: not synced yet "
+                        f"(last_data={payload.last_data_date})"
+                    )
+                    return
+                logger.info(f"MORNING user={user.id}: deadline reached — sending with stale note")
+                note = _MORNING_STALE
+            else:
+                logger.info(f"MORNING user={user.id}: today synced — sending")
+                note = ""
+
+            try:
+                text = await run_analysis(
+                    session, payload, user_id=user.id, question=_MORNING_Q,
+                    kind="morning", api_key=creds.anthropic_key,
+                )
+            except AnalystError as e:
+                logger.error(f"ANALYST {e}")
+                text = str(e)
+
+            await ctx.bot.send_message(user.telegram_chat_id, "Доброго ранку.\n\n" + note + text)
+            await repository.set_state(session, user.id, MORNING_STATE_KEY, today)
+            logger.info(f"MORNING sent for {today} user={user.id}")
+    except Exception:
+        logger.exception(f"MORNING failed for user={user.id}")
+
+
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
     try:
         now = dt.datetime.now(TZ)
@@ -36,37 +83,17 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         async with async_session_maker() as session:
-            if await repository.get_state(session, MORNING_STATE_KEY) == today:
-                logger.debug("MORNING skip: already sent today")
-                return
-
-            payload = await service.build_payload_cached(session, days=3, activity_limit=20)
-
-            if not payload.synced_today:
-                if now.hour < MORNING_DEADLINE_HOUR:
-                    # no data yet and not past the deadline — wait for the next check
-                    logger.info(
-                        f"MORNING skip: not synced yet, waiting "
-                        f"(last_data={payload.last_data_date}, deadline={MORNING_DEADLINE_HOUR}:00)"
+            recipients = (
+                await session.execute(
+                    select(User).where(
+                        User.telegram_chat_id.is_not(None),
+                        User.is_active.is_(True),
+                        User.is_approved.is_(True),
                     )
-                    return
-                logger.info("MORNING: deadline reached without sync — sending with stale-data note")
-                note = _MORNING_STALE
-            else:
-                logger.info("MORNING: today synced — sending report")
-                note = ""
-
-            try:
-                text = await run_analysis(
-                    session, payload, question=_MORNING_Q, kind="morning"
                 )
-            except AnalystError as e:
-                logger.error(f"ANALYST {e}")
-                text = str(e)
-
-            await ctx.bot.send_message(ALLOWED_CHAT_ID, "Доброго ранку.\n\n" + note + text)
-            await repository.set_state(session, MORNING_STATE_KEY, today)
-            logger.info(f"MORNING sent for {today}")
+            ).scalars().all()
+            for user in recipients:
+                await _morning_for_user(ctx, session, user, now, today)
 
     except Exception:
         logger.exception("MORNING job failed")

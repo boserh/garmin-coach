@@ -14,7 +14,9 @@ property (the ``userName`` used to build the sleep endpoint URL).
 """
 import os
 import warnings
+from contextvars import ContextVar
 from functools import lru_cache
+from typing import Optional
 
 from app.core.config import settings
 
@@ -87,10 +89,76 @@ class _GConnProvider:
         return self._api.garth.profile["userName"]
 
 
+class _UserGarthProvider:
+    """Per-user garth provider backed by an isolated ``garth.Client`` (no shared
+    global state). Resumes from a stored session token when present, otherwise logs
+    in with email+password (no MFA) and exposes the fresh token via ``new_token`` so
+    the caller can persist it. Garmin endpoints/usage match ``_GarthProvider``."""
+
+    def __init__(self, creds) -> None:
+        from garth import Client
+
+        self._client = Client()
+        self._creds = creds
+        self._logged_in = False
+        self.new_token: Optional[str] = None  # set after a fresh login, for persistence
+
+    def login(self) -> None:
+        if self._logged_in:
+            return
+        if self._creds.garth_token:
+            try:
+                self._client.loads(self._creds.garth_token)
+                _ = self._client.username  # touch profile to validate the session
+                self._logged_in = True
+                return
+            except Exception:
+                pass  # stale/invalid token — fall back to a fresh login
+        email, password = self._creds.garmin_email, self._creds.garmin_password
+        if not email or not password:
+            raise RuntimeError("No Garmin credentials configured for this user.")
+        self._client.login(email, password)
+        self._logged_in = True
+        self.new_token = self._client.dumps()
+
+    def connectapi(self, path: str, **kwargs):
+        return self._client.connectapi(path, **kwargs)
+
+    @property
+    def username(self) -> str:
+        return self._client.profile["userName"]
+
+
+def build_user_provider(creds) -> _UserGarthProvider:
+    """A fresh provider bound to one user's credentials (see ``credentials.py``)."""
+    return _UserGarthProvider(creds)
+
+
+# The provider in effect for the current request/command. When set (per-user
+# runtime), it overrides the legacy global; the fetch layer reads it via
+# ``get_provider`` with no signature changes. ContextVars propagate into the
+# threadpool workers anyio uses, so blocking fetches see the right provider.
+_current_provider: ContextVar = ContextVar("garmin_provider", default=None)
+
+
+def set_current_provider(provider) -> object:
+    return _current_provider.set(provider)
+
+
+def reset_current_provider(token) -> None:
+    _current_provider.reset(token)
+
+
 @lru_cache
-def get_provider():
-    """Return the configured provider singleton."""
+def _default_provider():
+    """The legacy single-user provider from .env (back-compat / fallback)."""
     name = settings.GARMIN_PROVIDER.lower()
     if name == "gconn":
         return _GConnProvider()
     return _GarthProvider()
+
+
+def get_provider():
+    """Provider for the current context: the per-user one if set, else the legacy
+    global. Fetch/aggregation code calls this and needs no per-user awareness."""
+    return _current_provider.get() or _default_provider()

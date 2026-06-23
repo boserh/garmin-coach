@@ -11,8 +11,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog
-from app.dependencies import get_session, verify_token
+from app.core.auth import require_admin
+from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog, User
+from app.dependencies import get_session
 from app.garmin import repository
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -20,13 +21,15 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # name → ORM model (whitelist; the path param is matched against these keys only)
 TABLES = {
+    "users": User,
     "daily_metrics": DailyMetric,
     "activities": ActivityRecord,
     "report_logs": ReportLog,
     "bot_state": BotState,
 }
 
-router = APIRouter(tags=["ui"], dependencies=[Depends(verify_token)])
+# The raw DB browser spans all users' rows → admin only.
+router = APIRouter(tags=["ui"], dependencies=[Depends(require_admin)])
 
 # inline-SVG sparkline geometry (no JS / no CDN — renders server-side)
 _SVG_W, _SVG_H, _SVG_PAD = 720, 120, 22
@@ -59,9 +62,10 @@ def _series(values):
             "last": ys[-1], "W": _SVG_W, "H": _SVG_H}
 
 
-async def _daily_charts(session: AsyncSession, days: int = 60):
-    """Trend charts (HRV / sleep hours / sleep score) for the daily_metrics page."""
-    trend = await repository.read_history(session, days=days)
+async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
+    """Trend charts (HRV / sleep hours / sleep score) for the daily_metrics page
+    (the viewing admin's own data)."""
+    trend = await repository.read_history(session, user_id, days=days)
     dates = [r["date"] for r in trend]
     defs = [
         ("HRV avg", "#6cb6ff", [r["hrv_avg"] for r in trend]),
@@ -74,11 +78,16 @@ async def _daily_charts(session: AsyncSession, days: int = 60):
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def ui_index(request: Request, session: AsyncSession = Depends(get_session)):
+async def ui_index(
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
     counts = {name: await _count(session, model) for name, model in TABLES.items()}
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "counts": counts, "token": request.query_params.get("token", "")},
+        {"request": request, "counts": counts, "user": user,
+         "token": request.query_params.get("token", "")},
     )
 
 
@@ -88,6 +97,7 @@ async def ui_table(
     request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     model = TABLES.get(table)
@@ -110,7 +120,7 @@ async def ui_table(
 
     charts = first_date = last_date = None
     if table == "daily_metrics":
-        charts, first_date, last_date = await _daily_charts(session)
+        charts, first_date, last_date = await _daily_charts(session, user.id)
 
     return templates.TemplateResponse(
         "table.html",

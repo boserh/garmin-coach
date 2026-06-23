@@ -39,15 +39,35 @@ The web app also runs zero-config: `init_db()` in the lifespan creates tables on
 startup, so `uvicorn` works even before `alembic upgrade head`. Alembic remains the
 source of truth for schema changes.
 
+### First-run bootstrap (multi-user)
+
+Credentials are now **per user, stored encrypted in the DB** — `.env` Garmin/Claude
+values are only a seed source. After installing:
+
+```bash
+# 1. Generate a master key and put it in .env as APP_SECRET_KEY:
+./venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# 2. Migrate (adds users + user_id columns):
+./venv/bin/python -m alembic upgrade head
+
+# 3. Create the first admin, seeding its creds from .env and claiming existing data:
+./venv/bin/python -m app.cli create-user --email me@example.com --admin --seed-env
+```
+
+Then log in at `/login`, manage credentials at `/settings`, add users at `/admin/users`.
+
 ## Environment
 
 `.env` (read by `app.core.config.Settings` via pydantic-settings):
 
 ```
+APP_SECRET_KEY=        # Fernet key — encrypts creds + signs sessions (required for auth)
+TELEGRAM_BOT_TOKEN=    # the (single) bot identity — global
+# Seed-only (per-user after bootstrap; used by `create-user --seed-env`):
 GARMIN_EMAIL=
 GARMIN_PASSWORD=
 ANTHROPIC_API_KEY=
-TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
 
@@ -55,67 +75,110 @@ Optional, with defaults:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `APP_SECRET_KEY` | `` (empty) | Fernet master key: encrypts stored creds + signs cookie sessions |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
-| `GARTH_TOKEN_DIR` | `~/.garth` | Garmin token storage |
+| `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
-| `WEB_TOKEN` | `` (empty) | Shared secret for data/cost endpoints; empty disables auth |
+| `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by login (kept for compatibility) |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root level (`DEBUG` shows skip-reason logs) |
 | `CLAUDE_CACHE_FILE` | `claude_cache.json` | Claude dedup cache |
 | `GARMIN_CACHE_FILE` | `garmin_cache.json` | Disk cache for immutable Garmin assets |
 
-`STATE_FILE` is gone — the morning-sent date now lives in the `bot_state` table.
+`STATE_FILE` is gone — the morning-sent date lives in the `bot_state` table, per user.
+
+## Authentication & multi-user
+
+- **Users**: `users` table (login email + bcrypt hash, `is_admin`, encrypted
+  Garmin/Claude creds + garth token, plaintext indexed `telegram_chat_id`). Web login
+  is a signed cookie session (`SessionMiddleware`, signed by `APP_SECRET_KEY`).
+- **Secrets**: `app.core.crypto` — Fernet encrypt/decrypt for creds, bcrypt for
+  passwords. `app.garmin.credentials.load_credentials` decrypts a user into a runtime
+  `UserCredentials`.
+- **Per-user runtime**: `app.garmin.runtime.user_runtime(session, user)` binds that
+  user's Garmin provider (a `garth.Client` resumed from the stored token, else
+  email+password login — no MFA — saving a fresh token) via a ContextVar, and yields
+  decrypted creds (so `run_analysis(..., api_key=creds.anthropic_key)` uses their key).
+  All data reads/writes are scoped by `user_id`.
+- **Registration**: `/register` is public — a self-signup creates an unapproved,
+  non-admin user (`is_approved=False`) that **cannot log in** until an admin approves
+  it at `/admin/users` (approve / delete buttons). Admin- and CLI-created users are
+  approved on creation. Login lands admins on `/ui`, others on `/settings`.
+- **Routes**: `/login`, `/logout`, `/register`, `/settings` (own creds +
+  `POST /settings/password` to change password, verifying the current one),
+  `/admin/users` (admin: list/create/approve/activate-deactivate/delete), `/ui` (raw
+  DB browser — **admin only**). `/health` stays public; `/status`, `/report.json`,
+  `/deep`, `/history` require login and act on the current user.
+- **Active flag**: `is_active` (default True) is a separate admin off-switch from
+  approval — a deactivated user keeps its data but can neither log in (403 "Акаунт
+  деактивовано") nor receive bot reports (`_resolve_user` and `morning_job` require
+  active + approved). Admins can't deactivate themselves.
+- **Bot**: one global `TELEGRAM_BOT_TOKEN`; an incoming chat is mapped to a user by
+  `telegram_chat_id` (`_resolve_user`). `morning_job` loops over every user with a
+  chat id + Garmin creds, each guarded once-a-day via per-user `bot_state`.
+- **CLI**: `python -m app.cli create-user [--admin] [--seed-env]` — `--seed-env`
+  encrypts `.env` creds into the user and claims pre-existing (unowned) data rows.
 
 ## Structure
 
 ```
 app/
-  main.py              create_app() factory; lifespan = DB init/dispose; router registration
+  main.py              create_app() factory; SessionMiddleware; RequiresLogin→/login; routers
+  cli.py               admin CLI: create-user [--admin] [--seed-env]
   core/
     config.py          pydantic-settings Settings — the single source for all env vars
     logging.py         logging config (was logging_setup.py)
-    security.py        verify_token dependency (WEB_TOKEN; Bearer or X-Token; empty = off)
+    security.py        verify_token dependency (legacy WEB_TOKEN; superseded by auth.py)
+    crypto.py          Fernet encrypt/decrypt for creds + bcrypt password hashing
+    auth.py            current_user / require_admin deps; session login/logout helpers
   db/
     base.py            async engine + sessionmaker + declarative Base; init_db/dispose_db
     session.py         get_session() request dependency
-    models.py          ORM: DailyMetric, ActivityRecord, ReportLog, BotState
+    models.py          ORM: User, DailyMetric, ActivityRecord, ReportLog, BotState (user-scoped)
+    users.py           user queries: get_by_email / get_by_chat_id / create_user
   garmin/
-    providers.py       _GarthProvider (verbatim) / _GConnProvider (untested) via GARMIN_PROVIDER
+    providers.py       legacy global + _UserGarthProvider + provider ContextVar
+    credentials.py     load_credentials(user) → decrypted UserCredentials
+    runtime.py         user_runtime(session, user): bind provider, persist fresh garth token
     client.py          low-level connectapi fetches + disk cache for immutable assets
-    service.py         aggregation; build_payload (sync) + build_payload_cached (async, DB-backed)
-    repository.py      idempotent upserts, history reads, ReportLog, BotState (ORM↔schema mapping)
+    service.py         aggregation; build_payload (sync) + build_payload_cached (async, per-user)
+    repository.py      user-scoped upserts/reads, ReportLog, per-user BotState
     schemas.py         Pydantic Payload / DailySummary / Activity / PlannedRun
     exercise_names.py  Garmin exercise NAME codes → readable Ukrainian
   analysis/
-    service.py         analyze()/AnalystError; dedup cache; cost logging; ReportLog via run_analysis
-    prompts.py         SYSTEM prompt (verbatim)
+    service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
+    prompts.py         SYSTEM + SYSTEM_ASK prompts
   routers/
-    health.py          GET /health, GET /status
-    reports.py         GET /report.json (Sonnet), GET /deep (Opus) — token-gated
-    history.py         GET /history?days=N — trends from DB, token-gated
+    auth.py            GET/POST /login, GET /logout
+    settings.py        /settings (own creds), /admin/users (admin)
+    health.py          GET /health (public), GET /status (login, per-user)
+    reports.py         GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
+    history.py         GET /history?days=N — trends from DB, login, per-user
+    admin.py           /ui DB browser — admin only
   dependencies.py      shared deps (get_session, verify_token)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /deep, /test_on, /test_off, owner _guard, error handler
-  jobs.py              morning_job (Europe/Warsaw window; once-a-day guard in BotState)
+  handlers.py          /report, /ask, /deep, /test_*; _resolve_user (chat_id→user), error handler
+  jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
-tests/                 pytest: garmin service (mocked provider), routers, repository
+tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
 ```
 
 ## Architecture and data flow
 
 ```
-Telegram command / HTTP request
-  → service.build_payload_cached(session, days, activity_limit)   [async]
-      → provider.login() (garth token at ~/.garth)
-      → past immutable days served from DB (repository.read_daily_metrics)
-      → today + missing days fetched via Garmin (run_in_threadpool); activities, planned
-      → persist_payload(): upsert daily + activities (idempotent)
-      → typed Payload (synced_today, last_data_date, daily[], recent_activities[], planned_runs[])
-  → analysis.run_analysis(session, payload, ...)
-      → dedup cache check (hash of payload+date+question+model) — early return on hit
-      → Sonnet (/report, morning) or Opus (/deep); AnalystError → user-visible message
-      → ReportLog row written (tokens, cost, ok/error)
+Telegram command (chat_id→user) / HTTP request (session→user)
+  → async with user_runtime(session, user) as creds:   # binds user's garth provider
+      → service.build_payload_cached(session, user.id, days, activity_limit)   [async]
+          → provider.login() (per-user garth.Client; token resumed/persisted in DB)
+          → past immutable days served from DB (repository.read_daily_metrics, user-scoped)
+          → today + missing days fetched via Garmin (run_in_threadpool); activities, planned
+          → persist_payload(): upsert daily + activities (idempotent, per user)
+          → typed Payload (synced_today, last_data_date, daily[], recent_activities[], planned_runs[])
+      → analysis.run_analysis(session, payload, user_id=…, api_key=creds.anthropic_key, …)
+          → dedup cache check (hash of payload+date+question+model) — early return on hit
+          → Sonnet (/report, morning) or Opus (/deep); AnalystError → user-visible message
+          → ReportLog row written (user_id, tokens, cost, ok/error)
   → reply / JSON response
 ```
 
@@ -124,18 +187,22 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 
 ## Web endpoints
 
-- `GET /health` — liveness (unauthenticated).
-- `GET /status` — Garmin auth, DB stats, last morning report, total cost (unauthenticated; metadata only).
-- `GET /report.json` — daily report (Sonnet). Token-gated.
-- `GET /deep?q=...` — deep analysis (Opus). Token-gated.
-- `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Token-gated.
-- `GET /ui` + `GET /ui/{table}` — minimal server-rendered DB browser (whitelisted
-  tables: daily_metrics, activities, report_logs, bot_state). Token-gated. Templates
-  in `app/templates/`.
+- `GET/POST /login`, `GET /logout`, `GET/POST /register` — cookie-session auth +
+  self-registration (new users await admin approval before they can log in).
+- `GET /health` — liveness (public, no auth).
+- `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost.
+- `GET /report.json` — daily report (Sonnet). Login; current user.
+- `GET /deep?q=...` — deep analysis (Opus). Login; current user.
+- `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Login; current user.
+- `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save).
+- `GET /admin/users` — list/create users (admin only).
+- `GET /ui` + `GET /ui/{table}` + `/ui/{table}/{id}` — raw DB browser (whitelisted
+  tables: users, daily_metrics, activities, report_logs, bot_state). **Admin only.**
+  Templates in `app/templates/`.
 
-Auth: send `WEB_TOKEN` as `Authorization: Bearer <token>`, `X-Token: <token>`, or
-`?token=<token>` (the query-param form lets the browser UI work via plain links).
-If `WEB_TOKEN` is empty, the gate is disabled.
+Auth: a signed cookie session set at `/login` (no token headers). `current_user`
+gates user endpoints; `require_admin` gates `/ui` and `/admin/users`. `WEB_TOKEN` is
+legacy and no longer used by these routes.
 
 ## Database
 
@@ -167,6 +234,13 @@ which logs its decision. The once-a-day guard persists in `bot_state`.
 
 **Models**: `/report` + morning use `claude-sonnet-4-6`; `/deep` uses `claude-opus-4-8`.
 Every call is logged to `ReportLog` (tokens, cost, ok/error).
+
+**`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
+(3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
+`repository.get_recent_reports` (filtered to `kind="report"`, so `/deep` and prior
+`/ask` answers don't pollute the context), calls `analyze_with_stats`' sibling
+`ask_with_stats` (separate `SYSTEM_ASK` prompt for free-form answers, shares the dedup
+cache), and logs a `ReportLog` row with `kind="ask"`. Bot-only — no web endpoint.
 
 **Exercise names**: `fetch_exercise_summary` reads Garmin's specific `name` code, maps it
 to Ukrainian via `app/garmin/exercise_names.py` at return time (cache stays language-

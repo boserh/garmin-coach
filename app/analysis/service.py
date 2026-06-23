@@ -16,7 +16,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
-from app.analysis.prompts import SYSTEM
+from app.analysis.prompts import SYSTEM, SYSTEM_ASK
 from app.core.config import settings
 from app.garmin.schemas import Payload
 
@@ -29,6 +29,9 @@ PRICES = {
 }
 MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
+MODEL_ASK = "claude-sonnet-4-6"   # follow-up Q&A: cheap, grounded in recent reports
+
+ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 
 _DEFAULT_DAILY_Q = (
     "Дай щоденний статус відновлення. "
@@ -38,19 +41,22 @@ _DEFAULT_DAILY_Q = (
 CACHE_FILE = settings.CLAUDE_CACHE_FILE
 CACHE_TTL_S = 7 * 24 * 3600  # one week
 
-_client = None
+_clients: dict = {}
 
 
-def _get_client():
-    """Lazily build the Anthropic client so importing this module never requires
-    an API key (tests, CLI tooling)."""
-    global _client
-    if _client is None:
+def _get_client(api_key: Optional[str] = None):
+    """Lazily build (and cache per key) an Anthropic client, so importing this
+    module never requires a key. ``api_key`` is the per-user key; it falls back to
+    the global .env key for the legacy single-user path."""
+    key = api_key or settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")
+    client = _clients.get(key)
+    if client is None:
         from anthropic import Anthropic
 
-        key = settings.ANTHROPIC_API_KEY or os.environ["ANTHROPIC_API_KEY"]
-        _client = Anthropic(api_key=key)
-    return _client
+        client = _clients[key] = Anthropic(api_key=key)
+    return client
 
 
 # ---------- DEDUP CACHE ----------
@@ -123,6 +129,7 @@ def analyze_with_stats(
     deep: bool = False,
     kind: Optional[str] = None,
     previous_report: Optional[dict] = None,
+    api_key: Optional[str] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -151,7 +158,7 @@ def analyze_with_stats(
     try:
         from anthropic import APIConnectionError, APIStatusError
 
-        msg = _get_client().messages.create(
+        msg = _get_client(api_key).messages.create(
             model=model,
             max_tokens=1200,
             system=SYSTEM,
@@ -202,13 +209,135 @@ def analyze(payload: Union[Payload, dict], question: str = "", deep: bool = Fals
     return text
 
 
+def _ask_cache_key(reports: list, question: str, model: str) -> str:
+    material = {
+        "today": dt.date.today().isoformat(),
+        "reports": reports,
+        "question": question,
+        "model": model,
+        "ask": True,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def ask_with_stats(
+    reports: list, question: str, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Free-form follow-up Q&A grounded in the recent daily reports (no Garmin
+    payload). Returns (text, stats); raises AnalystError on API failure. Shares the
+    dedup cache and the error handling with :func:`analyze_with_stats`."""
+    model = MODEL_ASK
+    key = _ask_cache_key(reports, question, model)
+    cached = _cache.get(key)
+    if cached and cached[1] > _time.time():
+        logger.info(f"CLAUDE CACHE HIT  {model} (ask)")
+        return cached[0], CallStats(kind="ask", model=model, cached=True)
+
+    user_content = {
+        "today": dt.date.today().isoformat(),
+        "recent_reports": reports,
+        "question": question,
+    }
+    try:
+        from anthropic import APIConnectionError, APIStatusError
+
+        msg = _get_client(api_key).messages.create(
+            model=model,
+            max_tokens=1000,
+            system=SYSTEM_ASK,
+            messages=[{"role": "user",
+                       "content": json.dumps(user_content, ensure_ascii=False)}],
+        )
+        stats = CallStats(kind="ask", model=model)
+        usage = getattr(msg, "usage", None)
+        if usage:
+            pin, pout = PRICES.get(model, (0, 0))
+            stats.input_tokens = usage.input_tokens
+            stats.output_tokens = usage.output_tokens
+            stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
+            logger.info(
+                f"CLAUDE OK  {model} (ask)  in={usage.input_tokens} out={usage.output_tokens} "
+                f"~${stats.cost_usd:.4f}"
+            )
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        _cache[key] = (text, _time.time() + CACHE_TTL_S)
+        _save_cache()
+        return text, stats
+
+    except APIStatusError as e:
+        status = getattr(e, "status_code", None)
+        body = str(getattr(e, "message", e)).lower()
+
+        if status == 400 and "credit balance is too low" in body:
+            raise AnalystError(
+                "❗️ Закінчились кредити Anthropic API.\n"
+                "Поповни баланс на console.anthropic.com → Billing і повтори запит."
+            )
+        if status == 429:
+            raise AnalystError("⏳ Ліміт запитів перевищено. Спробуй за хвилину.")
+        if status == 401:
+            raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")
+        if status == 529:
+            raise AnalystError("🛠 Сервіс Anthropic тимчасово перевантажений. Спробуй пізніше.")
+        logger.error(f"CLAUDE ERR {status}: {body[:150]}")
+        raise AnalystError(f"Помилка API ({status}): {body[:200]}")
+
+    except APIConnectionError:
+        raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
+
+
+async def run_ask(
+    session,
+    question: str,
+    *,
+    user_id: Optional[int] = None,
+    n: int = ASK_DEFAULT_N,
+    api_key: Optional[str] = None,
+) -> str:
+    """Fetch the last ``n`` daily reports, answer ``question`` against them, persist
+    a ReportLog row (kind="ask"), return the text. Raises AnalystError if there are
+    no reports to ground the answer in."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    reports = await repository.get_recent_reports(session, user_id, n=n)
+    if not reports:
+        raise AnalystError("Поки немає жодного звіту для контексту. Спершу зроби /report.")
+
+    try:
+        text, stats = await run_in_threadpool(ask_with_stats, reports, question, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="ask", model=MODEL_ASK, ok=False,
+            error=str(e)[:512]
+        )
+        raise
+    await repository.log_report(
+        session,
+        user_id=user_id,
+        kind=stats.kind,
+        model=stats.model,
+        input_tokens=stats.input_tokens,
+        output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd,
+        ok=True,
+        cached=stats.cached,
+        report_text=text,
+    )
+    return text
+
+
 async def run_analysis(
     session,
     payload: Union[Payload, dict],
     *,
+    user_id: Optional[int] = None,
     question: str = "",
     deep: bool = False,
     kind: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Analyze, persist a ReportLog row (success or failure), return the text.
 
@@ -226,22 +355,23 @@ async def run_analysis(
     # new ReportLog is written, so it never picks up the report we're about to make.
     previous_report = None
     if kind != "deep":
-        last = await repository.get_last_report(session)
+        last = await repository.get_last_report(session, user_id)
         if last:
             text_prev, date_prev = last
             previous_report = {"date": date_prev, "text": text_prev}
 
     try:
         text, stats = await run_in_threadpool(
-            analyze_with_stats, payload, question, deep, kind, previous_report
+            analyze_with_stats, payload, question, deep, kind, previous_report, api_key
         )
     except AnalystError as e:
         await repository.log_report(
-            session, kind=kind, model=model, ok=False, error=str(e)[:512]
+            session, user_id=user_id, kind=kind, model=model, ok=False, error=str(e)[:512]
         )
         raise
     await repository.log_report(
         session,
+        user_id=user_id,
         kind=stats.kind,
         model=stats.model,
         input_tokens=stats.input_tokens,
