@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Користувачі</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-weight: 600; font-size: 1.4rem; }
+    nav { margin-bottom: 1.5rem; color: #9aa4b2; }
+    table { border-collapse: collapse; margin: 1rem 0 2rem; }
+    th, td { text-align: left; padding: .4rem 1rem .4rem 0; border-bottom: 1px solid #2a2f3a; }
+    th { color: #9aa4b2; font-weight: 600; }
+    form.add { max-width: 26rem; padding: 1.2rem; border: 1px solid #2a2f3a; border-radius: 10px;
+               background: #14171f; }
+    label { display: block; color: #9aa4b2; font-size: .85rem; margin: .8rem 0 .25rem; }
+    input[type=email], input[type=password] { width: 100%; box-sizing: border-box; padding: .5rem .7rem;
+            border-radius: 8px; border: 1px solid #2a2f3a; background: #0f1115; color: #e6e6e6; }
+    .row { margin-top: .8rem; color: #9aa4b2; font-size: .9rem; }
+    button { margin-top: 1.2rem; padding: .55rem 1.3rem; border: 0; border-radius: 8px;
+             background: #6cb6ff; color: #0f1115; font-weight: 700; cursor: pointer; }
+    .err { color: #ff7b72; margin: 1rem 0; }
+    .pending td { background: #1c1a12; }
+    .badge { font-size: .8rem; }
+    .ok { color: #7ee787; }
+    .wait { color: #e3b341; }
+    .off { color: #8b949e; }
+    button.act { padding: .25rem .7rem; border: 0; border-radius: 6px; cursor: pointer;
+                 font-size: .82rem; }
+    button.approve { background: #7ee787; color: #0f1115; }
+    button.toggle { background: #1f2733; color: #6cb6ff; margin-left: .3rem; }
+    button.del { background: #3a2326; color: #ff7b72; margin-left: .3rem; }
+    td form { display: inline; }
+  </style>
+</head>
+<body>
+  <nav><a href="/ui">← Дані</a> · <a href="/settings">Налаштування</a> · <a href="/logout">Вихід</a></nav>
+  <h1>Користувачі</h1>
+
+  <table>
+    <tr><th>ID</th><th>Email</th><th>Статус</th><th>Адмін</th><th>Garmin</th><th>Claude</th><th>Telegram</th><th></th></tr>
+    {% for u in users %}
+    <tr {% if not u.is_approved %}class="pending"{% endif %}>
+      <td>{{ u.id }}</td>
+      <td>{{ u.email }}</td>
+      <td class="badge">
+        {% if not u.is_approved %}<span class="wait">очікує</span>
+        {% elif not u.is_active %}<span class="off">вимкнено</span>
+        {% else %}<span class="ok">активний</span>{% endif %}
+      </td>
+      <td>{{ "так" if u.is_admin else "" }}</td>
+      <td>{{ "✓" if u.garmin_password_enc else "—" }}</td>
+      <td>{{ "✓" if u.anthropic_key_enc else "—" }}</td>
+      <td>{{ u.telegram_chat_id or "—" }}</td>
+      <td>
+        {% if not u.is_approved %}
+        <form method="post" action="/admin/users/{{ u.id }}/approve">
+          <button class="act approve" type="submit">Підтвердити</button>
+        </form>{% endif %}
+        {% if u.id != current_user_id %}
+          {% if u.is_approved %}
+          <form method="post" action="/admin/users/{{ u.id }}/active">
+            <input type="hidden" name="active" value="{{ 0 if u.is_active else 1 }}">
+            <button class="act toggle" type="submit">{{ "Деактивувати" if u.is_active else "Активувати" }}</button>
+          </form>{% endif %}
+        <form method="post" action="/admin/users/{{ u.id }}/delete"
+              onsubmit="return confirm('Видалити {{ u.email }} та всі його дані?');">
+          <button class="act del" type="submit">Видалити</button>
+        </form>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <form class="add" method="post" action="/admin/users">
+    <h3 style="margin:0">Додати користувача</h3>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" required>
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" required>
+    <div class="row"><label style="display:inline"><input type="checkbox" name="is_admin"> адмін</label></div>
+    <button type="submit">Створити</button>
+  </form>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вхід — Garmin</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6;
+           min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    form { width: 18rem; padding: 2rem; border: 1px solid #2a2f3a; border-radius: 12px;
+           background: #14171f; }
+    h1 { font-weight: 600; font-size: 1.3rem; margin: 0 0 1.2rem; }
+    label { display: block; color: #9aa4b2; font-size: .85rem; margin: .8rem 0 .25rem; }
+    input { width: 100%; box-sizing: border-box; padding: .55rem .7rem; border-radius: 8px;
+            border: 1px solid #2a2f3a; background: #0f1115; color: #e6e6e6; font-size: 1rem; }
+    input:focus { outline: none; border-color: #6cb6ff; }
+    button { width: 100%; margin-top: 1.4rem; padding: .6rem; border: 0; border-radius: 8px;
+             background: #6cb6ff; color: #0f1115; font-weight: 700; font-size: 1rem; cursor: pointer; }
+    .err { color: #ff7b72; font-size: .85rem; margin-top: 1rem; }
+    .info { color: #7ee787; font-size: .85rem; margin-top: 1rem; }
+    .alt { color: #9aa4b2; font-size: .85rem; margin-top: 1.2rem; text-align: center; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <form method="post" action="/login">
+    <h1>Garmin → Claude</h1>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Увійти</button>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    {% if info %}<div class="info">{{ info }}</div>{% endif %}
+    <div class="alt">Немає акаунта? <a href="/register">Зареєструватись</a></div>
+  </form>
+</body>
+</html>

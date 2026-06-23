@@ -33,7 +33,14 @@ class Settings(BaseSettings):
 
     # --- Web layer ---
     # Shared-secret for the data/cost endpoints. Empty string disables auth.
+    # Legacy: superseded by per-user login; kept as an optional fallback.
     WEB_TOKEN: str = ""
+
+    # --- Auth / secrets ---
+    # Master key for Fernet credential encryption AND cookie-session signing.
+    # Generate with: Fernet.generate_key().decode()  (see app/core/crypto.py docstring)
+    # Empty disables encryption/login plumbing (so existing single-user .env still runs).
+    APP_SECRET_KEY: str = ""
 
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by

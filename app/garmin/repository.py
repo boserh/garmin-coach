@@ -34,26 +34,29 @@ def _to_summary(m: DailyMetric) -> DailySummary:
 # ---------- READ ----------
 
 async def read_daily_metrics(
-    session: AsyncSession, dates: List[str]
+    session: AsyncSession, user_id: int, dates: List[str]
 ) -> Dict[str, DailySummary]:
-    """Past-day metrics already stored, keyed by ISO date (the day-level cache)."""
+    """Past-day metrics already stored for this user, keyed by ISO date (the
+    day-level cache)."""
     if not dates:
         return {}
     rows = (
         await session.execute(
-            select(DailyMetric).where(DailyMetric.date.in_(dates))
+            select(DailyMetric).where(
+                DailyMetric.user_id == user_id, DailyMetric.date.in_(dates)
+            )
         )
     ).scalars().all()
     return {m.date: _to_summary(m) for m in rows}
 
 
-async def read_history(session: AsyncSession, days: int = 30) -> List[dict]:
-    """Recovery trends over the last ``days`` days, oldest first."""
+async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> List[dict]:
+    """Recovery trends over the last ``days`` days for this user, oldest first."""
     cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
     rows = (
         await session.execute(
             select(DailyMetric)
-            .where(DailyMetric.date >= cutoff)
+            .where(DailyMetric.user_id == user_id, DailyMetric.date >= cutoff)
             .order_by(DailyMetric.date)
         )
     ).scalars().all()
@@ -75,26 +78,33 @@ async def read_history(session: AsyncSession, days: int = 30) -> List[dict]:
 
 # ---------- WRITE ----------
 
-async def upsert_daily(session: AsyncSession, s: DailySummary) -> None:
+async def upsert_daily(session: AsyncSession, user_id: int, s: DailySummary) -> None:
     existing = (
-        await session.execute(select(DailyMetric).where(DailyMetric.date == s.date))
+        await session.execute(
+            select(DailyMetric).where(
+                DailyMetric.user_id == user_id, DailyMetric.date == s.date
+            )
+        )
     ).scalar_one_or_none()
     fields = {k: getattr(s, k) for k in _DAILY_FIELDS}
     if existing:
         for k, v in fields.items():
             setattr(existing, k, v)
     else:
-        session.add(DailyMetric(date=s.date, **fields))
+        session.add(DailyMetric(user_id=user_id, date=s.date, **fields))
 
 
 async def upsert_activity(
-    session: AsyncSession, activity_id: Optional[int], row: dict
+    session: AsyncSession, user_id: int, activity_id: Optional[int], row: dict
 ) -> None:
     if not activity_id:
         return
     existing = (
         await session.execute(
-            select(ActivityRecord).where(ActivityRecord.activity_id == int(activity_id))
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.activity_id == int(activity_id),
+            )
         )
     ).scalar_one_or_none()
     fields = {
@@ -111,25 +121,31 @@ async def upsert_activity(
         for k, v in fields.items():
             setattr(existing, k, v)
     else:
-        session.add(ActivityRecord(activity_id=int(activity_id), **fields))
+        session.add(ActivityRecord(user_id=user_id, activity_id=int(activity_id), **fields))
 
 
-async def persist_payload(session: AsyncSession, payload: Payload, act_pairs) -> None:
-    """Upsert everything the payload carries (does not commit)."""
+async def persist_payload(
+    session: AsyncSession, user_id: int, payload: Payload, act_pairs
+) -> None:
+    """Upsert everything the payload carries for this user (does not commit)."""
     for d in payload.daily:
         if d.has_data:
-            await upsert_daily(session, d)
+            await upsert_daily(session, user_id, d)
     for activity_id, row in act_pairs:
-        await upsert_activity(session, activity_id, row)
+        await upsert_activity(session, user_id, activity_id, row)
 
 
-async def get_last_report(session: AsyncSession):
-    """Most recent delivered report as (text, date_iso) for day-over-day context.
-    The date is when it was generated — i.e. that report's own "today"."""
+async def get_last_report(session: AsyncSession, user_id: int):
+    """This user's most recent delivered report as (text, date_iso) for day-over-day
+    context. The date is when it was generated — i.e. that report's own "today"."""
     row = (
         await session.execute(
             select(ReportLog.report_text, ReportLog.created_at)
-            .where(ReportLog.report_text.is_not(None), ReportLog.ok.is_(True))
+            .where(
+                ReportLog.user_id == user_id,
+                ReportLog.report_text.is_not(None),
+                ReportLog.ok.is_(True),
+            )
             .order_by(ReportLog.created_at.desc())
             .limit(1)
         )
@@ -140,9 +156,35 @@ async def get_last_report(session: AsyncSession):
     return text, (created.date().isoformat() if created else None)
 
 
+async def get_recent_reports(
+    session: AsyncSession, user_id: int, n: int = 3
+) -> List[dict]:
+    """This user's last ``n`` delivered daily reports (newest first) as
+    [{date, text}, ...], for the /ask follow-up context. Only kind="report" — /deep
+    and /ask answers are excluded so the context stays the daily-report thread."""
+    rows = (
+        await session.execute(
+            select(ReportLog.report_text, ReportLog.created_at)
+            .where(
+                ReportLog.user_id == user_id,
+                ReportLog.report_text.is_not(None),
+                ReportLog.ok.is_(True),
+                ReportLog.kind == "report",
+            )
+            .order_by(ReportLog.created_at.desc())
+            .limit(n)
+        )
+    ).all()
+    return [
+        {"date": created.date().isoformat() if created else None, "text": text}
+        for text, created in rows
+    ]
+
+
 async def log_report(
     session: AsyncSession,
     *,
+    user_id: Optional[int] = None,
     kind: str,
     model: str,
     input_tokens: int = 0,
@@ -154,7 +196,7 @@ async def log_report(
     report_text: Optional[str] = None,
 ) -> None:
     session.add(ReportLog(
-        kind=kind, model=model, input_tokens=input_tokens,
+        user_id=user_id, kind=kind, model=model, input_tokens=input_tokens,
         output_tokens=output_tokens, cost_usd=cost_usd, ok=ok, cached=cached,
         error=error, report_text=report_text,
     ))
@@ -163,15 +205,15 @@ async def log_report(
 
 # ---------- BOT STATE ----------
 
-async def get_state(session: AsyncSession, key: str) -> Optional[str]:
-    m = await session.get(BotState, key)
+async def get_state(session: AsyncSession, user_id: int, key: str) -> Optional[str]:
+    m = await session.get(BotState, (user_id, key))
     return m.value if m else None
 
 
-async def set_state(session: AsyncSession, key: str, value: str) -> None:
-    m = await session.get(BotState, key)
+async def set_state(session: AsyncSession, user_id: int, key: str, value: str) -> None:
+    m = await session.get(BotState, (user_id, key))
     if m:
         m.value = value
     else:
-        session.add(BotState(key=key, value=value))
+        session.add(BotState(user_id=user_id, key=key, value=value))
     await session.commit()
