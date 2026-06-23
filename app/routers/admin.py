@@ -126,7 +126,7 @@ async def ui_table(
     return templates.TemplateResponse(
         request, "table.html",
         {
-            "table": table, "cols": cols, "rows": rows,
+            "table": table, "cols": cols, "rows": rows, "user": user,
             "limit": limit, "offset": offset, "total": total,
             "tables": list(TABLES), "token": request.query_params.get("token", ""),
             "charts": charts, "first_date": first_date, "last_date": last_date,
@@ -139,6 +139,7 @@ async def ui_row(
     table: str,
     row_id: str,
     request: Request,
+    user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     model = TABLES.get(table)
@@ -158,7 +159,7 @@ async def ui_row(
     return templates.TemplateResponse(
         request, "detail.html",
         {
-            "table": table, "fields": fields,
+            "table": table, "fields": fields, "user": user,
             "token": request.query_params.get("token", ""),
         },
     )

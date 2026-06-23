@@ -85,7 +85,7 @@ async def me_table(
     return templates.TemplateResponse(
         request, "table.html",
         {
-            "table": table, "cols": cols, "rows": rows,
+            "table": table, "cols": cols, "rows": rows, "user": user,
             "limit": limit, "offset": offset, "total": total,
             "tables": list(TABLES), "base": "/me", "token": "",
             "charts": charts, "first_date": first_date, "last_date": last_date,
@@ -117,5 +117,5 @@ async def me_row(
     fields = [(c.name, getattr(obj, c.name)) for c in model.__table__.columns]
     return templates.TemplateResponse(
         request, "detail.html",
-        {"table": table, "fields": fields, "base": "/me", "token": ""},
+        {"table": table, "fields": fields, "user": user, "base": "/me", "token": ""},
     )
