@@ -19,8 +19,8 @@ router = APIRouter(tags=["auth"])
 
 def _login_page(request: Request, *, error=None, info=None, status_code=200):
     return templates.TemplateResponse(
-        "login.html",
-        {"request": request, "error": error, "info": info},
+        request, "login.html",
+        {"error": error, "info": info},
         status_code=status_code,
     )
 
@@ -61,7 +61,7 @@ async def logout(request: Request):
 @router.get("/register", response_class=HTMLResponse)
 async def register_form(request: Request):
     return templates.TemplateResponse(
-        "register.html", {"request": request, "error": None}
+        request, "register.html", {"error": None}
     )
 
 
@@ -75,14 +75,14 @@ async def register_submit(
     email = email.strip().lower()
     if len(password) < 6:
         return templates.TemplateResponse(
-            "register.html",
-            {"request": request, "error": "Пароль має бути щонайменше 6 символів."},
+            request, "register.html",
+            {"error": "Пароль має бути щонайменше 6 символів."},
             status_code=400,
         )
     if await users.get_by_email(session, email):
         return templates.TemplateResponse(
-            "register.html",
-            {"request": request, "error": "Цей email вже зареєстровано."},
+            request, "register.html",
+            {"error": "Цей email вже зареєстровано."},
             status_code=409,
         )
     await users.create_user(
