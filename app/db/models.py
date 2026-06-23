@@ -42,6 +42,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Self-registered accounts start unapproved and cannot log in until an admin
+    # approves them. Admin/CLI-created accounts are approved on creation.
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Encrypted upstream credentials (Fernet tokens); null until the user fills them in.
     garmin_email_enc: Mapped[Optional[str]] = mapped_column(Text)

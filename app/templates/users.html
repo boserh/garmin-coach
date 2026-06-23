@@ -22,6 +22,15 @@
     button { margin-top: 1.2rem; padding: .55rem 1.3rem; border: 0; border-radius: 8px;
              background: #6cb6ff; color: #0f1115; font-weight: 700; cursor: pointer; }
     .err { color: #ff7b72; margin: 1rem 0; }
+    .pending td { background: #1c1a12; }
+    .badge { font-size: .8rem; }
+    .ok { color: #7ee787; }
+    .wait { color: #e3b341; }
+    button.act { padding: .25rem .7rem; border: 0; border-radius: 6px; cursor: pointer;
+                 font-size: .82rem; }
+    button.approve { background: #7ee787; color: #0f1115; }
+    button.del { background: #3a2326; color: #ff7b72; margin-left: .3rem; }
+    td form { display: inline; }
   </style>
 </head>
 <body>
@@ -29,15 +38,30 @@
   <h1>Користувачі</h1>
 
   <table>
-    <tr><th>ID</th><th>Email</th><th>Адмін</th><th>Garmin</th><th>Claude</th><th>Telegram</th></tr>
+    <tr><th>ID</th><th>Email</th><th>Статус</th><th>Адмін</th><th>Garmin</th><th>Claude</th><th>Telegram</th><th></th></tr>
     {% for u in users %}
-    <tr>
+    <tr {% if not u.is_approved %}class="pending"{% endif %}>
       <td>{{ u.id }}</td>
       <td>{{ u.email }}</td>
+      <td class="badge">
+        {% if u.is_approved %}<span class="ok">активний</span>
+        {% else %}<span class="wait">очікує</span>{% endif %}
+      </td>
       <td>{{ "так" if u.is_admin else "" }}</td>
       <td>{{ "✓" if u.garmin_password_enc else "—" }}</td>
       <td>{{ "✓" if u.anthropic_key_enc else "—" }}</td>
       <td>{{ u.telegram_chat_id or "—" }}</td>
+      <td>
+        {% if not u.is_approved %}
+        <form method="post" action="/admin/users/{{ u.id }}/approve">
+          <button class="act approve" type="submit">Підтвердити</button>
+        </form>{% endif %}
+        {% if u.id != current_user_id %}
+        <form method="post" action="/admin/users/{{ u.id }}/delete"
+              onsubmit="return confirm('Видалити {{ u.email }} та всі його дані?');">
+          <button class="act del" type="submit">Видалити</button>
+        </form>{% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>

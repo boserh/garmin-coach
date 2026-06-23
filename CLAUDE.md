@@ -100,9 +100,14 @@ Optional, with defaults:
   email+password login — no MFA — saving a fresh token) via a ContextVar, and yields
   decrypted creds (so `run_analysis(..., api_key=creds.anthropic_key)` uses their key).
   All data reads/writes are scoped by `user_id`.
-- **Routes**: `/login`, `/logout`, `/settings` (own creds), `/admin/users` (admin),
-  `/ui` (raw DB browser — **admin only**). `/health` stays public; `/status`,
-  `/report.json`, `/deep`, `/history` require login and act on the current user.
+- **Registration**: `/register` is public — a self-signup creates an unapproved,
+  non-admin user (`is_approved=False`) that **cannot log in** until an admin approves
+  it at `/admin/users` (approve / delete buttons). Admin- and CLI-created users are
+  approved on creation. Login lands admins on `/ui`, others on `/settings`.
+- **Routes**: `/login`, `/logout`, `/register`, `/settings` (own creds),
+  `/admin/users` (admin: list/create/approve/delete), `/ui` (raw DB browser —
+  **admin only**). `/health` stays public; `/status`, `/report.json`, `/deep`,
+  `/history` require login and act on the current user.
 - **Bot**: one global `TELEGRAM_BOT_TOKEN`; an incoming chat is mapped to a user by
   `telegram_chat_id` (`_resolve_user`). `morning_job` loops over every user with a
   chat id + Garmin creds, each guarded once-a-day via per-user `bot_state`.
@@ -177,7 +182,8 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 
 ## Web endpoints
 
-- `GET /login`, `POST /login`, `GET /logout` — cookie-session auth.
+- `GET/POST /login`, `GET /logout`, `GET/POST /register` — cookie-session auth +
+  self-registration (new users await admin approval before they can log in).
 - `GET /health` — liveness (public, no auth).
 - `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost.
 - `GET /report.json` — daily report (Sonnet). Login; current user.

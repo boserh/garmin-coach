@@ -88,7 +88,7 @@ async def users_list(
     rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
     return templates.TemplateResponse(
         "users.html",
-        {"request": request, "users": rows, "error": None},
+        {"request": request, "users": rows, "error": None, "current_user_id": admin.id},
     )
 
 
@@ -106,10 +106,38 @@ async def users_create(
         rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
         return templates.TemplateResponse(
             "users.html",
-            {"request": request, "users": rows, "error": f"Користувач {email} вже існує."},
+            {"request": request, "users": rows, "current_user_id": admin.id,
+             "error": f"Користувач {email} вже існує."},
             status_code=409,
         )
     await users.create_user(
-        session, email=email, password_hash=hash_password(password), is_admin=bool(is_admin)
+        session, email=email, password_hash=hash_password(password),
+        is_admin=bool(is_admin), is_approved=True,  # admin-created → active immediately
     )
+    return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.post("/admin/users/{user_id}/approve")
+async def users_approve(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    u = await session.get(User, user_id)
+    if u is not None:
+        u.is_approved = True
+        await session.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.post("/admin/users/{user_id}/delete")
+async def users_delete(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    u = await session.get(User, user_id)
+    if u is not None and u.id != admin.id:  # never delete yourself
+        await session.delete(u)
+        await session.commit()
     return RedirectResponse("/admin/users", status_code=303)
