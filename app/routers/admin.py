@@ -85,8 +85,8 @@ async def ui_index(
 ):
     counts = {name: await _count(session, model) for name, model in TABLES.items()}
     return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "counts": counts, "user": user,
+        request, "index.html",
+        {"counts": counts, "user": user,
          "base": "/ui", "title": "Garmin DB",
          "token": request.query_params.get("token", "")},
     )
@@ -124,9 +124,9 @@ async def ui_table(
         charts, first_date, last_date = await _daily_charts(session, user.id)
 
     return templates.TemplateResponse(
-        "table.html",
+        request, "table.html",
         {
-            "request": request, "table": table, "cols": cols, "rows": rows,
+            "table": table, "cols": cols, "rows": rows,
             "limit": limit, "offset": offset, "total": total,
             "tables": list(TABLES), "token": request.query_params.get("token", ""),
             "charts": charts, "first_date": first_date, "last_date": last_date,
@@ -156,9 +156,9 @@ async def ui_row(
 
     fields = [(c.name, getattr(obj, c.name)) for c in model.__table__.columns]
     return templates.TemplateResponse(
-        "detail.html",
+        request, "detail.html",
         {
-            "request": request, "table": table, "fields": fields,
+            "table": table, "fields": fields,
             "token": request.query_params.get("token", ""),
         },
     )

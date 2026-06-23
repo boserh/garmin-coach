@@ -43,8 +43,8 @@ async def me_index(
 ):
     counts = {name: await _count(session, model, user.id) for name, model in TABLES.items()}
     return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "counts": counts, "user": user,
+        request, "index.html",
+        {"counts": counts, "user": user,
          "base": "/me", "title": "Мої дані", "token": ""},
     )
 
@@ -83,9 +83,9 @@ async def me_table(
         charts, first_date, last_date = await _daily_charts(session, user.id)
 
     return templates.TemplateResponse(
-        "table.html",
+        request, "table.html",
         {
-            "request": request, "table": table, "cols": cols, "rows": rows,
+            "table": table, "cols": cols, "rows": rows,
             "limit": limit, "offset": offset, "total": total,
             "tables": list(TABLES), "base": "/me", "token": "",
             "charts": charts, "first_date": first_date, "last_date": last_date,
@@ -116,6 +116,6 @@ async def me_row(
 
     fields = [(c.name, getattr(obj, c.name)) for c in model.__table__.columns]
     return templates.TemplateResponse(
-        "detail.html",
-        {"request": request, "table": table, "fields": fields, "base": "/me", "token": ""},
+        request, "detail.html",
+        {"table": table, "fields": fields, "base": "/me", "token": ""},
     )
