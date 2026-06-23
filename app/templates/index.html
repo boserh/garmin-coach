@@ -18,13 +18,10 @@
   </style>
 </head>
 <body>
-  <nav>
-    <a href="/settings">Налаштування</a>
-    {% if user and user.is_admin %} · <a href="/admin/users">Користувачі</a>{% endif %}
-    · <a href="/logout">Вихід</a>
-  </nav>
-  <h1>{{ title }}</h1>
   {% set base = base or '/ui' %}
+  {% set active = 'ui' if base == '/ui' else 'me' %}
+  {% include "_nav.html" %}
+  <h1>{{ title }}</h1>
   {% set q = '?token=' ~ token if token else '' %}
   {% for name, n in counts.items() %}
     <a class="card" href="{{ base }}/{{ name }}{{ q }}">

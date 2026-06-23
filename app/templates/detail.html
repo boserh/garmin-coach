@@ -17,6 +17,8 @@
 </head>
 <body>
   {% set base = base or '/ui' %}
+  {% set active = 'ui' if base == '/ui' else 'me' %}
+  {% include "_nav.html" %}
   {% set qf = '?token=' ~ token if token else '' %}
   <div class="bar"><a href="{{ base }}/{{ table }}{{ qf }}">← {{ table }}</a></div>
   <table>

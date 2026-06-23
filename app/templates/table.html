@@ -27,6 +27,8 @@
 </head>
 <body>
   {% set base = base or '/ui' %}
+  {% set active = 'ui' if base == '/ui' else 'me' %}
+  {% include "_nav.html" %}
   {% set q = '&token=' ~ token if token else '' %}
   {% set qf = '?token=' ~ token if token else '' %}
   <div class="bar tabs">
