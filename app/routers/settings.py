@@ -36,9 +36,8 @@ def _safe_decrypt(token):
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_form(request: Request, user: User = Depends(current_user)):
     return templates.TemplateResponse(
-        "settings.html",
+        request, "settings.html",
         {
-            "request": request,
             "user": user,
             "garmin_email": _safe_decrypt(user.garmin_email_enc),
             "has_garmin_password": bool(user.garmin_password_enc),
@@ -104,8 +103,8 @@ async def users_list(
 ):
     rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
     return templates.TemplateResponse(
-        "users.html",
-        {"request": request, "users": rows, "error": None, "current_user_id": admin.id},
+        request, "users.html",
+        {"users": rows, "error": None, "current_user_id": admin.id},
     )
 
 
@@ -122,8 +121,8 @@ async def users_create(
     if await users.get_by_email(session, email):
         rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
         return templates.TemplateResponse(
-            "users.html",
-            {"request": request, "users": rows, "current_user_id": admin.id,
+            request, "users.html",
+            {"users": rows, "current_user_id": admin.id,
              "error": f"Користувач {email} вже існує."},
             status_code=409,
         )
