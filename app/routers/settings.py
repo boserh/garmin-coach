@@ -147,6 +147,20 @@ async def users_approve(
     return RedirectResponse("/admin/users", status_code=303)
 
 
+@router.post("/admin/users/{user_id}/active")
+async def users_set_active(
+    user_id: int,
+    active: str = Form(...),  # "1" to activate, "0" to deactivate
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    u = await session.get(User, user_id)
+    if u is not None and u.id != admin.id:  # never deactivate yourself
+        u.is_active = active == "1"
+        await session.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+
 @router.post("/admin/users/{user_id}/delete")
 async def users_delete(
     user_id: int,

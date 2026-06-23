@@ -46,6 +46,8 @@ async def login_submit(
             error="Акаунт ще не підтверджено адміністратором.",
             status_code=403,
         )
+    if not user.is_active:
+        return _login_page(request, error="Акаунт деактивовано.", status_code=403)
     login_session(request, user)
     return RedirectResponse("/ui" if user.is_admin else "/settings", status_code=303)
 

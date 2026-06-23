@@ -85,7 +85,11 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
         async with async_session_maker() as session:
             recipients = (
                 await session.execute(
-                    select(User).where(User.telegram_chat_id.is_not(None))
+                    select(User).where(
+                        User.telegram_chat_id.is_not(None),
+                        User.is_active.is_(True),
+                        User.is_approved.is_(True),
+                    )
                 )
             ).scalars().all()
             for user in recipients:
