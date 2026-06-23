@@ -104,7 +104,7 @@ async def users_list(
     rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
     return templates.TemplateResponse(
         request, "users.html",
-        {"users": rows, "error": None, "current_user_id": admin.id},
+        {"users": rows, "error": None, "current_user_id": admin.id, "user": admin},
     )
 
 
@@ -122,7 +122,7 @@ async def users_create(
         rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
         return templates.TemplateResponse(
             request, "users.html",
-            {"users": rows, "current_user_id": admin.id,
+            {"users": rows, "current_user_id": admin.id, "user": admin,
              "error": f"Користувач {email} вже існує."},
             status_code=409,
         )

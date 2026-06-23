@@ -1,0 +1,18 @@
+<style>
+  .topnav { display: flex; gap: 1.1rem; align-items: center; flex-wrap: wrap;
+            margin-bottom: 1.5rem; padding-bottom: .8rem; font-size: .9rem;
+            border-bottom: 1px solid #2a2f3a; }
+  .topnav a { color: #9aa4b2; text-decoration: none; }
+  .topnav a:hover { color: #6cb6ff; }
+  .topnav a.active { color: #e6e6e6; font-weight: 600; }
+  .topnav .logout { margin-left: auto; color: #8b949e; }
+</style>
+<nav class="topnav">
+  <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
+  <a href="/settings"{% if active == 'settings' %} class="active"{% endif %}>Налаштування</a>
+  {% if user and user.is_admin %}
+  <a href="/ui"{% if active == 'ui' %} class="active"{% endif %}>База даних</a>
+  <a href="/admin/users"{% if active == 'users' %} class="active"{% endif %}>Користувачі</a>
+  {% endif %}
+  <a href="/logout" class="logout">Вихід</a>
+</nav>
