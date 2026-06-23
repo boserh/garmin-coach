@@ -104,7 +104,8 @@ Optional, with defaults:
   non-admin user (`is_approved=False`) that **cannot log in** until an admin approves
   it at `/admin/users` (approve / delete buttons). Admin- and CLI-created users are
   approved on creation. Login lands admins on `/ui`, others on `/settings`.
-- **Routes**: `/login`, `/logout`, `/register`, `/settings` (own creds),
+- **Routes**: `/login`, `/logout`, `/register`, `/settings` (own creds +
+  `POST /settings/password` to change password, verifying the current one),
   `/admin/users` (admin: list/create/approve/delete), `/ui` (raw DB browser —
   **admin only**). `/health` stays public; `/status`, `/report.json`, `/deep`,
   `/history` require login and act on the current user.

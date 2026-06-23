@@ -177,6 +177,53 @@ def test_admin_deletes_user(auth_client):
     assert _user_id("del@example.com") is None
 
 
+def test_change_password_requires_login(client):
+    r = client.post(
+        "/settings/password",
+        data={"current_password": "x", "new_password": "yyyyyy"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login"
+
+
+def test_change_own_password(client):
+    _seed_user(email="pw1@example.com", password="origpass", is_admin=False)
+    client.post("/login", data={"email": "pw1@example.com", "password": "origpass"})
+
+    wrong = client.post(
+        "/settings/password",
+        data={"current_password": "nope", "new_password": "newpass1"},
+        follow_redirects=False,
+    )
+    assert wrong.headers["location"] == "/settings?pw=wrong"
+
+    short = client.post(
+        "/settings/password",
+        data={"current_password": "origpass", "new_password": "abc"},
+        follow_redirects=False,
+    )
+    assert short.headers["location"] == "/settings?pw=short"
+
+    ok = client.post(
+        "/settings/password",
+        data={"current_password": "origpass", "new_password": "newpass1"},
+        follow_redirects=False,
+    )
+    assert ok.headers["location"] == "/settings?pw=ok"
+
+    # old password stops working, new one logs in
+    client.get("/logout")
+    assert client.post(
+        "/login", data={"email": "pw1@example.com", "password": "origpass"},
+        follow_redirects=False,
+    ).status_code == 401
+    assert client.post(
+        "/login", data={"email": "pw1@example.com", "password": "newpass1"},
+        follow_redirects=False,
+    ).status_code == 303
+
+
 @pytest.fixture
 def crypto_key(monkeypatch):
     from cryptography.fernet import Fernet
