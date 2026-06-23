@@ -1,0 +1,15 @@
+[Unit]
+Description=Garmin Bot — Telegram bot
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/garmin_bot
+EnvironmentFile=/home/pi/garmin_bot/.env
+ExecStart=/home/pi/garmin_bot/venv/bin/python -m bot.main
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
