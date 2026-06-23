@@ -36,7 +36,8 @@
   </style>
 </head>
 <body>
-  <nav><a href="/ui">← Дані</a> · <a href="/settings">Налаштування</a> · <a href="/logout">Вихід</a></nav>
+  {% set active = 'users' %}
+  {% include "_nav.html" %}
   <h1>Користувачі</h1>
 
   <table>
