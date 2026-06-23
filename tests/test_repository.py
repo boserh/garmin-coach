@@ -141,6 +141,24 @@ async def test_get_recent_reports_filters_and_orders(session):
     assert all("date" in r for r in recent)
 
 
+async def test_get_recent_asks(session):
+    # only this user's successful asks, with question + answer, within the window
+    await repository.log_report(session, user_id=U1, kind="report", model="m", ok=True,
+                                question="звіт?", report_text="звіт — не ask")
+    await repository.log_report(session, user_id=U1, kind="ask", model="m", ok=True,
+                                question="чи бігти?", report_text="так, легко")
+    await repository.log_report(session, user_id=U1, kind="ask", model="m", ok=False,
+                                question="впав", error="boom")  # failed → excluded
+    await repository.log_report(session, user_id=U2, kind="ask", model="m", ok=True,
+                                question="чуже", report_text="чужа відповідь")
+
+    asks = await repository.get_recent_asks(session, U1, minutes=5)
+    assert asks == [{"question": "чи бігти?", "answer": "так, легко"}]
+
+    # nothing in a zero-minute window (everything is older than 'now')
+    assert await repository.get_recent_asks(session, U1, minutes=0) == []
+
+
 async def test_state_is_per_user(session):
     await repository.set_state(session, U1, "morning_sent_date", "2026-06-22")
     await repository.set_state(session, U2, "morning_sent_date", "2026-06-21")

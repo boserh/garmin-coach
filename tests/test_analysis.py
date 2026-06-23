@@ -27,11 +27,14 @@ _REPORTS = [{"date": "2026-06-22", "text": "звіт B"},
 
 
 def test_ask_cache_key_varies_with_question_and_reports():
-    base = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6")
-    assert base != _ask_cache_key(_REPORTS, "інше питання", "claude-sonnet-4-6")
-    assert base != _ask_cache_key(_REPORTS[:1], "чи бігти?", "claude-sonnet-4-6")
+    base = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [])
+    assert base != _ask_cache_key(_REPORTS, "інше питання", "claude-sonnet-4-6", [])
+    assert base != _ask_cache_key(_REPORTS[:1], "чи бігти?", "claude-sonnet-4-6", [])
+    # the recent-ask thread is part of the key
+    asks = [{"question": "а вчора?", "answer": "ок"}]
+    assert base != _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", asks)
     # stable for equal inputs
-    assert base == _ask_cache_key(list(_REPORTS), "чи бігти?", "claude-sonnet-4-6")
+    assert base == _ask_cache_key(list(_REPORTS), "чи бігти?", "claude-sonnet-4-6", [])
 
 
 def test_get_client_caches_per_key(monkeypatch):
