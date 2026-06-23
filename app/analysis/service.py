@@ -32,6 +32,7 @@ MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-4-6"   # follow-up Q&A: cheap, grounded in recent reports
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
+ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
 
 _DEFAULT_DAILY_Q = (
     "Дай щоденний статус відновлення. "
@@ -209,10 +210,11 @@ def analyze(payload: Union[Payload, dict], question: str = "", deep: bool = Fals
     return text
 
 
-def _ask_cache_key(reports: list, question: str, model: str) -> str:
+def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "reports": reports,
+        "recent_asks": recent_asks,
         "question": question,
         "model": model,
         "ask": True,
@@ -222,13 +224,19 @@ def _ask_cache_key(reports: list, question: str, model: str) -> str:
 
 
 def ask_with_stats(
-    reports: list, question: str, api_key: Optional[str] = None
+    reports: list,
+    question: str,
+    api_key: Optional[str] = None,
+    recent_asks: Optional[list] = None,
 ) -> Tuple[str, CallStats]:
     """Free-form follow-up Q&A grounded in the recent daily reports (no Garmin
-    payload). Returns (text, stats); raises AnalystError on API failure. Shares the
-    dedup cache and the error handling with :func:`analyze_with_stats`."""
+    payload). ``recent_asks`` ([{question, answer}, ...]) is the last few minutes'
+    /ask thread so a follow-up can build on it. Returns (text, stats); raises
+    AnalystError on API failure. Shares the dedup cache and error handling with
+    :func:`analyze_with_stats`."""
     model = MODEL_ASK
-    key = _ask_cache_key(reports, question, model)
+    recent_asks = recent_asks or []
+    key = _ask_cache_key(reports, question, model, recent_asks)
     cached = _cache.get(key)
     if cached and cached[1] > _time.time():
         logger.info(f"CLAUDE CACHE HIT  {model} (ask)")
@@ -239,6 +247,8 @@ def ask_with_stats(
         "recent_reports": reports,
         "question": question,
     }
+    if recent_asks:
+        user_content["recent_qa"] = recent_asks
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -295,9 +305,10 @@ async def run_ask(
     n: int = ASK_DEFAULT_N,
     api_key: Optional[str] = None,
 ) -> str:
-    """Fetch the last ``n`` daily reports, answer ``question`` against them, persist
-    a ReportLog row (kind="ask"), return the text. Raises AnalystError if there are
-    no reports to ground the answer in."""
+    """Fetch the last ``n`` daily reports plus the recent /ask thread, answer
+    ``question`` against them, persist a ReportLog row (kind="ask", with the
+    question), return the text. Raises AnalystError if there are no reports to ground
+    the answer in."""
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import repository
@@ -305,13 +316,16 @@ async def run_ask(
     reports = await repository.get_recent_reports(session, user_id, n=n)
     if not reports:
         raise AnalystError("Поки немає жодного звіту для контексту. Спершу зроби /report.")
+    recent_asks = await repository.get_recent_asks(session, user_id, minutes=ASK_CONTEXT_MIN)
 
     try:
-        text, stats = await run_in_threadpool(ask_with_stats, reports, question, api_key)
+        text, stats = await run_in_threadpool(
+            ask_with_stats, reports, question, api_key, recent_asks
+        )
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="ask", model=MODEL_ASK, ok=False,
-            error=str(e)[:512]
+            question=question, error=str(e)[:512]
         )
         raise
     await repository.log_report(
@@ -324,6 +338,7 @@ async def run_ask(
         cost_usd=stats.cost_usd,
         ok=True,
         cached=stats.cached,
+        question=question,
         report_text=text,
     )
     return text
@@ -366,7 +381,8 @@ async def run_analysis(
         )
     except AnalystError as e:
         await repository.log_report(
-            session, user_id=user_id, kind=kind, model=model, ok=False, error=str(e)[:512]
+            session, user_id=user_id, kind=kind, model=model, ok=False,
+            question=question or None, error=str(e)[:512]
         )
         raise
     await repository.log_report(
@@ -379,6 +395,7 @@ async def run_analysis(
         cost_usd=stats.cost_usd,
         ok=True,
         cached=stats.cached,
+        question=question or None,
         report_text=text,
     )
     return text

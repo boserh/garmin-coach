@@ -128,6 +128,7 @@ class ReportLog(Base):
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     cached: Mapped[bool] = mapped_column(Boolean, default=False)  # served from dedup cache
     error: Mapped[Optional[str]] = mapped_column(String(512))
+    question: Mapped[Optional[str]] = mapped_column(Text)      # the asked question / prompt
     report_text: Mapped[Optional[str]] = mapped_column(Text)  # the delivered report
 
 

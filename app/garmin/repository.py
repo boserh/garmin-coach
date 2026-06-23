@@ -190,6 +190,29 @@ async def get_recent_reports(
     ]
 
 
+async def get_recent_asks(
+    session: AsyncSession, user_id: int, minutes: int = 5
+) -> List[dict]:
+    """This user's successful /ask exchanges from the last ``minutes`` minutes, oldest
+    first, as [{question, answer}, ...] — the short conversation thread so a follow-up
+    /ask can build on what was just asked."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)
+    rows = (
+        await session.execute(
+            select(ReportLog.question, ReportLog.report_text)
+            .where(
+                ReportLog.user_id == user_id,
+                ReportLog.kind == "ask",
+                ReportLog.ok.is_(True),
+                ReportLog.report_text.is_not(None),
+                ReportLog.created_at >= cutoff,
+            )
+            .order_by(ReportLog.created_at.asc())
+        )
+    ).all()
+    return [{"question": q, "answer": a} for q, a in rows]
+
+
 async def log_report(
     session: AsyncSession,
     *,
@@ -202,12 +225,13 @@ async def log_report(
     ok: bool = True,
     cached: bool = False,
     error: Optional[str] = None,
+    question: Optional[str] = None,
     report_text: Optional[str] = None,
 ) -> None:
     session.add(ReportLog(
         user_id=user_id, kind=kind, model=model, input_tokens=input_tokens,
         output_tokens=output_tokens, cost_usd=cost_usd, ok=ok, cached=cached,
-        error=error, report_text=report_text,
+        error=error, question=question, report_text=report_text,
     ))
     await session.commit()
 
