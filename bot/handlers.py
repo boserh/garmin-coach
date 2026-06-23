@@ -38,7 +38,7 @@ async def _resolve_user(update: Update, session) -> "User | None":
     if chat is None:
         return None
     user = await users.get_by_chat_id(session, chat.id)
-    if user is None:
+    if user is None or not (user.is_active and user.is_approved):
         logger.warning(f"DENIED chat_id={chat.id}")
         if update.message:
             await update.message.reply_text(_NOT_REGISTERED)

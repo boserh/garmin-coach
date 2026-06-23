@@ -106,9 +106,13 @@ Optional, with defaults:
   approved on creation. Login lands admins on `/ui`, others on `/settings`.
 - **Routes**: `/login`, `/logout`, `/register`, `/settings` (own creds +
   `POST /settings/password` to change password, verifying the current one),
-  `/admin/users` (admin: list/create/approve/delete), `/ui` (raw DB browser —
-  **admin only**). `/health` stays public; `/status`, `/report.json`, `/deep`,
-  `/history` require login and act on the current user.
+  `/admin/users` (admin: list/create/approve/activate-deactivate/delete), `/ui` (raw
+  DB browser — **admin only**). `/health` stays public; `/status`, `/report.json`,
+  `/deep`, `/history` require login and act on the current user.
+- **Active flag**: `is_active` (default True) is a separate admin off-switch from
+  approval — a deactivated user keeps its data but can neither log in (403 "Акаунт
+  деактивовано") nor receive bot reports (`_resolve_user` and `morning_job` require
+  active + approved). Admins can't deactivate themselves.
 - **Bot**: one global `TELEGRAM_BOT_TOKEN`; an incoming chat is mapped to a user by
   `telegram_chat_id` (`_resolve_user`). `morning_job` loops over every user with a
   chat id + Garmin creds, each guarded once-a-day via per-user `bot_state`.

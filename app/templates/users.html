@@ -26,9 +26,11 @@
     .badge { font-size: .8rem; }
     .ok { color: #7ee787; }
     .wait { color: #e3b341; }
+    .off { color: #8b949e; }
     button.act { padding: .25rem .7rem; border: 0; border-radius: 6px; cursor: pointer;
                  font-size: .82rem; }
     button.approve { background: #7ee787; color: #0f1115; }
+    button.toggle { background: #1f2733; color: #6cb6ff; margin-left: .3rem; }
     button.del { background: #3a2326; color: #ff7b72; margin-left: .3rem; }
     td form { display: inline; }
   </style>
@@ -44,8 +46,9 @@
       <td>{{ u.id }}</td>
       <td>{{ u.email }}</td>
       <td class="badge">
-        {% if u.is_approved %}<span class="ok">активний</span>
-        {% else %}<span class="wait">очікує</span>{% endif %}
+        {% if not u.is_approved %}<span class="wait">очікує</span>
+        {% elif not u.is_active %}<span class="off">вимкнено</span>
+        {% else %}<span class="ok">активний</span>{% endif %}
       </td>
       <td>{{ "так" if u.is_admin else "" }}</td>
       <td>{{ "✓" if u.garmin_password_enc else "—" }}</td>
@@ -57,6 +60,11 @@
           <button class="act approve" type="submit">Підтвердити</button>
         </form>{% endif %}
         {% if u.id != current_user_id %}
+          {% if u.is_approved %}
+          <form method="post" action="/admin/users/{{ u.id }}/active">
+            <input type="hidden" name="active" value="{{ 0 if u.is_active else 1 }}">
+            <button class="act toggle" type="submit">{{ "Деактивувати" if u.is_active else "Активувати" }}</button>
+          </form>{% endif %}
         <form method="post" action="/admin/users/{{ u.id }}/delete"
               onsubmit="return confirm('Видалити {{ u.email }} та всі його дані?');">
           <button class="act del" type="submit">Видалити</button>

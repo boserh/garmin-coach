@@ -177,6 +177,45 @@ def test_admin_deletes_user(auth_client):
     assert _user_id("del@example.com") is None
 
 
+def test_admin_deactivate_and_reactivate(auth_client):
+    _seed_user(email="da@example.com", password="pw", is_admin=False)
+    uid = _user_id("da@example.com")
+
+    # deactivate → that user can no longer log in
+    assert auth_client.post(
+        f"/admin/users/{uid}/active", data={"active": "0"}, follow_redirects=False
+    ).status_code == 303
+    blocked = auth_client.post(
+        "/login", data={"email": "da@example.com", "password": "pw"},
+        follow_redirects=False,
+    )
+    assert blocked.status_code == 403  # "Акаунт деактивовано" — admin session intact
+
+    # reactivate → login works again
+    assert auth_client.post(
+        f"/admin/users/{uid}/active", data={"active": "1"}, follow_redirects=False
+    ).status_code == 303
+    assert auth_client.post(
+        "/login", data={"email": "da@example.com", "password": "pw"},
+        follow_redirects=False,
+    ).status_code == 303
+
+
+def test_admin_cannot_deactivate_self(auth_client):
+    uid = _user_id("t@example.com")
+    auth_client.post(f"/admin/users/{uid}/active", data={"active": "0"},
+                     follow_redirects=False)
+
+    from app.db.base import async_session_maker
+
+    async def check():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            assert u.is_active is True  # self-deactivation ignored
+
+    anyio.run(check)
+
+
 def test_change_password_requires_login(client):
     r = client.post(
         "/settings/password",

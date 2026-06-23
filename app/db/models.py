@@ -45,6 +45,9 @@ class User(Base):
     # Self-registered accounts start unapproved and cannot log in until an admin
     # approves them. Admin/CLI-created accounts are approved on creation.
     is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An admin can deactivate an account (block login + bot, keep its data) and
+    # reactivate it later. Distinct from approval: active=False is a deliberate off.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Encrypted upstream credentials (Fernet tokens); null until the user fills them in.
     garmin_email_enc: Mapped[Optional[str]] = mapped_column(Text)
