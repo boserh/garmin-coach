@@ -10,6 +10,7 @@ Garmin/Claude/Telegram credentials from the existing ``.env``::
 import argparse
 import asyncio
 import getpass
+import pathlib
 import sys
 
 from sqlalchemy import text
@@ -18,6 +19,30 @@ from app.core.config import settings
 from app.core.crypto import encrypt, hash_password
 from app.db import users
 from app.db.base import async_session_maker, init_db
+
+
+async def _import_garth_token(email: str) -> int:
+    garth_dir = pathlib.Path.home() / ".garth"
+    if not garth_dir.exists():
+        print("~/.garth not found.")
+        return 1
+    try:
+        import garth
+        garth.resume(str(garth_dir))
+        token = garth.client.dumps()
+    except Exception as e:
+        print(f"Failed to read garth token: {e}")
+        return 1
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        user.garth_token_enc = encrypt(token)
+        await session.commit()
+        print(f"Garth token imported for {email}.")
+    return 0
 
 
 async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
@@ -38,6 +63,16 @@ async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool
                 user.anthropic_key_enc = encrypt(settings.ANTHROPIC_API_KEY)
             if settings.TELEGRAM_CHAT_ID:
                 user.telegram_chat_id = settings.TELEGRAM_CHAT_ID
+            # Import garth token from ~/.garth if it exists.
+            garth_dir = pathlib.Path.home() / ".garth"
+            if garth_dir.exists():
+                try:
+                    import garth
+                    garth.resume(str(garth_dir))
+                    user.garth_token_enc = encrypt(garth.client.dumps())
+                    print("Imported garth token from ~/.garth.")
+                except Exception as e:
+                    print(f"Warning: could not import garth token: {e}")
             # Claim pre-existing single-user data (rows the migration left unowned).
             claimed = 0
             for tbl in ("daily_metrics", "activities", "report_logs"):
@@ -66,12 +101,17 @@ def main(argv=None) -> int:
         help="encrypt Garmin/Claude/Telegram creds from .env into this user",
     )
 
+    igt = sub.add_parser("import-garth-token", help="Import ~/.garth token into a user's DB record")
+    igt.add_argument("--email", required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
         if not password:
             parser.error("password must not be empty")
         return asyncio.run(_create_user(args.email, password, args.admin, args.seed_env))
+    if args.cmd == "import-garth-token":
+        return asyncio.run(_import_garth_token(args.email))
     return 0
 
 
