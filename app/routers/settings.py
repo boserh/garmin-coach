@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user, require_admin
+from app.core.config import settings
 from app.core.crypto import decrypt, encrypt, hash_password, verify_password
 from app.db import users
 from app.db.models import User
@@ -35,7 +36,10 @@ def _safe_decrypt(token):
 
 @router.get("/info", response_class=HTMLResponse)
 async def info_page(request: Request, user: User = Depends(current_user)):
-    return templates.TemplateResponse(request, "info.html", {"user": user})
+    return templates.TemplateResponse(
+        request, "info.html",
+        {"user": user, "bot_username": settings.TELEGRAM_BOT_USERNAME},
+    )
 
 
 @router.get("/settings", response_class=HTMLResponse)
@@ -51,6 +55,7 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "telegram_chat_id": user.telegram_chat_id or "",
             "saved": request.query_params.get("saved") == "1",
             "pw": request.query_params.get("pw"),
+            "bot_username": settings.TELEGRAM_BOT_USERNAME,
         },
     )
 

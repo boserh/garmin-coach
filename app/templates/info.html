@@ -41,6 +41,12 @@
     <p class="muted">Перший звіт зробить логін у Garmin і збереже сесію — далі без повторних логінів.</p>
 
     <h2>2. Бот у Telegram</h2>
+    {% if bot_username %}
+    <p>Знайди бота <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a>
+       і напиши йому. Команди:</p>
+    {% else %}
+    <p>Напиши боту, якого тобі дали. Команди:</p>
+    {% endif %}
     <ul>
       <li><code>/report</code> — щоденний статус відновлення й готовності (Sonnet).</li>
       <li><code>/deep &lt;питання&gt;</code> — глибокий разовий розбір (Opus).</li>

@@ -43,7 +43,9 @@
       <li><b>Claude API ключ</b> — для аналізу (взяти на console.anthropic.com → Billing).</li>
       <li><b>Telegram chat ID</b> — куди бот шле звіти (дізнатись: напиши <b>@userinfobot</b>).</li>
     </ol>
-    <div class="more">Далі напиши боту <b>/report</b> у Telegram або відкрий «Мої дані».
+    <div class="more">Далі знайди бота
+      {% if bot_username %}<a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a>{% else %}у Telegram{% endif %}
+      і напиши йому <b>/report</b> — або відкрий «Мої дані».
       Детальніше — на сторінці <a href="/info">Інфо</a>.</div>
   </div>
   {% endif %}

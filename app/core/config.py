@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[int] = None
+    # Bot's public @username (without @) — used to render a t.me/ link in the web
+    # onboarding so users know which bot to message. Override via env if it changes.
+    TELEGRAM_BOT_USERNAME: Optional[str] = "garmim_coach_bot"
 
     # --- Web layer ---
     # Shared-secret for the data/cost endpoints. Empty string disables auth.
