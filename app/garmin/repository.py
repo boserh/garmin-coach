@@ -136,8 +136,15 @@ async def persist_payload(
 
 
 async def get_last_report(session: AsyncSession, user_id: int):
-    """This user's most recent delivered report as (text, date_iso) for day-over-day
-    context. The date is when it was generated — i.e. that report's own "today"."""
+    """This user's most recent *daily* report from a prior day, as (text, date_iso),
+    for day-over-day continuity context.
+
+    Excludes today's reports (so repeated same-day /report presses keep a stable
+    dedup-cache key instead of each picking up the previous press as "previous"),
+    and excludes /deep and /ask — only the daily-status thread (report/morning)."""
+    today_start = dt.datetime.now(dt.timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     row = (
         await session.execute(
             select(ReportLog.report_text, ReportLog.created_at)
@@ -145,6 +152,8 @@ async def get_last_report(session: AsyncSession, user_id: int):
                 ReportLog.user_id == user_id,
                 ReportLog.report_text.is_not(None),
                 ReportLog.ok.is_(True),
+                ReportLog.kind.in_(("report", "morning")),
+                ReportLog.created_at < today_start,
             )
             .order_by(ReportLog.created_at.desc())
             .limit(1)
