@@ -44,6 +44,10 @@ def create_app() -> FastAPI:
     async def _redirect_to_login(request: Request, exc: RequiresLogin):
         return RedirectResponse("/login", status_code=303)
 
+    @app.get("/")
+    async def root():
+        return RedirectResponse("/login", status_code=303)
+
     app.include_router(auth.router)
     app.include_router(settings_router.router)
     app.include_router(me.router)
