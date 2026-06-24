@@ -28,7 +28,8 @@ See `CLAUDE.md` for the full module map and design notes.
 * Runna workout plan integration through Garmin Calendar
 * Morning automated reports
 * On-demand reports via Telegram commands
-* Follow-up questions (`/ask`) answered against your recent reports
+* Follow-up questions (`/ask`) answered against your recent reports, with the last few
+  minutes' `/ask` thread carried as conversation context so you can refine a question
 * Deep analysis mode using a larger Claude model
 * Aggressive data aggregation to minimize token usage and API cost
 * Response caching to avoid duplicate Claude API calls
@@ -315,8 +316,9 @@ Three small JSON files persist state across restarts. All use atomic writes, pru
 
 To avoid paying for identical Claude requests:
 
-* The cache key is a hash of the meaningful payload (daily metrics, recent activities, planned runs), the current date, the question, and the model. The volatile `generated` timestamp is excluded, so fresh Garmin data invalidates the cache automatically.
+* The cache key is a hash of the meaningful payload (daily metrics, recent activities, planned runs), the current date, the question, the model, and the previous-day report fed as context. The volatile `generated` timestamp is excluded, so fresh Garmin data invalidates the cache automatically.
 * `/report` (Sonnet) and `/deep` (Opus) are cached separately, since the model is part of the key.
+* `/ask` keys on the recent reports plus the recent `/ask` thread and the question instead.
 * One-week TTL. A hit logs `CLAUDE CACHE HIT`.
 
 ### Garmin disk cache (`garmin_cache.json`)
@@ -334,7 +336,7 @@ Day-level caching, history, and cost tracking moved into the database:
 
 * `DailyMetric` — one row per day; past days are served from here instead of Garmin (today is always refetched). Doubles as the trend source for `/history`.
 * `ActivityRecord` — one row per activity (idempotent on `activity_id`).
-* `ReportLog` — one row per Claude call (tokens, cost, ok/error).
+* `ReportLog` — one row per Claude call (tokens, cost, ok/error, the asked `question` and the delivered `report_text`).
 * `BotState` — key/value, including the morning-report-sent date (replaces `state.json`).
 
 Backend is set by `DATABASE_URL`: SQLite (zero-config) by default, Postgres by env
