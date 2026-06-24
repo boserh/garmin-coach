@@ -23,6 +23,8 @@
     .chead { font-size: .9rem; margin-bottom: .3rem; }
     .chart svg { display: block; width: 100%; height: auto; }
     .xaxis { display: flex; justify-content: space-between; }
+    button.del { padding: .1rem .5rem; border: 0; border-radius: 5px; cursor: pointer;
+                 background: #3a2326; color: #ff7b72; font-size: .82rem; }
   </style>
 </head>
 <body>
@@ -68,9 +70,10 @@
       {% endfor %}
     </div>
   {% endif %}
+  {% set can_clear = base == '/ui' and table == 'bot_state' %}
   <div class="wrap">
     <table>
-      <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}{% if can_clear %}<th></th>{% endif %}</tr></thead>
       <tbody>
         {% for row in rows %}
           <tr>
@@ -81,6 +84,16 @@
                 <td title="{{ v if v is not none else '' }}">{{ v if v is not none else '' }}</td>
               {% endif %}
             {% endfor %}
+            {% if can_clear %}
+              <td>
+                <form method="post" action="/ui/bot_state/delete" style="display:inline"
+                      onsubmit="return confirm('Очистити {{ row[1] }} (user {{ row[0] }})?');">
+                  <input type="hidden" name="user_id" value="{{ row[0] }}">
+                  <input type="hidden" name="key" value="{{ row[1] }}">
+                  <button class="del" type="submit">✕ очистити</button>
+                </form>
+              </td>
+            {% endif %}
           </tr>
         {% endfor %}
       </tbody>

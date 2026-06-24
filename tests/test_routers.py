@@ -223,6 +223,33 @@ def test_info_requires_login(client):
     assert client.get("/info", follow_redirects=False).status_code == 303
 
 
+def test_admin_clears_bot_state(auth_client):
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.set_state(s, uid, "morning_sent_date", "2026-06-24")
+
+    anyio.run(seed)
+    assert "morning_sent_date" in auth_client.get("/ui/bot_state").text
+
+    r = auth_client.post(
+        "/ui/bot_state/delete",
+        data={"user_id": str(uid), "key": "morning_sent_date"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    async def check():
+        async with async_session_maker() as s:
+            return await repository.get_state(s, uid, "morning_sent_date")
+
+    assert anyio.run(check) is None
+
+
 def test_info_when_logged_in(auth_client):
     r = auth_client.get("/info")
     assert r.status_code == 200

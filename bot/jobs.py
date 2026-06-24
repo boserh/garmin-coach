@@ -29,6 +29,14 @@ _MORNING_Q = "Короткий ранковий звіт: відновлення
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
 
 
+def _recovery_synced(payload, today: str) -> bool:
+    """True only when today's recovery data is actually in — both HRV and sleep.
+    Garmin can sync stress earlier than HRV/sleep, so ``payload.synced_today`` (any
+    field) is too loose for the morning report; we wait for the recovery essentials."""
+    row = next((d for d in payload.daily if d.date == today), None)
+    return bool(row and row.hrv_avg is not None and row.sleep_score is not None)
+
+
 async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
         if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
@@ -44,10 +52,10 @@ async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: s
                 session, user.id, days=3, activity_limit=20
             )
 
-            if not payload.synced_today:
+            if not _recovery_synced(payload, today):
                 if now.hour < MORNING_DEADLINE_HOUR:
                     logger.info(
-                        f"MORNING skip user={user.id}: not synced yet "
+                        f"MORNING skip user={user.id}: recovery data not synced yet "
                         f"(last_data={payload.last_data_date})"
                     )
                     return
