@@ -213,7 +213,8 @@ legacy and no longer used by these routes.
   zero-config on a Raspberry Pi; switch to Postgres (`asyncpg`) by setting
   `DATABASE_URL` only — no code changes.
 - **Models**: `DailyMetric` (unique `date`), `ActivityRecord` (unique `activity_id`,
-  `exercises` JSON), `ReportLog` (cost/metrics), `BotState` (key/value).
+  `exercises` JSON), `ReportLog` (cost/metrics + `question`/`report_text`), `BotState`
+  (key/value).
 - **DB as cache**: past days already stored are served from the DB instead of
   re-hitting Garmin; today is always refetched (still syncing). `build_payload_cached`
   persists what it fetches, so history accumulates.
@@ -241,9 +242,23 @@ Every call is logged to `ReportLog` (tokens, cost, ok/error).
 **`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
 (3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
 `repository.get_recent_reports` (filtered to `kind="report"`, so `/deep` and prior
-`/ask` answers don't pollute the context), calls `analyze_with_stats`' sibling
-`ask_with_stats` (separate `SYSTEM_ASK` prompt for free-form answers, shares the dedup
-cache), and logs a `ReportLog` row with `kind="ask"`. Bot-only — no web endpoint.
+`/ask` answers don't pollute the daily context), **plus** `get_recent_asks` — this
+user's `/ask` exchanges (question + answer) from the last `ASK_CONTEXT_MIN` (5) minutes,
+so a follow-up can build on the previous one. Both go to `analyze_with_stats`' sibling
+`ask_with_stats` (separate `SYSTEM_ASK` prompt; the recent thread arrives as `recent_qa`
+and is part of the dedup-cache key), which logs a `ReportLog` row with `kind="ask"`.
+Bot-only — no web endpoint.
+
+**Stored question**: `ReportLog.question` records the asked prompt — for `/ask` (the
+question), `/deep` (the user's question) and morning (its fixed prompt); `/report` leaves
+it null (default daily prompt). Visible in the `/me` and `/ui` browsers, and what
+`get_recent_asks` reads back for the conversation thread.
+
+**Day-over-day continuity**: `run_analysis` (report/morning, not `/deep`) feeds the
+**previous day's** daily report as `previous_report` context via
+`repository.get_last_report` — which excludes today's reports and `/deep`+`/ask`. Excluding
+today keeps the dedup-cache key stable across repeated same-day `/report` presses (so a
+second press is a `CLAUDE CACHE HIT`, not a paid re-run).
 
 **Exercise names**: `fetch_exercise_summary` reads Garmin's specific `name` code, maps it
 to Ukrainian via `app/garmin/exercise_names.py` at return time (cache stays language-
@@ -252,10 +267,11 @@ neutral). Unknown codes are logged once (`EXERCISE unmapped: <CODE>`). Warm-up j
 ## Caching layers
 
 - **Claude dedup** (`claude_cache.json`): `analyze()` keys on a hash of the meaningful
-  payload (`daily`, `recent_activities`, `planned_runs`) + date + question + model. The
-  volatile `generated` timestamp is deliberately excluded — otherwise the key changes
-  every minute and never hits (the main gotcha if you touch the key logic). 1-week TTL.
-  Hit logs `CLAUDE CACHE HIT`.
+  payload (`daily`, `recent_activities`, `planned_runs`) + date + question + model +
+  `previous_report`. The volatile `generated` timestamp is deliberately excluded —
+  otherwise the key changes every minute and never hits (the main gotcha if you touch the
+  key logic). `/ask` keys instead on the recent reports + `recent_qa` thread + question +
+  model. 1-week TTL. Hit logs `CLAUDE CACHE HIT`.
 - **Garmin disk cache** (`garmin_cache.json`): immutable ID-keyed assets only —
   `exercise:v2:<id>` (365d) and `workout:v2:<id>` (7d; name + coach description + steps).
 Day-level caching moved to the DB.
