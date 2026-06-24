@@ -5,8 +5,8 @@ endpoints; the token can be passed as ``?token=`` so plain browser links work.
 """
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -163,3 +163,18 @@ async def ui_row(
             "token": request.query_params.get("token", ""),
         },
     )
+
+
+@router.post("/ui/bot_state/delete")
+async def bot_state_delete(
+    user_id: int = Form(...),
+    key: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Clear one bot_state row (e.g. a user's morning-sent guard so the report can
+    re-fire). Composite PK (user_id, key)."""
+    obj = await session.get(BotState, (user_id, key))
+    if obj is not None:
+        await session.delete(obj)
+        await session.commit()
+    return RedirectResponse("/ui/bot_state", status_code=303)
