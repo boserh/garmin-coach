@@ -327,6 +327,7 @@ Immutable assets keyed on stable Garmin IDs, to cut request volume:
 
 * `exercise:v2:<id>` — a completed activity's exercise sets (365-day TTL; immutable).
 * `workout:v2:<id>` — planned-workout details: name, coach description, steps (7-day TTL; plans can be edited).
+* `series:v1:<id>` — a run's per-point pace/HR series from `/details`, downsampled (365-day TTL; immutable).
 
 A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are mapped to Ukrainian at read time, so labels can change without invalidating the cache.
 
@@ -335,7 +336,7 @@ A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are
 Day-level caching, history, and cost tracking moved into the database:
 
 * `DailyMetric` — one row per day; past days are served from here instead of Garmin (today is always refetched). Doubles as the trend source for `/history`.
-* `ActivityRecord` — one row per activity (idempotent on `activity_id`).
+* `ActivityRecord` — one row per activity (idempotent on `activity_id`); runs also store a downsampled pace/HR `series` rendered as charts on the activity detail page.
 * `ReportLog` — one row per Claude call (tokens, cost, ok/error, the asked `question` and the delivered `report_text`).
 * `BotState` — key/value, including the morning-report-sent date (replaces `state.json`).
 
