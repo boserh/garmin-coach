@@ -10,7 +10,7 @@ logic. Ensures DB tables exist on startup so BotState works out of the box.
 import logging
 
 from telegram import BotCommand
-from telegram.ext import Application, CommandHandler, Defaults
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Defaults
 
 from app.core import logging as app_logging
 from app.core.config import settings
@@ -33,7 +33,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("deep", "Глибокий аналіз (Opus), напр. /deep вплив вело на HRV"),
         BotCommand("activities", "Останні активності"),
         BotCommand("activity", "Розбір активності, напр. /activity 5"),
-        BotCommand("plan", "Програма тренувань (найближчі тренування)"),
+        BotCommand("plan", "Програма; /plan <текст> щоб змінити, напр. додай біг сьогодні"),
     ])
 
 
@@ -53,6 +53,7 @@ def main() -> None:
     app.add_handler(CommandHandler("activities", handlers.activities))
     app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("plan", handlers.plan))
+    app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
     app.add_handler(CommandHandler("test_on", handlers.test_on))
     app.add_handler(CommandHandler("test_off", handlers.test_off))
     app.add_error_handler(handlers.on_error)

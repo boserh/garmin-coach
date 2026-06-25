@@ -16,9 +16,15 @@ import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
-from app.analysis.prompts import SYSTEM, SYSTEM_ACTIVITY, SYSTEM_ASK, SYSTEM_PLAN
+from app.analysis.prompts import (
+    SYSTEM,
+    SYSTEM_ACTIVITY,
+    SYSTEM_ASK,
+    SYSTEM_PLAN,
+    SYSTEM_PLAN_EDIT,
+)
 from app.core.config import settings
-from app.garmin.schemas import GeneratedPlan, Payload
+from app.garmin.schemas import GeneratedPlan, Payload, PlanEdit
 
 logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -647,3 +653,69 @@ async def run_plan_generation(
         question=f"plan: {goal}", report_text=plan_out.summary,
     )
     return plan
+
+
+def _coerce_edit(text: str) -> PlanEdit:
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    return PlanEdit(**json.loads(s))
+
+
+def plan_edit_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Turn a free-text instruction + current workouts into a structured PlanEdit
+    (proposed only — not applied). One retry on a parse miss, else AnalystError."""
+    model = MODEL_PLAN
+    text, stats = _complete(model, SYSTEM_PLAN_EDIT, context, "plan_edit", api_key, max_tokens=1500)
+    try:
+        return _coerce_edit(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(
+            model, SYSTEM_PLAN_EDIT, retry, "plan_edit", api_key, max_tokens=1500
+        )
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_edit(text), stats
+        except Exception as e:
+            logger.error(f"PLAN_EDIT parse failed: {e}")
+            raise AnalystError("Не вдалось зрозуміти зміну. Спробуй переформулювати.")
+
+
+async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Optional[str] = None):
+    """Propose changes to the active plan from a free-text instruction (does NOT apply —
+    the caller confirms first). Returns (plan, PlanEdit). Logs ReportLog(kind="plan_edit")."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        raise AnalystError("Немає активної програми. Створи її на сторінці /plan у вебі.")
+    ws = await repository.list_workouts(session, plan.id, upcoming_only=True)
+    context = {
+        "today": dt.date.today().isoformat(),
+        "instruction": instruction,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description} for w in ws],
+    }
+    try:
+        edit, stats = await run_in_threadpool(plan_edit_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="plan_edit", model=MODEL_PLAN, ok=False,
+            question=instruction[:200], error=str(e)[:512],
+        )
+        raise
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=instruction[:200], report_text=edit.summary,
+    )
+    return plan, edit
