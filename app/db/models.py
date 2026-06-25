@@ -108,6 +108,8 @@ class ActivityRecord(Base):
     max_hr: Mapped[Optional[int]] = mapped_column(Integer)
     load: Mapped[Optional[float]] = mapped_column(Float)
     exercises: Mapped[Optional[dict]] = mapped_column(JSON)
+    # Per-point pace/HR series for runs ([{d, p, hr}, ...]); null for other types.
+    series: Mapped[Optional[list]] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

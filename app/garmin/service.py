@@ -94,6 +94,11 @@ def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
             if ex:
                 row["exercises"] = ex
             time.sleep(0.3)
+        elif "run" in (row["type"] or "") and a.get("activityId"):
+            sr = client.fetch_activity_series(a["activityId"])
+            if sr:
+                row["series"] = sr
+            time.sleep(0.3)
         out.append((a.get("activityId"), row))
     return out
 

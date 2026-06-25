@@ -101,6 +101,51 @@ def test_ui_browse(auth_client):
     assert auth_client.get("/ui/nope").status_code == 404
 
 
+def test_activities_minimal_index_and_run_chart(auth_client):
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+    series = [{"d": 0.0, "p": 7.0, "hr": 120}, {"d": 0.5, "p": 6.5, "hr": 140},
+              {"d": 1.0, "p": 6.0, "hr": 150}]
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.upsert_activity(s, uid, 999, {
+                "date": "2026-06-24", "type": "running", "dur_min": 30.0,
+                "dist_km": 5.0, "avg_hr": 140, "max_hr": 155, "load": 80.0,
+                "series": series,
+            })
+            await s.commit()
+
+    anyio.run(seed)
+
+    def _row_id():
+        from sqlalchemy import select
+
+        from app.db.models import ActivityRecord
+
+        async def get():
+            async with async_session_maker() as s:
+                return (await s.execute(
+                    select(ActivityRecord.id).where(ActivityRecord.activity_id == 999)
+                )).scalar_one()
+
+        return anyio.run(get)
+
+    # list view: minimal columns — heavy fields are not column headers
+    lst = auth_client.get("/ui/activities").text
+    assert "<th>dist_km</th>" in lst
+    assert "<th>series</th>" not in lst
+    assert "<th>load</th>" not in lst
+
+    # detail view: pace + HR charts rendered, raw series not dumped
+    detail = auth_client.get(f"/ui/activities/{_row_id()}").text
+    assert "<polyline" in detail
+    assert "Темп, хв/км" in detail
+    assert "Пульс" in detail
+
+
 def test_logout_clears_session(auth_client):
     assert auth_client.get("/ui", follow_redirects=False).status_code == 200
     auth_client.get("/logout")

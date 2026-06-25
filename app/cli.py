@@ -45,6 +45,51 @@ async def _import_garth_token(email: str) -> int:
     return 0
 
 
+async def _backfill_series(email: str) -> int:
+    """Fetch the pace/HR series for this user's already-stored runs that don't have
+    one yet (saved before the feature existed). Idempotent — only fills nulls."""
+    import asyncio
+
+    from fastapi.concurrency import run_in_threadpool
+    from sqlalchemy import select
+
+    from app.db.models import ActivityRecord
+    from app.garmin import client
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        rows = (await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user.id,
+                ActivityRecord.series.is_(None),
+                ActivityRecord.type.like("%run%"),
+            ).order_by(ActivityRecord.date.desc())
+        )).scalars().all()
+        if not rows:
+            print("No runs need backfilling.")
+            return 0
+        print(f"Backfilling {len(rows)} run(s) for {email}...")
+        done = 0
+        async with user_runtime(session, user):
+            await run_in_threadpool(get_provider().login)
+            for r in rows:
+                sr = await run_in_threadpool(client.fetch_activity_series, r.activity_id)
+                if sr:
+                    r.series = sr
+                    done += 1
+                    print(f"  {r.date} {r.type} (id={r.activity_id}) — {len(sr)} pts")
+                await asyncio.sleep(0.3)  # be gentle on Garmin
+            await session.commit()
+        print(f"Done: {done}/{len(rows)} updated.")
+    return 0
+
+
 async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
     await init_db()  # zero-config safety; Alembic remains the source of truth
     async with async_session_maker() as session:
@@ -104,6 +149,9 @@ def main(argv=None) -> int:
     igt = sub.add_parser("import-garth-token", help="Import ~/.garth token into a user's DB record")
     igt.add_argument("--email", required=True)
 
+    bf = sub.add_parser("backfill-series", help="Fetch pace/HR series for stored runs missing one")
+    bf.add_argument("--email", required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
@@ -112,6 +160,8 @@ def main(argv=None) -> int:
         return asyncio.run(_create_user(args.email, password, args.admin, args.seed_env))
     if args.cmd == "import-garth-token":
         return asyncio.run(_import_garth_token(args.email))
+    if args.cmd == "backfill-series":
+        return asyncio.run(_backfill_series(args.email))
     return 0
 
 

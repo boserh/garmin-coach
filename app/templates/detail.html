@@ -13,6 +13,12 @@
     th, td { border-bottom: 1px solid #2a2f3a; padding: .5rem .7rem; text-align: left; vertical-align: top; }
     th { color: #9aa4b2; white-space: nowrap; width: 12rem; }
     pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+    .charts { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0 0 1.5rem; max-width: 60rem; }
+    .chart { flex: 1 1 22rem; border: 1px solid #2a2f3a; border-radius: 8px; padding: .6rem .8rem; background: #14171f; }
+    .chead { font-size: .9rem; margin-bottom: .3rem; }
+    .chart svg { display: block; width: 100%; height: auto; }
+    .meta { color: #9aa4b2; }
+    .xaxis { display: flex; justify-content: space-between; }
   </style>
 </head>
 <body>
@@ -21,6 +27,26 @@
   {% include "_nav.html" %}
   {% set qf = '?token=' ~ token if token else '' %}
   <div class="bar"><a href="{{ base }}/{{ table }}{{ qf }}">← {{ table }}</a></div>
+  {% if charts %}
+    <div class="charts">
+      {% for c in charts %}
+        {% set s = c.s %}
+        <div class="chart">
+          <div class="chead">
+            <span style="color: {{ c.color }}">●</span> {{ c.label }}
+            <span class="meta">— {{ '%.0f'|format(s.ymin) }}…{{ '%.0f'|format(s.ymax) }},
+              останнє {{ '%.1f'|format(s.last) }}</span>
+          </div>
+          <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img"
+               aria-label="{{ c.label }}">
+            <polyline fill="none" stroke="{{ c.color }}" stroke-width="2"
+                      stroke-linejoin="round" points="{{ s.points }}"/>
+          </svg>
+          <div class="meta xaxis"><span>{{ first_x }}</span><span>{{ last_x }}</span></div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
   <table>
     {% for name, value in fields %}
       <tr>

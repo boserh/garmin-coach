@@ -28,6 +28,13 @@ TABLES = {
     "bot_state": BotState,
 }
 
+# Columns shown on a table's list view (the detail page always shows every column).
+# Tables not listed here show all columns. Keeps the activities list scannable; the
+# heavy fields (load/exercises/series) live on the per-row detail page.
+INDEX_COLS = {
+    "activities": ["id", "date", "type", "dur_min", "dist_km", "avg_hr", "max_hr"],
+}
+
 # The raw DB browser spans all users' rows → admin only.
 router = APIRouter(tags=["ui"], dependencies=[Depends(require_admin)])
 
@@ -77,6 +84,23 @@ async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
     return charts, (dates[0] if dates else ""), (dates[-1] if dates else "")
 
 
+def _run_charts(series):
+    """Pace + HR sparklines for a run's per-point series ([{d, p, hr}, ...]).
+    Returns (charts, first_km, last_km) for the activity detail page."""
+    if not series:
+        return [], "", ""
+    defs = [
+        ("Темп, хв/км", "#6cb6ff", [p.get("p") for p in series]),
+        ("Пульс", "#ff7b72", [p.get("hr") for p in series]),
+    ]
+    charts = [{"label": lbl, "color": c, "s": s}
+              for lbl, c, vals in defs if (s := _series(vals))]
+    dists = [p.get("d") for p in series if p.get("d") is not None]
+    first = f"{dists[0]:.1f} км" if dists else ""
+    last = f"{dists[-1]:.1f} км" if dists else ""
+    return charts, first, last
+
+
 @router.get("/ui", response_class=HTMLResponse)
 async def ui_index(
     request: Request,
@@ -105,7 +129,7 @@ async def ui_table(
     if model is None:
         raise HTTPException(status_code=404, detail="Unknown table")
 
-    cols = [c.name for c in model.__table__.columns]
+    cols = INDEX_COLS.get(table) or [c.name for c in model.__table__.columns]
     pk = list(model.__table__.primary_key.columns)[0]
     # Order by the most meaningful recency column (newest first), not the PK,
     # so date-based tables read chronologically instead of by insert order.
@@ -155,11 +179,15 @@ async def ui_row(
     if obj is None:
         raise HTTPException(status_code=404, detail="Row not found")
 
-    fields = [(c.name, getattr(obj, c.name)) for c in model.__table__.columns]
+    # ``series`` is a long per-point array — render it as charts, not raw JSON.
+    fields = [(c.name, getattr(obj, c.name))
+              for c in model.__table__.columns if c.name != "series"]
+    charts, first_x, last_x = _run_charts(getattr(obj, "series", None) or [])
     return templates.TemplateResponse(
         request, "detail.html",
         {
             "table": table, "fields": fields, "user": user,
+            "charts": charts, "first_x": first_x, "last_x": last_x,
             "token": request.query_params.get("token", ""),
         },
     )

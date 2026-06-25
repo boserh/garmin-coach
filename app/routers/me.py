@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import current_user
 from app.db.models import ActivityRecord, DailyMetric, ReportLog, User
 from app.dependencies import get_session
-from app.routers.admin import _daily_charts
+from app.routers.admin import INDEX_COLS, _daily_charts, _run_charts
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -62,7 +62,7 @@ async def me_table(
     if model is None:
         raise HTTPException(status_code=404, detail="Unknown table")
 
-    cols = [c.name for c in model.__table__.columns]
+    cols = INDEX_COLS.get(table) or [c.name for c in model.__table__.columns]
     table_cols = model.__table__.columns
     pk = list(model.__table__.primary_key.columns)[0]
     order_col = next(
@@ -114,8 +114,11 @@ async def me_row(
     if obj is None:
         raise HTTPException(status_code=404, detail="Row not found")  # not yours / missing
 
-    fields = [(c.name, getattr(obj, c.name)) for c in model.__table__.columns]
+    fields = [(c.name, getattr(obj, c.name))
+              for c in model.__table__.columns if c.name != "series"]
+    charts, first_x, last_x = _run_charts(getattr(obj, "series", None) or [])
     return templates.TemplateResponse(
         request, "detail.html",
-        {"table": table, "fields": fields, "user": user, "base": "/me", "token": ""},
+        {"table": table, "fields": fields, "user": user, "base": "/me", "token": "",
+         "charts": charts, "first_x": first_x, "last_x": last_x},
     )

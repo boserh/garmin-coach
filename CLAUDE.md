@@ -121,6 +121,9 @@ Optional, with defaults:
   chat id + Garmin creds, each guarded once-a-day via per-user `bot_state`.
 - **CLI**: `python -m app.cli create-user [--admin] [--seed-env]` — `--seed-env`
   encrypts `.env` creds into the user and claims pre-existing (unowned) data rows.
+  `import-garth-token --email` seeds a user's garth session from `~/.garth`;
+  `backfill-series --email` fetches the pace/HR series for already-stored runs that
+  predate the feature (fills nulls only, idempotent).
 
 ## Structure
 
@@ -213,8 +216,8 @@ legacy and no longer used by these routes.
   zero-config on a Raspberry Pi; switch to Postgres (`asyncpg`) by setting
   `DATABASE_URL` only — no code changes.
 - **Models**: `DailyMetric` (unique `date`), `ActivityRecord` (unique `activity_id`,
-  `exercises` JSON), `ReportLog` (cost/metrics + `question`/`report_text`), `BotState`
-  (key/value).
+  `exercises` JSON + `series` JSON — per-point pace/HR for runs), `ReportLog`
+  (cost/metrics + `question`/`report_text`), `BotState` (key/value).
 - **DB as cache**: past days already stored are served from the DB instead of
   re-hitting Garmin; today is always refetched (still syncing). `build_payload_cached`
   persists what it fetches, so history accumulates.
@@ -264,6 +267,14 @@ second press is a `CLAUDE CACHE HIT`, not a paid re-run).
 to Ukrainian via `app/garmin/exercise_names.py` at return time (cache stays language-
 neutral). Unknown codes are logged once (`EXERCISE unmapped: <CODE>`). Warm-up jog filtered.
 
+**Run pace/HR series**: for running activities, `fetch_activity_series` pulls Garmin's
+`/details` metrics, resolves the speed/HR/distance columns by descriptor key (indices
+vary), converts m/s→min/km, downsamples to ~150 points, and stores them on
+`ActivityRecord.series`. The `/ui` and `/me` browsers show a **minimal column set** on the
+activities list (`admin.INDEX_COLS`) and render `series` as **pace + HR sparklines** on the
+per-row detail page (`admin._run_charts`, reusing the `_series` SVG scaler) — the detail
+routes stay pure DB reads (no Garmin call). Non-run activities have `series = null`.
+
 ## Caching layers
 
 - **Claude dedup** (`claude_cache.json`): `analyze()` keys on a hash of the meaningful
@@ -273,7 +284,8 @@ neutral). Unknown codes are logged once (`EXERCISE unmapped: <CODE>`). Warm-up j
   key logic). `/ask` keys instead on the recent reports + `recent_qa` thread + question +
   model. 1-week TTL. Hit logs `CLAUDE CACHE HIT`.
 - **Garmin disk cache** (`garmin_cache.json`): immutable ID-keyed assets only —
-  `exercise:v2:<id>` (365d) and `workout:v2:<id>` (7d; name + coach description + steps).
+  `exercise:v2:<id>` (365d), `workout:v2:<id>` (7d; name + coach description + steps),
+  and `series:v1:<id>` (365d; a run's per-point pace/HR from `/details`, downsampled).
 Day-level caching moved to the DB.
 - **DB day-level cache** (`DailyMetric`): past days served from the DB; today refetched.
 
