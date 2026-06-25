@@ -148,3 +148,45 @@ class BotState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class TrainingPlan(Base):
+    """A generated running training program for a goal. One active plan per user
+    (creating a new one archives the previous). Holds the goal/params, the intake
+    answers, and Claude's approach summary; the dated sessions live in PlannedWorkout."""
+
+    __tablename__ = "training_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    goal: Mapped[str] = mapped_column(String(32))          # first_5k / faster_5k / ...
+    goal_label: Mapped[Optional[str]] = mapped_column(String(128))
+    target_date: Mapped[Optional[str]] = mapped_column(String(10))
+    start_date: Mapped[Optional[str]] = mapped_column(String(10))
+    days_per_week: Mapped[Optional[int]] = mapped_column(Integer)
+    intensity: Mapped[Optional[str]] = mapped_column(String(16))   # easy / moderate / hard
+    intake: Mapped[Optional[dict]] = mapped_column(JSON)           # the answers given
+    summary: Mapped[Optional[str]] = mapped_column(Text)           # Claude's approach overview
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active / archived
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class PlannedWorkout(Base):
+    """One dated session of a TrainingPlan. ``description`` carries the free-text
+    prescription (what to do + target pace/effort); ``status`` tracks progress."""
+
+    __tablename__ = "planned_workouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_id: Mapped[Optional[int]] = mapped_column(ForeignKey("training_plans.id"), index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    date: Mapped[str] = mapped_column(String(10), index=True)
+    week: Mapped[Optional[int]] = mapped_column(Integer)
+    type: Mapped[Optional[str]] = mapped_column(String(16))  # easy/long/tempo/intervals/rest/cross
+    dist_km: Mapped[Optional[float]] = mapped_column(Float)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

@@ -64,3 +64,48 @@ class Payload(BaseModel):
     daily: List[DailySummary]
     recent_activities: List[Activity]
     planned_runs: List[PlannedRun]
+
+
+class PlanWorkout(BaseModel):
+    """One dated session in a generated training plan (Claude's structured output)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    date: str                       # ISO YYYY-MM-DD
+    week: Optional[int] = None
+    type: str                       # easy / long / tempo / intervals / rest / cross
+    dist_km: Optional[float] = None
+    description: str
+
+
+class GeneratedPlan(BaseModel):
+    """The structured plan Claude returns: an approach summary + dated workouts."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str
+    workouts: List[PlanWorkout]
+
+
+class PlanOp(BaseModel):
+    """One edit operation on a plan (Claude's structured output for a free-text tweak).
+    ``date`` targets an existing workout (or the new one for ``add``)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    action: str                     # add / move / modify / skip
+    date: str                       # target workout date (ISO); for `add`, the new date
+    to_date: Optional[str] = None   # `move` destination
+    week: Optional[int] = None
+    type: Optional[str] = None
+    dist_km: Optional[float] = None
+    description: Optional[str] = None
+
+
+class PlanEdit(BaseModel):
+    """Proposed changes to the active plan: a human-readable summary + operations."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str
+    operations: List[PlanOp]

@@ -8,7 +8,7 @@ global identity; a chat is authorised by mapping its chat_id to a registered use
 import logging
 from zoneinfo import ZoneInfo
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
@@ -17,12 +17,14 @@ from app.analysis.service import (
     run_activity_analysis,
     run_analysis,
     run_ask,
+    run_plan_edit,
 )
 from app.db import users
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.garmin import repository, service
 from app.garmin.runtime import user_runtime
+from app.garmin.schemas import PlanOp
 
 logger = logging.getLogger("bot")
 
@@ -173,6 +175,91 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"ANALYST {e}")
                 text = str(e)
     await update.message.reply_text(text)
+
+
+async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    instruction = " ".join(ctx.args).strip()
+    if instruction:
+        await _plan_edit(update, ctx, instruction)
+        return
+    logger.info("CMD /plan")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        p = await repository.get_active_plan(session, user.id)
+        if p is None:
+            await update.message.reply_text(
+                "Немає активної програми. Створи її на сторінці /plan у вебі."
+            )
+            return
+        ws = await repository.list_workouts(session, p.id, upcoming_only=True)
+    if not ws:
+        await update.message.reply_text(
+            f"🎯 {p.goal_label or p.goal}: майбутніх тренувань немає."
+        )
+        return
+    lines = [f"🎯 {p.goal_label or p.goal}", ""]
+    for w in ws[:10]:
+        dist = f" · {w.dist_km:.1f} км" if w.dist_km else ""
+        lines.append(f"{w.date}  {w.type}{dist}\n  {w.description}")
+    lines.append("\nКоригувати: /plan <що змінити>")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction: str):
+    """Propose a free-text plan change and offer confirm/cancel buttons."""
+    logger.info(f"CMD /plan edit: {instruction[:60]}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await update.message.reply_text("Думаю над змінами...")
+        async with user_runtime(session, user) as creds:
+            try:
+                _plan, edit = await run_plan_edit(
+                    session, user_id=user.id, instruction=instruction,
+                    api_key=creds.anthropic_key,
+                )
+            except AnalystError as e:
+                logger.error(f"ANALYST {e}")
+                await update.message.reply_text(str(e))
+                return
+    if not edit.operations:
+        await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
+        return
+    ctx.user_data["pending_plan_ops"] = [op.model_dump() for op in edit.operations]
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
+    ]])
+    await update.message.reply_text("Пропоную:\n\n" + edit.summary, reply_markup=kb)
+
+
+async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "plan_cancel":
+        ctx.user_data.pop("pending_plan_ops", None)
+        await q.edit_message_text("Скасовано.")
+        return
+    ops_data = ctx.user_data.pop("pending_plan_ops", None)
+    if not ops_data:
+        await q.edit_message_text("Немає змін для застосування.")
+        return
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        plan_obj = await repository.get_active_plan(session, user.id)
+        if plan_obj is None:
+            await q.edit_message_text("Немає активної програми.")
+            return
+        n = await repository.apply_plan_ops(
+            session, plan_obj, [PlanOp(**o) for o in ops_data]
+        )
+    await q.edit_message_text(f"✅ Застосовано змін: {n}. /plan — переглянути.")
 
 
 # ---------- TEST JOB ----------

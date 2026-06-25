@@ -160,11 +160,12 @@ app/
     health.py          GET /health (public), GET /status (login, per-user)
     reports.py         GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py         GET /history?days=N — trends from DB, login, per-user
+    plan.py            GET/POST /plan — training-plan setup form + view, login, per-user
     admin.py           /ui DB browser — admin only
   dependencies.py      shared deps (get_session, verify_token)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /plan (+edit), /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -200,6 +201,7 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /report.json` — daily report (Sonnet). Login; current user.
 - `GET /deep?q=...` — deep analysis (Opus). Login; current user.
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Login; current user.
+- `GET/POST /plan` — training-plan setup form (no active plan) / plan view; `POST /plan/archive`. Login; current user.
 - `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save).
 - `GET /admin/users` — list/create users (admin only).
 - `GET /ui` + `GET /ui/{table}` + `/ui/{table}/{id}` — raw DB browser (whitelisted
@@ -218,7 +220,8 @@ legacy and no longer used by these routes.
 - **Models**: `DailyMetric` (unique `date`), `ActivityRecord` (unique `activity_id`,
   `exercises` JSON + `series` JSON — per-point pace/HR for runs + `analysis` text —
   Claude's `/activity` writeup), `ReportLog` (cost/metrics + `question`/`report_text`),
-  `BotState` (key/value).
+  `BotState` (key/value), `TrainingPlan` (goal/params/intake/summary, one active per
+  user) + `PlannedWorkout` (dated session: type/dist/description/status).
 - **DB as cache**: past days already stored are served from the DB instead of
   re-hitting Garmin; today is always refetched (still syncing). `build_payload_cached`
   persists what it fetches, so history accumulates.
@@ -286,6 +289,21 @@ collapsed to ~6 pace/HR segments so the LLM sees pacing and HR drift), calls Son
 `SYSTEM_ACTIVITY`, **stores the text on `ActivityRecord.analysis`** (shown as a block on the
 web detail page) and logs a `ReportLog` (kind="activity"). Shares the dedup cache
 (`_activity_cache_key`). Works for any type; runs additionally get the segment detail.
+
+**Training plans**: a user picks a goal + intake on the **web form** (`/plan`); we *prescribe*
+a dated program (distinct from the Garmin-Calendar `planned_runs` we merely read). This is
+the one place we need **structured LLM output**: `SYSTEM_PLAN` returns JSON validated by
+`GeneratedPlan`/`PlanWorkout` (`_coerce_plan` slices to the outer `{...}`; one retry, else
+`AnalystError`). `run_plan_generation` feeds compact context (recent runs + recovery trend),
+persists a `TrainingPlan` + `PlannedWorkout` rows via `repository.create_plan` (archiving any
+prior active plan), and logs `ReportLog(kind="plan")`. Adjustments are **free-text in the
+bot**: `/plan <текст>` → `run_plan_edit` (`SYSTEM_PLAN_EDIT` → `PlanEdit` operations
+add/move/modify/skip) returns a *proposed* change; the bot shows it with inline ✅/❌ buttons
+(`plan_callback`, pending ops in `context.user_data`) and only `repository.apply_plan_ops`
+on confirm. Plain `/plan` shows upcoming workouts. The shared `_complete` helper centralises
+the Claude call for both. Recovery-adaptive behaviour (reports reacting to HRV/sleep) is not
+wired yet. NB the prompt-for-JSON + Pydantic + one-retry choice avoids SDK tool-use, matching
+the rest of the `messages.create` usage.
 
 ## Caching layers
 
