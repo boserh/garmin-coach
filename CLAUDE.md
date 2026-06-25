@@ -164,7 +164,7 @@ app/
   dependencies.py      shared deps (get_session, verify_token)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /test_*; _resolve_user (chat_id→user), error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -216,8 +216,9 @@ legacy and no longer used by these routes.
   zero-config on a Raspberry Pi; switch to Postgres (`asyncpg`) by setting
   `DATABASE_URL` only — no code changes.
 - **Models**: `DailyMetric` (unique `date`), `ActivityRecord` (unique `activity_id`,
-  `exercises` JSON + `series` JSON — per-point pace/HR for runs), `ReportLog`
-  (cost/metrics + `question`/`report_text`), `BotState` (key/value).
+  `exercises` JSON + `series` JSON — per-point pace/HR for runs + `analysis` text —
+  Claude's `/activity` writeup), `ReportLog` (cost/metrics + `question`/`report_text`),
+  `BotState` (key/value).
 - **DB as cache**: past days already stored are served from the DB instead of
   re-hitting Garmin; today is always refetched (still syncing). `build_payload_cached`
   persists what it fetches, so history accumulates.
@@ -277,6 +278,14 @@ reads (no Garmin call). Non-run activities have `series = null`. The detail char
 carry per-point data (`s.pts`: x-fraction + raw value + distance) and a small inline
 vanilla-JS hover handler in `detail.html` that shows the value (pace as m:ss, HR in уд)
 and distance on mousemove — progressive enhancement; the SVG still renders without JS.
+
+**`/activity` analysis**: `/activities` lists this user's last 5 activities (DB read, no
+Garmin call) keyed by the short DB `id`; `/activity <id>` analyzes one. `run_activity_analysis`
+builds a compact payload (`activity_payload`: summary + `_segments` — the run's series
+collapsed to ~6 pace/HR segments so the LLM sees pacing and HR drift), calls Sonnet with
+`SYSTEM_ACTIVITY`, **stores the text on `ActivityRecord.analysis`** (shown as a block on the
+web detail page) and logs a `ReportLog` (kind="activity"). Shares the dedup cache
+(`_activity_cache_key`). Works for any type; runs additionally get the segment detail.
 
 ## Caching layers
 

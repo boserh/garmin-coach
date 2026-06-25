@@ -110,6 +110,8 @@ class ActivityRecord(Base):
     exercises: Mapped[Optional[dict]] = mapped_column(JSON)
     # Per-point pace/HR series for runs ([{d, p, hr}, ...]); null for other types.
     series: Mapped[Optional[list]] = mapped_column(JSON)
+    # Claude's on-demand analysis of this activity (/activity); null until requested.
+    analysis: Mapped[Optional[str]] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

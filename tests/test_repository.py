@@ -159,6 +159,24 @@ async def test_get_recent_asks(session):
     assert await repository.get_recent_asks(session, U1, minutes=0) == []
 
 
+async def test_list_and_get_activity_scoped(session):
+    await repository.upsert_activity(session, U1, 111, {
+        "date": "2026-06-20", "type": "running", "dist_km": 5.0, "dur_min": 30.0, "avg_hr": 140})
+    await repository.upsert_activity(session, U1, 222, {
+        "date": "2026-06-22", "type": "cycling", "dist_km": 20.0, "dur_min": 60.0, "avg_hr": 130})
+    await repository.upsert_activity(session, U2, 333, {
+        "date": "2026-06-22", "type": "running", "dist_km": 3.0})
+    await session.commit()
+
+    lst = await repository.list_activities(session, U1, n=5)
+    assert [a["type"] for a in lst] == ["cycling", "running"]  # newest first, U1 only
+
+    rid = lst[0]["id"]
+    act = await repository.get_activity(session, U1, rid)
+    assert act is not None and act.user_id == U1
+    assert await repository.get_activity(session, U2, rid) is None  # not theirs
+
+
 async def test_state_is_per_user(session):
     await repository.set_state(session, U1, "morning_sent_date", "2026-06-22")
     await repository.set_state(session, U2, "morning_sent_date", "2026-06-21")
