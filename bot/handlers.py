@@ -175,6 +175,31 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    logger.info("CMD /plan")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        p = await repository.get_active_plan(session, user.id)
+        if p is None:
+            await update.message.reply_text(
+                "Немає активної програми. Створи її на сторінці /plan у вебі."
+            )
+            return
+        ws = await repository.list_workouts(session, p.id, upcoming_only=True)
+    if not ws:
+        await update.message.reply_text(
+            f"🎯 {p.goal_label or p.goal}: майбутніх тренувань немає."
+        )
+        return
+    lines = [f"🎯 {p.goal_label or p.goal}", ""]
+    for w in ws[:10]:
+        dist = f" · {w.dist_km:.1f} км" if w.dist_km else ""
+        lines.append(f"{w.date}  {w.type}{dist}\n  {w.description}")
+    await update.message.reply_text("\n".join(lines))
+
+
 # ---------- TEST JOB ----------
 
 async def test_job(ctx: ContextTypes.DEFAULT_TYPE):

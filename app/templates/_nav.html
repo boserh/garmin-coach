@@ -9,6 +9,7 @@
 </style>
 <nav class="topnav">
   <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
+  <a href="/plan"{% if active == 'plan' %} class="active"{% endif %}>Програма</a>
   <a href="/settings"{% if active == 'settings' %} class="active"{% endif %}>Налаштування</a>
   <a href="/info"{% if active == 'info' %} class="active"{% endif %}>Інфо</a>
   {% if user and user.is_admin %}
