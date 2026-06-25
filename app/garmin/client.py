@@ -182,6 +182,49 @@ def fetch_exercise_summary(activity_id) -> dict:
     return {"active_sets": raw["active_sets"], "sets": named}
 
 
+SERIES_TTL_S = 365 * 24 * 3600   # a completed run's per-point series is immutable
+
+
+def fetch_activity_series(activity_id, max_points: int = 150) -> list:
+    """Per-point pace + HR series for a run, for the detail-page chart.
+
+    Reads Garmin's ``/details`` metrics, locates the speed / HR / distance columns
+    by descriptor key (indices vary), converts m/s → min/km, and downsamples to
+    ``max_points``. Returns ``[{"d": dist_km, "p": pace_min_km, "hr": bpm}, ...]``
+    (None where a point lacks the value). Immutable → disk-cached like exercises."""
+    key = f"series:v1:{activity_id}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    d = _safe(
+        _api, f"/activity-service/activity/{activity_id}/details",
+        params={"maxChartSize": max_points},
+    )
+    if not isinstance(d, dict) or "_error" in d:
+        return []  # transient error — don't cache
+    idx = {x.get("key"): x.get("metricsIndex") for x in (_g(d, "metricDescriptors") or [])}
+    i_speed = idx.get("directSpeed")
+    i_hr = idx.get("directHeartRate")
+    i_dist = idx.get("sumDistance")
+    pts = _g(d, "activityDetailMetrics") or []
+    step = max(1, len(pts) // max_points)  # downsample if Garmin returned more
+
+    def val(metrics, i):
+        return metrics[i] if i is not None and i < len(metrics) else None
+
+    series = []
+    for p in pts[::step]:
+        m = p.get("metrics") or []
+        speed, hr, dist = val(m, i_speed), val(m, i_hr), val(m, i_dist)
+        series.append({
+            "d": round(dist / 1000.0, 2) if dist is not None else None,
+            "p": round((1000.0 / speed) / 60.0, 2) if speed and speed > 0 else None,
+            "hr": int(hr) if hr is not None else None,
+        })
+    _cache_put(key, series, SERIES_TTL_S)
+    return series
+
+
 def fetch_workout_detail(workout_id) -> dict:
     """Structure of a planned workout: name, coach description (Runna's free-text
     guidance, e.g. 'no faster than 7:15/km, a limit not a target'), and steps with
