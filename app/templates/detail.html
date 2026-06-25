@@ -25,6 +25,10 @@
     .tip { position: absolute; top: .2rem; transform: translateX(-50%); display: none;
            pointer-events: none; background: #1a1e27; border: 1px solid #2a2f3a;
            border-radius: 6px; padding: .1rem .45rem; font-size: .78rem; white-space: nowrap; }
+    .analysis { max-width: 60rem; margin: 0 0 1.5rem; padding: 1rem 1.2rem; border-radius: 10px;
+                border: 1px solid #2a2f3a; background: #14171f; }
+    .analysis h2 { font-size: 1rem; margin: 0 0 .5rem; color: #9aa4b2; font-weight: 600; }
+    .analysis pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -33,6 +37,12 @@
   {% include "_nav.html" %}
   {% set qf = '?token=' ~ token if token else '' %}
   <div class="bar"><a href="{{ base }}/{{ table }}{{ qf }}">← {{ table }}</a></div>
+  {% if analysis %}
+    <div class="analysis">
+      <h2>💬 Аналіз</h2>
+      <pre>{{ analysis }}</pre>
+    </div>
+  {% endif %}
   {% if charts %}
     <div class="charts">
       {% for c in charts %}

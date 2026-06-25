@@ -16,7 +16,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
-from app.analysis.prompts import SYSTEM, SYSTEM_ASK
+from app.analysis.prompts import SYSTEM, SYSTEM_ACTIVITY, SYSTEM_ASK
 from app.core.config import settings
 from app.garmin.schemas import Payload
 
@@ -30,6 +30,7 @@ PRICES = {
 MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-4-6"   # follow-up Q&A: cheap, grounded in recent reports
+MODEL_ACTIVITY = "claude-sonnet-4-6"   # single-activity analysis (/activity)
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
@@ -110,6 +111,25 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
 
 class AnalystError(Exception):
     """User-facing analysis error (its text is shown in Telegram / the API)."""
+
+
+def _status_error(e) -> "AnalystError":
+    """Map an Anthropic APIStatusError to a user-facing AnalystError."""
+    status = getattr(e, "status_code", None)
+    body = str(getattr(e, "message", e)).lower()
+    if status == 400 and "credit balance is too low" in body:
+        return AnalystError(
+            "❗️ Закінчились кредити Anthropic API.\n"
+            "Поповни баланс на console.anthropic.com → Billing і повтори запит."
+        )
+    if status == 429:
+        return AnalystError("⏳ Ліміт запитів перевищено. Спробуй за хвилину.")
+    if status == 401:
+        return AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")
+    if status == 529:
+        return AnalystError("🛠 Сервіс Anthropic тимчасово перевантажений. Спробуй пізніше.")
+    logger.error(f"CLAUDE ERR {status}: {body[:150]}")
+    return AnalystError(f"Помилка API ({status}): {body[:200]}")
 
 
 @dataclass
@@ -340,6 +360,123 @@ async def run_ask(
         cached=stats.cached,
         question=question,
         report_text=text,
+    )
+    return text
+
+
+# ---------- SINGLE ACTIVITY ANALYSIS ----------
+
+def _segments(series: list, n: int = 6) -> list:
+    """Collapse a run's per-point series into ~n segments (avg pace + HR each) so the
+    LLM sees pacing and HR drift without the full point cloud."""
+    pts = [p for p in series if p.get("p") is not None or p.get("hr") is not None]
+    if not pts:
+        return []
+    size = max(1, len(pts) // n)
+    segs = []
+    for i in range(0, len(pts), size):
+        chunk = pts[i:i + size]
+        paces = [c["p"] for c in chunk if c.get("p") is not None]
+        hrs = [c["hr"] for c in chunk if c.get("hr") is not None]
+        ds = [c["d"] for c in chunk if c.get("d") is not None]
+        segs.append({
+            "from_km": round(ds[0], 2) if ds else None,
+            "to_km": round(ds[-1], 2) if ds else None,
+            "avg_pace": round(sum(paces) / len(paces), 2) if paces else None,
+            "avg_hr": round(sum(hrs) / len(hrs)) if hrs else None,
+        })
+    return segs
+
+
+def activity_payload(activity) -> dict:
+    """Compact LLM input for one ActivityRecord — summary fields plus run segments."""
+    data = {
+        "type": activity.type, "date": activity.date,
+        "dur_min": activity.dur_min, "dist_km": activity.dist_km,
+        "avg_hr": activity.avg_hr, "max_hr": activity.max_hr, "load": activity.load,
+    }
+    if activity.exercises:
+        data["exercises"] = activity.exercises
+    if activity.series:
+        data["segments"] = _segments(activity.series)
+        if activity.dist_km and activity.dur_min:
+            data["avg_pace"] = round(activity.dur_min / activity.dist_km, 2)
+    return data
+
+
+def _activity_cache_key(data: dict, model: str) -> str:
+    blob = json.dumps({"activity": data, "model": model, "act": True},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def analyze_activity_with_stats(
+    activity_data: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Analyze one activity. Returns (text, stats); raises AnalystError on API failure.
+    Shares the dedup cache (keyed on the activity payload + model)."""
+    model = MODEL_ACTIVITY
+    key = _activity_cache_key(activity_data, model)
+    cached = _cache.get(key)
+    if cached and cached[1] > _time.time():
+        logger.info(f"CLAUDE CACHE HIT  {model} (activity)")
+        return cached[0], CallStats(kind="activity", model=model, cached=True)
+
+    user_content = {"today": dt.date.today().isoformat(), "activity": activity_data}
+    try:
+        from anthropic import APIConnectionError, APIStatusError
+
+        msg = _get_client(api_key).messages.create(
+            model=model, max_tokens=1000, system=SYSTEM_ACTIVITY,
+            messages=[{"role": "user",
+                       "content": json.dumps(user_content, ensure_ascii=False)}],
+        )
+        stats = CallStats(kind="activity", model=model)
+        usage = getattr(msg, "usage", None)
+        if usage:
+            pin, pout = PRICES.get(model, (0, 0))
+            stats.input_tokens = usage.input_tokens
+            stats.output_tokens = usage.output_tokens
+            stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
+            logger.info(
+                f"CLAUDE OK  {model} (activity)  in={usage.input_tokens} "
+                f"out={usage.output_tokens} ~${stats.cost_usd:.4f}"
+            )
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        _cache[key] = (text, _time.time() + CACHE_TTL_S)
+        _save_cache()
+        return text, stats
+    except APIStatusError as e:
+        raise _status_error(e)
+    except APIConnectionError:
+        raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
+
+
+async def run_activity_analysis(
+    session, activity, *, user_id: Optional[int] = None, api_key: Optional[str] = None
+) -> str:
+    """Analyze one activity, store the text on the row (``analysis``) for the web detail
+    page, log a ReportLog (kind="activity"), and return the text."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    data = activity_payload(activity)
+    q = f"activity #{activity.id} ({activity.type})"
+    try:
+        text, stats = await run_in_threadpool(analyze_activity_with_stats, data, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, ok=False,
+            question=q, error=str(e)[:512],
+        )
+        raise
+    activity.analysis = text
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=q, report_text=text,
     )
     return text
 
