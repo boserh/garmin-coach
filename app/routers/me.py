@@ -115,10 +115,11 @@ async def me_row(
         raise HTTPException(status_code=404, detail="Row not found")  # not yours / missing
 
     fields = [(c.name, getattr(obj, c.name))
-              for c in model.__table__.columns if c.name != "series"]
+              for c in model.__table__.columns if c.name not in ("series", "analysis")]
     charts, first_x, last_x = _run_charts(getattr(obj, "series", None) or [])
     return templates.TemplateResponse(
         request, "detail.html",
         {"table": table, "fields": fields, "user": user, "base": "/me", "token": "",
-         "charts": charts, "first_x": first_x, "last_x": last_x},
+         "charts": charts, "first_x": first_x, "last_x": last_x,
+         "analysis": getattr(obj, "analysis", None)},
     )

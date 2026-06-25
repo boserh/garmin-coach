@@ -31,6 +31,8 @@ async def _post_init(application: Application) -> None:
         BotCommand("report", "Звіт відновлення за 7 днів"),
         BotCommand("ask", "Питання за останніми звітами, напр. /ask чи бігти завтра"),
         BotCommand("deep", "Глибокий аналіз (Opus), напр. /deep вплив вело на HRV"),
+        BotCommand("activities", "Останні активності"),
+        BotCommand("activity", "Розбір активності, напр. /activity 5"),
     ])
 
 
@@ -47,6 +49,8 @@ def main() -> None:
     app.add_handler(CommandHandler("report", handlers.report))
     app.add_handler(CommandHandler("ask", handlers.ask))
     app.add_handler(CommandHandler("deep", handlers.deep))
+    app.add_handler(CommandHandler("activities", handlers.activities))
+    app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("test_on", handlers.test_on))
     app.add_handler(CommandHandler("test_off", handlers.test_off))
     app.add_error_handler(handlers.on_error)

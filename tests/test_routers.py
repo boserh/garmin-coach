@@ -149,6 +149,30 @@ def test_activities_minimal_index_and_run_chart(auth_client):
     assert "mousemove" in detail
 
 
+def test_activity_analysis_shown_on_detail(auth_client):
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.upsert_activity(s, uid, 777, {
+                "date": "2026-06-23", "type": "running", "dist_km": 5.0})
+            act = await repository.get_activity(
+                s, uid, (await repository.list_activities(s, uid, 1))[0]["id"])
+            act.analysis = "🏃 Рівний легкий біг, пульс у нормі."
+            await s.commit()
+            return act.id
+
+    rid = anyio.run(seed)
+    detail = auth_client.get(f"/ui/activities/{rid}").text
+    assert "Аналіз" in detail
+    assert "Рівний легкий біг" in detail
+    # the raw analysis column is not also dumped as a plain field row
+    assert "<th>analysis</th>" not in detail
+
+
 def test_logout_clears_session(auth_client):
     assert auth_client.get("/ui", follow_redirects=False).status_code == 200
     auth_client.get("/logout")
