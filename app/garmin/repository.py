@@ -50,6 +50,35 @@ async def read_daily_metrics(
     return {m.date: _to_summary(m) for m in rows}
 
 
+async def list_activities(session: AsyncSession, user_id: int, n: int = 5) -> List[dict]:
+    """This user's most recent activities (newest first) as compact dicts for the
+    bot's ``/activities`` list — keyed by the short DB ``id`` the user references."""
+    rows = (
+        await session.execute(
+            select(ActivityRecord)
+            .where(ActivityRecord.user_id == user_id)
+            .order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
+            .limit(n)
+        )
+    ).scalars().all()
+    return [
+        {"id": a.id, "date": a.date, "type": a.type, "dist_km": a.dist_km,
+         "dur_min": a.dur_min, "avg_hr": a.avg_hr}
+        for a in rows
+    ]
+
+
+async def get_activity(session: AsyncSession, user_id: int, row_id: int):
+    """One activity by its DB id, scoped to the user (None if missing / not theirs)."""
+    return (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.id == row_id, ActivityRecord.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> List[dict]:
     """Recovery trends over the last ``days`` days for this user, oldest first."""
     cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()

@@ -12,11 +12,16 @@ from telegram import Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
-from app.analysis.service import AnalystError, run_analysis, run_ask
+from app.analysis.service import (
+    AnalystError,
+    run_activity_analysis,
+    run_analysis,
+    run_ask,
+)
 from app.db import users
 from app.db.base import async_session_maker
 from app.db.models import User
-from app.garmin import service
+from app.garmin import repository, service
 from app.garmin.runtime import user_runtime
 
 logger = logging.getLogger("bot")
@@ -109,6 +114,60 @@ async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 text = await run_ask(
                     session, question, user_id=user.id, api_key=creds.anthropic_key
+                )
+            except AnalystError as e:
+                logger.error(f"ANALYST {e}")
+                text = str(e)
+    await update.message.reply_text(text)
+
+
+async def activities(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    logger.info("CMD /activities")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        rows = await repository.list_activities(session, user.id, n=5)
+    if not rows:
+        await update.message.reply_text(
+            "Немає збережених активностей. Зроби /report, щоб синканути дані."
+        )
+        return
+    lines = ["Останні активності:"]
+    for a in rows:
+        parts = [a["type"] or "активність"]
+        if a["dist_km"]:
+            parts.append(f"{a['dist_km']:.1f} км")
+        if a["dur_min"]:
+            parts.append(f"{a['dur_min']:.0f} хв")
+        if a["avg_hr"]:
+            parts.append(f"♥{a['avg_hr']}")
+        lines.append(f"#{a['id']}  {a['date']}  {' · '.join(parts)}")
+    lines.append("\nРозбір: /activity <id>")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text(
+            "Вкажи id активності, напр.: /activity 5  (список — /activities)"
+        )
+        return
+    row_id = int(ctx.args[0])
+    logger.info(f"CMD /activity {row_id}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        act = await repository.get_activity(session, user.id, row_id)
+        if act is None:
+            await update.message.reply_text(f"Активність #{row_id} не знайдено.")
+            return
+        await update.message.reply_text("Аналізую активність...")
+        async with user_runtime(session, user) as creds:
+            try:
+                text = await run_activity_analysis(
+                    session, act, user_id=user.id, api_key=creds.anthropic_key
                 )
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")

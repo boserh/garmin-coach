@@ -31,6 +31,8 @@ See `CLAUDE.md` for the full module map and design notes.
 * Follow-up questions (`/ask`) answered against your recent reports, with the last few
   minutes' `/ask` thread carried as conversation context so you can refine a question
 * Deep analysis mode using a larger Claude model
+* Per-activity analysis (`/activities` to list, `/activity <id>` to analyze pace, HR and
+  effort); the writeup is saved and shown on the activity's web detail page
 * Aggressive data aggregation to minimize token usage and API cost
 * Response caching to avoid duplicate Claude API calls
 * Web API (FastAPI) for reports, status, and history trends
@@ -48,7 +50,7 @@ app/                 shared core + web layer
   routers/           /health, /status, /report.json, /deep, /history
   main.py            FastAPI app factory (create_app)
 bot/                 Telegram front-end
-  handlers.py        /report, /ask, /deep, /test_on, /test_off
+  handlers.py        /report, /ask, /deep, /activities, /activity, /test_on, /test_off
   jobs.py            morning_job
   main.py            entrypoint (python -m bot.main)
 alembic/             database migrations
@@ -336,7 +338,7 @@ A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are
 Day-level caching, history, and cost tracking moved into the database:
 
 * `DailyMetric` — one row per day; past days are served from here instead of Garmin (today is always refetched). Doubles as the trend source for `/history`.
-* `ActivityRecord` — one row per activity (idempotent on `activity_id`); runs also store a downsampled pace/HR `series` rendered as charts on the activity detail page.
+* `ActivityRecord` — one row per activity (idempotent on `activity_id`); runs also store a downsampled pace/HR `series` rendered as charts on the activity detail page, plus an optional `analysis` (Claude's `/activity` writeup).
 * `ReportLog` — one row per Claude call (tokens, cost, ok/error, the asked `question` and the delivered `report_text`).
 * `BotState` — key/value, including the morning-report-sent date (replaces `state.json`).
 
