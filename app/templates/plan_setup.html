@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Програма тренувань</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-weight: 600; font-size: 1.4rem; }
+    form { max-width: 32rem; }
+    label { display: block; color: #9aa4b2; font-size: .85rem; margin: 1.1rem 0 .25rem; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: .55rem .7rem;
+      border-radius: 8px; border: 1px solid #2a2f3a; background: #14171f; color: #e6e6e6; font-size: 1rem; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #6cb6ff; }
+    .hint { color: #6b7280; font-size: .78rem; margin-top: .25rem; }
+    button { margin-top: 1.6rem; padding: .6rem 1.4rem; border: 0; border-radius: 8px;
+      background: #6cb6ff; color: #0f1115; font-weight: 700; font-size: 1rem; cursor: pointer; }
+    .intro { max-width: 32rem; margin: 1rem 0 1.5rem; color: #9aa4b2; line-height: 1.5; }
+    .err { color: #ff7b72; margin: 1rem 0; max-width: 32rem; }
+  </style>
+</head>
+<body>
+  {% set active = 'plan' %}
+  {% include "_nav.html" %}
+  <h1>Програма тренувань</h1>
+  <div class="intro">Обери ціль і відповідай на кілька питань — складу персональну програму
+    бігу під твій рівень і відновлення. Потім зможеш коригувати її вільним текстом у боті
+    (напр. «додай легкий біг сьогодні»).</div>
+  {% if error == 'gen' %}<div class="err">Не вдалось згенерувати план. Спробуй ще раз.</div>
+  {% elif error == 'goal' %}<div class="err">Обери коректну ціль.</div>{% endif %}
+
+  <form method="post" action="/plan">
+    <label for="goal">Ціль</label>
+    <select id="goal" name="goal">
+      {% for slug, label in goals.items() %}<option value="{{ slug }}">{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="target_date">Цільова дата (необовʼязково)</label>
+    <input id="target_date" name="target_date" type="date" min="{{ today }}">
+    <div class="hint">Дата забігу/цілі. Якщо порожньо — підберу розумний термін.</div>
+
+    <label for="days_per_week">Днів бігу на тиждень</label>
+    <input id="days_per_week" name="days_per_week" type="number" min="2" max="6" value="3">
+
+    <label for="intensity">Інтенсивність прогресії</label>
+    <select id="intensity" name="intensity">
+      <option value="easy">Легка (обережно)</option>
+      <option value="moderate" selected>Помірна</option>
+      <option value="hard">Агресивна</option>
+    </select>
+
+    <label for="recent_5k">Нещодавній час на 5 км (необовʼязково)</label>
+    <input id="recent_5k" name="recent_5k" type="text" placeholder="напр. 30:00 або «не бігав»">
+
+    <label for="longest_run_km">Найдовша нещодавня пробіжка, км (необовʼязково)</label>
+    <input id="longest_run_km" name="longest_run_km" type="text" placeholder="напр. 6">
+
+    <label for="notes">Нотатки (необовʼязково)</label>
+    <textarea id="notes" name="notes" rows="3" placeholder="травми, обмеження, дні які зайняті тощо"></textarea>
+
+    <button type="submit">Скласти програму</button>
+  </form>
+</body>
+</html>

@@ -33,6 +33,8 @@ See `CLAUDE.md` for the full module map and design notes.
 * Deep analysis mode using a larger Claude model
 * Per-activity analysis (`/activities` to list, `/activity <id>` to analyze pace, HR and
   effort); the writeup is saved and shown on the activity's web detail page
+* Training plans: pick a goal on the web (`/plan`) and get a generated dated program;
+  adjust it in plain language in the bot (`/plan додай легкий біг сьогодні`) with a confirm step
 * Aggressive data aggregation to minimize token usage and API cost
 * Response caching to avoid duplicate Claude API calls
 * Web API (FastAPI) for reports, status, and history trends
@@ -50,7 +52,7 @@ app/                 shared core + web layer
   routers/           /health, /status, /report.json, /deep, /history
   main.py            FastAPI app factory (create_app)
 bot/                 Telegram front-end
-  handlers.py        /report, /ask, /deep, /activities, /activity, /test_on, /test_off
+  handlers.py        /report, /ask, /deep, /activities, /activity, /plan, /test_on, /test_off
   jobs.py            morning_job
   main.py            entrypoint (python -m bot.main)
 alembic/             database migrations
@@ -181,6 +183,7 @@ first `alembic upgrade head`.
 * `GET /report.json` — daily report (Sonnet), login required
 * `GET /deep?q=...` — deep analysis (Opus), login required
 * `GET /history?days=N` — HRV/sleep/stress trend from the DB, login required
+* `GET/POST /plan` — training-plan setup form / generated plan view, login required
 * `GET /settings` — manage your own Garmin/Claude/Telegram credentials + password
 * `GET /me` — browse your own metrics / activities / reports (per-user, with charts)
 * `GET /admin/users` — list/create/approve/activate/delete users (admin only)
@@ -341,6 +344,7 @@ Day-level caching, history, and cost tracking moved into the database:
 * `ActivityRecord` — one row per activity (idempotent on `activity_id`); runs also store a downsampled pace/HR `series` rendered as charts on the activity detail page, plus an optional `analysis` (Claude's `/activity` writeup).
 * `ReportLog` — one row per Claude call (tokens, cost, ok/error, the asked `question` and the delivered `report_text`).
 * `BotState` — key/value, including the morning-report-sent date (replaces `state.json`).
+* `TrainingPlan` + `PlannedWorkout` — a generated training program (one active per user) and its dated sessions; created from `/plan`, adjusted via the bot.
 
 Backend is set by `DATABASE_URL`: SQLite (zero-config) by default, Postgres by env
 var alone. Schema is managed with Alembic (`alembic upgrade head`).

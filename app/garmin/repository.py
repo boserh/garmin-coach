@@ -11,7 +11,14 @@ from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog
+from app.db.models import (
+    ActivityRecord,
+    BotState,
+    DailyMetric,
+    PlannedWorkout,
+    ReportLog,
+    TrainingPlan,
+)
 from app.garmin.schemas import DailySummary, Payload
 
 _DAILY_FIELDS = (
@@ -280,3 +287,122 @@ async def set_state(session: AsyncSession, user_id: int, key: str, value: str) -
     else:
         session.add(BotState(user_id=user_id, key=key, value=value))
     await session.commit()
+
+
+# ---------- TRAINING PLAN ----------
+
+async def get_active_plan(session: AsyncSession, user_id: int):
+    """This user's current active TrainingPlan, or None."""
+    return (
+        await session.execute(
+            select(TrainingPlan)
+            .where(TrainingPlan.user_id == user_id, TrainingPlan.status == "active")
+            .order_by(TrainingPlan.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def list_workouts(
+    session: AsyncSession, plan_id: int, *, upcoming_only: bool = False
+) -> List[PlannedWorkout]:
+    """Workouts of a plan, oldest first. ``upcoming_only`` keeps today+ planned ones."""
+    stmt = select(PlannedWorkout).where(PlannedWorkout.plan_id == plan_id)
+    if upcoming_only:
+        stmt = stmt.where(
+            PlannedWorkout.date >= dt.date.today().isoformat(),
+            PlannedWorkout.status == "planned",
+        )
+    return (await session.execute(stmt.order_by(PlannedWorkout.date))).scalars().all()
+
+
+async def create_plan(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    goal: str,
+    goal_label: Optional[str],
+    target_date: Optional[str],
+    start_date: Optional[str],
+    days_per_week: Optional[int],
+    intensity: Optional[str],
+    intake: Optional[dict],
+    summary: Optional[str],
+    workouts: list,
+) -> TrainingPlan:
+    """Create a new active plan (archiving any prior active one) and its workouts.
+    ``workouts`` is a list of ``PlanWorkout`` (or anything with the same attrs)."""
+    prior = (
+        await session.execute(
+            select(TrainingPlan).where(
+                TrainingPlan.user_id == user_id, TrainingPlan.status == "active"
+            )
+        )
+    ).scalars().all()
+    for p in prior:
+        p.status = "archived"
+
+    plan = TrainingPlan(
+        user_id=user_id, goal=goal, goal_label=goal_label, target_date=target_date,
+        start_date=start_date, days_per_week=days_per_week, intensity=intensity,
+        intake=intake, summary=summary, status="active",
+    )
+    session.add(plan)
+    await session.flush()  # assign plan.id
+    for w in workouts:
+        session.add(PlannedWorkout(
+            plan_id=plan.id, user_id=user_id, date=w.date, week=w.week,
+            type=w.type, dist_km=w.dist_km, description=w.description, status="planned",
+        ))
+    await session.commit()
+    return plan
+
+
+async def archive_plan(session: AsyncSession, plan: TrainingPlan) -> None:
+    plan.status = "archived"
+    await session.commit()
+
+
+async def _workout_on(session: AsyncSession, plan_id: int, date: str):
+    return (
+        await session.execute(
+            select(PlannedWorkout)
+            .where(PlannedWorkout.plan_id == plan_id, PlannedWorkout.date == date)
+            .order_by(PlannedWorkout.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def apply_plan_ops(session: AsyncSession, plan: TrainingPlan, ops: list) -> int:
+    """Apply edit operations (``PlanOp``-like objects) to a plan's workouts. Returns the
+    number applied. ``move``/``modify``/``skip`` target the workout on ``op.date``."""
+    applied = 0
+    for op in ops:
+        if op.action == "add":
+            session.add(PlannedWorkout(
+                plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
+                type=op.type or "easy", dist_km=op.dist_km,
+                description=op.description or "", status="planned",
+            ))
+            applied += 1
+            continue
+        w = await _workout_on(session, plan.id, op.date)
+        if w is None:
+            continue
+        if op.action == "skip":
+            w.status = "skipped"
+            applied += 1
+        elif op.action == "move" and op.to_date:
+            w.date = op.to_date
+            applied += 1
+        elif op.action == "modify":
+            if op.type is not None:
+                w.type = op.type
+            if op.dist_km is not None:
+                w.dist_km = op.dist_km
+            if op.description is not None:
+                w.description = op.description
+            applied += 1
+    await session.commit()
+    return applied
