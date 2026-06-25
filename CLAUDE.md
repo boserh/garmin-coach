@@ -272,8 +272,11 @@ neutral). Unknown codes are logged once (`EXERCISE unmapped: <CODE>`). Warm-up j
 vary), converts m/s→min/km, downsamples to ~150 points, and stores them on
 `ActivityRecord.series`. The `/ui` and `/me` browsers show a **minimal column set** on the
 activities list (`admin.INDEX_COLS`) and render `series` as **pace + HR sparklines** on the
-per-row detail page (`admin._run_charts`, reusing the `_series` SVG scaler) — the detail
-routes stay pure DB reads (no Garmin call). Non-run activities have `series = null`.
+per-row detail page (`admin._run_series`/`_run_charts`) — the detail routes stay pure DB
+reads (no Garmin call). Non-run activities have `series = null`. The detail charts also
+carry per-point data (`s.pts`: x-fraction + raw value + distance) and a small inline
+vanilla-JS hover handler in `detail.html` that shows the value (pace as m:ss, HR in уд)
+and distance on mousemove — progressive enhancement; the SVG still renders without JS.
 
 ## Caching layers
 
