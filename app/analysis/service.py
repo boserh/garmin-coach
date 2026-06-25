@@ -16,9 +16,9 @@ import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
-from app.analysis.prompts import SYSTEM, SYSTEM_ACTIVITY, SYSTEM_ASK
+from app.analysis.prompts import SYSTEM, SYSTEM_ACTIVITY, SYSTEM_ASK, SYSTEM_PLAN
 from app.core.config import settings
-from app.garmin.schemas import Payload
+from app.garmin.schemas import GeneratedPlan, Payload
 
 logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -31,6 +31,7 @@ MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-4-6"   # follow-up Q&A: cheap, grounded in recent reports
 MODEL_ACTIVITY = "claude-sonnet-4-6"   # single-activity analysis (/activity)
+MODEL_PLAN = "claude-sonnet-4-6"       # training-plan generation
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
@@ -536,3 +537,113 @@ async def run_analysis(
         report_text=text,
     )
     return text
+
+
+# ---------- TRAINING PLAN GENERATION ----------
+
+def _complete(model: str, system: str, user_content: dict, kind: str,
+              api_key: Optional[str], max_tokens: int = 1200) -> Tuple[str, CallStats]:
+    """One Claude completion → (text, stats). Centralises usage accounting + error
+    mapping (used by the plan calls; the older report calls keep their inline copies)."""
+    from anthropic import APIConnectionError, APIStatusError
+
+    try:
+        msg = _get_client(api_key).messages.create(
+            model=model, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user",
+                       "content": json.dumps(user_content, ensure_ascii=False)}],
+        )
+        stats = CallStats(kind=kind, model=model)
+        usage = getattr(msg, "usage", None)
+        if usage:
+            pin, pout = PRICES.get(model, (0, 0))
+            stats.input_tokens = usage.input_tokens
+            stats.output_tokens = usage.output_tokens
+            stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
+            logger.info(
+                f"CLAUDE OK  {model} ({kind})  in={usage.input_tokens} "
+                f"out={usage.output_tokens} ~${stats.cost_usd:.4f}"
+            )
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        return text, stats
+    except APIStatusError as e:
+        raise _status_error(e)
+    except APIConnectionError:
+        raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
+
+
+def _coerce_plan(text: str) -> GeneratedPlan:
+    """Parse Claude's reply into a GeneratedPlan, tolerating ``` fences / surrounding
+    prose by slicing to the outermost {...}."""
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    return GeneratedPlan(**json.loads(s))
+
+
+def generate_plan_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[GeneratedPlan, CallStats]:
+    """Generate a structured training plan. Returns (GeneratedPlan, stats); one retry
+    with a stricter JSON nudge before giving up. Raises AnalystError on API/parse failure.
+    Not dedup-cached — dates are relative to today, so every generation is fresh."""
+    model = MODEL_PLAN
+    text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=4096)
+    try:
+        return _coerce_plan(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(model, SYSTEM_PLAN, retry, "plan", api_key, max_tokens=4096)
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_plan(text), stats
+        except Exception as e:
+            logger.error(f"PLAN parse failed: {e}")
+            raise AnalystError(
+                "Не вдалось згенерувати план (некоректна відповідь). Спробуй ще раз."
+            )
+
+
+async def run_plan_generation(
+    session, *, user_id: int, goal: str, goal_label: Optional[str],
+    target_date: Optional[str], start_date: Optional[str], days_per_week: Optional[int],
+    intensity: Optional[str], intake: Optional[dict], api_key: Optional[str] = None,
+):
+    """Build context, generate the plan, persist it (archiving any active plan), log a
+    ReportLog(kind="plan"), and return the new TrainingPlan."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
+                   if "run" in (a.get("type") or "")]
+    recovery = await repository.read_history(session, user_id, days=30)
+    context = {
+        "today": dt.date.today().isoformat(),
+        "goal": goal, "start_date": start_date, "target_date": target_date,
+        "days_per_week": days_per_week, "intensity": intensity, "intake": intake,
+        "recent_runs": recent_runs, "recovery": recovery[-14:],
+    }
+    try:
+        plan_out, stats = await run_in_threadpool(generate_plan_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="plan", model=MODEL_PLAN, ok=False,
+            question=goal, error=str(e)[:512],
+        )
+        raise
+    plan = await repository.create_plan(
+        session, user_id, goal=goal, goal_label=goal_label, target_date=target_date,
+        start_date=start_date, days_per_week=days_per_week, intensity=intensity,
+        intake=intake, summary=plan_out.summary, workouts=plan_out.workouts,
+    )
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"plan: {goal}", report_text=plan_out.summary,
+    )
+    return plan

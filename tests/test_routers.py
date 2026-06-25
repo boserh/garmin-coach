@@ -291,6 +291,40 @@ def _report_id(user_id):
     return anyio.run(get)
 
 
+def test_plan_requires_login(client):
+    assert client.get("/plan", follow_redirects=False).status_code == 303
+
+
+def test_plan_setup_then_view(auth_client):
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+    from app.routers import plan as plan_router
+
+    # no active plan → the setup form
+    assert "Скласти програму" in auth_client.get("/plan").text
+
+    async def fake_gen(session, **kw):
+        return await repository.create_plan(
+            session, kw["user_id"], goal=kw["goal"], goal_label=kw["goal_label"],
+            target_date=kw["target_date"], start_date=kw["start_date"],
+            days_per_week=kw["days_per_week"], intensity=kw["intensity"],
+            intake=kw["intake"], summary="тестовий підхід",
+            workouts=[PlanWorkout(date="2026-07-01", week=1, type="easy",
+                                  dist_km=4.0, description="легкий біг")],
+        )
+
+    with patch.object(plan_router, "run_plan_generation", fake_gen):
+        r = auth_client.post(
+            "/plan",
+            data={"goal": "first_5k", "days_per_week": "3", "intensity": "moderate"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303 and r.headers["location"] == "/plan"
+
+    view = auth_client.get("/plan").text
+    assert "Перші 5 км" in view and "тестовий підхід" in view and "легкий біг" in view
+
+
 def test_info_requires_login(client):
     assert client.get("/info", follow_redirects=False).status_code == 303
 

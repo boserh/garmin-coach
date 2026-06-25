@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Програма тренувань</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-weight: 600; font-size: 1.4rem; }
+    .wrap { max-width: 48rem; }
+    .summary { margin: 1rem 0 1.5rem; padding: 1rem 1.2rem; border-radius: 10px;
+               border: 1px solid #2a2f3a; background: #14171f; line-height: 1.5; }
+    .meta { color: #9aa4b2; font-size: .9rem; }
+    .week { margin: 1.4rem 0 .4rem; color: #9aa4b2; font-weight: 600; font-size: .95rem;
+            border-bottom: 1px solid #2a2f3a; padding-bottom: .3rem; }
+    .wk { display: flex; gap: .8rem; padding: .5rem 0; border-bottom: 1px solid #1a1e27; }
+    .wk .d { width: 7rem; color: #9aa4b2; flex: none; font-size: .9rem; }
+    .wk .t { width: 5.5rem; flex: none; font-weight: 600; }
+    .wk .desc { flex: 1; }
+    .wk.today { background: #14171f; border-radius: 6px; }
+    .wk.done .desc { color: #7ee787; }
+    .wk.skipped .desc { color: #8b949e; text-decoration: line-through; }
+    .badge { display: inline-block; font-size: .72rem; padding: .05rem .4rem; border-radius: 5px;
+             background: #1f2733; color: #6cb6ff; }
+    .rest { color: #8b949e; }
+    form.inline { display: inline; }
+    button.arch { margin-top: 1.5rem; padding: .4rem 1rem; border: 0; border-radius: 8px;
+      background: #3a2326; color: #ff7b72; font-size: .85rem; cursor: pointer; }
+    .tip { color: #6b7280; font-size: .82rem; margin-top: 1.2rem; }
+  </style>
+</head>
+<body>
+  {% set active = 'plan' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <h1>{{ plan.goal_label or plan.goal }}</h1>
+    <div class="meta">
+      {{ plan.start_date }}{% if plan.target_date %} → {{ plan.target_date }}{% endif %}
+      · {{ plan.days_per_week }} дн/тиж · {{ plan.intensity }}
+    </div>
+    {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
+
+    {% for week_no, items in weeks %}
+      <div class="week">Тиждень {{ week_no }}</div>
+      {% for w in items %}
+        <div class="wk {{ 'today' if w.date == today else '' }} {{ w.status }}">
+          <div class="d">{{ w.date }}</div>
+          <div class="t {{ 'rest' if w.type in ('rest','cross') else '' }}">{{ w.type }}</div>
+          <div class="desc">
+            {{ w.description }}
+            {% if w.dist_km %}<span class="badge">{{ '%.1f'|format(w.dist_km) }} км</span>{% endif %}
+            {% if w.status == 'done' %}<span class="badge">✓</span>
+            {% elif w.status == 'skipped' %}<span class="badge">пропущено</span>{% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    {% endfor %}
+
+    <div class="tip">Коригувати — у боті вільним текстом, напр.
+      <b>/plan додай легкий біг сьогодні</b> або <b>/plan перенеси суботнє на неділю</b>.</div>
+
+    <form class="inline" method="post" action="/plan/archive"
+          onsubmit="return confirm('Архівувати поточну програму і почати нову?');">
+      <button class="arch" type="submit">Архівувати / почати нову</button>
+    </form>
+  </div>
+</body>
+</html>

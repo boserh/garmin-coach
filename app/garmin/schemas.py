@@ -64,3 +64,24 @@ class Payload(BaseModel):
     daily: List[DailySummary]
     recent_activities: List[Activity]
     planned_runs: List[PlannedRun]
+
+
+class PlanWorkout(BaseModel):
+    """One dated session in a generated training plan (Claude's structured output)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    date: str                       # ISO YYYY-MM-DD
+    week: Optional[int] = None
+    type: str                       # easy / long / tempo / intervals / rest / cross
+    dist_km: Optional[float] = None
+    description: str
+
+
+class GeneratedPlan(BaseModel):
+    """The structured plan Claude returns: an approach summary + dated workouts."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str
+    workouts: List[PlanWorkout]
