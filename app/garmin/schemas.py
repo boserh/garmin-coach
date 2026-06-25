@@ -85,3 +85,27 @@ class GeneratedPlan(BaseModel):
 
     summary: str
     workouts: List[PlanWorkout]
+
+
+class PlanOp(BaseModel):
+    """One edit operation on a plan (Claude's structured output for a free-text tweak).
+    ``date`` targets an existing workout (or the new one for ``add``)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    action: str                     # add / move / modify / skip
+    date: str                       # target workout date (ISO); for `add`, the new date
+    to_date: Optional[str] = None   # `move` destination
+    week: Optional[int] = None
+    type: Optional[str] = None
+    dist_km: Optional[float] = None
+    description: Optional[str] = None
+
+
+class PlanEdit(BaseModel):
+    """Proposed changes to the active plan: a human-readable summary + operations."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str
+    operations: List[PlanOp]

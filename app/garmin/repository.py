@@ -361,3 +361,48 @@ async def create_plan(
 async def archive_plan(session: AsyncSession, plan: TrainingPlan) -> None:
     plan.status = "archived"
     await session.commit()
+
+
+async def _workout_on(session: AsyncSession, plan_id: int, date: str):
+    return (
+        await session.execute(
+            select(PlannedWorkout)
+            .where(PlannedWorkout.plan_id == plan_id, PlannedWorkout.date == date)
+            .order_by(PlannedWorkout.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def apply_plan_ops(session: AsyncSession, plan: TrainingPlan, ops: list) -> int:
+    """Apply edit operations (``PlanOp``-like objects) to a plan's workouts. Returns the
+    number applied. ``move``/``modify``/``skip`` target the workout on ``op.date``."""
+    applied = 0
+    for op in ops:
+        if op.action == "add":
+            session.add(PlannedWorkout(
+                plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
+                type=op.type or "easy", dist_km=op.dist_km,
+                description=op.description or "", status="planned",
+            ))
+            applied += 1
+            continue
+        w = await _workout_on(session, plan.id, op.date)
+        if w is None:
+            continue
+        if op.action == "skip":
+            w.status = "skipped"
+            applied += 1
+        elif op.action == "move" and op.to_date:
+            w.date = op.to_date
+            applied += 1
+        elif op.action == "modify":
+            if op.type is not None:
+                w.type = op.type
+            if op.dist_km is not None:
+                w.dist_km = op.dist_km
+            if op.description is not None:
+                w.description = op.description
+            applied += 1
+    await session.commit()
+    return applied
