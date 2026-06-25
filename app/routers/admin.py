@@ -84,20 +84,46 @@ async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
     return charts, (dates[0] if dates else ""), (dates[-1] if dates else "")
 
 
+def _run_series(values, dists):
+    """Like ``_series`` but also carries each point's raw value + distance (``pts``,
+    x as a 0..1 fraction) so the detail page can show them on hover."""
+    pairs = [(i, v) for i, v in enumerate(values) if v is not None]
+    if len(pairs) < 2:
+        return None
+    n = len(values)
+    ys = [v for _, v in pairs]
+    ymin, ymax = min(ys), max(ys)
+    span = (ymax - ymin) or 1.0
+
+    def px(i):
+        return _SVG_PAD + (i / (n - 1)) * (_SVG_W - 2 * _SVG_PAD)
+
+    def py(v):
+        return _SVG_H - _SVG_PAD - ((v - ymin) / span) * (_SVG_H - 2 * _SVG_PAD)
+
+    points = " ".join(f"{round(px(i), 1)},{round(py(v), 1)}" for i, v in pairs)
+    pts = [{"x": round(i / (n - 1), 4), "v": v,
+            "d": dists[i] if i < len(dists) else None} for i, v in pairs]
+    return {"points": points, "pts": pts, "ymin": ymin, "ymax": ymax,
+            "last": ys[-1], "W": _SVG_W, "H": _SVG_H}
+
+
 def _run_charts(series):
     """Pace + HR sparklines for a run's per-point series ([{d, p, hr}, ...]).
-    Returns (charts, first_km, last_km) for the activity detail page."""
+    Returns (charts, first_km, last_km) for the activity detail page. Each chart
+    carries a ``fmt`` hint (pace/hr) so the hover tooltip formats the value right."""
     if not series:
         return [], "", ""
+    dists = [p.get("d") for p in series]
     defs = [
-        ("Темп, хв/км", "#6cb6ff", [p.get("p") for p in series]),
-        ("Пульс", "#ff7b72", [p.get("hr") for p in series]),
+        ("Темп, хв/км", "#6cb6ff", "pace", [p.get("p") for p in series]),
+        ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in series]),
     ]
-    charts = [{"label": lbl, "color": c, "s": s}
-              for lbl, c, vals in defs if (s := _series(vals))]
-    dists = [p.get("d") for p in series if p.get("d") is not None]
-    first = f"{dists[0]:.1f} км" if dists else ""
-    last = f"{dists[-1]:.1f} км" if dists else ""
+    charts = [{"label": lbl, "color": c, "fmt": fmt, "s": s}
+              for lbl, c, fmt, vals in defs if (s := _run_series(vals, dists))]
+    valid = [d for d in dists if d is not None]
+    first = f"{valid[0]:.1f} км" if valid else ""
+    last = f"{valid[-1]:.1f} км" if valid else ""
     return charts, first, last
 
 
