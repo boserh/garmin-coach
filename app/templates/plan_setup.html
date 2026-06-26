@@ -44,7 +44,7 @@
     (напр. «додай легкий біг сьогодні»).</div>
   {% if error == 'gen' %}<div class="err">Не вдалось згенерувати план. Спробуй ще раз.</div>
   {% elif error == 'goal' %}<div class="err">Обери коректну ціль.</div>
-  {% elif error == 'days' %}<div class="err">Обери хоча б один день бігу.</div>{% endif %}
+  {% elif error == 'days' %}<div class="err">Обери щонайменше два дні бігу.</div>{% endif %}
 
   <div id="loading">
     <div class="row"><div class="spin"></div>
@@ -99,7 +99,37 @@
 
   <script>
     var f = document.getElementById('planform');
-    f.addEventListener('submit', function () {
+    var order = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    var labels = { mon: 'Пн', tue: 'Вт', wed: 'Ср', thu: 'Чт', fri: 'Пт', sat: 'Сб', sun: 'Нд' };
+    var longSel = document.getElementById('long_run_day');
+
+    function checkedDays() {
+      return order.filter(function (d) {
+        return f.querySelector('input[name=run_days][value=' + d + ']').checked;
+      });
+    }
+    // The long-run day can only be one of the chosen run days.
+    function refreshLong() {
+      var days = checkedDays(), prev = longSel.value;
+      longSel.innerHTML = '';
+      days.forEach(function (d) {
+        var o = document.createElement('option');
+        o.value = d; o.textContent = labels[d];
+        longSel.appendChild(o);
+      });
+      longSel.value = days.indexOf(prev) !== -1 ? prev : (days[days.length - 1] || '');
+    }
+    f.querySelectorAll('input[name=run_days]').forEach(function (cb) {
+      cb.addEventListener('change', refreshLong);
+    });
+    refreshLong();
+
+    f.addEventListener('submit', function (e) {
+      if (checkedDays().length < 2) {
+        e.preventDefault();
+        alert('Обери щонайменше два дні бігу.');
+        return;
+      }
       f.style.display = 'none';
       document.getElementById('loading').style.display = 'block';
     });
