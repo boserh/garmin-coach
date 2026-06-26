@@ -327,6 +327,16 @@ def test_plan_setup_then_view(auth_client):
     assert "Програму створено" in view
 
 
+def test_plan_rejects_fewer_than_two_run_days(auth_client):
+    r = auth_client.post(
+        "/plan",
+        data={"goal": "first_5k", "run_days": ["tue"], "long_run_day": "tue",
+              "intensity": "easy"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/plan?error=days"
+
+
 def test_plan_archive_and_readonly_view(auth_client):
     from app.db.base import async_session_maker
     from app.garmin import repository

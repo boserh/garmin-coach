@@ -120,8 +120,8 @@ async def plan_create(
 ):
     if goal not in GOALS:
         return RedirectResponse("/plan?error=goal", status_code=303)
-    run_days = [d for d in run_days if d in WEEKDAYS]
-    if not run_days:
+    run_days = [d for d in WEEKDAYS if d in run_days]  # normalise to Mon→Sun order
+    if len(run_days) < 2:
         return RedirectResponse("/plan?error=days", status_code=303)
     if long_run_day not in run_days:
         long_run_day = run_days[-1]
