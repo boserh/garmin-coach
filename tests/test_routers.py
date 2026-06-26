@@ -316,7 +316,8 @@ def test_plan_setup_then_view(auth_client):
     with patch.object(plan_router, "run_plan_generation", fake_gen):
         r = auth_client.post(
             "/plan",
-            data={"goal": "first_5k", "days_per_week": "3", "intensity": "moderate"},
+            data={"goal": "first_5k", "run_days": ["tue", "thu", "sun"],
+                  "long_run_day": "sun", "intensity": "moderate"},
             follow_redirects=False,
         )
     assert r.status_code == 303 and r.headers["location"] == "/plan?created=1"
