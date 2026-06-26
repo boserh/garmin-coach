@@ -617,6 +617,7 @@ async def run_plan_generation(
     session, *, user_id: int, goal: str, goal_label: Optional[str],
     target_date: Optional[str], start_date: Optional[str], days_per_week: Optional[int],
     intensity: Optional[str], intake: Optional[dict], api_key: Optional[str] = None,
+    run_days: Optional[list] = None, long_run_day: Optional[str] = None,
 ):
     """Build context, generate the plan, persist it (archiving any active plan), log a
     ReportLog(kind="plan"), and return the new TrainingPlan."""
@@ -630,7 +631,8 @@ async def run_plan_generation(
     context = {
         "today": dt.date.today().isoformat(),
         "goal": goal, "start_date": start_date, "target_date": target_date,
-        "days_per_week": days_per_week, "intensity": intensity, "intake": intake,
+        "days_per_week": days_per_week, "intensity": intensity,
+        "run_days": run_days, "long_run_day": long_run_day, "intake": intake,
         "recent_runs": recent_runs, "recovery": recovery[-14:],
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
