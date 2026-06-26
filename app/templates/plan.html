@@ -29,12 +29,14 @@
     button.arch { margin-top: 1.5rem; padding: .4rem 1rem; border: 0; border-radius: 8px;
       background: #3a2326; color: #ff7b72; font-size: .85rem; cursor: pointer; }
     .tip { color: #6b7280; font-size: .82rem; margin-top: 1.2rem; }
+    .ok { color: #7ee787; margin: 1rem 0; }
   </style>
 </head>
 <body>
   {% set active = 'plan' %}
   {% include "_nav.html" %}
   <div class="wrap">
+    {% if created %}<div class="ok">✅ Програму створено — {{ count }} тренувань.</div>{% endif %}
     <h1>{{ plan.goal_label or plan.goal }}</h1>
     <div class="meta">
       {{ plan.start_date }}{% if plan.target_date %} → {{ plan.target_date }}{% endif %}

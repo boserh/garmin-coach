@@ -319,10 +319,11 @@ def test_plan_setup_then_view(auth_client):
             data={"goal": "first_5k", "days_per_week": "3", "intensity": "moderate"},
             follow_redirects=False,
         )
-    assert r.status_code == 303 and r.headers["location"] == "/plan"
+    assert r.status_code == 303 and r.headers["location"] == "/plan?created=1"
 
-    view = auth_client.get("/plan").text
+    view = auth_client.get("/plan?created=1").text
     assert "Перші 5 км" in view and "тестовий підхід" in view and "легкий біг" in view
+    assert "Програму створено" in view
 
 
 def test_info_requires_login(client):
