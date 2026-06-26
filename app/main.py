@@ -7,6 +7,8 @@ Run with::
 The lifespan initialises the DB (create tables for a zero-config first run;
 Alembic remains the source of truth) and disposes the engine on shutdown.
 """
+import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -19,6 +21,8 @@ from app.core.config import settings
 from app.db.base import dispose_db, init_db
 from app.routers import admin, auth, health, history, me, plan, reports
 from app.routers import settings as settings_router
+
+logger = logging.getLogger("api")
 
 
 @asynccontextmanager
@@ -39,6 +43,19 @@ def create_app() -> FastAPI:
         secret_key=settings.APP_SECRET_KEY or "dev-insecure-session-secret",
         same_site="lax",
     )
+
+    @app.middleware("http")
+    async def _log_requests(request: Request, call_next):
+        # Per-request access log in the app's format (uvicorn.access stays quiet).
+        # /health is polled by uptime checks — skip it to avoid noise.
+        start = time.perf_counter()
+        response = await call_next(request)
+        if request.url.path != "/health":
+            ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                f"{request.method} {request.url.path} → {response.status_code} {ms:.0f}ms"
+            )
+        return response
 
     @app.exception_handler(RequiresLogin)
     async def _redirect_to_login(request: Request, exc: RequiresLogin):
