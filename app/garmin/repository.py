@@ -303,6 +303,25 @@ async def get_active_plan(session: AsyncSession, user_id: int):
     ).scalar_one_or_none()
 
 
+async def list_plans(session: AsyncSession, user_id: int, status: Optional[str] = None):
+    """This user's plans (newest first); optionally filtered by status."""
+    stmt = select(TrainingPlan).where(TrainingPlan.user_id == user_id)
+    if status:
+        stmt = stmt.where(TrainingPlan.status == status)
+    return (await session.execute(stmt.order_by(TrainingPlan.id.desc()))).scalars().all()
+
+
+async def get_plan(session: AsyncSession, user_id: int, plan_id: int):
+    """One plan by id, scoped to the user (active or archived)."""
+    return (
+        await session.execute(
+            select(TrainingPlan).where(
+                TrainingPlan.id == plan_id, TrainingPlan.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def list_workouts(
     session: AsyncSession, plan_id: int, *, upcoming_only: bool = False
 ) -> List[PlannedWorkout]:

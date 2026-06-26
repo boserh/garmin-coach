@@ -33,3 +33,9 @@ def setup() -> None:
     # silence noisy libraries
     for noisy in ("httpx", "httpcore", "telegram", "apscheduler", "uvicorn.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    # DB_ECHO=true → log every SQL statement (reads + writes) through our handlers;
+    # otherwise keep SQLAlchemy quiet. (Level-based, so no duplicate echo handler.)
+    logging.getLogger("sqlalchemy.engine").setLevel(
+        logging.INFO if settings.DB_ECHO else logging.WARNING
+    )
