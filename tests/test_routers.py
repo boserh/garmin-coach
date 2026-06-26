@@ -327,6 +327,38 @@ def test_plan_setup_then_view(auth_client):
     assert "Програму створено" in view
 
 
+def test_plan_archive_and_readonly_view(auth_client):
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="faster_5k", goal_label="Швидше 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="старий план", workouts=[PlanWorkout(
+                    date="2026-06-02", week=1, type="easy", dist_km=3.0, description="легко-арх")])
+            # a second create archives the first
+            await repository.create_plan(
+                s, uid, goal="first_10k", goal_label="Перші 10 км", target_date=None,
+                start_date="2026-06-20", days_per_week=3, intensity="moderate", intake={},
+                summary="новий план", workouts=[])
+            archived = await repository.list_plans(s, uid, status="archived")
+            return next(p.id for p in archived if p.summary == "старий план")
+
+    archived_id = anyio.run(seed)
+
+    assert "Швидше 5 км" in auth_client.get("/plan/archive").text  # listed in archive
+
+    view = auth_client.get(f"/plan/{archived_id}").text
+    assert "старий план" in view and "легко-арх" in view
+    assert "архівна програма" in view
+    assert "Архівувати / почати нову" not in view  # readonly — no archive button
+
+
 def test_info_requires_login(client):
     assert client.get("/info", follow_redirects=False).status_code == 303
 

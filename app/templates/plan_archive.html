@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Архів програм</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
+    a { color: #6cb6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-weight: 600; font-size: 1.4rem; }
+    .wrap { max-width: 42rem; }
+    .bar { margin: 0 0 1rem; font-size: .9rem; }
+    .row { display: block; padding: .8rem 1rem; margin: .5rem 0; border: 1px solid #2a2f3a;
+           border-radius: 10px; background: #14171f; }
+    .row:hover { border-color: #6cb6ff; }
+    .goal { font-weight: 600; }
+    .meta { color: #9aa4b2; font-size: .88rem; margin-top: .2rem; }
+    .empty { color: #9aa4b2; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  {% set active = 'plan' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <div class="bar"><a href="/plan">← Поточна програма</a></div>
+    <h1>Архів програм</h1>
+    {% if not plans %}
+      <div class="empty">Архівних програм поки немає. Коли створиш нову, попередня переїде сюди.</div>
+    {% endif %}
+    {% for p in plans %}
+      <a class="row" href="/plan/{{ p.id }}">
+        <div class="goal">{{ p.goal_label or p.goal }}</div>
+        <div class="meta">
+          {{ p.start_date }}{% if p.target_date %} → {{ p.target_date }}{% endif %}
+          · {{ p.days_per_week }} дн/тиж · {{ p.intensity }}
+          · створено {{ p.created_at.date() if p.created_at else '' }}
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+</body>
+</html>

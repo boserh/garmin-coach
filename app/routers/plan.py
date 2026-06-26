@@ -8,7 +8,7 @@ import datetime as dt
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,7 +70,38 @@ async def plan_page(
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "created": request.query_params.get("created") == "1",
-         "count": len(workouts)},
+         "count": len(workouts), "readonly": False},
+    )
+
+
+@router.get("/plan/archive", response_class=HTMLResponse)
+async def plan_archive_list(
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    plans = await repository.list_plans(session, user.id, status="archived")
+    return templates.TemplateResponse(
+        request, "plan_archive.html", {"user": user, "plans": plans},
+    )
+
+
+@router.get("/plan/{plan_id}", response_class=HTMLResponse)
+async def plan_view(
+    plan_id: int,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    plan = await repository.get_plan(session, user.id, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    workouts = await repository.list_workouts(session, plan.id)
+    return templates.TemplateResponse(
+        request, "plan.html",
+        {"user": user, "plan": plan, "weeks": _by_week(workouts),
+         "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
+         "count": len(workouts), "readonly": True},
     )
 
 
