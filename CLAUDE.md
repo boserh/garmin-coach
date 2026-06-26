@@ -326,6 +326,11 @@ Day-level caching moved to the DB.
 (httpx, telegram, apscheduler, uvicorn.access) are pinned WARNING. Run with
 `LOG_LEVEL=DEBUG` to see skip-reason lines (e.g. `MORNING skip: outside window`).
 
+Web requests are logged by an app-level HTTP middleware in `create_app` (logger `api`,
+`GET /plan → 200 42ms`; `/health` skipped) instead of `uvicorn.access`, so they share the
+project format. Per-Claude-call cost/tokens are logged (logger `claude`) **and** persisted
+to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
+
 ## TODO
 
 - Validate the `gconn` provider against the live Garmin API.
