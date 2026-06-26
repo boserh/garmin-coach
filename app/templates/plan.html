@@ -13,6 +13,7 @@
     .summary { margin: 1rem 0 1.5rem; padding: 1rem 1.2rem; border-radius: 10px;
                border: 1px solid #2a2f3a; background: #14171f; line-height: 1.5; }
     .meta { color: #9aa4b2; font-size: .9rem; }
+    .bar { margin: 0 0 1rem; font-size: .9rem; }
     .week { margin: 1.4rem 0 .4rem; color: #9aa4b2; font-weight: 600; font-size: .95rem;
             border-bottom: 1px solid #2a2f3a; padding-bottom: .3rem; }
     .wk { display: flex; gap: .8rem; padding: .5rem 0; border-bottom: 1px solid #1a1e27; }
@@ -37,6 +38,10 @@
   {% include "_nav.html" %}
   <div class="wrap">
     {% if created %}<div class="ok">✅ Програму створено — {{ count }} тренувань.</div>{% endif %}
+    <div class="bar">
+      {% if readonly %}<a href="/plan/archive">← Архів</a> · <span class="meta">архівна програма</span>
+      {% else %}<a href="/plan/archive">Архів програм</a>{% endif %}
+    </div>
     <h1>{{ plan.goal_label or plan.goal }}</h1>
     <div class="meta">
       {{ plan.start_date }}{% if plan.target_date %} → {{ plan.target_date }}{% endif %}
@@ -64,6 +69,7 @@
       {% endfor %}
     {% endfor %}
 
+    {% if not readonly %}
     <div class="tip">Коригувати — у боті вільним текстом, напр.
       <b>/plan додай легкий біг сьогодні</b> або <b>/plan перенеси суботнє на неділю</b>.</div>
 
@@ -71,6 +77,7 @@
           onsubmit="return confirm('Архівувати поточну програму і почати нову?');">
       <button class="arch" type="submit">Архівувати / почати нову</button>
     </form>
+    {% endif %}
   </div>
 </body>
 </html>

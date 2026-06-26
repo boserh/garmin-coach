@@ -50,11 +50,11 @@ def create_app() -> FastAPI:
         # /health is polled by uptime checks — skip it to avoid noise.
         start = time.perf_counter()
         response = await call_next(request)
-        if request.url.path != "/health":
-            ms = (time.perf_counter() - start) * 1000
-            logger.info(
-                f"{request.method} {request.url.path} → {response.status_code} {ms:.0f}ms"
-            )
+        path = request.url.path
+        if path == "/health":
+            return response
+        ms = (time.perf_counter() - start) * 1000
+        logger.info(f"{request.method} {path} → {response.status_code} {ms:.0f}ms")
         return response
 
     @app.exception_handler(RequiresLogin)

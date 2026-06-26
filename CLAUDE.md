@@ -201,7 +201,9 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /report.json` — daily report (Sonnet). Login; current user.
 - `GET /deep?q=...` — deep analysis (Opus). Login; current user.
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Login; current user.
-- `GET/POST /plan` — training-plan setup form (no active plan) / plan view; `POST /plan/archive`. Login; current user.
+- `GET/POST /plan` — training-plan setup form (no active plan) / plan view; `POST /plan/archive`
+  (archive active), `GET /plan/archive` (list archived), `GET /plan/{id}` (read-only view of
+  a past plan). Login; current user.
 - `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save).
 - `GET /admin/users` — list/create users (admin only).
 - `GET /ui` + `GET /ui/{table}` + `/ui/{table}/{id}` — raw DB browser (whitelisted

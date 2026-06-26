@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by
     # setting DATABASE_URL=postgresql+asyncpg://... — no code changes needed.
     DATABASE_URL: str = "sqlite+aiosqlite:///./garmin.db"
+    # DB_ECHO=true logs every SQL statement (reads + writes) to the logs. Verbose;
+    # turn on to watch DB activity, then `journalctl -u garmin-web -f`.
+    DB_ECHO: bool = False
 
     # --- Logging ---
     LOG_FILE: str = "bot.log"
