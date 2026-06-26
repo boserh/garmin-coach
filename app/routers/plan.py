@@ -34,6 +34,12 @@ GOALS = {
     "first_half": "Перший півмарафон",
 }
 
+# weekday slug → Ukrainian label (used for the run-day picker)
+WEEKDAYS = {
+    "mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+    "fri": "Пт", "sat": "Сб", "sun": "Нд",
+}
+
 
 def _by_week(workouts):
     """Group workouts into [(week_no, [workouts...]), ...] ordered by week."""
@@ -53,14 +59,16 @@ async def plan_page(
     if plan is None:
         return templates.TemplateResponse(
             request, "plan_setup.html",
-            {"user": user, "goals": GOALS, "today": dt.date.today().isoformat(),
+            {"user": user, "goals": GOALS, "weekdays": WEEKDAYS,
+             "default_days": ["tue", "thu", "sun"], "default_long": "sun",
+             "today": dt.date.today().isoformat(),
              "error": request.query_params.get("error")},
         )
     workouts = await repository.list_workouts(session, plan.id)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
-         "today": dt.date.today().isoformat(),
+         "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "created": request.query_params.get("created") == "1",
          "count": len(workouts)},
     )
@@ -70,7 +78,8 @@ async def plan_page(
 async def plan_create(
     goal: str = Form(...),
     target_date: str = Form(""),
-    days_per_week: str = Form("3"),
+    run_days: list[str] = Form(default=[]),
+    long_run_day: str = Form("sun"),
     intensity: str = Form("moderate"),
     recent_5k: str = Form(""),
     longest_run_km: str = Form(""),
@@ -80,23 +89,25 @@ async def plan_create(
 ):
     if goal not in GOALS:
         return RedirectResponse("/plan?error=goal", status_code=303)
-    try:
-        dpw = int(days_per_week)
-    except ValueError:
-        dpw = 3
+    run_days = [d for d in run_days if d in WEEKDAYS]
+    if not run_days:
+        return RedirectResponse("/plan?error=days", status_code=303)
+    if long_run_day not in run_days:
+        long_run_day = run_days[-1]
     intake = {
         "recent_5k": recent_5k.strip() or None,
         "longest_run_km": longest_run_km.strip() or None,
         "notes": notes.strip() or None,
+        "run_days": run_days, "long_run_day": long_run_day,
     }
-    logger.info(f"PLAN generate requested user={user.id} goal={goal} dpw={dpw}")
+    logger.info(f"PLAN generate requested user={user.id} goal={goal} days={run_days}")
     async with user_runtime(session, user) as creds:
         try:
             plan = await run_plan_generation(
                 session, user_id=user.id, goal=goal, goal_label=GOALS[goal],
                 target_date=target_date or None, start_date=dt.date.today().isoformat(),
-                days_per_week=dpw, intensity=intensity, intake=intake,
-                api_key=creds.anthropic_key,
+                days_per_week=len(run_days), intensity=intensity, intake=intake,
+                run_days=run_days, long_run_day=long_run_day, api_key=creds.anthropic_key,
             )
         except AnalystError as e:
             logger.warning(f"PLAN generate failed user={user.id}: {e}")

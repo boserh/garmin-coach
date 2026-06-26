@@ -19,6 +19,19 @@
       background: #6cb6ff; color: #0f1115; font-weight: 700; font-size: 1rem; cursor: pointer; }
     .intro { max-width: 32rem; margin: 1rem 0 1.5rem; color: #9aa4b2; line-height: 1.5; }
     .err { color: #ff7b72; margin: 1rem 0; max-width: 32rem; }
+    button:disabled { opacity: .6; cursor: default; }
+    .days { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; }
+    .day { display: inline-flex; align-items: center; gap: .3rem; margin: 0; padding: .35rem .6rem;
+      border: 1px solid #2a2f3a; border-radius: 8px; background: #14171f; color: #e6e6e6;
+      font-size: .9rem; cursor: pointer; width: auto; }
+    .day input { width: auto; }
+    #loading { display: none; max-width: 32rem; margin: 1.5rem 0; padding: 1.2rem 1.4rem;
+      border-radius: 10px; border: 1px solid #2a2f3a; background: #14171f; }
+    #loading .row { display: flex; align-items: center; gap: .8rem; }
+    .spin { width: 1.1rem; height: 1.1rem; border: 2px solid #2a2f3a; border-top-color: #6cb6ff;
+      border-radius: 50%; animation: spin 0.8s linear infinite; flex: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading .sub { color: #6b7280; font-size: .82rem; margin-top: .5rem; }
   </style>
 </head>
 <body>
@@ -29,9 +42,16 @@
     бігу під твій рівень і відновлення. Потім зможеш коригувати її вільним текстом у боті
     (напр. «додай легкий біг сьогодні»).</div>
   {% if error == 'gen' %}<div class="err">Не вдалось згенерувати план. Спробуй ще раз.</div>
-  {% elif error == 'goal' %}<div class="err">Обери коректну ціль.</div>{% endif %}
+  {% elif error == 'goal' %}<div class="err">Обери коректну ціль.</div>
+  {% elif error == 'days' %}<div class="err">Обери хоча б один день бігу.</div>{% endif %}
 
-  <form method="post" action="/plan">
+  <div id="loading">
+    <div class="row"><div class="spin"></div>
+      <div>⏳ Складаю програму під твою ціль…</div></div>
+    <div class="sub">Це займає до хвилини — не закривай сторінку. Сторінка оновиться сама.</div>
+  </div>
+
+  <form id="planform" method="post" action="/plan">
     <label for="goal">Ціль</label>
     <select id="goal" name="goal">
       {% for slug, label in goals.items() %}<option value="{{ slug }}">{{ label }}</option>{% endfor %}
@@ -41,8 +61,21 @@
     <input id="target_date" name="target_date" type="date" min="{{ today }}">
     <div class="hint">Дата забігу/цілі. Якщо порожньо — підберу розумний термін.</div>
 
-    <label for="days_per_week">Днів бігу на тиждень</label>
-    <input id="days_per_week" name="days_per_week" type="number" min="2" max="6" value="3">
+    <label>Дні бігу</label>
+    <div class="days">
+      {% for slug, lbl in weekdays.items() %}
+        <label class="day"><input type="checkbox" name="run_days" value="{{ slug }}"
+          {{ 'checked' if slug in default_days else '' }}> {{ lbl }}</label>
+      {% endfor %}
+    </div>
+    <div class="hint">Обери дні тижня, у які зручно бігати.</div>
+
+    <label for="long_run_day">День довгого бігу</label>
+    <select id="long_run_day" name="long_run_day">
+      {% for slug, lbl in weekdays.items() %}
+        <option value="{{ slug }}" {{ 'selected' if slug == default_long else '' }}>{{ lbl }}</option>
+      {% endfor %}
+    </select>
 
     <label for="intensity">Інтенсивність прогресії</label>
     <select id="intensity" name="intensity">
@@ -62,5 +95,13 @@
 
     <button type="submit">Скласти програму</button>
   </form>
+
+  <script>
+    var f = document.getElementById('planform');
+    f.addEventListener('submit', function () {
+      f.style.display = 'none';
+      document.getElementById('loading').style.display = 'block';
+    });
+  </script>
 </body>
 </html>
