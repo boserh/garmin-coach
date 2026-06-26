@@ -69,7 +69,9 @@
           {{ 'checked' if slug in default_days else '' }}> {{ lbl }}</label>
       {% endfor %}
     </div>
-    <div class="hint">Обери дні тижня, у які зручно бігати.</div>
+    <div class="hint">Обери дні тижня, у які зручно бігати (мінімум два).</div>
+    <div id="dayserr" class="err" style="display:none;margin:.4rem 0 0">
+      Обери щонайменше два дні бігу.</div>
 
     <label for="long_run_day">День довгого бігу</label>
     <select id="long_run_day" name="long_run_day">
@@ -94,7 +96,7 @@
     <label for="notes">Нотатки (необовʼязково)</label>
     <textarea id="notes" name="notes" rows="3" placeholder="травми, обмеження, дні які зайняті тощо"></textarea>
 
-    <button type="submit">Скласти програму</button>
+    <button id="submitbtn" type="submit">Скласти програму</button>
   </form>
 
   <script>
@@ -119,17 +121,21 @@
       });
       longSel.value = days.indexOf(prev) !== -1 ? prev : (days[days.length - 1] || '');
     }
+    var submitBtn = document.getElementById('submitbtn');
+    var daysErr = document.getElementById('dayserr');
+    function update() {
+      refreshLong();
+      var ok = checkedDays().length >= 2;
+      submitBtn.disabled = !ok;
+      daysErr.style.display = ok ? 'none' : 'block';
+    }
     f.querySelectorAll('input[name=run_days]').forEach(function (cb) {
-      cb.addEventListener('change', refreshLong);
+      cb.addEventListener('change', update);
     });
-    refreshLong();
+    update();
 
     f.addEventListener('submit', function (e) {
-      if (checkedDays().length < 2) {
-        e.preventDefault();
-        alert('Обери щонайменше два дні бігу.');
-        return;
-      }
+      if (checkedDays().length < 2) { e.preventDefault(); return; }
       f.style.display = 'none';
       document.getElementById('loading').style.display = 'block';
     });
