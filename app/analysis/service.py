@@ -595,12 +595,12 @@ def generate_plan_with_stats(
     with a stricter JSON nudge before giving up. Raises AnalystError on API/parse failure.
     Not dedup-cached — dates are relative to today, so every generation is fresh."""
     model = MODEL_PLAN
-    text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=4096)
+    text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=8192)
     try:
         return _coerce_plan(text), stats
     except Exception:
         retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
-        text, stats2 = _complete(model, SYSTEM_PLAN, retry, "plan", api_key, max_tokens=4096)
+        text, stats2 = _complete(model, SYSTEM_PLAN, retry, "plan", api_key, max_tokens=8192)
         stats.input_tokens += stats2.input_tokens
         stats.output_tokens += stats2.output_tokens
         stats.cost_usd += stats2.cost_usd
@@ -633,6 +633,7 @@ async def run_plan_generation(
         "days_per_week": days_per_week, "intensity": intensity, "intake": intake,
         "recent_runs": recent_runs, "recovery": recovery[-14:],
     }
+    logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
         plan_out, stats = await run_in_threadpool(generate_plan_with_stats, context, api_key)
     except AnalystError as e:
@@ -641,6 +642,7 @@ async def run_plan_generation(
             question=goal, error=str(e)[:512],
         )
         raise
+    logger.info(f"PLAN parsed user={user_id}: {len(plan_out.workouts)} workouts")
     plan = await repository.create_plan(
         session, user_id, goal=goal, goal_label=goal_label, target_date=target_date,
         start_date=start_date, days_per_week=days_per_week, intensity=intensity,

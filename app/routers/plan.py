@@ -5,6 +5,7 @@ Claude to generate a dated program (``app.analysis.service.run_plan_generation``
 store it. Day-to-day adjustments happen in the bot (free text). One active plan per user.
 """
 import datetime as dt
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -21,6 +22,8 @@ from app.garmin.runtime import user_runtime
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+logger = logging.getLogger("plan")
 
 router = APIRouter(tags=["plan"])
 
@@ -57,7 +60,9 @@ async def plan_page(
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
-         "today": dt.date.today().isoformat()},
+         "today": dt.date.today().isoformat(),
+         "created": request.query_params.get("created") == "1",
+         "count": len(workouts)},
     )
 
 
@@ -84,17 +89,20 @@ async def plan_create(
         "longest_run_km": longest_run_km.strip() or None,
         "notes": notes.strip() or None,
     }
+    logger.info(f"PLAN generate requested user={user.id} goal={goal} dpw={dpw}")
     async with user_runtime(session, user) as creds:
         try:
-            await run_plan_generation(
+            plan = await run_plan_generation(
                 session, user_id=user.id, goal=goal, goal_label=GOALS[goal],
                 target_date=target_date or None, start_date=dt.date.today().isoformat(),
                 days_per_week=dpw, intensity=intensity, intake=intake,
                 api_key=creds.anthropic_key,
             )
-        except AnalystError:
+        except AnalystError as e:
+            logger.warning(f"PLAN generate failed user={user.id}: {e}")
             return RedirectResponse("/plan?error=gen", status_code=303)
-    return RedirectResponse("/plan", status_code=303)
+    logger.info(f"PLAN created id={plan.id} user={user.id}")
+    return RedirectResponse("/plan?created=1", status_code=303)
 
 
 @router.post("/plan/archive")
