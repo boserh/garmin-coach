@@ -41,6 +41,10 @@
     <div class="meta">
       {{ plan.start_date }}{% if plan.target_date %} → {{ plan.target_date }}{% endif %}
       · {{ plan.days_per_week }} дн/тиж · {{ plan.intensity }}
+      {% if plan.intake and plan.intake.run_days %}
+        · дні: {% for d in plan.intake.run_days %}{{ weekdays.get(d, d) }}{{ ", " if not loop.last else "" }}{% endfor %}
+        {% if plan.intake.long_run_day %} · довгий — {{ weekdays.get(plan.intake.long_run_day, plan.intake.long_run_day) }}{% endif %}
+      {% endif %}
     </div>
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
 
