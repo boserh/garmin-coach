@@ -124,10 +124,16 @@ Optional, with defaults:
   `import-garth-token --email` seeds a user's garth session from `~/.garth`;
   `backfill-series --email` fetches the pace/HR series for already-stored runs that
   predate the feature (fills nulls only, idempotent). `import-export --email --path
-  [--since YYYY-MM-DD]` backfills `daily_metrics` (+`extra`) from a Garmin GDPR export
-  folder offline (no API → no 429); `app.garmin.export_import` merges the per-date JSON
-  files (sleep/UDS/VO2max/race/endurance/readiness), inserting only days not already
-  stored. `/history` caps at 365 days, so `--since` ~1y is plenty.
+  [--since YYYY-MM-DD] [--overwrite]` backfills `daily_metrics` (+`extra`) **and**
+  `activities` from a Garmin GDPR export folder offline (no API → no 429).
+  `app.garmin.export_import` merges the per-date JSON (sleep, UDS daily summary,
+  healthStatus for HRV, VO2max, race predictions, endurance, readiness) — the export uses
+  different keys/units than the live API (sleep score = `overallScore`; HRV in
+  `healthStatusData.metrics`; all-day stress avg+max in `allDayStress.aggregatorList`;
+  activity distance in cm). Existing days are **merge-filled** (only NULL columns + missing
+  `extra` keys; `--overwrite` is still null-safe — never writes a null over a value);
+  activities insert only ids not already stored (summary only — no pace/HR series).
+  `/history` caps at 365 days, so `--since` ~1y is plenty.
 
 ## Structure
 
