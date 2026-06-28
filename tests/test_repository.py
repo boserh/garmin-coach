@@ -30,6 +30,15 @@ async def test_upsert_daily_is_idempotent(session):
     assert got["2026-06-20"].hrv_avg == 58
 
 
+async def test_extra_json_round_trips(session):
+    await repository.upsert_daily(session, U1, DailySummary(
+        date="2026-06-25", hrv_avg=50, has_data=True,
+        extra={"resting_hr": 50, "readiness_score": 63, "acwr_pct": 100}))
+    await session.commit()
+    got = await repository.read_daily_metrics(session, U1, ["2026-06-25"])
+    assert got["2026-06-25"].extra == {"resting_hr": 50, "readiness_score": 63, "acwr_pct": 100}
+
+
 async def test_daily_metrics_isolated_per_user(session):
     await repository.upsert_daily(
         session, U1, DailySummary(date="2026-06-20", hrv_avg=55, has_data=True))
