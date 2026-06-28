@@ -40,11 +40,57 @@ def _date_range(days: int) -> List[dt.date]:
 
 # ---------- AGGREGATION ----------
 
+def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
+    """Everything useful we fetch but don't put in the typed columns — kept as a
+    compact scalar dict on ``DailyMetric.extra`` (no per-minute arrays). RHR, SpO2 and
+    respiration come free from the sleep DTO; readiness is the one extra fetch."""
+    hs = _g(hrv, "hrvSummary") or {}
+    bl = _g(hs, "baseline") or {}
+    sn = _g(dto, "sleepNeed") or {}
+    need = sn.get("actual")
+    raw = {
+        # recovery / cardio
+        "resting_hr": _g(sleep, "restingHeartRate"),
+        "avg_hr_sleep": _g(dto, "avgHeartRate"),
+        "overnight_hrv": _g(sleep, "avgOvernightHrv"),
+        "bb_change": _g(sleep, "bodyBatteryChange"),
+        "skin_temp_dev_c": _g(sleep, "avgSkinTempDeviationC"),
+        # sleep quality
+        "awake_count": _g(dto, "awakeCount"),
+        "restless_moments": _g(sleep, "restlessMomentsCount"),
+        "avg_sleep_stress": _g(dto, "avgSleepStress"),
+        "sleep_need_h": round(need / 60, 2) if isinstance(need, (int, float)) else None,
+        "sleep_need_feedback": sn.get("feedback"),
+        "sleep_feedback": _g(dto, "sleepScoreFeedback"),
+        # spo2 + respiration (already in the sleep DTO)
+        "spo2_avg": _g(dto, "averageSpO2Value"),
+        "spo2_low": _g(dto, "lowestSpO2Value"),
+        "respiration_avg": _g(dto, "averageRespirationValue"),
+        "breathing_disruption_sev": _g(sleep, "breathingDisruptionSeverity"),
+        # hrv detail
+        "hrv_weekly_avg": _g(hs, "weeklyAvg"),
+        "hrv_5min_high": _g(hs, "lastNight5MinHigh"),
+        "hrv_baseline_low": _g(bl, "balancedLow"),
+        "hrv_baseline_high": _g(bl, "balancedUpper"),
+        "hrv_feedback": _g(hs, "feedbackPhrase"),
+        # training readiness (extra fetch)
+        "readiness_score": _g(readiness, "score"),
+        "readiness_level": _g(readiness, "level"),
+        "readiness_feedback": _g(readiness, "feedbackShort"),
+        "recovery_time_h": _g(readiness, "recoveryTime"),
+        "acute_load": _g(readiness, "acuteLoad"),
+        "acwr_pct": _g(readiness, "acwrFactorPercent"),
+        "acwr_feedback": _g(readiness, "acwrFactorFeedback"),
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
 def daily_summary(date: dt.date) -> dict:
     sleep = client.fetch_sleep(date)
     hrv = client.fetch_hrv(date)
     stress = client.fetch_stress(date)
     bb = client.fetch_body_battery(date)
+    readiness = client.fetch_training_readiness(date)
     dto = _g(sleep, "dailySleepDTO") or {}
     sec = lambda v: round(v / 3600, 2) if isinstance(v, (int, float)) else None
 
@@ -64,6 +110,7 @@ def daily_summary(date: dt.date) -> dict:
         "stress_max": _g(stress, "maxStressLevel"),
         "bb_charged": _g(bb, "charged"),
         "bb_drained": _g(bb, "drained"),
+        "extra": _daily_extra(sleep, hrv, dto, readiness) or None,
     }
     result["has_data"] = any(result[k] is not None
                              for k in ("sleep_score", "hrv_avg", "stress_avg"))

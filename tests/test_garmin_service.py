@@ -13,17 +13,24 @@ class FakeProvider:
 
     def connectapi(self, path, **kwargs):
         if "dailySleepData" in path:
-            return {"dailySleepDTO": {
+            return {"restingHeartRate": 48, "bodyBatteryChange": 55, "dailySleepDTO": {
                 "sleepScores": {"overall": {"value": 82}},
                 "deepSleepSeconds": 3600,
                 "lightSleepSeconds": 7200,
                 "remSleepSeconds": 5400,
                 "awakeSleepSeconds": 600,
+                "avgHeartRate": 52, "averageSpO2Value": 96.0,
+                "averageRespirationValue": 14.0, "sleepScoreFeedback": "POSITIVE",
+                "sleepNeed": {"actual": 480, "feedback": "STABLE"},
             }}
         if path.startswith("/hrv-service"):
-            return {"hrvSummary": {"lastNightAvg": 60, "status": "BALANCED"}}
+            return {"hrvSummary": {"lastNightAvg": 60, "status": "BALANCED", "weeklyAvg": 55}}
         if "dailyStress" in path:
             return {"avgStressLevel": 25, "maxStressLevel": 70}
+        if "trainingreadiness" in path:
+            return [{"score": 63, "level": "MODERATE", "feedbackShort": "OK",
+                     "recoveryTime": 2, "acuteLoad": 110, "acwrFactorPercent": 95,
+                     "acwrFactorFeedback": "VERY_GOOD"}]
         if "bodyBattery" in path:
             return [{"charged": 50, "drained": 40}]
         if "activities/search/activities" in path:
@@ -58,6 +65,12 @@ def test_build_payload_shape(monkeypatch):
     assert day.hrv_status == "BALANCED"
     assert day.stress_avg == 25
     assert day.has_data is True
+
+    # `extra` collects the unprocessed scalars + training readiness
+    assert day.extra["resting_hr"] == 48
+    assert day.extra["readiness_score"] == 63 and day.extra["acwr_pct"] == 95
+    assert day.extra["sleep_need_h"] == 8.0           # 480 min / 60
+    assert day.extra["spo2_avg"] == 96.0 and day.extra["hrv_weekly_avg"] == 55
 
     act = payload.recent_activities[0]
     assert act.type == "running"

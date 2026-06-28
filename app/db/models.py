@@ -83,6 +83,9 @@ class DailyMetric(Base):
     stress_max: Mapped[Optional[int]] = mapped_column(Integer)
     bb_charged: Mapped[Optional[int]] = mapped_column(Integer)
     bb_drained: Mapped[Optional[int]] = mapped_column(Integer)
+    # Extra scalar metrics we fetch but don't model as columns (RHR, SpO2, respiration,
+    # skin-temp deviation, training readiness, ACWR, HRV detail …). Compact dict, no arrays.
+    extra: Mapped[Optional[dict]] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
