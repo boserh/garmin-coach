@@ -87,6 +87,20 @@ async def get_activity(session: AsyncSession, user_id: int, row_id: int):
     ).scalar_one_or_none()
 
 
+async def get_latest_daily_extra(session: AsyncSession, user_id: int) -> dict:
+    """The most recent day's ``extra`` dict (race predictions, VO2max, endurance, …),
+    used to calibrate plan generation to current fitness."""
+    row = (
+        await session.execute(
+            select(DailyMetric.extra)
+            .where(DailyMetric.user_id == user_id, DailyMetric.extra.is_not(None))
+            .order_by(DailyMetric.date.desc())
+            .limit(1)
+        )
+    ).first()
+    return (row[0] if row else None) or {}
+
+
 async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> List[dict]:
     """Recovery trends over the last ``days`` days for this user, oldest first."""
     cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()

@@ -340,7 +340,7 @@ A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are
 
 Day-level caching, history, and cost tracking moved into the database:
 
-* `DailyMetric` — one row per day; past days are served from here instead of Garmin (today is always refetched). Doubles as the trend source for `/history`. An `extra` JSON column also stores the scalar metrics we fetch but don't model as columns (resting HR, SpO2, respiration, skin-temp deviation, HRV detail, and Garmin's Training Readiness + ACWR load).
+* `DailyMetric` — one row per day; past days are served from here instead of Garmin (today is always refetched). Doubles as the trend source for `/history`. An `extra` JSON column also stores the scalar metrics we fetch but don't model as columns (resting HR, SpO2, respiration, skin-temp deviation, HRV detail, Training Readiness + ACWR load, daily steps/intensity minutes/floors, VO2max, race-time predictions and endurance score). Plan generation calibrates targets to the latest race predictions / VO2max.
 * `ActivityRecord` — one row per activity (idempotent on `activity_id`); runs also store a downsampled pace/HR `series` rendered as charts on the activity detail page, plus an optional `analysis` (Claude's `/activity` writeup).
 * `ReportLog` — one row per Claude call (tokens, cost, ok/error, the asked `question` and the delivered `report_text`).
 * `BotState` — key/value, including the morning-report-sent date (replaces `state.json`).

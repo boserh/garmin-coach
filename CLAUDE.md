@@ -249,8 +249,17 @@ respiration, restless moments, sleep need/feedback), the HRV summary (weekly avg
 high, baseline band, feedback) and **Training Readiness** — the one extra fetch
 (`client.fetch_training_readiness`, `/metrics-service/metrics/trainingreadiness/{date}`):
 `readiness_score`/`level`/`feedback`, `recovery_time_h`, `acute_load`, and the ACWR
-(acute:chronic load) `acwr_pct`/`acwr_feedback`. Persisted (in `_DAILY_FIELDS`) and served
-from the day cache like the other fields; **not yet fed to the LLM** — that's a later step.
+(acute:chronic load) `acwr_pct`/`acwr_feedback`. `_daily_extra_metrics` adds the rest from
+four more endpoints (all keyed by the **displayName**, not the email — the earlier 403 was a
+wrong-identifier bug): **user summary** (`fetch_user_summary` — steps, distance, calories,
+moderate/vigorous intensity minutes, floors, min HR, body-battery high/low), **VO2max**
+(`fetch_vo2max`), **race-time predictions** (`fetch_race_predictions` — 5K/10K/half/marathon
+seconds) and **endurance score** (`fetch_endurance`). Persisted (in `_DAILY_FIELDS`) and
+served from the day cache. Used by the reports: not yet; used by plan generation: **yes** —
+`run_plan_generation` pulls the latest day's `fitness` (race predictions + VO2max +
+endurance via `repository.get_latest_daily_extra`) into the `SYSTEM_PLAN` context so targets
+and paces are calibrated to current fitness. A bulk historical backfill from the Garmin GDPR
+export is a later step.
 
 **Sync awareness**: `synced_today` / `has_data` / `last_data_date` distinguish "watch
 hasn't synced" from "bad recovery." The morning job runs ~10s after startup, then every

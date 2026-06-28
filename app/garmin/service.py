@@ -85,15 +85,47 @@ def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
     return {k: v for k, v in raw.items() if v is not None}
 
 
+def _daily_extra_metrics(uds: dict, vo2: dict, race: dict, endurance: dict) -> dict:
+    """Daily summary (steps/intensity/floors/BB range), VO2max, race-time predictions
+    and endurance score — from the metrics + usersummary endpoints."""
+    raw = {
+        "steps": _g(uds, "totalSteps"),
+        "distance_m": _g(uds, "totalDistanceMeters"),
+        "active_kcal": _g(uds, "activeKilocalories"),
+        "moderate_min": _g(uds, "moderateIntensityMinutes"),
+        "vigorous_min": _g(uds, "vigorousIntensityMinutes"),
+        "floors_up": _g(uds, "floorsAscended"),
+        "min_hr": _g(uds, "minHeartRate"),
+        "bb_high": _g(uds, "bodyBatteryHighestValue"),
+        "bb_low": _g(uds, "bodyBatteryLowestValue"),
+        "vo2max": _g(vo2, "vo2MaxPreciseValue") or _g(vo2, "vo2MaxValue"),
+        "race_5k_s": _g(race, "time5K"),
+        "race_10k_s": _g(race, "time10K"),
+        "race_half_s": _g(race, "timeHalfMarathon"),
+        "race_marathon_s": _g(race, "timeMarathon"),
+        "endurance_score": _g(endurance, "overallScore"),
+        "endurance_class": _g(endurance, "classification"),
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
 def daily_summary(date: dt.date) -> dict:
     sleep = client.fetch_sleep(date)
     hrv = client.fetch_hrv(date)
     stress = client.fetch_stress(date)
     bb = client.fetch_body_battery(date)
     readiness = client.fetch_training_readiness(date)
+    uds = client.fetch_user_summary(date)
+    vo2 = client.fetch_vo2max(date)
+    race = client.fetch_race_predictions()
+    endurance = client.fetch_endurance(date)
     dto = _g(sleep, "dailySleepDTO") or {}
     sec = lambda v: round(v / 3600, 2) if isinstance(v, (int, float)) else None
 
+    extra = {
+        **_daily_extra(sleep, hrv, dto, readiness),
+        **_daily_extra_metrics(uds, vo2, race, endurance),
+    }
     result = {
         "date": date.isoformat(),
         "sleep_score": _g(dto, "sleepScores", "overall", "value"),
@@ -110,7 +142,7 @@ def daily_summary(date: dt.date) -> dict:
         "stress_max": _g(stress, "maxStressLevel"),
         "bb_charged": _g(bb, "charged"),
         "bb_drained": _g(bb, "drained"),
-        "extra": _daily_extra(sleep, hrv, dto, readiness) or None,
+        "extra": extra or None,
     }
     result["has_data"] = any(result[k] is not None
                              for k in ("sleep_score", "hrv_avg", "stress_avg"))
