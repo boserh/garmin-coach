@@ -219,7 +219,8 @@ legacy and no longer used by these routes.
 - **Stack**: SQLAlchemy 2.0 async + Alembic. SQLite (`aiosqlite`) by default for
   zero-config on a Raspberry Pi; switch to Postgres (`asyncpg`) by setting
   `DATABASE_URL` only — no code changes.
-- **Models**: `DailyMetric` (unique `date`), `ActivityRecord` (unique `activity_id`,
+- **Models**: `DailyMetric` (unique `date`, + `extra` JSON of unmodeled scalars),
+  `ActivityRecord` (unique `activity_id`,
   `exercises` JSON + `series` JSON — per-point pace/HR for runs + `analysis` text —
   Claude's `/activity` writeup), `ReportLog` (cost/metrics + `question`/`report_text`),
   `BotState` (key/value), `TrainingPlan` (goal/params/intake/summary, one active per
@@ -237,8 +238,19 @@ legacy and no longer used by these routes.
 exists behind `GARMIN_PROVIDER=gconn` but is **untested against the live API** — do
 not rely on it. Endpoint URLs and the m/s→min/km pace conversion are unchanged.
 
-**HRV is the primary recovery signal** — Garmin returns 403 for resting HR via garth.
-`hrv_status = BALANCED` means recovered; a drop is the main stress indicator.
+**HRV is the primary recovery signal** — `hrv_status = BALANCED` means recovered; a drop is
+the main stress indicator. (The dedicated resting-HR endpoint 403s via garth, but RHR comes
+free inside the sleep DTO — stored in `extra.resting_hr`; see below.)
+
+**`DailyMetric.extra` (JSON)** — everything we fetch but don't model as a typed column,
+kept as a compact scalar dict (no per-minute arrays). Built by `service._daily_extra` from
+the sleep DTO (RHR, overnight HRV, body-battery change, skin-temp deviation, SpO2,
+respiration, restless moments, sleep need/feedback), the HRV summary (weekly avg, 5-min
+high, baseline band, feedback) and **Training Readiness** — the one extra fetch
+(`client.fetch_training_readiness`, `/metrics-service/metrics/trainingreadiness/{date}`):
+`readiness_score`/`level`/`feedback`, `recovery_time_h`, `acute_load`, and the ACWR
+(acute:chronic load) `acwr_pct`/`acwr_feedback`. Persisted (in `_DAILY_FIELDS`) and served
+from the day cache like the other fields; **not yet fed to the LLM** — that's a later step.
 
 **Sync awareness**: `synced_today` / `has_data` / `last_data_date` distinguish "watch
 hasn't synced" from "bad recovery." The morning job runs ~10s after startup, then every

@@ -26,6 +26,7 @@ class DailySummary(BaseModel):
     stress_max: Optional[int] = None
     bb_charged: Optional[int] = None
     bb_drained: Optional[int] = None
+    extra: Optional[dict] = None   # scalar metrics we fetch but don't model as columns
     has_data: bool = False
 
 

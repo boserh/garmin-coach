@@ -121,6 +121,15 @@ def fetch_body_battery(date: dt.date) -> dict:
     return r[0] if isinstance(r, list) and r else {}
 
 
+def fetch_training_readiness(date: dt.date) -> dict:
+    """Garmin's composite readiness for the day: score/level + recovery time + the
+    acute:chronic load (ACWR) and HRV/sleep/stress factor breakdown."""
+    r = _safe(_api, f"/metrics-service/metrics/trainingreadiness/{date.isoformat()}")
+    if isinstance(r, list):
+        return r[0] if r else {}
+    return r if isinstance(r, dict) and "_error" not in r else {}
+
+
 def fetch_activities(limit: int = 30) -> list:
     return _safe(
         _api,

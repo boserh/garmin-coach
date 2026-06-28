@@ -24,6 +24,7 @@ from app.garmin.schemas import DailySummary, Payload
 _DAILY_FIELDS = (
     "sleep_score", "sleep_h", "deep_h", "rem_h", "light_h", "awake_h",
     "hrv_avg", "hrv_status", "stress_avg", "stress_max", "bb_charged", "bb_drained",
+    "extra",
 )
 
 
