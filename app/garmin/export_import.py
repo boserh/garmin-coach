@@ -194,6 +194,100 @@ def _activity_row(a: dict):
     return aid, row
 
 
+def _series_from_points(points: list) -> list:
+    """[(dist_m, speed_mps, hr), ...] → the [{d, p, hr}] series our charts use,
+    downsampled to ~150 points (same shape as ``client.fetch_activity_series``)."""
+    pts = [p for p in points if p[1] is not None or p[2] is not None]
+    if len(pts) < 2:
+        return []
+    step = max(1, len(pts) // 150)
+    out = []
+    for d, s, hr in pts[::step]:
+        out.append({
+            "d": round(d / 1000, 2) if isinstance(d, (int, float)) else None,
+            "p": round((1000.0 / s) / 60, 2) if isinstance(s, (int, float)) and s > 0 else None,
+            "hr": int(hr) if isinstance(hr, (int, float)) else None,
+        })
+    return out
+
+
+def _fit_points(fitfile) -> list:
+    out = []
+    for r in fitfile.get_messages("record"):
+        s = r.get_value("enhanced_speed")
+        if s is None:
+            s = r.get_value("speed")
+        out.append((r.get_value("distance"), s, r.get_value("heart_rate")))
+    return out
+
+
+async def import_fit_series(
+    session, user_id: int, folder: str, since: Optional[str] = None,
+) -> dict:
+    """Backfill the pace/HR ``series`` for stored runs from the export's FIT files
+    (``DI-Connect-Uploaded-Files``) — no API. Scans FIT files, matches each activity FIT
+    to a run by its session start time (== the activity ``beginTimestamp``), parses the
+    records, and stores the downsampled series. Runs only (where the charts apply)."""
+    import io
+    import zipfile
+
+    import fitparse
+    from sqlalchemy import select
+
+    from app.db.models import ActivityRecord
+
+    di = folder
+    if not os.path.isdir(os.path.join(di, "DI-Connect-Fitness")):
+        inner = os.path.join(di, "DI_CONNECT")
+        if os.path.isdir(inner):
+            di = inner
+    uploaded = os.path.join(di, "DI-Connect-Uploaded-Files")
+    if not os.path.isdir(uploaded):
+        return {"error": "DI-Connect-Uploaded-Files not found (copy the FIT zips)"}
+
+    aid_begin = {a["activityId"]: int(a["beginTimestamp"])
+                 for a in parse_activities(di)
+                 if a.get("activityId") and a.get("beginTimestamp")}
+    # NB: `series.is_(None)` would miss rows — a JSON column stores Python None as JSON
+    # `null`, not SQL NULL — so filter for a missing series in Python instead.
+    stmt = select(ActivityRecord).where(
+        ActivityRecord.user_id == user_id, ActivityRecord.type.like("%run%"))
+    if since:
+        stmt = stmt.where(ActivityRecord.date >= since)
+    runs = [r for r in (await session.execute(stmt)).scalars().all() if not r.series]
+    targets = {aid_begin[r.activity_id]: r for r in runs if r.activity_id in aid_begin}
+
+    done = 0
+    for z in glob.glob(os.path.join(uploaded, "*.zip")):
+        zf = zipfile.ZipFile(z)
+        for name in zf.namelist():
+            if not name.endswith(".fit"):
+                continue
+            try:
+                blob = zf.read(name)
+                ff = fitparse.FitFile(io.BytesIO(blob))
+                if next(ff.get_messages("file_id")).get_value("type") != "activity":
+                    continue
+                sess = next(ff.get_messages("session"), None)
+                st = sess.get_value("start_time") if sess else None
+                if st is None:
+                    continue
+                ms = int(st.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+            except Exception:
+                continue
+            r = targets.get(ms)
+            if r is None:
+                continue
+            series = _series_from_points(_fit_points(fitparse.FitFile(io.BytesIO(blob))))
+            if series:
+                r.series = series
+                done += 1
+    await session.commit()
+    stats = {"runs": len(runs), "series_added": done}
+    logger.info(f"EXPORT fit-series user={user_id}: {stats}")
+    return stats
+
+
 async def import_export(
     session, user_id: int, folder: str, overwrite: bool = False,
     since: Optional[str] = None,

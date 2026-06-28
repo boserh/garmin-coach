@@ -26,6 +26,7 @@ dependencies = [
     "bcrypt",             # password hashing for web login
     "itsdangerous",       # signed cookie sessions (starlette SessionMiddleware)
     "python-multipart",   # HTML form parsing (login / settings POST)
+    "fitparse",           # parse pace/HR series from FIT files in a Garmin export
 ]
 
 [project.optional-dependencies]
