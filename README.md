@@ -26,7 +26,9 @@ See `CLAUDE.md` for the full module map and design notes.
 * Daily recovery analysis
 * Sleep, HRV, stress, Body Battery, activities, and workout analysis
 * Runna workout plan integration through Garmin Calendar
-* Morning automated reports
+* Morning automated reports — optionally weather-aware: set a location in `/settings`
+  and the morning report factors today's heat/rain/wind into the run advice (Open-Meteo,
+  no API key)
 * On-demand reports via Telegram commands
 * Follow-up questions (`/ask`) answered against your recent reports, with the last few
   minutes' `/ask` thread carried as conversation context so you can refine a question

@@ -102,7 +102,8 @@ def _as_dict(payload: Union[Payload, dict]) -> dict:
     return payload.model_dump() if isinstance(payload, Payload) else payload
 
 
-def _cache_key(data: dict, question: str, model: str, previous_report: Optional[str] = None) -> str:
+def _cache_key(data: dict, question: str, model: str, previous_report: Optional[dict] = None,
+               weather: Optional[dict] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -111,6 +112,7 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "question": question,
         "model": model,
         "prev": previous_report,
+        "weather": weather,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -158,19 +160,24 @@ def analyze_with_stats(
     kind: Optional[str] = None,
     previous_report: Optional[dict] = None,
     api_key: Optional[str] = None,
+    weather: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
     ``previous_report`` ({"date", "text"}) is yesterday's report passed as context
     for day-over-day continuity (incl. did-the-planned-workout-happen checks). It
     adds ~200-400 input tokens and no output growth.
+
+    ``weather`` (today's compact forecast, see ``app.weather.fetch_forecast``) lets the
+    analyst tailor advice for a run today/tomorrow (heat, rain, wind, run timing). Part
+    of the cache key so a forecast change yields a fresh report.
     """
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
     data = _as_dict(payload)
     effective_q = question or _DEFAULT_DAILY_Q
 
-    key = _cache_key(data, effective_q, model, previous_report)
+    key = _cache_key(data, effective_q, model, previous_report, weather)
     cached = _cache.get(key)
     if cached and cached[1] > _time.time():
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -183,6 +190,8 @@ def analyze_with_stats(
     }
     if previous_report:
         user_content["previous_report"] = previous_report
+    if weather:
+        user_content["weather"] = weather
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -497,10 +506,12 @@ async def run_analysis(
     deep: bool = False,
     kind: Optional[str] = None,
     api_key: Optional[str] = None,
+    weather: Optional[dict] = None,
 ) -> str:
     """Analyze, persist a ReportLog row (success or failure), return the text.
 
     Blocking API work runs in a threadpool; the failed-call log is best-effort.
+    ``weather`` (optional) is today's forecast passed through to the analyst.
     """
     from fastapi.concurrency import run_in_threadpool
 
@@ -521,7 +532,7 @@ async def run_analysis(
 
     try:
         text, stats = await run_in_threadpool(
-            analyze_with_stats, payload, question, deep, kind, previous_report, api_key
+            analyze_with_stats, payload, question, deep, kind, previous_report, api_key, weather
         )
     except AnalystError as e:
         await repository.log_report(

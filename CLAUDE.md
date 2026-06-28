@@ -90,7 +90,8 @@ Optional, with defaults:
 ## Authentication & multi-user
 
 - **Users**: `users` table (login email + bcrypt hash, `is_admin`, encrypted
-  Garmin/Claude creds + garth token, plaintext indexed `telegram_chat_id`). Web login
+  Garmin/Claude creds + garth token, plaintext indexed `telegram_chat_id`, and a
+  `weather_location`/`latitude`/`longitude` for the morning weather lookup). Web login
   is a signed cookie session (`SessionMiddleware`, signed by `APP_SECRET_KEY`).
 - **Secrets**: `app.core.crypto` — Fernet encrypt/decrypt for creds, bcrypt for
   passwords. `app.garmin.credentials.load_credentials` decrypts a user into a runtime
@@ -169,6 +170,7 @@ app/
     repository.py      user-scoped upserts/reads, ReportLog, per-user BotState
     schemas.py         Pydantic Payload / DailySummary / Activity / PlannedRun
     exercise_names.py  Garmin exercise NAME codes → readable Ukrainian
+  weather.py           Open-Meteo geocode (settings) + today's forecast (morning report)
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     prompts.py         SYSTEM + SYSTEM_ASK prompts
@@ -283,6 +285,19 @@ export is a later step.
 hasn't synced" from "bad recovery." The morning job runs ~10s after startup, then every
 20 min; the Europe/Warsaw window (07–12) and once-a-day guard live inside `morning_job`,
 which logs its decision. The once-a-day guard persists in `bot_state`.
+
+**Weather (morning report)**: if a user set a location in `/settings`, the morning job
+fetches today's forecast (`app/weather.py` → Open-Meteo, no API key) and passes it to
+`run_analysis(..., weather=...)`. `app.weather.geocode` resolves the typed city to
+lat/lon **once on settings save** (stored on the user) so the morning job needs no
+geocoding; `fetch_forecast` returns a compact today dict (min/max + feels-like, precip
+mm/prob, max wind, a short Ukrainian condition, and six daytime hourly slots for
+run-timing advice). Both helpers are network-bound and return `None` on any error, so a
+weather outage never blocks the report. `weather` is part of the dedup-cache key and the
+`SYSTEM` prompt instructs the analyst to factor heat/rain/wind into advice **only when a
+run is today/tomorrow** (same proximity rule as pace detail). Wired into the morning job
+only (not on-demand `/report`); `analyze_with_stats`/`run_analysis` take the param
+generically so adding it elsewhere is trivial.
 
 **Models**: `/report` + morning use `claude-sonnet-4-6`; `/deep` uses `claude-opus-4-8`.
 Every call is logged to `ReportLog` (tokens, cost, ok/error).
