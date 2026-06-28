@@ -39,6 +39,64 @@ def _recovery_synced(payload, today: str) -> bool:
     return bool(row and row.hrv_avg is not None and row.sleep_score is not None)
 
 
+async def _fetch_user_weather(user: User):
+    """Today's forecast for the user's stored location, or None if unset/on error."""
+    if user.latitude is None or user.longitude is None:
+        return None
+    wx = await run_in_threadpool(weather.fetch_forecast, user.latitude, user.longitude)
+    if wx:
+        logger.info(f"MORNING user={user.id}: weather {wx.get('summary')} "
+                    f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C")
+    return wx
+
+
+async def _deliver_morning(ctx, session, user: User, creds, now: dt.datetime, today: str,
+                           *, force: bool = False) -> bool:
+    """Build the payload + weather, run the morning analysis and send it. Returns True
+    if a report was sent. With ``force`` the not-yet-synced wait is skipped (send with the
+    stale note) — used by the on-demand /test_morning trigger. Does NOT touch the
+    once-a-day guard; the caller owns that."""
+    payload = await service.build_payload_cached(session, user.id, days=3, activity_limit=20)
+
+    if not _recovery_synced(payload, today):
+        if not force and now.hour < MORNING_DEADLINE_HOUR:
+            logger.info(f"MORNING skip user={user.id}: recovery data not synced yet "
+                        f"(last_data={payload.last_data_date})")
+            return False
+        logger.info(f"MORNING user={user.id}: sending with stale note "
+                    f"({'forced' if force else 'deadline reached'})")
+        note = _MORNING_STALE
+    else:
+        logger.info(f"MORNING user={user.id}: today synced — sending")
+        note = ""
+
+    wx = await _fetch_user_weather(user)
+    try:
+        text = await run_analysis(
+            session, payload, user_id=user.id, question=_MORNING_Q,
+            kind="morning", api_key=creds.anthropic_key, weather=wx,
+        )
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        text = str(e)
+
+    prefix = "🧪 [тест] " if force else ""
+    await ctx.bot.send_message(user.telegram_chat_id, prefix + "Доброго ранку.\n\n" + note + text)
+    return True
+
+
+async def force_morning_for_user(ctx, session, user: User) -> None:
+    """Send the morning report on demand, bypassing the time window + once-a-day guard
+    (and leaving the guard untouched, so the real morning still fires). For /test_morning."""
+    now = dt.datetime.now(TZ)
+    today = now.date().isoformat()
+    async with user_runtime(session, user) as creds:
+        if not creds.has_garmin:
+            await ctx.bot.send_message(user.telegram_chat_id, "🧪 Немає Garmin-кредів.")
+            return
+        await _deliver_morning(ctx, session, user, creds, now, today, force=True)
+
+
 async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
         if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
@@ -49,45 +107,9 @@ async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: s
             if not creds.has_garmin:
                 logger.debug(f"MORNING skip user={user.id}: no Garmin credentials")
                 return
-
-            payload = await service.build_payload_cached(
-                session, user.id, days=3, activity_limit=20
-            )
-
-            if not _recovery_synced(payload, today):
-                if now.hour < MORNING_DEADLINE_HOUR:
-                    logger.info(
-                        f"MORNING skip user={user.id}: recovery data not synced yet "
-                        f"(last_data={payload.last_data_date})"
-                    )
-                    return
-                logger.info(f"MORNING user={user.id}: deadline reached — sending with stale note")
-                note = _MORNING_STALE
-            else:
-                logger.info(f"MORNING user={user.id}: today synced — sending")
-                note = ""
-
-            wx = None
-            if user.latitude is not None and user.longitude is not None:
-                wx = await run_in_threadpool(
-                    weather.fetch_forecast, user.latitude, user.longitude
-                )
-                if wx:
-                    logger.info(f"MORNING user={user.id}: weather {wx.get('summary')} "
-                                f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C")
-
-            try:
-                text = await run_analysis(
-                    session, payload, user_id=user.id, question=_MORNING_Q,
-                    kind="morning", api_key=creds.anthropic_key, weather=wx,
-                )
-            except AnalystError as e:
-                logger.error(f"ANALYST {e}")
-                text = str(e)
-
-            await ctx.bot.send_message(user.telegram_chat_id, "Доброго ранку.\n\n" + note + text)
-            await repository.set_state(session, user.id, MORNING_STATE_KEY, today)
-            logger.info(f"MORNING sent for {today} user={user.id}")
+            if await _deliver_morning(ctx, session, user, creds, now, today):
+                await repository.set_state(session, user.id, MORNING_STATE_KEY, today)
+                logger.info(f"MORNING sent for {today} user={user.id}")
     except Exception:
         logger.exception(f"MORNING failed for user={user.id}")
 
