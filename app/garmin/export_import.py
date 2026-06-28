@@ -12,11 +12,9 @@ import logging
 import os
 from typing import Optional
 
-from app.garmin.schemas import DailySummary
-
 logger = logging.getLogger("garmin")
 
-# our DailyMetric column fields (minus date/has_data/extra) — for building DailySummary
+# DailyMetric column fields (minus date/extra) we map from the export
 _COLS = (
     "sleep_score", "sleep_h", "deep_h", "rem_h", "light_h", "awake_h",
     "hrv_avg", "hrv_status", "stress_avg", "stress_max", "bb_charged", "bb_drained",
@@ -62,24 +60,35 @@ def _int(v):
     return round(v) if isinstance(v, (int, float)) else None
 
 
-def _build_day(date, sleep, uds, readiness, vo2, race, endurance) -> dict:
+def _metric(health: dict, mtype: str) -> dict:
+    """One metric (HRV/HR/SPO2/…) from a healthStatusData record's ``metrics`` list."""
+    for m in health.get("metrics") or []:
+        if m.get("type") == mtype:
+            return m
+    return {}
+
+
+def _build_day(date, sleep, uds, readiness, vo2, race, endurance, health) -> dict:
     sc = sleep.get("sleepScores") or {}
     bb = uds.get("bodyBattery") or {}
     resp = uds.get("respiration") or {}
     spo2s = sleep.get("spo2SleepSummary") or {}
     deep = sleep.get("deepSleepSeconds")
+    hrv_m = _metric(health, "HRV")   # off-baseline health-status metric
 
     cols = {
         "date": date,
-        "sleep_score": _num(sc.get("overall")),
+        # export uses `overallScore` (int); the live API uses `overall.value`
+        "sleep_score": _int(sc.get("overallScore")) if sc.get("overallScore") is not None
+        else _num(sc.get("overall")),
         "sleep_h": _hours((deep or 0) + (sleep.get("lightSleepSeconds") or 0)
                           + (sleep.get("remSleepSeconds") or 0)) if deep is not None else None,
         "deep_h": _hours(deep),
         "rem_h": _hours(sleep.get("remSleepSeconds")),
         "light_h": _hours(sleep.get("lightSleepSeconds")),
         "awake_h": _hours(sleep.get("awakeSleepSeconds")),
-        "hrv_avg": None,            # not in the export
-        "hrv_status": None,
+        "hrv_avg": _int(hrv_m.get("value")),       # from healthStatusData metrics
+        "hrv_status": None,         # Garmin HRV Status (BALANCED) not in the export
         "stress_avg": _int(sleep.get("avgSleepStress")),
         "stress_max": None,
         "bb_charged": _int(bb.get("chargedValue")),
@@ -96,6 +105,8 @@ def _build_day(date, sleep, uds, readiness, vo2, race, endurance) -> dict:
         "vigorous_min": uds.get("vigorousIntensityMinutes"),
         "respiration_avg": resp.get("avgWakingRespirationValue") or sleep.get("averageRespiration"),
         "spo2_avg": _num(spo2s.get("averageSpO2")) if spo2s else None,
+        "hrv_baseline_low": hrv_m.get("baselineLowerLimit"),
+        "hrv_baseline_high": hrv_m.get("baselineUpperLimit"),
         "awake_count": sleep.get("awakeCount"),
         "restless_moments": sleep.get("restlessMomentCount"),
         "breathing_disruption_sev": sleep.get("breathingDisruptionSeverity"),
@@ -128,10 +139,12 @@ def parse_export(folder: str) -> dict:
     vo2 = _by_date(_load(folder, "*MetricsMaxMetData*"))
     race = _by_date(_load(folder, "*RunRacePredictions*"))
     endurance = _by_date(_load(folder, "*EnduranceScore*"))
-    dates = set(sleep) | set(uds) | set(readiness) | set(vo2) | set(race) | set(endurance)
+    health = _by_date(_load(folder, "*healthStatusData*"))
+    dates = (set(sleep) | set(uds) | set(readiness) | set(vo2) | set(race)
+             | set(endurance) | set(health))
     return {
         d: _build_day(d, sleep.get(d, {}), uds.get(d, {}), readiness.get(d, {}),
-                      vo2.get(d, {}), race.get(d, {}), endurance.get(d, {}))
+                      vo2.get(d, {}), race.get(d, {}), endurance.get(d, {}), health.get(d, {}))
         for d in sorted(dates)
     }
 
@@ -140,14 +153,15 @@ async def import_export(
     session, user_id: int, folder: str, overwrite: bool = False,
     since: Optional[str] = None,
 ) -> dict:
-    """Insert the export's days for ``user_id`` (skips dates already stored unless
-    ``overwrite``). ``since`` (ISO date) limits to that date onward — the app only shows
-    ~365 days of trend, so a year is plenty. Returns counts. Locates ``DI_CONNECT`` inside
-    the export if given the top-level folder."""
+    """Backfill the export's days for ``user_id``. New dates are inserted; existing dates
+    are **merge-filled** — only NULL columns are set and missing ``extra`` keys are added,
+    so live-fetched data (HRV status, etc.) is never clobbered. ``overwrite=True`` instead
+    replaces any value present in the export. ``since`` (ISO) limits the range (the app
+    shows ~365 days of trend, so a year is plenty). Locates ``DI_CONNECT`` if given the
+    top-level export folder. Idempotent."""
     from sqlalchemy import select
 
     from app.db.models import DailyMetric
-    from app.garmin import repository
 
     if not os.path.isdir(os.path.join(folder, "DI-Connect-Wellness")):
         inner = os.path.join(folder, "DI_CONNECT")
@@ -156,24 +170,39 @@ async def import_export(
 
     days = {d: row for d, row in parse_export(folder).items()
             if row["has_data"] and (since is None or d >= since)}
-    existing = set((
+    existing = {m.date: m for m in (
         await session.execute(
-            select(DailyMetric.date).where(DailyMetric.user_id == user_id)
+            select(DailyMetric).where(DailyMetric.user_id == user_id)
         )
-    ).scalars().all())
+    ).scalars().all()}
 
-    ins = skipped = 0
+    inserted = filled = unchanged = 0
     for date, row in days.items():
-        if date in existing and not overwrite:
-            skipped += 1
+        m = existing.get(date)
+        if m is None:
+            session.add(DailyMetric(
+                user_id=user_id, date=date, extra=row["extra"],
+                **{c: row[c] for c in _COLS}))
+            inserted += 1
             continue
-        await repository.upsert_daily(
-            session, user_id,
-            DailySummary(date=date, has_data=True,
-                         extra=row["extra"], **{c: row[c] for c in _COLS}),
-        )
-        ins += 1
+        changed = False
+        for c in _COLS:
+            if row[c] is not None and (overwrite or getattr(m, c) is None):
+                if getattr(m, c) != row[c]:
+                    setattr(m, c, row[c])
+                    changed = True
+        merged = dict(m.extra or {})
+        for k, v in (row["extra"] or {}).items():
+            if v is not None and (overwrite or merged.get(k) is None) and merged.get(k) != v:
+                merged[k] = v
+                changed = True
+        if changed:
+            m.extra = merged or None
+            filled += 1
+        else:
+            unchanged += 1
     await session.commit()
-    stats = {"parsed": len(days), "imported": ins, "skipped_existing": skipped}
+    stats = {"parsed": len(days), "inserted": inserted,
+             "filled": filled, "unchanged": unchanged}
     logger.info(f"EXPORT import user={user_id}: {stats}")
     return stats
