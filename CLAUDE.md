@@ -297,7 +297,12 @@ weather outage never blocks the report. `weather` is part of the dedup-cache key
 `SYSTEM` prompt instructs the analyst to factor heat/rain/wind into advice **only when a
 run is today/tomorrow** (same proximity rule as pace detail). Wired into the morning job
 only (not on-demand `/report`); `analyze_with_stats`/`run_analysis` take the param
-generically so adding it elsewhere is trivial.
+generically so adding it elsewhere is trivial. The send path is factored into
+`jobs._deliver_morning` (payload → weather → analysis → send), reused by both the
+scheduled `morning_job` (with the time-window + once-a-day guard) and
+`force_morning_for_user` (no guards) — the hidden bot commands `/test_morning` (one-shot)
+and `/test_on` (repeating) call the latter, so a test exercises the **exact** morning path
+incl. weather, without consuming the day's guard.
 
 **Models**: `/report` + morning use `claude-sonnet-4-6`; `/deep` uses `claude-opus-4-8`.
 Every call is logged to `ReportLog` (tokens, cost, ok/error).

@@ -265,24 +265,15 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------- TEST JOB ----------
 
 async def test_job(ctx: ContextTypes.DEFAULT_TYPE):
+    # Runs the exact morning-report path (weather included), same as the scheduled job.
+    from bot.jobs import force_morning_for_user
+
     user_id = ctx.job.data["user_id"]
-    chat_id = ctx.job.data["chat_id"]
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         if user is None:
             return
-        async with user_runtime(session, user) as creds:
-            payload = await service.build_payload_cached(
-                session, user.id, days=7, activity_limit=20
-            )
-            try:
-                text = await run_analysis(
-                    session, payload, user_id=user.id, kind="report",
-                    api_key=creds.anthropic_key,
-                )
-            except AnalystError as e:
-                text = str(e)
-    await ctx.bot.send_message(chat_id, "🧪 [тест]\n\n" + text)
+        await force_morning_for_user(ctx, session, user)
 
 
 async def test_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -306,6 +297,20 @@ async def test_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         removed += 1
     logger.info(f"CMD /test_off removed={removed}")
     await update.message.reply_text(f"🧪 Тестову джобу вимкнено (знято {removed}).")
+
+
+async def test_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Force the real morning report now (weather included), bypassing the time window
+    and once-a-day guard — without consuming today's guard, so the scheduled one still fires."""
+    from bot.jobs import force_morning_for_user
+
+    logger.info("CMD /test_morning")
+    await update.message.reply_text("🧪 Генерую ранковий звіт…")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await force_morning_for_user(ctx, session, user)
 
 
 # ---------- ERROR HANDLER ----------
