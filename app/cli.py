@@ -61,9 +61,11 @@ async def _import_export(email: str, path: str, overwrite: bool, since: str) -> 
     return 0
 
 
-async def _backfill_series(email: str) -> int:
+async def _backfill_series(email: str, since: str) -> int:
     """Fetch the pace/HR series for this user's already-stored runs that don't have
-    one yet (saved before the feature existed). Idempotent — only fills nulls."""
+    one yet (saved before the feature existed, or imported from the export). Idempotent —
+    only fills nulls. ``since`` (ISO) limits to recent runs so it isn't hundreds of API
+    calls at once."""
     import asyncio
 
     from fastapi.concurrency import run_in_threadpool
@@ -80,13 +82,14 @@ async def _backfill_series(email: str) -> int:
         if user is None:
             print(f"User {email} not found.")
             return 1
-        rows = (await session.execute(
-            select(ActivityRecord).where(
-                ActivityRecord.user_id == user.id,
-                ActivityRecord.series.is_(None),
-                ActivityRecord.type.like("%run%"),
-            ).order_by(ActivityRecord.date.desc())
-        )).scalars().all()
+        stmt = select(ActivityRecord).where(
+            ActivityRecord.user_id == user.id,
+            ActivityRecord.series.is_(None),
+            ActivityRecord.type.like("%run%"),
+        )
+        if since:
+            stmt = stmt.where(ActivityRecord.date >= since)
+        rows = (await session.execute(stmt.order_by(ActivityRecord.date.desc()))).scalars().all()
         if not rows:
             print("No runs need backfilling.")
             return 0
@@ -167,6 +170,7 @@ def main(argv=None) -> int:
 
     bf = sub.add_parser("backfill-series", help="Fetch pace/HR series for stored runs missing one")
     bf.add_argument("--email", required=True)
+    bf.add_argument("--since", help="only runs from this ISO date onward (e.g. 2025-06-01)")
 
     ie = sub.add_parser("import-export", help="Backfill daily_metrics from a Garmin GDPR export")
     ie.add_argument("--email", required=True)
@@ -183,7 +187,7 @@ def main(argv=None) -> int:
     if args.cmd == "import-garth-token":
         return asyncio.run(_import_garth_token(args.email))
     if args.cmd == "backfill-series":
-        return asyncio.run(_backfill_series(args.email))
+        return asyncio.run(_backfill_series(args.email, args.since))
     if args.cmd == "import-export":
         return asyncio.run(_import_export(args.email, args.path, args.overwrite, args.since))
     return 0
