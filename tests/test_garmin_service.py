@@ -7,11 +7,20 @@ from app.garmin.schemas import Payload
 
 class FakeProvider:
     username = "tester"
+    display_name = "uuid-1234"
 
     def login(self):
         pass
 
     def connectapi(self, path, **kwargs):
+        if "usersummary/daily" in path:
+            return {"totalSteps": 5000, "moderateIntensityMinutes": 20,
+                    "bodyBatteryHighestValue": 70, "bodyBatteryLowestValue": 10}
+        if "racepredictions" in path:
+            return {"time5K": 1500, "time10K": 3200,
+                    "timeHalfMarathon": 7200, "timeMarathon": 15600}
+        if "endurancescore" in path:
+            return {"overallScore": 5000, "classification": 2}
         if "dailySleepData" in path:
             return {"restingHeartRate": 48, "bodyBatteryChange": 55, "dailySleepDTO": {
                 "sleepScores": {"overall": {"value": 82}},
@@ -71,6 +80,9 @@ def test_build_payload_shape(monkeypatch):
     assert day.extra["readiness_score"] == 63 and day.extra["acwr_pct"] == 95
     assert day.extra["sleep_need_h"] == 8.0           # 480 min / 60
     assert day.extra["spo2_avg"] == 96.0 and day.extra["hrv_weekly_avg"] == 55
+    # … plus the daily summary + race predictions + endurance
+    assert day.extra["steps"] == 5000 and day.extra["moderate_min"] == 20
+    assert day.extra["race_5k_s"] == 1500 and day.extra["endurance_score"] == 5000
 
     act = payload.recent_activities[0]
     assert act.type == "running"

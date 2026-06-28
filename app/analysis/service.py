@@ -628,12 +628,17 @@ async def run_plan_generation(
     recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
                    if "run" in (a.get("type") or "")]
     recovery = await repository.read_history(session, user_id, days=30)
+    ex = await repository.get_latest_daily_extra(session, user_id)
+    fitness = {k: ex[k] for k in (
+        "vo2max", "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
+        "endurance_score") if k in ex}
     context = {
         "today": dt.date.today().isoformat(),
         "goal": goal, "start_date": start_date, "target_date": target_date,
         "days_per_week": days_per_week, "intensity": intensity,
         "run_days": run_days, "long_run_day": long_run_day, "intake": intake,
         "recent_runs": recent_runs, "recovery": recovery[-14:],
+        "fitness": fitness or None,
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
