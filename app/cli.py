@@ -56,8 +56,8 @@ async def _import_export(email: str, path: str, overwrite: bool, since: str) -> 
             print(f"User {email} not found.")
             return 1
         stats = await import_export(session, user.id, path, overwrite=overwrite, since=since)
-    print(f"Imported {stats['imported']} day(s); skipped {stats['skipped_existing']} "
-          f"already-present; {stats['parsed']} parsed.")
+    print(f"Inserted {stats['inserted']} new day(s); filled {stats['filled']} existing; "
+          f"{stats['unchanged']} unchanged ({stats['parsed']} parsed).")
     return 0
 
 
