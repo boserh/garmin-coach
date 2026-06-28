@@ -22,6 +22,15 @@ def test_cache_key_stable_for_same_inputs():
     assert a == b
 
 
+def test_cache_key_varies_with_weather():
+    base = _cache_key(_DATA, "q", "claude-sonnet-4-6")
+    wx = {"t_max_c": 28, "summary": "ясно"}
+    with_wx = _cache_key(_DATA, "q", "claude-sonnet-4-6", weather=wx)
+    assert base != with_wx
+    # a different forecast → a different key (so a fresh report, not a stale cache hit)
+    assert with_wx != _cache_key(_DATA, "q", "claude-sonnet-4-6", weather={"t_max_c": 15})
+
+
 _REPORTS = [{"date": "2026-06-22", "text": "звіт B"},
             {"date": "2026-06-21", "text": "звіт A"}]
 

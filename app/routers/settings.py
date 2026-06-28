@@ -18,6 +18,7 @@ from app.core.crypto import decrypt, encrypt, hash_password, verify_password
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
+from app.weather import geocode
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -53,7 +54,9 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "has_anthropic": bool(user.anthropic_key_enc),
             "has_garth_token": bool(user.garth_token_enc),
             "telegram_chat_id": user.telegram_chat_id or "",
+            "weather_location": user.weather_location or "",
             "saved": request.query_params.get("saved") == "1",
+            "geo": request.query_params.get("geo"),
             "pw": request.query_params.get("pw"),
             "bot_username": settings.TELEGRAM_BOT_USERNAME,
         },
@@ -67,6 +70,7 @@ async def settings_save(
     garmin_password: str = Form(""),
     anthropic_key: str = Form(""),
     telegram_chat_id: str = Form(""),
+    weather_location: str = Form(""),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -85,7 +89,21 @@ async def settings_save(
     tci = telegram_chat_id.strip()
     user.telegram_chat_id = int(tci) if tci.lstrip("-").isdigit() else None
 
+    # Weather location: geocode once on change so the morning job has lat/lon directly.
+    geo_failed = False
+    loc = weather_location.strip()
+    if not loc:
+        user.weather_location = user.latitude = user.longitude = None
+    elif loc != (user.weather_location or ""):
+        hit = geocode(loc)
+        if hit:
+            user.latitude, user.longitude, user.weather_location = hit
+        else:
+            geo_failed = True  # keep the previous location, tell the user
+
     await session.commit()
+    if geo_failed:
+        return RedirectResponse("/settings?saved=1&geo=fail", status_code=303)
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
