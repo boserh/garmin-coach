@@ -56,6 +56,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
     app.add_handler(CommandHandler("test_on", handlers.test_on))
     app.add_handler(CommandHandler("test_off", handlers.test_off))
+    app.add_handler(CommandHandler("test_morning", handlers.test_morning))
     app.add_error_handler(handlers.on_error)
 
     # First check runs shortly after startup, then every CHECK_INTERVAL_MIN.
