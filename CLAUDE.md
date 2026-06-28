@@ -123,7 +123,11 @@ Optional, with defaults:
   encrypts `.env` creds into the user and claims pre-existing (unowned) data rows.
   `import-garth-token --email` seeds a user's garth session from `~/.garth`;
   `backfill-series --email` fetches the pace/HR series for already-stored runs that
-  predate the feature (fills nulls only, idempotent).
+  predate the feature (fills nulls only, idempotent). `import-export --email --path
+  [--since YYYY-MM-DD]` backfills `daily_metrics` (+`extra`) from a Garmin GDPR export
+  folder offline (no API → no 429); `app.garmin.export_import` merges the per-date JSON
+  files (sleep/UDS/VO2max/race/endurance/readiness), inserting only days not already
+  stored. `/history` caps at 365 days, so `--since` ~1y is plenty.
 
 ## Structure
 
