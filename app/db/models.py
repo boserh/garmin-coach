@@ -57,6 +57,13 @@ class User(Base):
 
     telegram_chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, index=True)
 
+    # Location for the morning report's weather lookup. ``weather_location`` is the
+    # geocoded display name ("City, Country"); lat/lon are resolved once on save (see
+    # app.weather.geocode) so the morning job needs no extra geocoding. Null → no weather.
+    weather_location: Mapped[Optional[str]] = mapped_column(String(128))
+    latitude: Mapped[Optional[float]] = mapped_column(Float)
+    longitude: Mapped[Optional[float]] = mapped_column(Float)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

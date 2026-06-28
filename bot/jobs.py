@@ -8,9 +8,11 @@ The once-a-day guard lives in the DB (BotState), keyed per user.
 import datetime as dt
 import logging
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from telegram.ext import ContextTypes
 
+from app import weather
 from app.analysis.service import AnalystError, run_analysis
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -65,10 +67,19 @@ async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: s
                 logger.info(f"MORNING user={user.id}: today synced — sending")
                 note = ""
 
+            wx = None
+            if user.latitude is not None and user.longitude is not None:
+                wx = await run_in_threadpool(
+                    weather.fetch_forecast, user.latitude, user.longitude
+                )
+                if wx:
+                    logger.info(f"MORNING user={user.id}: weather {wx.get('summary')} "
+                                f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C")
+
             try:
                 text = await run_analysis(
                     session, payload, user_id=user.id, question=_MORNING_Q,
-                    kind="morning", api_key=creds.anthropic_key,
+                    kind="morning", api_key=creds.anthropic_key, weather=wx,
                 )
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")
