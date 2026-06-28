@@ -45,6 +45,22 @@ async def _import_garth_token(email: str) -> int:
     return 0
 
 
+async def _import_export(email: str, path: str, overwrite: bool, since: str) -> int:
+    """Backfill daily_metrics from a Garmin GDPR export folder (offline, no API)."""
+    from app.garmin.export_import import import_export
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        stats = await import_export(session, user.id, path, overwrite=overwrite, since=since)
+    print(f"Imported {stats['imported']} day(s); skipped {stats['skipped_existing']} "
+          f"already-present; {stats['parsed']} parsed.")
+    return 0
+
+
 async def _backfill_series(email: str) -> int:
     """Fetch the pace/HR series for this user's already-stored runs that don't have
     one yet (saved before the feature existed). Idempotent — only fills nulls."""
@@ -152,6 +168,12 @@ def main(argv=None) -> int:
     bf = sub.add_parser("backfill-series", help="Fetch pace/HR series for stored runs missing one")
     bf.add_argument("--email", required=True)
 
+    ie = sub.add_parser("import-export", help="Backfill daily_metrics from a Garmin GDPR export")
+    ie.add_argument("--email", required=True)
+    ie.add_argument("--path", required=True, help="export folder (top-level or DI_CONNECT)")
+    ie.add_argument("--since", help="only import from this ISO date onward (e.g. 2025-06-01)")
+    ie.add_argument("--overwrite", action="store_true", help="overwrite days already stored")
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
@@ -162,6 +184,8 @@ def main(argv=None) -> int:
         return asyncio.run(_import_garth_token(args.email))
     if args.cmd == "backfill-series":
         return asyncio.run(_backfill_series(args.email))
+    if args.cmd == "import-export":
+        return asyncio.run(_import_export(args.email, args.path, args.overwrite, args.since))
     return 0
 
 
