@@ -6,6 +6,7 @@ training readiness), merges them by ``calendarDate``, and inserts the days we do
 already have. Existing days (e.g. recently fetched live, which carry HRV the export
 lacks) are skipped unless ``overwrite=True``.
 """
+import datetime as dt
 import glob
 import json
 import logging
@@ -68,6 +69,14 @@ def _metric(health: dict, mtype: str) -> dict:
     return {}
 
 
+def _stress_total(uds: dict) -> dict:
+    """The all-day (TOTAL) stress aggregator from a UDS record — avg + max stress."""
+    for x in (uds.get("allDayStress") or {}).get("aggregatorList") or []:
+        if x.get("type") == "TOTAL":
+            return x
+    return {}
+
+
 def _build_day(date, sleep, uds, readiness, vo2, race, endurance, health) -> dict:
     sc = sleep.get("sleepScores") or {}
     bb = uds.get("bodyBattery") or {}
@@ -75,6 +84,7 @@ def _build_day(date, sleep, uds, readiness, vo2, race, endurance, health) -> dic
     spo2s = sleep.get("spo2SleepSummary") or {}
     deep = sleep.get("deepSleepSeconds")
     hrv_m = _metric(health, "HRV")   # off-baseline health-status metric
+    stress = _stress_total(uds)      # all-day stress (avg + max)
 
     cols = {
         "date": date,
@@ -88,9 +98,11 @@ def _build_day(date, sleep, uds, readiness, vo2, race, endurance, health) -> dic
         "light_h": _hours(sleep.get("lightSleepSeconds")),
         "awake_h": _hours(sleep.get("awakeSleepSeconds")),
         "hrv_avg": _int(hrv_m.get("value")),       # from healthStatusData metrics
-        "hrv_status": None,         # Garmin HRV Status (BALANCED) not in the export
-        "stress_avg": _int(sleep.get("avgSleepStress")),
-        "stress_max": None,
+        "hrv_status": None,         # Garmin HRV Status (BALANCED) not a clean export field
+        # all-day stress from UDS; fall back to the sleep-stress proxy if UDS is absent
+        "stress_avg": _int(stress.get("averageStressLevel")) if stress
+        else _int(sleep.get("avgSleepStress")),
+        "stress_max": _int(stress.get("maxStressLevel")),
         "bb_charged": _int(bb.get("chargedValue")),
         "bb_drained": _int(bb.get("drainedValue")),
     }
@@ -149,6 +161,39 @@ def parse_export(folder: str) -> dict:
     }
 
 
+def parse_activities(folder: str) -> list:
+    """All activities from the export's ``summarizedActivities`` file(s)."""
+    acts: list = []
+    for r in _load(folder, "*summarizedActivities*"):
+        if isinstance(r.get("summarizedActivitiesExport"), list):
+            acts += [a for a in r["summarizedActivitiesExport"] if isinstance(a, dict)]
+        elif r.get("activityId"):
+            acts.append(r)
+    return acts
+
+
+def _activity_row(a: dict):
+    """(activity_id, row) in the shape ``repository.upsert_activity`` expects."""
+    aid = a.get("activityId")
+    ts = a.get("startTimeLocal") or a.get("beginTimestamp")
+    date = None
+    if isinstance(ts, (int, float)):
+        date = dt.datetime.fromtimestamp(ts / 1000, dt.timezone.utc).date().isoformat()
+    dur, dist = a.get("duration"), a.get("distance")
+    row = {
+        "date": date,
+        "type": a.get("activityType"),
+        # the export's duration is ms and distance is centimetres (the live API uses
+        # seconds·1000 and metres — different units)
+        "dur_min": round(dur / 60000, 1) if isinstance(dur, (int, float)) else None,
+        "dist_km": round(dist / 100000, 2) if isinstance(dist, (int, float)) else None,
+        "avg_hr": _int(a.get("avgHr")),
+        "max_hr": _int(a.get("maxHr")),
+        "load": a.get("activityTrainingLoad"),
+    }
+    return aid, row
+
+
 async def import_export(
     session, user_id: int, folder: str, overwrite: bool = False,
     since: Optional[str] = None,
@@ -161,7 +206,8 @@ async def import_export(
     top-level export folder. Idempotent."""
     from sqlalchemy import select
 
-    from app.db.models import DailyMetric
+    from app.db.models import ActivityRecord, DailyMetric
+    from app.garmin import repository
 
     if not os.path.isdir(os.path.join(folder, "DI-Connect-Wellness")):
         inner = os.path.join(folder, "DI_CONNECT")
@@ -201,8 +247,27 @@ async def import_export(
             filled += 1
         else:
             unchanged += 1
+
+    # activities — insert only ones we don't already have (never clobber live rows that
+    # carry the pace/HR series + analysis); summary fields only, no series.
+    seen_aids = set((
+        await session.execute(
+            select(ActivityRecord.activity_id).where(ActivityRecord.user_id == user_id)
+        )
+    ).scalars().all())
+    act_ins = 0
+    for a in parse_activities(folder):
+        aid, arow = _activity_row(a)
+        if not aid or aid in seen_aids:
+            continue
+        if since is not None and (arow["date"] or "") < since:
+            continue
+        await repository.upsert_activity(session, user_id, aid, arow)
+        seen_aids.add(aid)
+        act_ins += 1
+
     await session.commit()
-    stats = {"parsed": len(days), "inserted": inserted,
-             "filled": filled, "unchanged": unchanged}
+    stats = {"parsed": len(days), "inserted": inserted, "filled": filled,
+             "unchanged": unchanged, "activities": act_ins}
     logger.info(f"EXPORT import user={user_id}: {stats}")
     return stats

@@ -64,6 +64,28 @@ async def test_import_export_inserts_and_is_idempotent(session, tmp_path):
     assert st2["inserted"] == 0 and st2["filled"] == 0 and st2["unchanged"] == 1
 
 
+async def test_import_export_inserts_activities(session, tmp_path):
+    f = str(tmp_path)
+    _write(f, "DI-Connect-Fitness/x_summarizedActivities.json", [{
+        "summarizedActivitiesExport": [{
+            "activityId": 555, "activityType": "running",
+            "startTimeLocal": 1700000000000, "duration": 2580000,
+            "distance": 600840, "avgHr": 132.0, "maxHr": 141.0,
+            "activityTrainingLoad": 47.6,
+        }],
+    }])
+    st = await import_export(session, 1, f)
+    assert st["activities"] == 1
+
+    act = await repository.get_activity(
+        session, 1, (await repository.list_activities(session, 1, 1))[0]["id"])
+    assert act.activity_id == 555 and act.type == "running"
+    assert act.dist_km == 6.01 and act.avg_hr == 132   # distance is cm in the export
+
+    # already-present activity isn't re-inserted
+    assert (await import_export(session, 1, f))["activities"] == 0
+
+
 async def test_import_export_merge_fills_gaps_without_clobbering(session, tmp_path):
     from app.garmin.schemas import DailySummary
 
