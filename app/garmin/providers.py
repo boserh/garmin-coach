@@ -52,6 +52,10 @@ class _GarthProvider:
     def username(self) -> str:
         return self._garth.client.profile["userName"]
 
+    @property
+    def display_name(self) -> str:
+        return self._garth.client.profile["displayName"]
+
 
 class _GConnProvider:
     """garminconnect-based provider. UNTESTED against the live API — kept as a
@@ -87,6 +91,10 @@ class _GConnProvider:
     @property
     def username(self) -> str:
         return self._api.garth.profile["userName"]
+
+    @property
+    def display_name(self) -> str:
+        return self._api.garth.profile["displayName"]
 
 
 class _UserGarthProvider:
@@ -127,6 +135,10 @@ class _UserGarthProvider:
     @property
     def username(self) -> str:
         return self._client.profile["userName"]
+
+    @property
+    def display_name(self) -> str:
+        return self._client.profile["displayName"]
 
 
 def build_user_provider(creds) -> _UserGarthProvider:

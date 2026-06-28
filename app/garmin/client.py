@@ -130,6 +130,41 @@ def fetch_training_readiness(date: dt.date) -> dict:
     return r if isinstance(r, dict) and "_error" not in r else {}
 
 
+def fetch_user_summary(date: dt.date) -> dict:
+    """Daily user summary: steps, distance, calories, intensity minutes, floors,
+    RHR/min HR, body-battery high/low, avg stress. (Needs the displayName, not email.)"""
+    d = _safe(
+        _api, f"/usersummary-service/usersummary/daily/{get_provider().display_name}",
+        params={"calendarDate": date.isoformat()},
+    )
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
+def fetch_vo2max(date: dt.date) -> dict:
+    """The day's VO2max (``generic`` = running). Updates only after qualifying
+    activities, so most days are empty."""
+    r = _safe(
+        _api, f"/metrics-service/metrics/maxmet/daily/{date.isoformat()}/{date.isoformat()}")
+    if isinstance(r, list) and r and isinstance(r[-1], dict):
+        return r[-1].get("generic") or {}
+    return {}
+
+
+def fetch_race_predictions() -> dict:
+    """Latest predicted race times (5K/10K/half/marathon, seconds) for current fitness."""
+    d = _safe(
+        _api, f"/metrics-service/metrics/racepredictions/latest/{get_provider().display_name}")
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
+def fetch_endurance(date: dt.date) -> dict:
+    """The day's endurance score + classification."""
+    d = _safe(
+        _api, "/metrics-service/metrics/endurancescore",
+        params={"calendarDate": date.isoformat()})
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
 def fetch_activities(limit: int = 30) -> list:
     return _safe(
         _api,
