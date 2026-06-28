@@ -211,14 +211,10 @@ def _series_from_points(points: list) -> list:
     return out
 
 
-def _fit_points(fitfile) -> list:
-    out = []
-    for r in fitfile.get_messages("record"):
-        s = r.get_value("enhanced_speed")
-        if s is None:
-            s = r.get_value("speed")
-        out.append((r.get_value("distance"), s, r.get_value("heart_rate")))
-    return out
+# FIT files smaller than this are device settings / monitoring snapshots with no
+# records — almost half the export. A real run (records every few seconds) is many KB,
+# so skipping them by the zip-directory size (no decompression) avoids ~half the parses.
+_FIT_MIN_BYTES = 4000
 
 
 async def import_fit_series(
@@ -227,7 +223,11 @@ async def import_fit_series(
     """Backfill the pace/HR ``series`` for stored runs from the export's FIT files
     (``DI-Connect-Uploaded-Files``) — no API. Scans FIT files, matches each activity FIT
     to a run by its session start time (== the activity ``beginTimestamp``), parses the
-    records, and stores the downsampled series. Runs only (where the charts apply)."""
+    records, and stores the downsampled series. Runs only (where the charts apply).
+
+    Cost control: the FIT filenames are upload ids (not activity ids), so we must read
+    each file's session to match — but we skip tiny non-activity files by size, stop as
+    soon as every target run is matched, and parse each file only once."""
     import io
     import zipfile
 
@@ -256,34 +256,61 @@ async def import_fit_series(
         stmt = stmt.where(ActivityRecord.date >= since)
     runs = [r for r in (await session.execute(stmt)).scalars().all() if not r.series]
     targets = {aid_begin[r.activity_id]: r for r in runs if r.activity_id in aid_begin}
+    if not targets:
+        logger.info(f"EXPORT fit-series user={user_id}: nothing to match ({len(runs)} runs)")
+        return {"runs": len(runs), "series_added": 0}
 
-    done = 0
+    total = len(targets)
+    done = scanned = 0
     for z in glob.glob(os.path.join(uploaded, "*.zip")):
         zf = zipfile.ZipFile(z)
-        for name in zf.namelist():
-            if not name.endswith(".fit"):
+        for info in zf.infolist():
+            if not info.filename.endswith(".fit") or info.file_size < _FIT_MIN_BYTES:
                 continue
+            scanned += 1
+            if scanned % 500 == 0:
+                logger.info(f"EXPORT fit-series: scanned {scanned} files, "
+                            f"matched {done}/{total}")
+            # Iterate messages in file order and bail early: `file_id` is first, the first
+            # `record` timestamp == the session start (== the activity `beginTimestamp`),
+            # and `session` is last. So we can decide "not a target" right after the first
+            # record and skip decoding the rest — the matched files (a handful) are the
+            # only ones we read to the end.
+            row = None
+            points: list = []
             try:
-                blob = zf.read(name)
-                ff = fitparse.FitFile(io.BytesIO(blob))
-                if next(ff.get_messages("file_id")).get_value("type") != "activity":
-                    continue
-                sess = next(ff.get_messages("session"), None)
-                st = sess.get_value("start_time") if sess else None
-                if st is None:
-                    continue
-                ms = int(st.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+                for m in fitparse.FitFile(io.BytesIO(zf.read(info.filename))):
+                    name = m.name
+                    if name == "file_id":
+                        if m.get_value("type") != "activity":
+                            break
+                    elif name == "record":
+                        if row is None:          # first record → the start timestamp
+                            ts = m.get_value("timestamp")
+                            if ts is None:
+                                break
+                            ms = int(ts.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+                            row = targets.pop(ms, None)  # matched — also removes it
+                            if row is None:      # not a run we need — stop reading this file
+                                break
+                        s = m.get_value("enhanced_speed")
+                        if s is None:
+                            s = m.get_value("speed")
+                        points.append((m.get_value("distance"), s, m.get_value("heart_rate")))
             except Exception:
                 continue
-            r = targets.get(ms)
-            if r is None:
+            if row is None:
                 continue
-            series = _series_from_points(_fit_points(fitparse.FitFile(io.BytesIO(blob))))
+            series = _series_from_points(points)
             if series:
-                r.series = series
+                row.series = series
                 done += 1
+            if not targets:            # every run filled; stop scanning
+                break
+        if not targets:
+            break
     await session.commit()
-    stats = {"runs": len(runs), "series_added": done}
+    stats = {"runs": len(runs), "series_added": done, "scanned": scanned}
     logger.info(f"EXPORT fit-series user={user_id}: {stats}")
     return stats
 
