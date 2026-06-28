@@ -133,7 +133,15 @@ Optional, with defaults:
   activity distance in cm). Existing days are **merge-filled** (only NULL columns + missing
   `extra` keys; `--overwrite` is still null-safe — never writes a null over a value);
   activities insert only ids not already stored (summary only — no pace/HR series).
-  `/history` caps at 365 days, so `--since` ~1y is plenty.
+  `/history` caps at 365 days, so `--since` ~1y is plenty. `import-fit-series --email
+  --path [--since]` then fills runs' pace/HR `series` from the export's **FIT files**
+  (`DI-Connect-Uploaded-Files`, parsed with `fitparse`) — no API: it scans the FIT files,
+  matches each activity FIT to a run by its session start time (== the activity
+  `beginTimestamp`; the FIT filenames are *not* activity ids), and downsamples the
+  records to the same `[{d, p, hr}]` shape as the live `/details` path. **JSON-null
+  gotcha**: a JSON column stores Python `None` as JSON `null` (not SQL NULL), so
+  "series is missing" is filtered in Python, not via `series.is_(None)` (same in
+  `backfill-series`).
 
 ## Structure
 

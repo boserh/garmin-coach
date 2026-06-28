@@ -3,7 +3,7 @@ import json
 import os
 
 from app.garmin import repository
-from app.garmin.export_import import import_export, parse_export
+from app.garmin.export_import import _series_from_points, import_export, parse_export
 
 
 def _write(folder, rel, data):
@@ -62,6 +62,16 @@ async def test_import_export_inserts_and_is_idempotent(session, tmp_path):
     # re-running changes nothing
     st2 = await import_export(session, 1, f)
     assert st2["inserted"] == 0 and st2["filled"] == 0 and st2["unchanged"] == 1
+
+
+def test_series_from_points_converts_and_downsamples():
+    pts = [(i * 100.0, 2.5, 120 + i) for i in range(300)]   # 100 m steps at 2.5 m/s
+    s = _series_from_points(pts)
+    assert 2 <= len(s) <= 160                                # downsampled
+    assert s[0]["p"] == 6.67 and s[0]["hr"] == 120           # 1000/2.5/60 = 6.67 min/km
+    # a stopped point (speed 0) keeps HR but drops pace
+    stopped = _series_from_points([(0.0, 0.0, 100), (1.0, 0.0, 101)])
+    assert stopped[0]["p"] is None and stopped[0]["hr"] == 100
 
 
 async def test_import_export_inserts_activities(session, tmp_path):
