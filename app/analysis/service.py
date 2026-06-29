@@ -639,16 +639,28 @@ async def run_plan_generation(
     recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
                    if "run" in (a.get("type") or "")]
     recovery = await repository.read_history(session, user_id, days=30)
-    ex = await repository.get_latest_daily_extra(session, user_id)
+    weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
+    ex = await repository.get_recent_extra(session, user_id, days=21)
+    # Latest fitness/load/health snapshot used to calibrate volume and paces. Current
+    # fitness (vo2/race predictions/endurance), training-load & injury risk (ACWR, acute
+    # load, recovery time, readiness), and recovery baselines (HRV band, resting HR, SpO2,
+    # respiration). Drop nulls so the context stays compact.
     fitness = {k: ex[k] for k in (
-        "vo2max", "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
-        "endurance_score") if k in ex}
+        "vo2max", "fitness_age",
+        "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
+        "endurance_score", "endurance_class",
+        "acwr_pct", "acwr_feedback", "acute_load", "recovery_time_h",
+        "readiness_score", "readiness_level",
+        "hrv_baseline_low", "hrv_baseline_high",
+        "resting_hr", "spo2_avg", "respiration_avg", "breathing_disruption_sev",
+    ) if ex.get(k) is not None}
     context = {
         "today": dt.date.today().isoformat(),
         "goal": goal, "start_date": start_date, "target_date": target_date,
         "days_per_week": days_per_week, "intensity": intensity,
         "run_days": run_days, "long_run_day": long_run_day, "intake": intake,
         "recent_runs": recent_runs, "recovery": recovery[-14:],
+        "weekly_volume": weekly_volume or None,
         "fitness": fitness or None,
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")

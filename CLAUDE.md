@@ -276,10 +276,15 @@ moderate/vigorous intensity minutes, floors, min HR, body-battery high/low), **V
 (`fetch_vo2max`), **race-time predictions** (`fetch_race_predictions` — 5K/10K/half/marathon
 seconds) and **endurance score** (`fetch_endurance`). Persisted (in `_DAILY_FIELDS`) and
 served from the day cache. Used by the reports: not yet; used by plan generation: **yes** —
-`run_plan_generation` pulls the latest day's `fitness` (race predictions + VO2max +
-endurance via `repository.get_latest_daily_extra`) into the `SYSTEM_PLAN` context so targets
-and paces are calibrated to current fitness. A bulk historical backfill from the Garmin GDPR
-export is a later step.
+`run_plan_generation` feeds `SYSTEM_PLAN` three calibration inputs: (1) a `fitness` snapshot
+coalesced from the last ~21 days of `extra` via `repository.get_recent_extra` (most-recent
+non-null per key, since metrics refresh at different cadences) — VO2max + fitness age, race
+predictions, endurance score/class, **training-load & injury risk** (ACWR %/feedback, acute
+load, recovery time, readiness) and **recovery baselines** (HRV band, resting HR, SpO2,
+respiration); (2) `weekly_volume` — running km/longest per ISO week over ~8 weeks
+(`repository.weekly_run_volume`) as the anchor for ~10%/week progression; (3) the
+`recovery` trend (now incl. `resting_hr`). The prompt eases volume / inserts deloads when
+ACWR is high, recovery time long, RHR drifts up or HRV drops below its baseline band.
 
 **Sync awareness**: `synced_today` / `has_data` / `last_data_date` distinguish "watch
 hasn't synced" from "bad recovery." The morning job runs ~10s after startup, then every

@@ -208,3 +208,75 @@ async def test_read_history_orders_oldest_first(session):
     dates = [r["date"] for r in trend]
     assert dates == sorted(dates)
     assert len(trend) == 3
+
+
+async def test_read_history_surfaces_resting_hr_from_extra(session):
+    import datetime as dt
+    d = dt.date.today().isoformat()
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d, hrv_avg=55, has_data=True, extra={"resting_hr": 48}))
+    await session.commit()
+    trend = await repository.read_history(session, U1, days=2)
+    assert trend[-1]["resting_hr"] == 48
+
+
+async def test_get_recent_extra_coalesces_newest_per_key(session):
+    import datetime as dt
+    today = dt.date.today()
+    # older day has race predictions; newer day has readiness but no race prediction
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=(today - dt.timedelta(days=5)).isoformat(), has_data=True,
+        extra={"race_5k_s": 1600, "vo2max": 46, "resting_hr": 50}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=today.isoformat(), has_data=True,
+        extra={"readiness_score": 70, "resting_hr": 48}))
+    # a stale day outside the window must be ignored
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=(today - dt.timedelta(days=40)).isoformat(), has_data=True,
+        extra={"endurance_score": 999}))
+    await session.commit()
+
+    merged = await repository.get_recent_extra(session, U1, days=21)
+    assert merged["race_5k_s"] == 1600        # only on the older (in-window) day
+    assert merged["vo2max"] == 46
+    assert merged["readiness_score"] == 70
+    assert merged["resting_hr"] == 48          # newest day wins
+    assert "endurance_score" not in merged     # 40 days ago → outside the window
+
+
+async def test_weekly_run_volume_groups_by_iso_week(session):
+    import collections
+    import datetime as dt
+    today = dt.date.today()
+    runs = {
+        today.isoformat(): ("running", 5.0),
+        (today - dt.timedelta(days=1)).isoformat(): ("trail_running", 8.0),
+        (today - dt.timedelta(days=14)).isoformat(): ("running", 10.0),
+    }
+    aid = 1
+    for ds, (typ, km) in runs.items():
+        await repository.upsert_activity(session, U1, aid, {"date": ds, "type": typ, "dist_km": km})
+        aid += 1
+    # a non-run and an out-of-window run must be excluded
+    await repository.upsert_activity(session, U1, 90, {
+        "date": today.isoformat(), "type": "cycling", "dist_km": 30.0})
+    await repository.upsert_activity(session, U1, 91, {
+        "date": (today - dt.timedelta(weeks=20)).isoformat(), "type": "running", "dist_km": 99.0})
+    await session.commit()
+
+    vol = await repository.weekly_run_volume(session, U1, weeks=8)
+    assert vol == sorted(vol, key=lambda b: b["week"])          # oldest first
+    assert round(sum(b["km"] for b in vol), 1) == 23.0          # cycling + old run excluded
+
+    exp = collections.defaultdict(lambda: {"km": 0.0, "runs": 0, "longest": 0.0})
+    for ds, (_t, km) in runs.items():
+        w = dt.date.fromisoformat(ds).strftime("%G-W%V")
+        exp[w]["km"] += km
+        exp[w]["runs"] += 1
+        exp[w]["longest"] = max(exp[w]["longest"], km)
+    weeks = {b["week"]: b for b in vol}
+    assert set(weeks) == set(exp)
+    for w, e in exp.items():
+        assert weeks[w]["km"] == round(e["km"], 1)
+        assert weeks[w]["runs"] == e["runs"]
+        assert weeks[w]["longest_km"] == round(e["longest"], 1)
