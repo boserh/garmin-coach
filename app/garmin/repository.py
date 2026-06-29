@@ -182,6 +182,16 @@ async def weekly_run_volume(
 
 # ---------- WRITE ----------
 
+def _dump_steps(steps) -> Optional[list]:
+    """Serialize a workout's structured steps (PlanStep models or plain dicts) to a
+    JSON-storable list, dropping null fields. None/empty → None (stored as JSON null)."""
+    if not steps:
+        return None
+    out = [s.model_dump(exclude_none=True) if hasattr(s, "model_dump") else s
+           for s in steps]
+    return out or None
+
+
 async def upsert_daily(session: AsyncSession, user_id: int, s: DailySummary) -> None:
     existing = (
         await session.execute(
@@ -439,7 +449,8 @@ async def create_plan(
     for w in workouts:
         session.add(PlannedWorkout(
             plan_id=plan.id, user_id=user_id, date=w.date, week=w.week,
-            type=w.type, dist_km=w.dist_km, description=w.description, status="planned",
+            type=w.type, dist_km=w.dist_km, description=w.description,
+            steps=_dump_steps(getattr(w, "steps", None)), status="planned",
         ))
     await session.commit()
     return plan
@@ -470,7 +481,8 @@ async def apply_plan_ops(session: AsyncSession, plan: TrainingPlan, ops: list) -
             session.add(PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
                 type=op.type or "easy", dist_km=op.dist_km,
-                description=op.description or "", status="planned",
+                description=op.description or "",
+                steps=_dump_steps(getattr(op, "steps", None)), status="planned",
             ))
             applied += 1
             continue
@@ -490,6 +502,8 @@ async def apply_plan_ops(session: AsyncSession, plan: TrainingPlan, ops: list) -
                 w.dist_km = op.dist_km
             if op.description is not None:
                 w.description = op.description
+            if getattr(op, "steps", None) is not None:
+                w.steps = _dump_steps(op.steps)
             applied += 1
     await session.commit()
     return applied

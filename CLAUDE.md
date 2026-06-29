@@ -244,7 +244,9 @@ legacy and no longer used by these routes.
   `exercises` JSON + `series` JSON — per-point pace/HR for runs + `analysis` text —
   Claude's `/activity` writeup), `ReportLog` (cost/metrics + `question`/`report_text`),
   `BotState` (key/value), `TrainingPlan` (goal/params/intake/summary, one active per
-  user) + `PlannedWorkout` (dated session: type/dist/description/status).
+  user) + `PlannedWorkout` (dated session: type/dist/description/status + `steps` JSON —
+  structured warmup/run/recovery/cooldown/repeat breakdown with pace ranges, for richer
+  detail and a future Garmin-Connect workout export).
 - **DB as cache**: past days already stored are served from the DB instead of
   re-hitting Garmin; today is always refetched (still syncing). `build_payload_cached`
   persists what it fetches, so history accumulates.
@@ -363,7 +365,14 @@ web detail page) and logs a `ReportLog` (kind="activity"). Shares the dedup cach
 a dated program (distinct from the Garmin-Calendar `planned_runs` we merely read). This is
 the one place we need **structured LLM output**: `SYSTEM_PLAN` returns JSON validated by
 `GeneratedPlan`/`PlanWorkout` (`_coerce_plan` slices to the outer `{...}`; one retry, else
-`AnalystError`). `run_plan_generation` feeds compact context (recent runs + recovery trend),
+`AnalystError`). Each workout carries both a human `description` (warmup/cooldown, pace as a
+**range**, HR/fuel cues) and structured `steps` (`PlanStep` — recursive: warmup/run/recovery/
+cooldown/repeat, `dist_m`|`dur_s`, `pace_min_km` `[fast, slow]`, mirrors the Runna
+`planned_runs[].detail.steps` shape) — persisted on `PlannedWorkout.steps` and rendered as
+chips on `/plan` (`plan._fmt_step`); the `steps` are also what a future Garmin-Connect workout
+export maps from. Generation runs on **Opus** (`MODEL_PLAN_GEN`, `max_tokens=16000` so a long
+plan with steps fits). `run_plan_generation` feeds compact context (recent runs + recovery
+trend, weekly volume, fitness/load snapshot),
 persists a `TrainingPlan` + `PlannedWorkout` rows via `repository.create_plan` (archiving any
 prior active plan), and logs `ReportLog(kind="plan")`. Adjustments are **free-text in the
 bot**: `/plan <текст>` → `run_plan_edit` (`SYSTEM_PLAN_EDIT` → `PlanEdit` operations
