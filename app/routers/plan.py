@@ -4,8 +4,10 @@ A logged-in user picks a goal and a few intake answers (``GET/POST /plan``); we 
 Claude to generate a dated program (``app.analysis.service.run_plan_generation``) and
 store it. Day-to-day adjustments happen in the bot (free text). One active plan per user.
 """
+import asyncio
 import datetime as dt
 import logging
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -15,10 +17,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.service import AnalystError, run_plan_generation
 from app.core.auth import current_user
+from app.db.base import async_session_maker
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository
 from app.garmin.runtime import user_runtime
+
+# Per-user BotState key tracking an in-flight (Opus, slow) plan generation: "pending"
+# while running, "err:<msg>" on failure, cleared once the new plan is active. Generation
+# runs in a background task so the request returns immediately (no gateway 504).
+PLAN_GEN_KEY = "plan_gen"
+# A "pending:<epoch>" older than this is treated as dead (e.g. the worker restarted
+# mid-generation) so /plan falls back to the form instead of spinning forever.
+PLAN_GEN_STALE_S = 600
+_bg_tasks: set = set()
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -84,12 +96,65 @@ def _by_week(workouts):
     return [(wk, weeks[wk]) for wk in sorted(weeks)]
 
 
+async def _generate_plan_bg(user_id: int, params: dict) -> None:
+    """Run the (slow, Opus) plan generation off the request path, in its own DB session.
+    Writes the result via ``run_plan_generation``; updates the per-user ``PLAN_GEN_KEY``
+    state so ``GET /plan`` can show progress/result. Never raises — failures land in state."""
+    async with async_session_maker() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            return
+        try:
+            async with user_runtime(session, user) as creds:
+                plan = await run_plan_generation(
+                    session, user_id=user_id, api_key=creds.anthropic_key, **params)
+            await repository.set_state(session, user_id, PLAN_GEN_KEY, "")  # done
+            logger.info(f"PLAN created id={plan.id} user={user_id} (background)")
+        except AnalystError as e:
+            logger.warning(f"PLAN generate failed user={user_id}: {e}")
+            await repository.set_state(session, user_id, PLAN_GEN_KEY, f"err:{str(e)[:200]}")
+        except Exception:
+            logger.exception(f"PLAN background generation crashed user={user_id}")
+            await repository.set_state(session, user_id, PLAN_GEN_KEY, "err:Внутрішня помилка.")
+
+
+def _pending_stale(state: str) -> bool:
+    """True if a ``pending:<epoch>`` marker is older than the staleness window (or has
+    no parseable timestamp) — i.e. the background job likely died."""
+    ts = state.split(":", 1)[1] if ":" in state else ""
+    try:
+        return time.time() - int(ts) > PLAN_GEN_STALE_S
+    except ValueError:
+        return True
+
+
+def _spawn_plan_generation(user_id: int, params: dict) -> None:
+    """Fire-and-forget the background generation, keeping a reference so it isn't GC'd."""
+    task = asyncio.create_task(_generate_plan_bg(user_id, params))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
 @router.get("/plan", response_class=HTMLResponse)
 async def plan_page(
     request: Request,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    # A background generation is in flight → show the waiting page (auto-refreshes),
+    # unless it's gone stale (worker died) — then fall through as an error.
+    gen = await repository.get_state(session, user.id, PLAN_GEN_KEY) or ""
+    error = request.query_params.get("error")
+    if gen.startswith("pending"):
+        if not _pending_stale(gen):
+            return templates.TemplateResponse(request, "plan_generating.html", {"user": user})
+        logger.warning(f"PLAN generation went stale user={user.id} — falling back to form")
+        await repository.set_state(session, user.id, PLAN_GEN_KEY, "")
+        error = error or "gen"
+    elif gen.startswith("err:"):
+        await repository.set_state(session, user.id, PLAN_GEN_KEY, "")  # consume once
+        error = error or "gen"
+
     plan = await repository.get_active_plan(session, user.id)
     if plan is None:
         return templates.TemplateResponse(
@@ -97,7 +162,7 @@ async def plan_page(
             {"user": user, "goals": GOALS, "weekdays": WEEKDAYS,
              "default_days": ["tue", "thu", "sun"], "default_long": "sun",
              "today": dt.date.today().isoformat(),
-             "error": request.query_params.get("error")},
+             "error": error},
         )
     workouts = await repository.list_workouts(session, plan.id)
     return templates.TemplateResponse(
@@ -166,20 +231,23 @@ async def plan_create(
         "notes": notes.strip() or None,
         "run_days": run_days, "long_run_day": long_run_day,
     }
+    # Ignore a duplicate submit while one is already running (and not stale).
+    cur = await repository.get_state(session, user.id, PLAN_GEN_KEY) or ""
+    if cur.startswith("pending") and not _pending_stale(cur):
+        return RedirectResponse("/plan", status_code=303)
+
+    # Generation is a slow Opus call — run it in the background and return immediately,
+    # otherwise the gateway times out (504). GET /plan polls the PLAN_GEN_KEY state.
+    params = {
+        "goal": goal, "goal_label": GOALS[goal],
+        "target_date": target_date or None, "start_date": dt.date.today().isoformat(),
+        "days_per_week": len(run_days), "intensity": intensity, "intake": intake,
+        "run_days": run_days, "long_run_day": long_run_day,
+    }
+    await repository.set_state(session, user.id, PLAN_GEN_KEY, f"pending:{int(time.time())}")
     logger.info(f"PLAN generate requested user={user.id} goal={goal} days={run_days}")
-    async with user_runtime(session, user) as creds:
-        try:
-            plan = await run_plan_generation(
-                session, user_id=user.id, goal=goal, goal_label=GOALS[goal],
-                target_date=target_date or None, start_date=dt.date.today().isoformat(),
-                days_per_week=len(run_days), intensity=intensity, intake=intake,
-                run_days=run_days, long_run_day=long_run_day, api_key=creds.anthropic_key,
-            )
-        except AnalystError as e:
-            logger.warning(f"PLAN generate failed user={user.id}: {e}")
-            return RedirectResponse("/plan?error=gen", status_code=303)
-    logger.info(f"PLAN created id={plan.id} user={user.id}")
-    return RedirectResponse("/plan?created=1", status_code=303)
+    _spawn_plan_generation(user.id, params)
+    return RedirectResponse("/plan", status_code=303)
 
 
 @router.post("/plan/archive")
