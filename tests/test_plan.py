@@ -10,7 +10,7 @@ from app.analysis.service import (
     run_plan_generation,
 )
 from app.garmin import repository
-from app.garmin.schemas import GeneratedPlan, PlanEdit, PlanOp, PlanWorkout
+from app.garmin.schemas import GeneratedPlan, PlanEdit, PlanOp, PlanStep, PlanWorkout
 
 U1 = 1
 
@@ -62,6 +62,57 @@ async def test_run_plan_generation_persists_and_archives(session):
             intensity="easy", intake={}, api_key=None)
     active = await repository.get_active_plan(session, U1)
     assert active.id == plan2.id
+
+
+def test_coerce_plan_parses_structured_steps_with_repeat():
+    raw = ('{"summary": "s", "workouts": [{"date": "2026-07-01", "week": 6, '
+           '"type": "intervals", "dist_km": 6.0, "description": "d", "steps": ['
+           '{"kind": "warmup", "dist_m": 1500, "pace_min_km": null}, '
+           '{"kind": "repeat", "reps": 5, "steps": ['
+           '{"kind": "run", "dur_s": 180, "pace_min_km": [5.25, 5.4]}, '
+           '{"kind": "recovery", "dur_s": 120, "pace_min_km": null}]}, '
+           '{"kind": "cooldown", "dist_m": 1500}]}]}')
+    w = _coerce_plan(raw).workouts[0]
+    assert w.steps[0].kind == "warmup" and w.steps[0].dist_m == 1500
+    rep = w.steps[1]
+    assert rep.kind == "repeat" and rep.reps == 5
+    assert rep.steps[0].dur_s == 180 and rep.steps[0].pace_min_km == [5.25, 5.4]
+
+
+async def test_run_plan_generation_persists_steps(session):
+    gen = GeneratedPlan(summary="s", workouts=[PlanWorkout(
+        date="2026-07-01", week=1, type="easy", dist_km=4.0, description="легко",
+        steps=[PlanStep(kind="run", dist_m=4000, pace_min_km=[6.75, 7.0])])])
+    with patch.object(service, "generate_plan_with_stats",
+                      return_value=(gen, CallStats(kind="plan", model="m"))):
+        plan = await run_plan_generation(
+            session, user_id=U1, goal="first_5k", goal_label="x", target_date=None,
+            start_date="2026-06-25", days_per_week=2, intensity="easy", intake={}, api_key=None)
+    ws = await repository.list_workouts(session, plan.id)
+    # PlanStep persisted as a plain JSON dict, nulls dropped
+    assert ws[0].steps == [{"kind": "run", "dist_m": 4000, "pace_min_km": [6.75, 7.0]}]
+
+
+async def test_apply_plan_ops_add_carries_steps(session):
+    plan = await _seed_plan(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="easy", dist_km=5.0, description="x",
+        steps=[PlanStep(kind="run", dist_m=5000, pace_min_km=[6.75, 7.0])])])
+    by_date = {w.date: w for w in await repository.list_workouts(session, plan.id)}
+    assert by_date["2026-07-02"].steps == [
+        {"kind": "run", "dist_m": 5000, "pace_min_km": [6.75, 7.0]}]
+
+
+def test_fmt_step_renders_human_labels():
+    from app.routers.plan import _fmt_step, _pace
+    assert _pace(6.75) == "6:45"
+    assert _fmt_step({"kind": "run", "dist_m": 4000,
+                      "pace_min_km": [6.75, 7.0]}) == "біг 4.0 км @ 6:45–7:00/км"
+    assert _fmt_step({"kind": "warmup", "dist_m": 1500, "pace_min_km": None}) == "розминка 1.5 км"
+    rep = _fmt_step({"kind": "repeat", "reps": 5, "steps": [
+        {"kind": "run", "dur_s": 180, "pace_min_km": [5.25, 5.4]},
+        {"kind": "recovery", "dur_s": 120, "pace_min_km": None}]})
+    assert rep == "5× (біг 3 хв @ 5:15–5:24/км + відновлення 2 хв)"
 
 
 def test_coerce_edit_parses():

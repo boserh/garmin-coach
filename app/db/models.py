@@ -195,6 +195,9 @@ class PlannedWorkout(Base):
     type: Mapped[Optional[str]] = mapped_column(String(16))  # easy/long/tempo/intervals/rest/cross
     dist_km: Mapped[Optional[float]] = mapped_column(Float)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    # Structured step breakdown (warmup/run/recovery/cooldown/repeat, pace ranges) — both
+    # richer detail and a future Garmin-Connect workout export. See schemas.PlanStep.
+    steps: Mapped[Optional[list]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
