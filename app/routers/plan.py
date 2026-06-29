@@ -23,6 +23,41 @@ from app.garmin.runtime import user_runtime
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+
+def _fmt_step(s: dict) -> str:
+    """Render one structured workout step as a compact human label, e.g.
+    'розминка 1.5 км', 'біг 3 хв @ 5:15–5:24/км', '5× (…)'."""
+    kinds = {"warmup": "розминка", "run": "біг", "recovery": "відновлення",
+             "cooldown": "заминка", "repeat": "повтор"}
+    if not isinstance(s, dict):
+        return ""
+    if s.get("kind") == "repeat":
+        inner = " + ".join(_fmt_step(x) for x in (s.get("steps") or []))
+        return f"{s.get('reps', '')}× ({inner})"
+    label = kinds.get(s.get("kind"), s.get("kind") or "")
+    dist_m, dur_s = s.get("dist_m"), s.get("dur_s")
+    if isinstance(dist_m, (int, float)):
+        amount = f"{dist_m / 1000:.1f} км".rstrip()
+    elif isinstance(dur_s, (int, float)):
+        amount = f"{int(dur_s // 60)} хв" if dur_s >= 60 else f"{int(dur_s)} с"
+    else:
+        amount = ""
+    pace = s.get("pace_min_km")
+    pace_str = ""
+    if isinstance(pace, (list, tuple)) and len(pace) == 2 and all(
+            isinstance(p, (int, float)) for p in pace):
+        pace_str = f" @ {_pace(pace[0])}–{_pace(pace[1])}/км"
+    return " ".join(p for p in (label, amount) if p) + pace_str
+
+
+def _pace(dec: float) -> str:
+    """Decimal min/km → m:ss (6.75 → 6:45)."""
+    total = round(dec * 60)
+    return f"{total // 60}:{total % 60:02d}"
+
+
+templates.env.filters["fmt_step"] = _fmt_step
+
 logger = logging.getLogger("plan")
 
 router = APIRouter(tags=["plan"])
