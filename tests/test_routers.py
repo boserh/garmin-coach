@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core.crypto import hash_password
 from app.db import users
+from app.db.base import async_session_maker
 from app.garmin import service
 from app.main import create_app
 
@@ -313,18 +314,24 @@ def test_plan_setup_then_view(auth_client):
                                   dist_km=4.0, description="легкий біг")],
         )
 
-    with patch.object(plan_router, "run_plan_generation", fake_gen):
+    # POST returns immediately (background generation); GET then shows the waiting page.
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
         r = auth_client.post(
             "/plan",
             data={"goal": "first_5k", "run_days": ["tue", "thu", "sun"],
                   "long_run_day": "sun", "intensity": "moderate"},
             follow_redirects=False,
         )
-    assert r.status_code == 303 and r.headers["location"] == "/plan?created=1"
+    assert r.status_code == 303 and r.headers["location"] == "/plan"
+    assert spawn.call_count == 1
+    user_id, params = spawn.call_args.args
+    assert "Складаємо" in auth_client.get("/plan").text   # pending → waiting page
 
-    view = auth_client.get("/plan?created=1").text
+    # Run the background job deterministically (Claude mocked), then the plan shows.
+    with patch.object(plan_router, "run_plan_generation", fake_gen):
+        anyio.run(plan_router._generate_plan_bg, user_id, params)
+    view = auth_client.get("/plan").text
     assert "Перші 5 км" in view and "тестовий підхід" in view and "легкий біг" in view
-    assert "Програму створено" in view
 
 
 def test_plan_rejects_fewer_than_two_run_days(auth_client):
@@ -608,3 +615,51 @@ def test_ui_daily_metrics_has_trend_chart(auth_client):
     assert "<polyline" in body
     # other tables get no chart
     assert 'class="charts"' not in auth_client.get("/ui/report_logs").text
+
+
+def _set_plan_state(value):
+    from app.garmin import repository
+
+    async def go():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            await repository.set_state(s, u.id, "plan_gen", value)
+
+    anyio.run(go)
+
+
+def _archive_all_plans():
+    from sqlalchemy import update
+
+    from app.db.models import TrainingPlan
+
+    async def go():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            await s.execute(update(TrainingPlan).where(
+                TrainingPlan.user_id == u.id).values(status="archived"))
+            await s.commit()
+
+    anyio.run(go)
+
+
+def test_plan_get_surfaces_background_error_once(auth_client):
+    _archive_all_plans()        # no active plan → the setup form renders
+    _set_plan_state("err:boom")
+    assert "Не вдалось згенерувати" in auth_client.get("/plan").text
+    # the error is consumed on first view — a reload no longer shows it
+    assert "Не вдалось згенерувати" not in auth_client.get("/plan").text
+
+
+def test_plan_post_invalid_days_does_not_spawn(auth_client):
+    _set_plan_state("")  # clear any leftover pending from a prior test
+    from app.routers import plan as plan_router
+
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        r = auth_client.post(
+            "/plan",
+            data={"goal": "first_5k", "run_days": ["tue"], "intensity": "easy"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303 and r.headers["location"] == "/plan?error=days"
+    assert spawn.call_count == 0
