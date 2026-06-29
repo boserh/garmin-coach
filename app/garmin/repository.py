@@ -87,18 +87,32 @@ async def get_activity(session: AsyncSession, user_id: int, row_id: int):
     ).scalar_one_or_none()
 
 
-async def get_latest_daily_extra(session: AsyncSession, user_id: int) -> dict:
-    """The most recent day's ``extra`` dict (race predictions, VO2max, endurance, …),
-    used to calibrate plan generation to current fitness."""
-    row = (
+async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) -> dict:
+    """Merge the last ``days`` days of ``extra`` into one dict — the most recent non-null
+    value wins per key. Garmin metrics refresh at different cadences (race predictions &
+    VO2max ~weekly, Training Readiness daily, HRV/RHR baselines slowly), so any single
+    day rarely carries them all; coalescing gives plan generation the freshest value of
+    each (race predictions, VO2max, endurance, ACWR/load, baselines, …)."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    rows = (
         await session.execute(
             select(DailyMetric.extra)
-            .where(DailyMetric.user_id == user_id, DailyMetric.extra.is_not(None))
-            .order_by(DailyMetric.date.desc())
-            .limit(1)
+            .where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.extra.is_not(None),
+                DailyMetric.date >= cutoff,
+            )
+            .order_by(DailyMetric.date.desc())  # newest first → first non-null wins
         )
-    ).first()
-    return (row[0] if row else None) or {}
+    ).scalars().all()
+    merged: dict = {}
+    for ex in rows:
+        if not isinstance(ex, dict):
+            continue
+        for k, v in ex.items():
+            if v is not None and k not in merged:
+                merged[k] = v
+    return merged
 
 
 async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> List[dict]:
@@ -122,9 +136,48 @@ async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> L
             "stress_max": m.stress_max,
             "bb_charged": m.bb_charged,
             "bb_drained": m.bb_drained,
+            # resting HR drift is a key fatigue marker; it lives in extra, not a column
+            "resting_hr": (m.extra or {}).get("resting_hr"),
         }
         for m in rows
     ]
+
+
+async def weekly_run_volume(
+    session: AsyncSession, user_id: int, weeks: int = 8
+) -> List[dict]:
+    """Running volume per ISO week over the last ``weeks`` weeks (oldest first), summed
+    from stored activities — the core signal for calibrating safe progression (~10%/week).
+    Each entry: ``{week: 'YYYY-Www', km, runs, longest_km}``."""
+    cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord.date, ActivityRecord.dist_km).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+            )
+        )
+    ).all()
+    buckets: dict = {}
+    for date_s, dist in rows:
+        try:
+            label = dt.date.fromisoformat(date_s).strftime("%G-W%V")
+        except (TypeError, ValueError):
+            continue
+        b = buckets.setdefault(
+            label, {"week": label, "km": 0.0, "runs": 0, "longest_km": 0.0}
+        )
+        km = dist or 0.0
+        b["km"] += km
+        b["runs"] += 1
+        b["longest_km"] = max(b["longest_km"], km)
+    out = sorted(buckets.values(), key=lambda x: x["week"])
+    for b in out:
+        b["km"] = round(b["km"], 1)
+        b["longest_km"] = round(b["longest_km"], 1)
+    return out
 
 
 # ---------- WRITE ----------
