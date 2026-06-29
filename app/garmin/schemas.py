@@ -67,6 +67,23 @@ class Payload(BaseModel):
     planned_runs: List[PlannedRun]
 
 
+class PlanStep(BaseModel):
+    """One step of a structured workout — mirrors the Runna ``planned_runs[].detail.steps``
+    shape (``dist_m`` + ``pace_min_km`` range) extended with warmup/cooldown/recovery and
+    ``repeat`` blocks. Carries both the human detail and a future Garmin-Connect workout
+    export. Pace is a ``[fast, slow]`` range in DECIMAL min/km (e.g. [5.83, 6.17] = 5:50–6:10)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str                                  # warmup / run / recovery / cooldown / repeat
+    dist_m: Optional[float] = None             # distance-based step
+    dur_s: Optional[int] = None                # time-based step (e.g. intervals)
+    pace_min_km: Optional[List[float]] = None  # [fast, slow] target range
+    reps: Optional[int] = None                 # kind=repeat: how many times
+    steps: Optional[List["PlanStep"]] = None   # kind=repeat: the repeated sub-steps
+    note: Optional[str] = None                 # optional short label (українською)
+
+
 class PlanWorkout(BaseModel):
     """One dated session in a generated training plan (Claude's structured output)."""
 
@@ -77,6 +94,7 @@ class PlanWorkout(BaseModel):
     type: str                       # easy / long / tempo / intervals / rest / cross
     dist_km: Optional[float] = None
     description: str
+    steps: Optional[List[PlanStep]] = None   # structured breakdown (Garmin-exportable)
 
 
 class GeneratedPlan(BaseModel):
@@ -101,6 +119,7 @@ class PlanOp(BaseModel):
     type: Optional[str] = None
     dist_km: Optional[float] = None
     description: Optional[str] = None
+    steps: Optional[List[PlanStep]] = None   # structured breakdown for add/modify
 
 
 class PlanEdit(BaseModel):
@@ -110,3 +129,6 @@ class PlanEdit(BaseModel):
 
     summary: str
     operations: List[PlanOp]
+
+
+PlanStep.model_rebuild()  # resolve the self-referential `steps` forward ref

@@ -26,6 +26,9 @@
     .badge { display: inline-block; font-size: .72rem; padding: .05rem .4rem; border-radius: 5px;
              background: #1f2733; color: #6cb6ff; }
     .rest { color: #8b949e; }
+    .steps { margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .35rem; }
+    .step { font-size: .74rem; padding: .1rem .45rem; border-radius: 5px;
+            background: #14171f; border: 1px solid #2a2f3a; color: #adbac7; }
     form.inline { display: inline; }
     button.arch { margin-top: 1.5rem; padding: .4rem 1rem; border: 0; border-radius: 8px;
       background: #3a2326; color: #ff7b72; font-size: .85rem; cursor: pointer; }
@@ -64,6 +67,9 @@
             {% if w.dist_km %}<span class="badge">{{ '%.1f'|format(w.dist_km) }} км</span>{% endif %}
             {% if w.status == 'done' %}<span class="badge">✓</span>
             {% elif w.status == 'skipped' %}<span class="badge">пропущено</span>{% endif %}
+            {% if w.steps %}
+            <div class="steps">{% for s in w.steps %}<span class="step">{{ s|fmt_step }}</span>{% endfor %}</div>
+            {% endif %}
           </div>
         </div>
       {% endfor %}
