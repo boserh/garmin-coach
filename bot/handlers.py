@@ -228,22 +228,49 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
     if not edit.operations:
         await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
         return
-    ctx.user_data["pending_plan_ops"] = [op.model_dump() for op in edit.operations]
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
-        InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
-    ]])
-    await update.message.reply_text("Пропоную:\n\n" + edit.summary, reply_markup=kb)
+    ops = [op.model_dump() for op in edit.operations]
+    alt = [op.model_dump() for op in (edit.alt_operations or [])]
+    ctx.user_data["pending_plan"] = {"ops": ops, "alt": alt}
+
+    if edit.risky and alt:
+        # risky request → keep what the user asked AND offer the coach's safer version,
+        # so the user explicitly chooses (apply-as-asked / take-suggestion / cancel).
+        text = "⚠️ " + edit.summary
+        if edit.alt_summary:
+            text += "\n\n🛡 Безпечніше: " + edit.alt_summary
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ Як просив{_ops_hint(ops)}", callback_data="plan_apply")],
+            [InlineKeyboardButton(f"🛡 Пропоноване{_ops_hint(alt)}",
+                                  callback_data="plan_apply_alt")],
+            [InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel")],
+        ])
+    else:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
+            InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
+        ]])
+        text = "Пропоную:\n\n" + edit.summary
+    await update.message.reply_text(text, reply_markup=kb)
+
+
+def _ops_hint(ops: list) -> str:
+    """A short ' · N км' hint for a button label, from the first op carrying a distance."""
+    for o in ops:
+        d = o.get("dist_km")
+        if d:
+            return f" · {d:.0f} км"
+    return ""
 
 
 async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    pending = ctx.user_data.pop("pending_plan", None)
     if q.data == "plan_cancel":
-        ctx.user_data.pop("pending_plan_ops", None)
-        await q.edit_message_text("Скасовано.")
+        await q.edit_message_text("Скасовано. План без змін.")
         return
-    ops_data = ctx.user_data.pop("pending_plan_ops", None)
+    # plan_apply → the literal request; plan_apply_alt → the safer counter-proposal.
+    ops_data = (pending or {}).get("alt" if q.data == "plan_apply_alt" else "ops")
     if not ops_data:
         await q.edit_message_text("Немає змін для застосування.")
         return

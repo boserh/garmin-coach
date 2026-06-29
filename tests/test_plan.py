@@ -121,6 +121,27 @@ def test_coerce_edit_parses():
         '"type": "easy", "dist_km": 5.0, "description": "легко"}]}'
     )
     assert e.summary == "додаю" and e.operations[0].action == "add"
+    # a plain edit defaults to not-risky with no alternative
+    assert e.risky is False and e.alt_operations is None
+
+
+def test_coerce_edit_parses_risky_with_alternative():
+    raw = ('{"summary": "20 км швидко — різкий стрибок, ризик травми", "risky": true, '
+           '"operations": [{"action": "modify", "date": "2026-08-22", "dist_km": 20.0, '
+           '"type": "tempo"}], '
+           '"alt_summary": "Краще 8 км легко", '
+           '"alt_operations": [{"action": "modify", "date": "2026-08-22", "dist_km": 8.0, '
+           '"type": "easy"}]}')
+    e = _coerce_edit(raw)
+    assert e.risky is True
+    assert e.operations[0].dist_km == 20.0          # the literal request is preserved
+    assert e.alt_operations[0].dist_km == 8.0       # the safer counter-proposal
+
+
+def test_ops_hint_label():
+    from bot.handlers import _ops_hint
+    assert _ops_hint([{"action": "modify", "date": "x", "dist_km": 20.0}]) == " · 20 км"
+    assert _ops_hint([{"action": "skip", "date": "x"}]) == ""
 
 
 async def _seed_plan(session):
