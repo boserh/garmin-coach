@@ -37,7 +37,8 @@ MODEL_DAILY = "claude-sonnet-4-6"
 MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-4-6"   # follow-up Q&A: cheap, grounded in recent reports
 MODEL_ACTIVITY = "claude-sonnet-4-6"   # single-activity analysis (/activity)
-MODEL_PLAN = "claude-sonnet-4-6"       # training-plan generation
+MODEL_PLAN_GEN = MODEL_DEEP            # plan generation: reasoning-heavy + rare → Opus
+MODEL_PLAN = "claude-sonnet-4-6"       # plan edits (/plan <text>): small, mechanical → Sonnet
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
@@ -605,7 +606,7 @@ def generate_plan_with_stats(
     """Generate a structured training plan. Returns (GeneratedPlan, stats); one retry
     with a stricter JSON nudge before giving up. Raises AnalystError on API/parse failure.
     Not dedup-cached — dates are relative to today, so every generation is fresh."""
-    model = MODEL_PLAN
+    model = MODEL_PLAN_GEN
     text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=8192)
     try:
         return _coerce_plan(text), stats
@@ -668,7 +669,7 @@ async def run_plan_generation(
         plan_out, stats = await run_in_threadpool(generate_plan_with_stats, context, api_key)
     except AnalystError as e:
         await repository.log_report(
-            session, user_id=user_id, kind="plan", model=MODEL_PLAN, ok=False,
+            session, user_id=user_id, kind="plan", model=MODEL_PLAN_GEN, ok=False,
             question=goal, error=str(e)[:512],
         )
         raise
