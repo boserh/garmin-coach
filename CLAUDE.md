@@ -309,8 +309,11 @@ scheduled `morning_job` (with the time-window + once-a-day guard) and
 and `/test_on` (repeating) call the latter, so a test exercises the **exact** morning path
 incl. weather, without consuming the day's guard.
 
-**Models**: `/report` + morning use `claude-sonnet-4-6`; `/deep` uses `claude-opus-4-8`.
-Every call is logged to `ReportLog` (tokens, cost, ok/error).
+**Models**: `/report` + morning + `/ask` + `/activity` use `claude-sonnet-4-6`; `/deep`
+and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
+cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
+(`MODEL_PLAN`) — small and mechanical. Every call is logged to `ReportLog` (tokens, cost,
+ok/error).
 
 **`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
 (3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
