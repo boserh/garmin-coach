@@ -123,12 +123,20 @@ class PlanOp(BaseModel):
 
 
 class PlanEdit(BaseModel):
-    """Proposed changes to the active plan: a human-readable summary + operations."""
+    """Proposed changes to the active plan: a human-readable summary + operations.
+
+    ``operations`` is always the user's literal request. When that request is risky
+    (a big jump in distance/intensity, breaks ~10%/week, etc.) ``risky`` is set and a
+    safer counter-proposal is offered via ``alt_summary``/``alt_operations`` — the bot
+    then shows a third button so the user can take the suggestion instead."""
 
     model_config = ConfigDict(extra="ignore")
 
     summary: str
     operations: List[PlanOp]
+    risky: bool = False
+    alt_summary: Optional[str] = None
+    alt_operations: Optional[List[PlanOp]] = None
 
 
 PlanStep.model_rebuild()  # resolve the self-referential `steps` forward ref
