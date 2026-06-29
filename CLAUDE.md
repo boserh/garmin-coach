@@ -377,8 +377,13 @@ persists a `TrainingPlan` + `PlannedWorkout` rows via `repository.create_plan` (
 prior active plan), and logs `ReportLog(kind="plan")`. Adjustments are **free-text in the
 bot**: `/plan <текст>` → `run_plan_edit` (`SYSTEM_PLAN_EDIT` → `PlanEdit` operations
 add/move/modify/skip) returns a *proposed* change; the bot shows it with inline ✅/❌ buttons
-(`plan_callback`, pending ops in `context.user_data`) and only `repository.apply_plan_ops`
-on confirm. Plain `/plan` shows upcoming workouts. The shared `_complete` helper centralises
+(`plan_callback`, pending ops in `context.user_data["pending_plan"]`) and only
+`repository.apply_plan_ops` on confirm. **Risky edits** (a big distance/intensity jump, etc.):
+`PlanEdit.operations` always holds the *literal* request, but the prompt also sets `risky` and
+returns a safer counter-proposal (`alt_summary`/`alt_operations`); the bot then offers a third
+button (✅ as-asked / 🛡 take-suggestion / ❌ cancel — `plan_apply` / `plan_apply_alt` /
+`plan_cancel`), so the user decides with the risk spelled out. Plain `/plan` shows upcoming
+workouts. The shared `_complete` helper centralises
 the Claude call for both. Recovery-adaptive behaviour (reports reacting to HRV/sleep) is not
 wired yet. NB the prompt-for-JSON + Pydantic + one-retry choice avoids SDK tool-use, matching
 the rest of the `messages.create` usage.
