@@ -269,6 +269,30 @@ def fetch_activity_series(activity_id, max_points: int = 150) -> list:
     return series
 
 
+def create_workout(payload: dict) -> dict:
+    """Create a saved workout in Garmin Connect; returns the created DTO (incl.
+    ``workoutId``). Raises on HTTP error (callers handle write failures)."""
+    return _api("/workout-service/workout", method="POST", json=payload)
+
+
+def schedule_workout(workout_id, date_iso: str) -> dict:
+    """Put a saved workout onto a calendar date; returns the schedule DTO (incl.
+    ``workoutScheduleId``)."""
+    return _api(
+        f"/workout-service/schedule/{workout_id}", method="POST", json={"date": date_iso}
+    )
+
+
+def delete_workout(workout_id) -> None:
+    """Delete a saved workout (also removes any calendar schedule for it)."""
+    _api(f"/workout-service/workout/{workout_id}", method="DELETE")
+
+
+def delete_schedule(schedule_id) -> None:
+    """Unschedule a workout from the calendar (the saved workout stays)."""
+    _api(f"/workout-service/schedule/{schedule_id}", method="DELETE")
+
+
 def fetch_workout_detail(workout_id) -> dict:
     """Structure of a planned workout: name, coach description (Runna's free-text
     guidance, e.g. 'no faster than 7:15/km, a limit not a target'), and steps with
