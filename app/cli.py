@@ -128,13 +128,14 @@ async def _backfill_series(email: str, since: str) -> int:
     return 0
 
 
-async def _push_plan(email: str, days: int, dry_run: bool) -> int:
+async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> int:
     """Push the user's active-plan workouts in the next ``days`` to the Garmin calendar.
 
     A rolling window like Runna's — only upcoming ``planned`` running sessions are sent,
     and each is recorded (``garmin_workout_id``/``garmin_schedule_id``) so re-runs skip
-    what's already there (idempotent). ``--dry-run`` builds + prints the payloads without
-    writing to Garmin."""
+    what's already there (idempotent). ``--date`` pushes exactly that one session instead
+    of the window (for testing / re-pushing a single edit). ``--dry-run`` builds + prints
+    the payloads without writing to Garmin."""
     import datetime as dt
 
     from fastapi.concurrency import run_in_threadpool
@@ -159,15 +160,17 @@ async def _push_plan(email: str, days: int, dry_run: bool) -> int:
         end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
         upcoming = await repository.list_workouts(session, plan.id, upcoming_only=True)
         todo = [w for w in upcoming
-                if w.date <= end
+                if (w.date == date if date else w.date <= end)
                 and (w.type or "").lower() not in skip_types
                 and w.garmin_workout_id is None]
         if not todo:
-            print(f"Nothing to push (next {days} days already up to date).")
+            scope = date if date else f"next {days} days"
+            print(f"Nothing to push ({scope} already up to date).")
             return 0
 
+        where = date if date else f"through {end}"
         print(f"{'[dry-run] ' if dry_run else ''}Pushing {len(todo)} workout(s) "
-              f"for {email} (through {end})...")
+              f"for {email} ({where})...")
         if dry_run:
             for w in todo:
                 payload = workout_export.build_workout(w)
@@ -193,10 +196,11 @@ async def _push_plan(email: str, days: int, dry_run: bool) -> int:
     return 0
 
 
-async def _unpush_plan(email: str) -> int:
+async def _unpush_plan(email: str, date: str = None) -> int:
     """Remove from the Garmin calendar everything we pushed for the active plan, and
-    clear the stored ids (so a later push re-creates them fresh). Only touches workouts
-    we created (by saved ``garmin_workout_id``) — never your manual/Runna workouts."""
+    clear the stored ids (so a later push re-creates them fresh). ``--date`` limits it to
+    one session. Only touches workouts we created (by saved ``garmin_workout_id``) — never
+    your manual/Runna workouts."""
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client, repository
@@ -214,7 +218,8 @@ async def _unpush_plan(email: str) -> int:
             print("No active plan for this user.")
             return 1
         pushed = [w for w in await repository.list_workouts(session, plan.id)
-                  if w.garmin_workout_id is not None]
+                  if w.garmin_workout_id is not None
+                  and (w.date == date if date else True)]
         if not pushed:
             print("Nothing pushed for this plan.")
             return 0
@@ -315,10 +320,12 @@ def main(argv=None) -> int:
     pp = sub.add_parser("push-plan", help="Push upcoming plan workouts to the Garmin calendar")
     pp.add_argument("--email", required=True)
     pp.add_argument("--days", type=int, default=14, help="rolling window size (default 14)")
+    pp.add_argument("--date", help="push only the session on this ISO date (overrides --days)")
     pp.add_argument("--dry-run", action="store_true", help="build + print payloads, don't write")
 
     up = sub.add_parser("unpush-plan", help="Remove pushed plan workouts from the Garmin calendar")
     up.add_argument("--email", required=True)
+    up.add_argument("--date", help="remove only the session on this ISO date")
 
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
@@ -335,9 +342,9 @@ def main(argv=None) -> int:
     if args.cmd == "import-fit-series":
         return asyncio.run(_import_fit_series(args.email, args.path, args.since))
     if args.cmd == "push-plan":
-        return asyncio.run(_push_plan(args.email, args.days, args.dry_run))
+        return asyncio.run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
-        return asyncio.run(_unpush_plan(args.email))
+        return asyncio.run(_unpush_plan(args.email, args.date))
     return 0
 
 

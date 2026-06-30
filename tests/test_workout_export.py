@@ -19,8 +19,8 @@ def test_speed_conversion_matches_garmin():
 
 def test_name_marker_by_type():
     assert wx.workout_name(_w(week=3, type="intervals", dist_km=6.0)) == "⚡ Intervals 6km · W3"
-    assert wx.workout_name(_w(week=1, type="easy", dist_km=3.5)) == "· Easy 3.5km · W1"
-    assert wx.workout_name(_w(week=2, type="tempo", dist_km=8.0)) == "▲ Tempo 8km · W2"
+    assert wx.workout_name(_w(week=1, type="easy", dist_km=3.5)) == "🌿 Easy 3.5km · W1"
+    assert wx.workout_name(_w(week=2, type="tempo", dist_km=8.0)) == "🔥 Tempo 8km · W2"
 
 
 def test_fallback_single_distance_step_when_no_steps():
