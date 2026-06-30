@@ -17,9 +17,10 @@ def test_speed_conversion_matches_garmin():
     assert round(wx._speed(7 + 10 / 60), 5) == 2.32558     # 7:10/km
 
 
-def test_name_is_runna_style():
-    assert wx.workout_name(_w(week=3, date="2026-07-01", type="intervals", dist_km=6.0)) \
-        == "W3 Wed Intervals - 6km"
+def test_name_marker_by_type():
+    assert wx.workout_name(_w(week=3, type="intervals", dist_km=6.0)) == "⚡ Intervals 6km · W3"
+    assert wx.workout_name(_w(week=1, type="easy", dist_km=3.5)) == "· Easy 3.5km · W1"
+    assert wx.workout_name(_w(week=2, type="tempo", dist_km=8.0)) == "▲ Tempo 8km · W2"
 
 
 def test_fallback_single_distance_step_when_no_steps():
