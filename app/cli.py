@@ -128,6 +128,71 @@ async def _backfill_series(email: str, since: str) -> int:
     return 0
 
 
+async def _push_plan(email: str, days: int, dry_run: bool) -> int:
+    """Push the user's active-plan workouts in the next ``days`` to the Garmin calendar.
+
+    A rolling window like Runna's — only upcoming ``planned`` running sessions are sent,
+    and each is recorded (``garmin_workout_id``/``garmin_schedule_id``) so re-runs skip
+    what's already there (idempotent). ``--dry-run`` builds + prints the payloads without
+    writing to Garmin."""
+    import datetime as dt
+
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import client, repository, workout_export
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    # rest/cross-training sessions aren't runs — don't push them to the watch.
+    skip_types = {"rest", "cross", "strength"}
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+        end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
+        upcoming = await repository.list_workouts(session, plan.id, upcoming_only=True)
+        todo = [w for w in upcoming
+                if w.date <= end
+                and (w.type or "").lower() not in skip_types
+                and w.garmin_workout_id is None]
+        if not todo:
+            print(f"Nothing to push (next {days} days already up to date).")
+            return 0
+
+        print(f"{'[dry-run] ' if dry_run else ''}Pushing {len(todo)} workout(s) "
+              f"for {email} (through {end})...")
+        if dry_run:
+            for w in todo:
+                payload = workout_export.build_workout(w)
+                n = len(payload["workoutSegments"][0]["workoutSteps"])
+                print(f"  {w.date}  {payload['workoutName']}  ({n} step(s))")
+            return 0
+
+        async with user_runtime(session, user):
+            await run_in_threadpool(get_provider().login)
+            done = 0
+            for w in todo:
+                payload = workout_export.build_workout(w)
+                created = await run_in_threadpool(client.create_workout, payload)
+                wid = created.get("workoutId")
+                sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
+                w.garmin_workout_id = wid
+                w.garmin_schedule_id = sched.get("workoutScheduleId")
+                await session.commit()
+                done += 1
+                print(f"  {w.date}  {payload['workoutName']}  → workout {wid}")
+                await asyncio.sleep(0.3)  # be gentle on Garmin
+        print(f"Done: {done}/{len(todo)} pushed to the Garmin calendar.")
+    return 0
+
+
 async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
     await init_db()  # zero-config safety; Alembic remains the source of truth
     async with async_session_maker() as session:
@@ -202,6 +267,11 @@ def main(argv=None) -> int:
     fs.add_argument("--path", required=True, help="export folder (needs DI-Connect-Uploaded-Files)")
     fs.add_argument("--since", help="only runs from this ISO date onward")
 
+    pp = sub.add_parser("push-plan", help="Push upcoming plan workouts to the Garmin calendar")
+    pp.add_argument("--email", required=True)
+    pp.add_argument("--days", type=int, default=14, help="rolling window size (default 14)")
+    pp.add_argument("--dry-run", action="store_true", help="build + print payloads, don't write")
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
@@ -216,6 +286,8 @@ def main(argv=None) -> int:
         return asyncio.run(_import_export(args.email, args.path, args.overwrite, args.since))
     if args.cmd == "import-fit-series":
         return asyncio.run(_import_fit_series(args.email, args.path, args.since))
+    if args.cmd == "push-plan":
+        return asyncio.run(_push_plan(args.email, args.days, args.dry_run))
     return 0
 
 
