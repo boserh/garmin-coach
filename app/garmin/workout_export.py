@@ -106,21 +106,24 @@ def _build_steps(steps: List[dict]) -> List[dict]:
     return [conv(s) for s in steps]
 
 
-# A leading per-type marker so the session type reads at a glance in Garmin's list
-# (and so our workouts are visibly not Runna's). Unknown types fall back to "·".
+# A leading per-type emoji so the session type reads at a glance in Garmin's list (and
+# so our workouts are visibly not Runna's). All single-codepoint (no variation selector
+# / ZWJ) so they render on the watch. Unknown types fall back to the runner.
 _TYPE_MARK = {
-    "easy": "·",
-    "recovery": "~",
-    "long": "—",
-    "tempo": "▲",
+    "easy": "🌿",
+    "recovery": "💧",
+    "long": "🗻",
+    "tempo": "🔥",
     "intervals": "⚡",
-    "race": "»",
+    "race": "🏁",
+    "rest": "😴",
+    "cross": "🚴",
 }
 
 
 def workout_name(w) -> str:
-    """A short, type-marked name: ``▲ Tempo 8km · W2`` / ``· Easy 3.5km · W1``."""
-    mark = _TYPE_MARK.get((w.type or "").lower(), "·")
+    """A short, emoji-marked name: ``🔥 Tempo 8km · W2`` / ``🌿 Easy 3.5km · W1``."""
+    mark = _TYPE_MARK.get((w.type or "").lower(), "🏃")
     name = f"{mark} {(w.type or 'Run').capitalize()}"
     if w.dist_km:
         name += f" {w.dist_km:g}km"
