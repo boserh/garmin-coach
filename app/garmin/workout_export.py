@@ -17,7 +17,6 @@ conversion is ``speed = 1000 / (min_km * 60)`` (verified: 6:40/km → 2.5 m/s).
 The module is pure (no DB, no network) so it unit-tests trivially; the push
 orchestration lives in ``app.cli``.
 """
-import datetime as dt
 from typing import List, Optional
 
 _RUN_SPORT = {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1}
@@ -107,20 +106,26 @@ def _build_steps(steps: List[dict]) -> List[dict]:
     return [conv(s) for s in steps]
 
 
+# A leading per-type marker so the session type reads at a glance in Garmin's list
+# (and so our workouts are visibly not Runna's). Unknown types fall back to "·".
+_TYPE_MARK = {
+    "easy": "·",
+    "recovery": "~",
+    "long": "—",
+    "tempo": "▲",
+    "intervals": "⚡",
+    "race": "»",
+}
+
+
 def workout_name(w) -> str:
-    """A Runna-style short name: ``W3 Wed Intervals - 6km``."""
-    parts = []
-    if w.week:
-        parts.append(f"W{w.week}")
-    try:
-        parts.append(dt.date.fromisoformat(w.date).strftime("%a"))
-    except (ValueError, TypeError):
-        pass
-    if w.type:
-        parts.append(str(w.type).capitalize())
-    name = " ".join(parts) or "Workout"
+    """A short, type-marked name: ``▲ Tempo 8km · W2`` / ``· Easy 3.5km · W1``."""
+    mark = _TYPE_MARK.get((w.type or "").lower(), "·")
+    name = f"{mark} {(w.type or 'Run').capitalize()}"
     if w.dist_km:
-        name += f" - {w.dist_km:g}km"
+        name += f" {w.dist_km:g}km"
+    if w.week:
+        name += f" · W{w.week}"
     return name[:80]   # Garmin caps the workout name length
 
 
