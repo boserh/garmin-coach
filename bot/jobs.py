@@ -16,7 +16,7 @@ from app import weather
 from app.analysis.service import AnalystError, run_analysis
 from app.db.base import async_session_maker
 from app.db.models import User
-from app.garmin import repository, service
+from app.garmin import plan_sync, repository, service
 from app.garmin.runtime import user_runtime
 from bot.handlers import TZ
 
@@ -26,6 +26,11 @@ MORNING_START_HOUR = 7
 MORNING_DEADLINE_HOUR = 12
 CHECK_INTERVAL_MIN = 20
 MORNING_STATE_KEY = "morning_sent_date"
+
+# A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
+# stale ones). Kept out of the morning report — different concern. Scheduled via
+# run_daily at a fixed hour (Europe/Warsaw), before the morning window.
+PLAN_SYNC_HOUR = 5
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
@@ -112,6 +117,41 @@ async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: s
                 logger.info(f"MORNING sent for {today} user={user.id}")
     except Exception:
         logger.exception(f"MORNING failed for user={user.id}")
+
+
+async def _sync_for_user(session, user: User) -> None:
+    """Reconcile one user's Garmin calendar with their plan. Binds the user's provider;
+    the cleanup pass runs even with no active plan (to remove a just-archived plan's
+    pushed workouts). Skips users with nothing to do or no Garmin credentials."""
+    try:
+        plan = await repository.get_active_plan(session, user.id)
+        pushed = await repository.list_pushed_workouts(session, user.id)
+        if plan is None and not pushed:
+            return
+        async with user_runtime(session, user) as creds:
+            if not creds.has_garmin:
+                return
+            await plan_sync.sync_plan_to_garmin(session, user.id)
+    except Exception:
+        logger.exception(f"PLAN sync failed user={user.id}")
+
+
+async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Once-a-day per-user Garmin calendar sync (separate from the morning report);
+    scheduled by run_daily, so no further time guard is needed."""
+    try:
+        async with async_session_maker() as session:
+            recipients = (
+                await session.execute(
+                    select(User).where(
+                        User.is_active.is_(True), User.is_approved.is_(True)
+                    )
+                )
+            ).scalars().all()
+            for user in recipients:
+                await _sync_for_user(session, user)
+    except Exception:
+        logger.exception("PLAN sync job failed")
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):

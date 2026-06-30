@@ -8,6 +8,7 @@ Shares the core (app.garmin / app.analysis) with the web layer — no duplicated
 logic. Ensures DB tables exist on startup so BotState works out of the box.
 """
 import logging
+from datetime import time
 
 from telegram import BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Defaults
@@ -16,7 +17,12 @@ from app.core import logging as app_logging
 from app.core.config import settings
 from app.db.base import init_db
 from bot import handlers
-from bot.jobs import CHECK_INTERVAL_MIN, morning_job
+from bot.jobs import (
+    CHECK_INTERVAL_MIN,
+    PLAN_SYNC_HOUR,
+    morning_job,
+    plan_sync_job,
+)
 
 app_logging.setup()
 logger = logging.getLogger("bot")
@@ -66,6 +72,12 @@ def main() -> None:
         morning_job,
         interval=CHECK_INTERVAL_MIN * 60,
         first=10,
+    )
+    # Separate once-a-day Garmin calendar sync (push upcoming plan workouts / remove
+    # stale ones) at a fixed hour, before the morning window.
+    app.job_queue.run_daily(
+        plan_sync_job,
+        time=time(hour=PLAN_SYNC_HOUR, tzinfo=handlers.TZ),
     )
 
     logger.info("Bot started")

@@ -154,12 +154,12 @@ async def _seed_plan(session):
 
 async def test_apply_plan_ops(session):
     plan = await _seed_plan(session)  # workouts on 2026-07-01 (easy) + 2026-07-03 (rest)
-    n = await repository.apply_plan_ops(session, plan, [
+    affected = await repository.apply_plan_ops(session, plan, [
         PlanOp(action="add", date="2026-07-02", type="easy", dist_km=5.0, description="новий"),
         PlanOp(action="modify", date="2026-07-01", dist_km=6.0),
         PlanOp(action="move", date="2026-07-03", to_date="2026-07-04"),
     ])
-    assert n == 3
+    assert len(affected) == 3
     by_date = {w.date: w for w in await repository.list_workouts(session, plan.id)}
     assert by_date["2026-07-02"].description == "новий"
     assert by_date["2026-07-01"].dist_km == 6.0
