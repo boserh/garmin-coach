@@ -193,6 +193,51 @@ async def _push_plan(email: str, days: int, dry_run: bool) -> int:
     return 0
 
 
+async def _unpush_plan(email: str) -> int:
+    """Remove from the Garmin calendar everything we pushed for the active plan, and
+    clear the stored ids (so a later push re-creates them fresh). Only touches workouts
+    we created (by saved ``garmin_workout_id``) — never your manual/Runna workouts."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import client, repository
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+        pushed = [w for w in await repository.list_workouts(session, plan.id)
+                  if w.garmin_workout_id is not None]
+        if not pushed:
+            print("Nothing pushed for this plan.")
+            return 0
+        print(f"Removing {len(pushed)} pushed workout(s) for {email}...")
+        async with user_runtime(session, user):
+            await run_in_threadpool(get_provider().login)
+            for w in pushed:
+                # delete_workout removes the saved workout AND its calendar schedule.
+                # Tolerate "already gone" (deleted by hand in the UI) — still clear the id.
+                wid = w.garmin_workout_id
+                try:
+                    await run_in_threadpool(client.delete_workout, wid)
+                    print(f"  {w.date}  removed workout {wid}")
+                except Exception as e:
+                    print(f"  {w.date}  workout {wid} already gone ({type(e).__name__})")
+                w.garmin_workout_id = None
+                w.garmin_schedule_id = None
+                await session.commit()
+                await asyncio.sleep(0.3)
+        print("Done.")
+    return 0
+
+
 async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
     await init_db()  # zero-config safety; Alembic remains the source of truth
     async with async_session_maker() as session:
@@ -272,6 +317,9 @@ def main(argv=None) -> int:
     pp.add_argument("--days", type=int, default=14, help="rolling window size (default 14)")
     pp.add_argument("--dry-run", action="store_true", help="build + print payloads, don't write")
 
+    up = sub.add_parser("unpush-plan", help="Remove pushed plan workouts from the Garmin calendar")
+    up.add_argument("--email", required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
@@ -288,6 +336,8 @@ def main(argv=None) -> int:
         return asyncio.run(_import_fit_series(args.email, args.path, args.since))
     if args.cmd == "push-plan":
         return asyncio.run(_push_plan(args.email, args.days, args.dry_run))
+    if args.cmd == "unpush-plan":
+        return asyncio.run(_unpush_plan(args.email))
     return 0
 
 
