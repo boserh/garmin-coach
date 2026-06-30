@@ -22,7 +22,7 @@ from app.analysis.service import (
 from app.db import users
 from app.db.base import async_session_maker
 from app.db.models import User
-from app.garmin import repository, service
+from app.garmin import plan_sync, repository, service
 from app.garmin.runtime import user_runtime
 from app.garmin.schemas import PlanOp
 
@@ -283,10 +283,17 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if plan_obj is None:
             await q.edit_message_text("Немає активної програми.")
             return
-        n = await repository.apply_plan_ops(
+        affected = await repository.apply_plan_ops(
             session, plan_obj, [PlanOp(**o) for o in ops_data]
         )
-    await q.edit_message_text(f"✅ Застосовано змін: {n}. /plan — переглянути.")
+        # Mirror just the edited sessions onto the Garmin calendar (best-effort — the
+        # daily job reconciles anything missed; a Garmin outage never blocks the edit).
+        try:
+            async with user_runtime(session, user):
+                await plan_sync.resync_workouts(session, user.id, affected)
+        except Exception:
+            logger.exception(f"PLAN edit sync failed user={user.id}")
+    await q.edit_message_text(f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.")
 
 
 # ---------- TEST JOB ----------

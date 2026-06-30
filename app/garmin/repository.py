@@ -413,6 +413,20 @@ async def list_workouts(
     return (await session.execute(stmt.order_by(PlannedWorkout.date))).scalars().all()
 
 
+async def list_pushed_workouts(session: AsyncSession, user_id: int) -> List[PlannedWorkout]:
+    """This user's workouts already pushed to Garmin (``garmin_workout_id`` set), across
+    all plans — for the sync cleanup pass. (A BigInteger column → real SQL NULL, so
+    ``is_not(None)`` works here, unlike the JSON ``series`` gotcha.)"""
+    return (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.user_id == user_id,
+                PlannedWorkout.garmin_workout_id.is_not(None),
+            )
+        )
+    ).scalars().all()
+
+
 async def create_plan(
     session: AsyncSession,
     user_id: int,
@@ -472,29 +486,33 @@ async def _workout_on(session: AsyncSession, plan_id: int, date: str):
     ).scalar_one_or_none()
 
 
-async def apply_plan_ops(session: AsyncSession, plan: TrainingPlan, ops: list) -> int:
+async def apply_plan_ops(
+    session: AsyncSession, plan: TrainingPlan, ops: list
+) -> List[PlannedWorkout]:
     """Apply edit operations (``PlanOp``-like objects) to a plan's workouts. Returns the
-    number applied. ``move``/``modify``/``skip`` target the workout on ``op.date``."""
-    applied = 0
+    **touched** workouts (so the caller can re-sync just those to Garmin). ``move``/
+    ``modify``/``skip`` target the workout on ``op.date``."""
+    affected: List[PlannedWorkout] = []
     for op in ops:
         if op.action == "add":
-            session.add(PlannedWorkout(
+            w = PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
                 type=op.type or "easy", dist_km=op.dist_km,
                 description=op.description or "",
                 steps=_dump_steps(getattr(op, "steps", None)), status="planned",
-            ))
-            applied += 1
+            )
+            session.add(w)
+            affected.append(w)
             continue
         w = await _workout_on(session, plan.id, op.date)
         if w is None:
             continue
         if op.action == "skip":
             w.status = "skipped"
-            applied += 1
+            affected.append(w)
         elif op.action == "move" and op.to_date:
             w.date = op.to_date
-            applied += 1
+            affected.append(w)
         elif op.action == "modify":
             if op.type is not None:
                 w.type = op.type
@@ -504,6 +522,6 @@ async def apply_plan_ops(session: AsyncSession, plan: TrainingPlan, ops: list) -
                 w.description = op.description
             if getattr(op, "steps", None) is not None:
                 w.steps = _dump_steps(op.steps)
-            applied += 1
+            affected.append(w)
     await session.commit()
-    return applied
+    return affected
