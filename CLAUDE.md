@@ -142,7 +142,18 @@ Optional, with defaults:
   records to the same `[{d, p, hr}]` shape as the live `/details` path. **JSON-null
   gotcha**: a JSON column stores Python `None` as JSON `null` (not SQL NULL), so
   "series is missing" is filtered in Python, not via `series.is_(None)` (same in
-  `backfill-series`).
+  `backfill-series`). `push-plan --email [--days 14] [--dry-run]` is the reverse
+  direction: it **writes** the active plan's upcoming `PlannedWorkout`s to the Garmin
+  Connect calendar (a rolling window like Runna — only `planned` runs in the next
+  `--days`, skipping rest/cross). `app.garmin.workout_export.build_workout` converts our
+  `steps` (`warmup/run/recovery/repeat` + `pace_min_km [fast, slow]`) into Garmin's step
+  DTOs — pace becomes a `pace.zone` target with `targetValueOne/Two` as **speed in m/s**
+  (`1000/(min_km*60)`; One = faster bound), distance/time map to `endCondition`
+  distance(metres)/time(s), and `repeat` → `RepeatGroupDTO` with continuous `stepOrder`.
+  `client.create_workout`/`schedule_workout`/`delete_workout`/`delete_schedule` are the
+  POST/DELETE calls. Each pushed session records `garmin_workout_id`/`garmin_schedule_id`
+  on the row so re-runs are **idempotent** (skip what's already there) and a later edit/
+  archive can unschedule it. `--dry-run` builds + prints the payloads without writing.
 
 ## Structure
 

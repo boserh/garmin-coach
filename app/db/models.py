@@ -198,6 +198,11 @@ class PlannedWorkout(Base):
     # Structured step breakdown (warmup/run/recovery/cooldown/repeat, pace ranges) — both
     # richer detail and a future Garmin-Connect workout export. See schemas.PlanStep.
     steps: Mapped[Optional[list]] = mapped_column(JSON)
+    # Garmin-Connect calendar export: the created workout + schedule ids once this
+    # session has been pushed to the watch (null = not pushed). Makes push idempotent
+    # and lets edits/archival unschedule what we put there.
+    garmin_workout_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    garmin_schedule_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
