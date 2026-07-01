@@ -88,12 +88,33 @@ WEEKDAYS = {
 }
 
 
+_MONTHS_UK = ["січ", "лют", "бер", "кві", "тра", "чер",
+              "лип", "сер", "вер", "жов", "лис", "гру"]
+
+
+def _fmt_day(d: dt.date) -> str:
+    return f"{d.day} {_MONTHS_UK[d.month - 1]}"
+
+
 def _by_week(workouts):
-    """Group workouts into [(week_no, [workouts...]), ...] ordered by week."""
+    """Group workouts into **Monday–Sunday calendar weeks** (by date, not the plan's
+    ``week`` field), ordered and numbered sequentially. Returns
+    ``[(week_no, "29 чер – 5 лип", [workouts...]), ...]``."""
     weeks: dict = {}
     for w in workouts:
-        weeks.setdefault(w.week or 0, []).append(w)
-    return [(wk, weeks[wk]) for wk in sorted(weeks)]
+        try:
+            d = dt.date.fromisoformat(w.date)
+            monday = d - dt.timedelta(days=d.weekday())   # ISO week start (Mon)
+        except (ValueError, TypeError):
+            monday = None
+        weeks.setdefault(monday, []).append(w)
+    out = []
+    for i, monday in enumerate(sorted(k for k in weeks if k is not None), 1):
+        sunday = monday + dt.timedelta(days=6)
+        out.append((i, f"{_fmt_day(monday)} – {_fmt_day(sunday)}", weeks[monday]))
+    if None in weeks:   # undated (shouldn't happen) — keep them visible at the end
+        out.append((len(out) + 1, "", weeks[None]))
+    return out
 
 
 async def _generate_plan_bg(user_id: int, params: dict) -> None:
