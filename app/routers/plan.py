@@ -87,9 +87,42 @@ def _dm(iso: str) -> str:
         return iso
 
 
+_STEP_KIND = {"warmup": "Розминка", "run": "Біг", "recovery": "Відновлення",
+              "cooldown": "Заминка", "rest": "Пауза"}
+
+
+def _step_label(s: dict) -> str:
+    """Role label for a structured step (repeat handled in the template)."""
+    if not isinstance(s, dict):
+        return ""
+    return _STEP_KIND.get(s.get("kind"), (s.get("kind") or "").capitalize())
+
+
+def _step_amount(s: dict) -> str:
+    """Distance/time of a step, e.g. '2.7 км' or '20 с'."""
+    dm, ds = s.get("dist_m"), s.get("dur_s")
+    if isinstance(dm, (int, float)):
+        return f"{dm / 1000:.1f} км"
+    if isinstance(ds, (int, float)):
+        return f"{int(ds // 60)} хв" if ds >= 60 else f"{int(ds)} с"
+    return ""
+
+
+def _step_pace(s: dict) -> str:
+    """Target pace range of a step, e.g. '6:45–7:15/км' (empty when no target)."""
+    p = s.get("pace_min_km")
+    if isinstance(p, (list, tuple)) and len(p) == 2 and all(
+            isinstance(x, (int, float)) for x in p):
+        return f"{_pace(p[0])}–{_pace(p[1])}/км"
+    return ""
+
+
 templates.env.filters["fmt_step"] = _fmt_step
 templates.env.filters["dow"] = _dow
 templates.env.filters["dm"] = _dm
+templates.env.filters["step_label"] = _step_label
+templates.env.filters["step_amount"] = _step_amount
+templates.env.filters["step_pace"] = _step_pace
 
 logger = logging.getLogger("plan")
 
