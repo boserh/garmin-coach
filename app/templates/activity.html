@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ a.label }} — {{ a.date }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {% set active = 'me' %}
+  {% include "_nav.html" %}
+  <div class="wrap" style="--accent:{{ a.color }}">
+    <a class="back" href="/me/activities">← Активності</a>
+
+    <div class="ahead">
+      <div class="ic">{{ a.emoji }}</div>
+      <div>
+        <div class="atitle">{{ a.label }}</div>
+        <div class="adate">{{ a.date }}</div>
+      </div>
+    </div>
+
+    <div class="bigstats">
+      {% if a.dist_km %}<div class="bigstat"><div class="v">{{ '%.1f'|format(a.dist_km) }}</div><div class="k">км</div></div>{% endif %}
+      {% if a.pace %}<div class="bigstat"><div class="v">{{ a.pace }}</div><div class="k">темп /км</div></div>{% endif %}
+      {% if a.dur_min %}<div class="bigstat"><div class="v">{{ a.dur_min|int }}</div><div class="k">хвилин</div></div>{% endif %}
+      {% if a.avg_hr %}<div class="bigstat"><div class="v">{{ a.avg_hr }}</div><div class="k">сер. пульс</div></div>{% endif %}
+      {% if a.max_hr %}<div class="bigstat"><div class="v">{{ a.max_hr }}</div><div class="k">макс пульс</div></div>{% endif %}
+      {% if a.load %}<div class="bigstat"><div class="v">{{ a.load|int }}</div><div class="k">load</div></div>{% endif %}
+    </div>
+
+    {% if analysis %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">💬 Розбір</h2>
+    <div class="note" style="max-width:none"><div class="abody">{{ analysis }}</div></div>
+    {% endif %}
+
+    {% if charts %}
+    <div class="charts">
+      {% for c in charts %}
+        {% set s = c.s %}
+        <div class="chart" data-fmt="{{ c.fmt }}" data-pts='{{ s.pts|tojson }}'>
+          <div class="chead">
+            <span style="color: {{ c.color }}">●</span> {{ c.label }}
+            <span class="meta">— {{ '%.0f'|format(s.ymin) }}…{{ '%.0f'|format(s.ymax) }},
+              останнє {{ '%.1f'|format(s.last) }}</span>
+          </div>
+          <div class="cwrap">
+            <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img" aria-label="{{ c.label }}">
+              <polyline fill="none" stroke="{{ c.color }}" stroke-width="2" stroke-linejoin="round" points="{{ s.points }}"/>
+            </svg>
+            <div class="guide" style="background: {{ c.color }}66"></div>
+            <div class="tip" style="color: {{ c.color }}"></div>
+          </div>
+          <div class="meta xaxis"><span>{{ first_x }}</span><span>{{ last_x }}</span></div>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if a.exercises and a.exercises.get('sets') %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">Вправи</h2>
+    <div class="note" style="max-width:none;font-variant-numeric:tabular-nums">
+      {% for name, cnt in a.exercises.get('sets').items() %}
+        <div style="display:flex;justify-content:space-between;padding:.2rem 0">
+          <span>{{ name }}</span><b>{{ cnt }}</b>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <script>
+    document.querySelectorAll('.chart[data-pts]').forEach(function (ch) {
+      var pts = JSON.parse(ch.dataset.pts), fmt = ch.dataset.fmt;
+      var wrap = ch.querySelector('.cwrap'),
+          tip = ch.querySelector('.tip'), guide = ch.querySelector('.guide');
+      function pace(v) {
+        var m = Math.floor(v), s = Math.round((v - m) * 60);
+        if (s === 60) { m++; s = 0; }
+        return m + ':' + (s < 10 ? '0' : '') + s + '/км';
+      }
+      function show(e) {
+        var r = wrap.getBoundingClientRect(), frac = (e.clientX - r.left) / r.width;
+        var best = null, bd = 2;
+        pts.forEach(function (p) { var d = Math.abs(p.x - frac); if (d < bd) { bd = d; best = p; } });
+        if (!best) return;
+        var x = best.x * r.width;
+        guide.style.left = x + 'px'; guide.style.display = 'block';
+        tip.style.left = Math.min(Math.max(x, 28), r.width - 28) + 'px';
+        tip.style.display = 'block';
+        tip.textContent = (fmt === 'pace' ? pace(best.v) : Math.round(best.v) + ' уд')
+                          + (best.d != null ? ' · ' + best.d.toFixed(2) + ' км' : '');
+      }
+      wrap.addEventListener('mousemove', show);
+      wrap.addEventListener('mouseleave', function () {
+        tip.style.display = 'none'; guide.style.display = 'none';
+      });
+    });
+  </script>
+</body>
+</html>
