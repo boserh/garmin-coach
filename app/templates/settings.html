@@ -4,107 +4,88 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Налаштування</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
-    a { color: #6cb6ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    h1 { font-weight: 600; font-size: 1.4rem; }
-    nav { margin-bottom: 1.5rem; color: #9aa4b2; }
-    form { max-width: 30rem; }
-    label { display: block; color: #9aa4b2; font-size: .85rem; margin: 1.1rem 0 .25rem; }
-    input { width: 100%; box-sizing: border-box; padding: .55rem .7rem; border-radius: 8px;
-            border: 1px solid #2a2f3a; background: #14171f; color: #e6e6e6; font-size: 1rem; }
-    input:focus { outline: none; border-color: #6cb6ff; }
-    .hint { color: #6b7280; font-size: .78rem; margin-top: .25rem; }
-    button { margin-top: 1.6rem; padding: .6rem 1.4rem; border: 0; border-radius: 8px;
-             background: #6cb6ff; color: #0f1115; font-weight: 700; font-size: 1rem; cursor: pointer; }
-    .saved { color: #7ee787; margin: 1rem 0; }
-    .err { color: #ff7b72; margin: 1rem 0; }
-    .intro { max-width: 30rem; margin: 1rem 0 1.5rem; padding: 1rem 1.2rem; border-radius: 10px;
-             border: 1px solid #2a2f3a; background: #14171f; font-size: .9rem; line-height: 1.5; }
-    .intro b { color: #e6e6e6; }
-    .intro ol { margin: .5rem 0 0; padding-left: 1.2rem; color: #c9d1d9; }
-    .intro li { margin: .3rem 0; }
-    .intro .more { margin-top: .7rem; color: #9aa4b2; }
-    hr { border: 0; border-top: 1px solid #2a2f3a; margin: 2.5rem 0 0; max-width: 30rem; }
-    h2 { font-weight: 600; font-size: 1.1rem; margin: 1.6rem 0 0; }
-  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   {% set active = 'settings' %}
   {% include "_nav.html" %}
-  <h1>Налаштування — {{ user.email }}</h1>
-  {% set configured = has_garmin_password and has_anthropic and telegram_chat_id %}
-  {% if not configured %}
-  <div class="intro">
-    <b>Як почати</b> — заповни три поля нижче:
-    <ol>
-      <li><b>Garmin email + пароль</b> — звідки беруться дані сну й тренувань.</li>
-      <li><b>Claude API ключ</b> — для аналізу (взяти на console.anthropic.com → Billing).</li>
-      <li><b>Telegram chat ID</b> — куди бот шле звіти (дізнатись: напиши <b>@userinfobot</b>).</li>
-    </ol>
-    <div class="more">Далі знайди бота
-      {% if bot_username %}<a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a>{% else %}у Telegram{% endif %}
-      і напиши йому <b>/report</b> — або відкрий «Мої дані».
-      Детальніше — на сторінці <a href="/info">Інфо</a>.</div>
-  </div>
-  {% endif %}
-  {% if saved %}<div class="saved">✅ Збережено.</div>{% endif %}
+  <div class="wrap">
+    <p class="eyebrow">Налаштування</p>
+    <h1 class="title" style="font-size:1.7rem">{{ user.email }}</h1>
 
-  <form method="post" action="/settings">
-    <label for="garmin_email">Garmin email</label>
-    <input id="garmin_email" name="garmin_email" type="email" value="{{ garmin_email }}"
-           autocomplete="off">
-
-    <label for="garmin_password">Garmin пароль</label>
-    <input id="garmin_password" name="garmin_password" type="password" autocomplete="off"
-           placeholder="{% if has_garmin_password %}•••••••• (без змін){% else %}не задано{% endif %}">
-    <div class="hint">
-      {% if has_garth_token %}Сесію Garmin збережено.{% else %}Сесію ще не створено — буде логін при першому звіті.{% endif %}
+    {% set configured = has_garmin_password and has_anthropic and telegram_chat_id %}
+    {% if not configured %}
+    <div class="note">
+      <b>Як почати</b> — заповни три поля нижче:
+      <ol>
+        <li><b>Garmin email + пароль</b> — звідки беруться дані сну й тренувань.</li>
+        <li><b>Claude API ключ</b> — для аналізу (взяти на console.anthropic.com → Billing).</li>
+        <li><b>Telegram chat ID</b> — куди бот шле звіти (дізнатись: напиши <b>@userinfobot</b>).</li>
+      </ol>
+      <div style="margin-top:.7rem;color:var(--muted)">Далі знайди бота
+        {% if bot_username %}<a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a>{% else %}у Telegram{% endif %}
+        і напиши йому <b>/report</b> — або відкрий «Мої дані».
+        Детальніше — на сторінці <a href="/info">Інфо</a>.</div>
     </div>
+    {% endif %}
+    {% if saved %}<div class="saved">✅ Збережено.</div>{% endif %}
 
-    <label for="anthropic_key">Claude API ключ</label>
-    <input id="anthropic_key" name="anthropic_key" type="password" autocomplete="off"
-           placeholder="{% if has_anthropic %}•••••••• (без змін){% else %}не задано{% endif %}">
+    <form class="form" method="post" action="/settings">
+      <label for="garmin_email">Garmin email</label>
+      <input id="garmin_email" name="garmin_email" type="email" value="{{ garmin_email }}" autocomplete="off">
 
-    <label for="telegram_chat_id">Telegram chat ID</label>
-    <input id="telegram_chat_id" name="telegram_chat_id" type="text" inputmode="numeric"
-           value="{{ telegram_chat_id }}">
-    <div class="hint">Чат, у який бот шле звіти. Дізнатись свій можна в @userinfobot.</div>
+      <label for="garmin_password">Garmin пароль</label>
+      <input id="garmin_password" name="garmin_password" type="password" autocomplete="off"
+             placeholder="{% if has_garmin_password %}•••••••• (без змін){% else %}не задано{% endif %}">
+      <div class="hint">
+        {% if has_garth_token %}Сесію Garmin збережено.{% else %}Сесію ще не створено — буде логін при першому звіті.{% endif %}
+      </div>
 
-    <label for="weather_location">Локація для погоди</label>
-    <input id="weather_location" name="weather_location" type="text" autocomplete="off"
-           value="{{ weather_location }}" placeholder="напр. Wrocław, Київ">
-    <div class="hint">Місто для прогнозу погоди в ранковому звіті (поради до пробіжки з
-      урахуванням спеки/дощу/вітру). Порожнє — без погоди.
-      {% if geo == "fail" %}<span class="err">Не вдалось знайти це місто — перевір назву.</span>{% endif %}</div>
+      <label for="anthropic_key">Claude API ключ</label>
+      <input id="anthropic_key" name="anthropic_key" type="password" autocomplete="off"
+             placeholder="{% if has_anthropic %}•••••••• (без змін){% else %}не задано{% endif %}">
 
-    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.75rem;font-weight:600">
-      <input type="checkbox" name="garmin_sync" {% if garmin_sync_enabled %}checked{% endif %}
-             style="width:auto">
-      Синхронізувати програму з Garmin-календарем
-    </label>
-    <div class="hint">Пушить заплановані тренування на годинник (ковзне вікно ~14 днів).
-      Вимкнеш — приберемо з календаря все, що ми туди додали.</div>
+      <label for="telegram_chat_id">Telegram chat ID</label>
+      <input id="telegram_chat_id" name="telegram_chat_id" type="text" inputmode="numeric"
+             value="{{ telegram_chat_id }}">
+      <div class="hint">Чат, у який бот шле звіти. Дізнатись свій можна в @userinfobot.</div>
 
-    <button type="submit">Зберегти</button>
-  </form>
+      <label for="weather_location">Локація для погоди</label>
+      <input id="weather_location" name="weather_location" type="text" autocomplete="off"
+             value="{{ weather_location }}" placeholder="напр. Wrocław, Київ">
+      <div class="hint">Місто для прогнозу погоди в ранковому звіті (поради до пробіжки з
+        урахуванням спеки/дощу/вітру). Порожнє — без погоди.
+        {% if geo == "fail" %}<span class="err">Не вдалось знайти це місто — перевір назву.</span>{% endif %}</div>
 
-  <hr>
-  <h2>Зміна пароля</h2>
-  {% if pw == "ok" %}<div class="saved">✅ Пароль змінено.</div>
-  {% elif pw == "wrong" %}<div class="err">Поточний пароль невірний.</div>
-  {% elif pw == "short" %}<div class="err">Новий пароль має бути щонайменше 6 символів.</div>{% endif %}
-  <form method="post" action="/settings/password">
-    <label for="current_password">Поточний пароль</label>
-    <input id="current_password" name="current_password" type="password"
-           autocomplete="current-password" required>
+      <label class="check">
+        <input type="checkbox" name="garmin_sync" {% if garmin_sync_enabled %}checked{% endif %}>
+        Синхронізувати програму з Garmin-календарем
+      </label>
+      <div class="hint">Пушить заплановані тренування на годинник (ковзне вікно ~14 днів).
+        Вимкнеш — приберемо з календаря все, що ми туди додали.</div>
 
-    <label for="new_password">Новий пароль</label>
-    <input id="new_password" name="new_password" type="password"
-           autocomplete="new-password" minlength="6" required>
+      <button class="btn" type="submit">Зберегти</button>
+    </form>
 
-    <button type="submit">Змінити пароль</button>
-  </form>
+    <hr class="divide">
+    <h2 class="sec">Зміна пароля</h2>
+    {% if pw == "ok" %}<div class="saved">✅ Пароль змінено.</div>
+    {% elif pw == "wrong" %}<div class="err" style="margin:1rem 0">Поточний пароль невірний.</div>
+    {% elif pw == "short" %}<div class="err" style="margin:1rem 0">Новий пароль має бути щонайменше 6 символів.</div>{% endif %}
+    <form class="form" method="post" action="/settings/password">
+      <label for="current_password">Поточний пароль</label>
+      <input id="current_password" name="current_password" type="password"
+             autocomplete="current-password" required>
+
+      <label for="new_password">Новий пароль</label>
+      <input id="new_password" name="new_password" type="password"
+             autocomplete="new-password" minlength="6" required>
+
+      <button class="btn" type="submit">Змінити пароль</button>
+    </form>
+  </div>
 </body>
 </html>
