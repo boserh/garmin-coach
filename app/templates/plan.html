@@ -5,68 +5,143 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Програма тренувань</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
-    a { color: #6cb6ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    h1 { font-weight: 600; font-size: 1.4rem; }
-    .wrap { max-width: 48rem; }
-    .summary { margin: 1rem 0 1.5rem; padding: 1rem 1.2rem; border-radius: 10px;
-               border: 1px solid #2a2f3a; background: #14171f; line-height: 1.5; }
-    .meta { color: #9aa4b2; font-size: .9rem; }
-    .bar { margin: 0 0 1rem; font-size: .9rem; }
-    .week { margin: 1.4rem 0 .4rem; color: #9aa4b2; font-weight: 600; font-size: .95rem;
-            border-bottom: 1px solid #2a2f3a; padding-bottom: .3rem; }
-    .wk { display: flex; gap: .8rem; padding: .5rem 0; border-bottom: 1px solid #1a1e27; }
-    .wk .d { width: 7rem; color: #9aa4b2; flex: none; font-size: .9rem; }
-    .wk .t { width: 5.5rem; flex: none; font-weight: 600; }
-    .wk .desc { flex: 1; }
-    .wk.today { background: #14171f; border-radius: 6px; }
-    .wk.done .desc { color: #7ee787; }
-    .wk.skipped .desc { color: #8b949e; text-decoration: line-through; }
-    .badge { display: inline-block; font-size: .72rem; padding: .05rem .4rem; border-radius: 5px;
-             background: #1f2733; color: #6cb6ff; }
-    .rest { color: #8b949e; }
-    .steps { margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .35rem; }
-    .step { font-size: .74rem; padding: .1rem .45rem; border-radius: 5px;
-            background: #14171f; border: 1px solid #2a2f3a; color: #adbac7; }
-    form.inline { display: inline; }
-    button.arch { margin-top: 1.5rem; padding: .4rem 1rem; border: 0; border-radius: 8px;
-      background: #3a2326; color: #ff7b72; font-size: .85rem; cursor: pointer; }
-    .tip { color: #6b7280; font-size: .82rem; margin-top: 1.2rem; }
-    .ok { color: #7ee787; margin: 1rem 0; }
+    :root{
+      --bg:#0a0c10; --card:#12151c; --card2:#161a22; --line:#232936;
+      --ink:#e8ebf0; --muted:#8a93a3; --faint:#5b6472; --accent:#7c9cff;
+    }
+    *{box-sizing:border-box}
+    body{font-family:"Inter",system-ui,-apple-system,sans-serif;color:var(--ink);margin:0;
+         padding:2rem 1.25rem 4rem;-webkit-font-smoothing:antialiased;
+         background:radial-gradient(1100px 560px at 18% -12%, #141d33 0%, transparent 55%), #0a0c10;
+         background-color:#0a0c10;}
+    a{color:#9db4ff;text-decoration:none}
+    a:hover{text-decoration:underline}
+    .wrap{max-width:52rem;margin:0 auto}
+
+    .bar{font-size:.85rem;color:var(--muted);margin-bottom:1.4rem}
+    .ok{margin:0 0 1rem;padding:.7rem 1rem;border-radius:12px;font-size:.9rem;
+        color:#7ee787;background:rgba(126,231,135,.08);border:1px solid rgba(126,231,135,.25)}
+
+    .hero h1{font-size:1.95rem;font-weight:700;letter-spacing:-.025em;margin:0;
+             background:linear-gradient(92deg,#eef1f6,#9db4ff 120%);
+             -webkit-background-clip:text;background-clip:text;color:transparent}
+    .chips{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:.85rem}
+    .chip{font-size:.78rem;padding:.3rem .65rem;border-radius:999px;background:#12161f;
+          border:1px solid var(--line);color:var(--muted)}
+    .chip b{color:var(--ink);font-weight:600}
+
+    .summary{margin:1.3rem 0 .5rem;padding:1.05rem 1.2rem;border-radius:16px;line-height:1.6;
+             font-size:.92rem;color:#c6cedb;border:1px solid var(--line);
+             background:linear-gradient(180deg,#141824,#10131b)}
+
+    .week{display:flex;align-items:baseline;gap:.7rem;margin:2.1rem 0 .9rem}
+    .week .n{font-size:1.06rem;font-weight:700;color:var(--ink)}
+    .week .r{font-size:.82rem;color:var(--faint);font-variant-numeric:tabular-nums}
+    .week .fill{flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+
+    .wk{position:relative;display:grid;grid-template-columns:auto 1fr;gap:.95rem;
+        padding:.95rem 1.1rem .95rem 1.15rem;margin:.6rem 0;border-radius:16px;
+        background:var(--card);border:1px solid var(--line);
+        transition:transform .13s ease,border-color .13s ease,background .13s ease}
+    .wk:hover{transform:translateY(-1px);border-color:#2e3647;background:var(--card2)}
+    .wk::before{content:"";position:absolute;left:0;top:1rem;bottom:1rem;width:3px;
+                border-radius:0 3px 3px 0;background:var(--accent)}
+    .wk .ic{width:2.5rem;height:2.5rem;border-radius:13px;display:grid;place-items:center;
+            font-size:1.2rem;background:#141922;
+            background:color-mix(in srgb,var(--accent) 14%,#0e1219);
+            border:1px solid #2a3140;border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
+    .body{min-width:0}
+    .top{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;margin-bottom:.3rem}
+    .date{font-variant-numeric:tabular-nums;font-weight:600;font-size:.92rem}
+    .dow{color:var(--faint);font-size:.8rem;font-weight:500}
+    .type{font-size:.72rem;font-weight:600;letter-spacing:.01em;padding:.17rem .55rem;
+          border-radius:999px;color:var(--accent);background:#141922;
+          background:color-mix(in srgb,var(--accent) 13%,#0e1219);
+          border:1px solid #2a3140;border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+    .dist{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:700;font-size:.98rem}
+    .dist small{color:var(--faint);font-weight:500;font-size:.72rem;margin-left:.1rem}
+    .desc{color:#c2cad7;font-size:.9rem;line-height:1.52}
+    .steps{margin-top:.6rem;display:flex;flex-wrap:wrap;gap:.4rem}
+    .step{font-size:.75rem;padding:.24rem .58rem;border-radius:9px;background:#0e1219;
+          border:1px solid var(--line);color:#aab4c4;font-variant-numeric:tabular-nums}
+
+    .wk.today{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));
+              box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 28%,transparent),
+                         0 12px 34px -16px color-mix(in srgb,var(--accent) 70%,transparent)}
+    .pill-today{font-size:.68rem;font-weight:700;color:#0a0c10;background:var(--accent);
+                padding:.1rem .45rem;border-radius:999px}
+    .wk.done{opacity:.85}
+    .wk.done .ic{filter:grayscale(.2)}
+    .wk.skipped{opacity:.5}
+    .wk.skipped .desc{text-decoration:line-through}
+    .tag{font-size:.7rem;font-weight:600;padding:.12rem .45rem;border-radius:999px}
+    .tag.done{color:#7ee787;background:rgba(126,231,135,.12)}
+    .tag.skip{color:#8b949e;background:#171b24}
+
+    .tip{color:var(--faint);font-size:.83rem;margin-top:1.6rem;line-height:1.5}
+    .tip b{color:var(--muted)}
+    .arch{margin-top:1rem;padding:.5rem 1.1rem;border:1px solid #3a2326;border-radius:10px;
+          background:rgba(255,123,114,.06);color:#ff8a80;font-size:.85rem;cursor:pointer}
+    .arch:hover{background:rgba(255,123,114,.12)}
+    form.inline{display:inline}
   </style>
 </head>
 <body>
   {% set active = 'plan' %}
   {% include "_nav.html" %}
+
+  {% set TCOLOR = {"easy":"#34d399","recovery":"#2dd4bf","long":"#38bdf8","tempo":"#fbbf24",
+                   "intervals":"#fb7185","race":"#f472b6","rest":"#64748b","cross":"#94a3b8"} %}
+  {% set TEMOJI = {"easy":"🌿","recovery":"💧","long":"🗻","tempo":"🔥","intervals":"⚡",
+                   "race":"🏁","rest":"😴","cross":"🚴"} %}
+  {% set TLABEL = {"easy":"Легкий","recovery":"Відновлення","long":"Довгий","tempo":"Темповий",
+                   "intervals":"Інтервали","race":"Забіг","rest":"Відпочинок","cross":"Крос"} %}
+
   <div class="wrap">
     {% if created %}<div class="ok">✅ Програму створено — {{ count }} тренувань.</div>{% endif %}
     <div class="bar">
-      {% if readonly %}<a href="/plan/archive">← Архів</a> · <span class="meta">архівна програма</span>
-      {% else %}<a href="/plan/archive">Архів програм</a>{% endif %}
+      {% if readonly %}<a href="/plan/archive">← Архів</a> · архівна програма
+      {% else %}<a href="/plan/archive">Архів програм →</a>{% endif %}
     </div>
-    <h1>{{ plan.goal_label or plan.goal }}</h1>
-    <div class="meta">
-      {{ plan.start_date }}{% if plan.target_date %} → {{ plan.target_date }}{% endif %}
-      · {{ plan.days_per_week }} дн/тиж · {{ plan.intensity }}
-      {% if plan.intake and plan.intake.run_days %}
-        · дні: {% for d in plan.intake.run_days %}{{ weekdays.get(d, d) }}{{ ", " if not loop.last else "" }}{% endfor %}
-        {% if plan.intake.long_run_day %} · довгий — {{ weekdays.get(plan.intake.long_run_day, plan.intake.long_run_day) }}{% endif %}
-      {% endif %}
+
+    <div class="hero">
+      <h1>{{ plan.goal_label or plan.goal }}</h1>
+      <div class="chips">
+        <span class="chip"><b>{{ plan.start_date }}</b>{% if plan.target_date %} → <b>{{ plan.target_date }}</b>{% endif %}</span>
+        <span class="chip"><b>{{ plan.days_per_week }}</b> дн/тиж</span>
+        <span class="chip">{{ plan.intensity }}</span>
+        {% if plan.intake and plan.intake.run_days %}
+          <span class="chip">дні: <b>{% for d in plan.intake.run_days %}{{ weekdays.get(d, d) }}{{ " " if not loop.last else "" }}{% endfor %}</b></span>
+        {% endif %}
+        {% if plan.intake and plan.intake.long_run_day %}
+          <span class="chip">довгий — <b>{{ weekdays.get(plan.intake.long_run_day, plan.intake.long_run_day) }}</b></span>
+        {% endif %}
+      </div>
     </div>
+
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
 
     {% for week_no, week_range, items in weeks %}
-      <div class="week">Тиждень {{ week_no }}{% if week_range %} · {{ week_range }}{% endif %}</div>
+      <div class="week">
+        <span class="n">Тиждень {{ week_no }}</span>
+        {% if week_range %}<span class="r">{{ week_range }}</span>{% endif %}
+        <span class="fill"></span>
+      </div>
       {% for w in items %}
-        <div class="wk {{ 'today' if w.date == today else '' }} {{ w.status }}">
-          <div class="d">{{ w.date }}</div>
-          <div class="t {{ 'rest' if w.type in ('rest','cross') else '' }}">{{ w.type }}</div>
-          <div class="desc">
-            {{ w.description }}
-            {% if w.dist_km %}<span class="badge">{{ '%.1f'|format(w.dist_km) }} км</span>{% endif %}
-            {% if w.status == 'done' %}<span class="badge">✓</span>
-            {% elif w.status == 'skipped' %}<span class="badge">пропущено</span>{% endif %}
+        {% set c = TCOLOR.get(w.type, "#8a93a3") %}
+        <div class="wk {{ 'today' if w.date == today else '' }} {{ w.status }}" style="--accent:{{ c }}">
+          <div class="ic">{{ TEMOJI.get(w.type, "🏃") }}</div>
+          <div class="body">
+            <div class="top">
+              <span class="date">{{ w.date|dm }}</span>
+              <span class="dow">{{ w.date|dow }}</span>
+              {% if w.date == today %}<span class="pill-today">сьогодні</span>{% endif %}
+              <span class="type">{{ TLABEL.get(w.type, w.type) }}</span>
+              {% if w.status == 'done' %}<span class="tag done">✓ виконано</span>
+              {% elif w.status == 'skipped' %}<span class="tag skip">пропущено</span>{% endif %}
+              {% if w.dist_km %}<span class="dist">{{ '%.1f'|format(w.dist_km) }}<small>км</small></span>{% endif %}
+            </div>
+            {% if w.description %}<div class="desc">{{ w.description }}</div>{% endif %}
             {% if w.steps %}
             <div class="steps">{% for s in w.steps %}<span class="step">{{ s|fmt_step }}</span>{% endfor %}</div>
             {% endif %}
@@ -78,7 +153,6 @@
     {% if not readonly %}
     <div class="tip">Коригувати — у боті вільним текстом, напр.
       <b>/plan додай легкий біг сьогодні</b> або <b>/plan перенеси суботнє на неділю</b>.</div>
-
     <form class="inline" method="post" action="/plan/archive"
           onsubmit="return confirm('Архівувати поточну програму і почати нову?');">
       <button class="arch" type="submit">Архівувати / почати нову</button>
