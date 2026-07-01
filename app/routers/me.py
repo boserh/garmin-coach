@@ -115,6 +115,7 @@ async def _activity_cards(session, user_id, limit, offset):
     for r in rows:
         emoji, color = _act_meta(r.type)
         runwalk = (r.type or "").lower() in _RUNWALK
+        strain_ring = {"color": "#3aa0ff", **_ring_geom(r.load / 2, 24)} if r.load else None
         cards.append({
             "id": r.id, "emoji": emoji, "color": color,
             "label": (r.type or "—").replace("_", " ").capitalize(),
@@ -123,6 +124,7 @@ async def _activity_cards(session, user_id, limit, offset):
             "avg_hr": r.avg_hr, "max_hr": r.max_hr, "load": r.load,
             "pace": _pace_str(r.dist_km, r.dur_min) if runwalk else None,
             "spark": _spark(r.series) if runwalk else None,
+            "strain_ring": strain_ring,
             "has_analysis": bool(r.analysis),
         })
     return cards
@@ -143,6 +145,12 @@ def _recovery_band(v):
     if v >= 34:
         return "#ffd23f", "Помірно"
     return "#ff5470", "Втома"
+
+
+def _ring_geom(value, r):
+    """SVG ring dash/circumference for a 0–100 ``value`` at radius ``r``."""
+    circ = round(2 * math.pi * r, 1)
+    return {"circ": circ, "dash": round(circ * min(max(value, 0), 100) / 100, 1), "r": r}
 
 
 def _recovery_ring(day):
@@ -216,6 +224,13 @@ async def _daily_cards(session, user_id, limit, offset):
     out = []
     for r in rows:
         ex = r.extra or {}
+        score = ex.get("readiness_score")
+        if score is None:
+            score = r.sleep_score
+        ring = None
+        if score is not None:
+            color, _ = _recovery_band(score)
+            ring = {"value": int(score), "color": color, **_ring_geom(score, 26)}
         out.append({
             "id": r.id, "date": _nice_date(r.date),
             "sleep_score": r.sleep_score, "sleep_h": r.sleep_h,
@@ -223,8 +238,15 @@ async def _daily_cards(session, user_id, limit, offset):
             "stress_avg": r.stress_avg,
             "bb_charged": r.bb_charged, "bb_drained": r.bb_drained,
             "rhr": ex.get("resting_hr"), "readiness": ex.get("readiness_score"),
+            "ring": ring,
         })
     return out
+
+
+async def _latest_ring(session, user_id):
+    """The recovery ring for the most recent day (for the /me overview hero)."""
+    rows = await _daily_cards(session, user_id, 1, 0)
+    return _recovery_ring(rows[0]) if rows else None
 
 
 # ---- report history ----
@@ -264,9 +286,10 @@ async def me_index(
     session: AsyncSession = Depends(get_session),
 ):
     counts = {name: await _count(session, model, user.id) for name, model in TABLES.items()}
+    hero = await _latest_ring(session, user.id)
     return templates.TemplateResponse(
         request, "index.html",
-        {"counts": counts, "user": user,
+        {"counts": counts, "user": user, "hero": hero,
          "base": "/me", "title": "Мої дані", "token": ""},
     )
 
@@ -376,10 +399,14 @@ async def me_row(
             "pace": _pace_str(obj.dist_km, obj.dur_min) if runwalk else None,
             "exercises": obj.exercises,
         }
+        strain = None
+        if obj.load:
+            strain = {"value": int(obj.load), "color": "#3aa0ff", "label": "Навантаження",
+                      **_ring_geom(obj.load / 2, 76)}   # load ~0..200 → 0..100%
         charts, first_x, last_x = _run_charts(obj.series or [])
         return templates.TemplateResponse(
             request, "activity.html",
-            {"a": a, "charts": charts, "first_x": first_x, "last_x": last_x,
+            {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
              "analysis": obj.analysis, "user": user, "base": "/me", "token": ""},
         )
 
