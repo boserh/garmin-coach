@@ -118,6 +118,34 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
        font-variant-numeric:tabular-nums}
 .empty{margin-top:2rem;color:var(--muted)}
 
+/* ---- activity detail (hero + big stats + charts) ---- */
+.back{color:var(--muted);font-size:.85rem}
+.ahead{display:flex;align-items:center;gap:1rem;margin-top:1.3rem}
+.ahead .ic{width:3.2rem;height:3.2rem;border-radius:16px;display:grid;place-items:center;font-size:1.7rem;
+  background:#0e1219;background:color-mix(in srgb,var(--accent) 15%,#0e1219);
+  border:1px solid #2a3140;border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
+.ahead .atitle{font-size:1.5rem;font-weight:650;letter-spacing:-.02em}
+.ahead .adate{color:var(--muted);font-size:.88rem;margin-top:.15rem}
+.bigstats{display:flex;flex-wrap:wrap;gap:.7rem;margin:1.6rem 0}
+.bigstat{flex:1 1 6.5rem;min-width:5.5rem;padding:.85rem 1rem;border:1px solid var(--line-2);
+         border-radius:13px;background:var(--surface)}
+.bigstat .v{font-size:1.4rem;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--ink)}
+.bigstat .k{color:var(--muted);font-size:.72rem;margin-top:.25rem;text-transform:uppercase;letter-spacing:.06em}
+.abody{white-space:pre-wrap;line-height:1.6;color:#cbd2dc;font-size:.92rem}
+
+/* ---- charts (activity / detail) ---- */
+.charts{display:flex;flex-wrap:wrap;gap:1rem;margin:1.6rem 0}
+.chart{flex:1 1 22rem;border:1px solid var(--line-2);border-radius:14px;padding:.85rem 1rem;background:var(--surface)}
+.chead{font-size:.9rem;margin-bottom:.5rem;color:#cbd2dc}
+.chead .meta{color:var(--muted)}
+.chart svg{display:block;width:100%;height:auto}
+.xaxis{display:flex;justify-content:space-between}
+.cwrap{position:relative}
+.guide{position:absolute;top:0;bottom:0;width:1px;display:none;pointer-events:none}
+.tip{position:absolute;top:.2rem;transform:translateX(-50%);display:none;pointer-events:none;
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:7px;padding:.12rem .5rem;
+  font-size:.78rem;white-space:nowrap}
+
 /* ---- prose / content pages ---- */
 .prose h1{font-size:clamp(1.7rem,4.5vw,2.15rem);font-weight:650;letter-spacing:-.03em;margin:0 0 .4rem}
 .prose h2{font-size:1.15rem;font-weight:650;letter-spacing:-.02em;margin:2.5rem 0 .6rem;color:var(--ink)}
