@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import current_user
 from app.db.models import ActivityRecord, DailyMetric, ReportLog, User
 from app.dependencies import get_session
-from app.routers.admin import INDEX_COLS, _daily_charts, _run_charts
+from app.garmin import repository
+from app.routers.admin import INDEX_COLS, _run_charts
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -127,6 +128,48 @@ async def _activity_cards(session, user_id, limit, offset):
 
 
 # ---- daily recovery metrics ----
+_SVG_W, _SVG_H, _SVG_PAD = 720, 120, 22
+
+
+def _trend_series(values, dates):
+    """Trend sparkline for daily_metrics with per-point data (``pts``: x-fraction + value
+    + date label) so the chart can show a value on hover. None if < 2 points."""
+    pairs = [(i, float(v)) for i, v in enumerate(values) if v is not None]
+    if len(pairs) < 2:
+        return None
+    n = len(values)
+    ys = [v for _, v in pairs]
+    ymin, ymax = min(ys), max(ys)
+    span = (ymax - ymin) or 1.0
+
+    def px(i):
+        return _SVG_PAD + (i / (n - 1)) * (_SVG_W - 2 * _SVG_PAD)
+
+    def py(v):
+        return _SVG_H - _SVG_PAD - ((v - ymin) / span) * (_SVG_H - 2 * _SVG_PAD)
+
+    dots = [(round(px(i), 1), round(py(v), 1)) for i, v in pairs]
+    points = " ".join(f"{x},{y}" for x, y in dots)
+    pts = [{"x": round(i / (n - 1), 4), "v": v, "lbl": dates[i] if i < len(dates) else ""}
+           for i, v in pairs]
+    return {"points": points, "dots": dots, "pts": pts, "ymin": ymin, "ymax": ymax,
+            "last": ys[-1], "W": _SVG_W, "H": _SVG_H}
+
+
+async def _daily_trends(session, user_id, days: int = 60):
+    """HRV / sleep-hours / sleep-score trend charts (hover-enabled) for the daily view."""
+    trend = await repository.read_history(session, user_id, days=days)
+    dates = [r["date"] for r in trend]
+    defs = [
+        ("HRV avg", "#7aa2f7", "int", [r["hrv_avg"] for r in trend]),
+        ("Сон, год", "#9ece6a", "f1", [r["sleep_h"] for r in trend]),
+        ("Сон, бал", "#e0af68", "int", [r["sleep_score"] for r in trend]),
+    ]
+    charts = [{"label": lbl, "color": c, "fmt": fmt, "s": s}
+              for lbl, c, fmt, vals in defs if (s := _trend_series(vals, dates))]
+    return charts, (dates[0] if dates else ""), (dates[-1] if dates else "")
+
+
 def _hrv_color(status):
     s = (status or "").upper()
     if s == "BALANCED":
@@ -223,7 +266,7 @@ async def me_table(
         )
     if table == "daily_metrics":
         days = await _daily_cards(session, user.id, limit, offset)
-        charts, first_date, last_date = await _daily_charts(session, user.id)
+        charts, first_date, last_date = await _daily_trends(session, user.id)
         total = await _count(session, model, user.id)
         return templates.TemplateResponse(
             request, "daily.html",
@@ -256,17 +299,15 @@ async def me_table(
     rows = [[getattr(r, c) for c in cols] for r in result.scalars().all()]
     total = await _count(session, model, user.id)
 
-    charts = first_date = last_date = None
-    if table == "daily_metrics":
-        charts, first_date, last_date = await _daily_charts(session, user.id)
-
+    # (activities / daily_metrics / report_logs have dedicated views above; this generic
+    # table path remains as a safe fallback for any future table.)
     return templates.TemplateResponse(
         request, "table.html",
         {
             "table": table, "cols": cols, "rows": rows, "user": user,
             "limit": limit, "offset": offset, "total": total,
             "tables": list(TABLES), "base": "/me", "token": "",
-            "charts": charts, "first_date": first_date, "last_date": last_date,
+            "charts": None, "first_date": None, "last_date": None,
         },
     )
 
