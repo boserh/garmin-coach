@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ label }} — {{ when }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {% set active = 'me' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <a class="back" href="/me/report_logs">← Звіти</a>
+    <div class="ahead" style="gap:.75rem">
+      <span class="kpill" style="background:{{ color }};font-size:.8rem;padding:.25rem .7rem">{{ label }}</span>
+      <div>
+        <div class="atitle" style="font-size:1.3rem">{{ label }}</div>
+        <div class="adate">{{ when }} · {{ r.model }}</div>
+      </div>
+    </div>
+
+    <div class="mrow" style="margin-top:1.2rem">
+      {% if r.cost_usd %}<span class="mchip"><b>${{ '%.4f'|format(r.cost_usd) }}</b><span class="u">вартість</span></span>{% endif %}
+      {% if r.input_tokens %}<span class="mchip"><b>{{ r.input_tokens }}</b><span class="u">in tok</span></span>{% endif %}
+      {% if r.output_tokens %}<span class="mchip"><b>{{ r.output_tokens }}</b><span class="u">out tok</span></span>{% endif %}
+      {% if r.cached %}<span class="mchip"><b>кеш</b></span>{% endif %}
+      {% if not r.ok %}<span class="mchip" style="color:#f7768e"><b>помилка</b></span>{% endif %}
+    </div>
+
+    {% if r.question %}<div class="qbox">{{ r.question }}</div>{% endif %}
+    {% if r.report_text %}<div class="readbody">{{ r.report_text }}</div>{% endif %}
+    {% if r.error %}<div class="readbody" style="color:#f7768e">{{ r.error }}</div>{% endif %}
+  </div>
+</body>
+</html>

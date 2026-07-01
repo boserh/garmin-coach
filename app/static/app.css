@@ -205,6 +205,35 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .note ol{margin:.5rem 0 0;padding-left:1.2rem}
 .note li{margin:.3rem 0}
 
+/* ---- metric chips (daily / reuse) ---- */
+.mrow{display:flex;flex-wrap:wrap;gap:.35rem .95rem;margin-top:.5rem;font-variant-numeric:tabular-nums}
+.mchip{font-size:.84rem;color:#cbd2dc}
+.mchip b{color:var(--ink);font-weight:600}
+.mchip .u{color:var(--faint);font-size:.72rem;margin-left:.12rem}
+
+/* ---- daily recovery cards ---- */
+.daycard{display:block;padding:.9rem 1.1rem;margin:.6rem 0;border:1px solid var(--line-2);border-radius:14px;
+  background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.35);transition:border-color .12s,background .12s}
+.daycard:hover{border-color:var(--accent);background:var(--surface-2);text-decoration:none}
+.daycard .dh{display:flex;align-items:center;gap:.6rem}
+.daycard .dt{font-weight:600;color:var(--ink)}
+.hrvpill{font-size:.71rem;font-weight:700;padding:.12rem .55rem;border-radius:999px;color:#0b0d11}
+
+/* ---- report history ---- */
+.rep{display:flex;gap:.9rem;align-items:baseline;padding:.9rem 1.1rem;margin:.55rem 0;
+  border:1px solid var(--line-2);border-radius:14px;background:var(--surface);
+  box-shadow:0 1px 3px rgba(0,0,0,.35);transition:border-color .12s,background .12s}
+.rep:hover{border-color:var(--accent);background:var(--surface-2);text-decoration:none}
+.rep .kpill{flex:none;font-size:.71rem;font-weight:700;padding:.15rem .58rem;border-radius:999px;color:#0b0d11}
+.rep .rbody{min-width:0;flex:1}
+.rep .rwhen{color:var(--faint);font-size:.78rem}
+.rep .rprev{color:#c2cad7;font-size:.88rem;margin-top:.25rem;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.rep .rcost{flex:none;color:var(--muted);font-size:.78rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+.readbody{white-space:pre-wrap;line-height:1.65;color:#d5dbe4;font-size:.95rem;margin-top:1.1rem}
+.qbox{margin-top:1.2rem;padding:.85rem 1.1rem;border-left:2px solid var(--accent);color:#cbd2dc;
+  background:var(--surface);border-radius:0 10px 10px 0;font-size:.92rem;line-height:1.55}
+
 /* ---- spinner (plan generating) ---- */
 .center{max-width:32rem;margin:3.5rem auto;text-align:center;padding:2.2rem 1.6rem;
   border:1px solid var(--line-2);border-radius:16px;background:var(--surface)}

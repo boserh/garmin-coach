@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Відновлення</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {% set active = 'me' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <div class="tabs">
+      <a href="/me">← огляд</a>
+      {% for t in tables %}<a class="{{ 'active' if t == 'daily_metrics' else '' }}" href="/me/{{ t }}">{{ t }}</a>{% endfor %}
+    </div>
+    <p class="eyebrow">Мої дані</p>
+    <h1 class="title" style="font-size:1.7rem">Відновлення</h1>
+
+    {% if charts %}
+    <div class="charts">
+      {% for c in charts %}{% set s = c.s %}
+        <div class="chart">
+          <div class="chead"><span style="color:{{ c.color }}">●</span> {{ c.label }}
+            <span class="meta">— {{ '%.0f'|format(s.ymin) }}…{{ '%.0f'|format(s.ymax) }}, останнє {{ '%.1f'|format(s.last) }}</span></div>
+          <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img" aria-label="{{ c.label }}">
+            <polyline fill="none" stroke="{{ c.color }}" stroke-width="2" stroke-linejoin="round" points="{{ s.points }}"/>
+            {% for x, y in s.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="{{ c.color }}"/>{% endfor %}
+          </svg>
+          <div class="meta xaxis"><span>{{ first_date }}</span><span>{{ last_date }}</span></div>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not days %}<div class="empty">Поки що немає даних.</div>{% endif %}
+    <div style="margin-top:1.2rem">
+    {% for d in days %}
+      <a class="daycard" href="/me/daily_metrics/{{ d.id }}">
+        <div class="dh">
+          <span class="dt">{{ d.date }}</span>
+          {% if d.hrv_status %}<span class="hrvpill" style="background:{{ d.hrv_color }}">HRV {{ d.hrv_status }}</span>{% endif %}
+        </div>
+        <div class="mrow">
+          {% if d.sleep_score %}<span class="mchip"><b>{{ d.sleep_score }}</b><span class="u">сон бал</span></span>{% endif %}
+          {% if d.sleep_h %}<span class="mchip"><b>{{ '%.1f'|format(d.sleep_h) }}</b><span class="u">год сну</span></span>{% endif %}
+          {% if d.hrv_avg %}<span class="mchip"><b>{{ d.hrv_avg }}</b><span class="u">HRV</span></span>{% endif %}
+          {% if d.rhr %}<span class="mchip"><b>{{ d.rhr }}</b><span class="u">RHR</span></span>{% endif %}
+          {% if d.stress_avg %}<span class="mchip"><b>{{ d.stress_avg }}</b><span class="u">стрес</span></span>{% endif %}
+          {% if d.bb_charged %}<span class="mchip"><b>+{{ d.bb_charged }}</b><span class="u">BB</span></span>{% endif %}
+          {% if d.readiness %}<span class="mchip"><b>{{ d.readiness }}</b><span class="u">готовність</span></span>{% endif %}
+        </div>
+      </a>
+    {% endfor %}
+    </div>
+
+    {% if total > limit %}
+    <div class="pager">
+      {% if offset > 0 %}<a href="/me/daily_metrics?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}">← новіші</a>{% endif %}
+      <span>{{ offset + 1 }}–{{ offset + days|length }} з {{ total }}</span>
+      {% if offset + limit < total %}<a href="/me/daily_metrics?limit={{ limit }}&offset={{ offset + limit }}">старіші →</a>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+</body>
+</html>
