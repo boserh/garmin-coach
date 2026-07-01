@@ -30,15 +30,17 @@ logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 PRICES = {
-    "claude-sonnet-4-6": (3.0, 15.0),   # (input, output) $/1M
+    # Sonnet 5 introductory pricing through 2026-08-31 — bump to (3.0, 15.0) on 2026-09-01.
+    "claude-sonnet-5":   (2.0, 10.0),   # (input, output) $/1M
+    "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-8":   (15.0, 75.0),
 }
-MODEL_DAILY = "claude-sonnet-4-6"
+MODEL_DAILY = "claude-sonnet-5"
 MODEL_DEEP = "claude-opus-4-8"
-MODEL_ASK = "claude-sonnet-4-6"   # follow-up Q&A: cheap, grounded in recent reports
-MODEL_ACTIVITY = "claude-sonnet-4-6"   # single-activity analysis (/activity)
-MODEL_PLAN_GEN = MODEL_DEEP            # plan generation: reasoning-heavy + rare → Opus
-MODEL_PLAN = "claude-sonnet-4-6"       # plan edits (/plan <text>): small, mechanical → Sonnet
+MODEL_ASK = "claude-sonnet-5"   # follow-up Q&A: cheap, grounded in recent reports
+MODEL_ACTIVITY = "claude-sonnet-5"   # single-activity analysis (/activity)
+MODEL_PLAN_GEN = MODEL_DEEP          # plan generation: reasoning-heavy + rare → Opus
+MODEL_PLAN = "claude-sonnet-5"       # plan edits (/plan <text>): small, mechanical → Sonnet
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread

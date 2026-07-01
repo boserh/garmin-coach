@@ -345,11 +345,13 @@ scheduled `morning_job` (with the time-window + once-a-day guard) and
 and `/test_on` (repeating) call the latter, so a test exercises the **exact** morning path
 incl. weather, without consuming the day's guard.
 
-**Models**: `/report` + morning + `/ask` + `/activity` use `claude-sonnet-4-6`; `/deep`
+**Models**: `/report` + morning + `/ask` + `/activity` use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
 (`MODEL_PLAN`) — small and mechanical. Every call is logged to `ReportLog` (tokens, cost,
-ok/error).
+ok/error). `PRICES` carries Sonnet 5's **introductory** rate ($2/$10 per 1M in/out through
+2026-08-31) — bump to $3/$15 on 2026-09-01. NB Sonnet 5 uses the newer tokenizer (~30%
+more tokens for the same text than Sonnet 4.6), so per-request token counts rise.
 
 **`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
 (3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
