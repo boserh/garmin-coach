@@ -269,6 +269,29 @@ def fetch_activity_series(activity_id, max_points: int = 150) -> list:
     return series
 
 
+def fetch_workout_full(workout_id) -> dict:
+    """The full raw workout DTO — for cloning a saved template (Day 1/Day 2) into our
+    own copy. Returns {} on error."""
+    d = _safe(_api, f"/workout-service/workout/{workout_id}")
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
+def fetch_workouts(limit: int = 60) -> list:
+    """List the user's saved workouts (``id`` / ``name`` / ``sport``) — for picking the
+    strength routines (Day 1 / Day 2) to schedule. Own workouts only, newest first."""
+    r = _safe(
+        _api, "/workout-service/workouts",
+        params={"start": 0, "limit": limit, "myWorkoutsOnly": True,
+                "orderBy": "UPDATE_DATE", "orderSeq": "DESC"},
+    )
+    out = []
+    for w in r if isinstance(r, list) else []:
+        if isinstance(w, dict) and w.get("workoutId"):
+            out.append({"id": w["workoutId"], "name": _g(w, "workoutName"),
+                        "sport": _g(w, "sportType", "sportTypeKey")})
+    return out
+
+
 def create_workout(payload: dict) -> dict:
     """Create a saved workout in Garmin Connect; returns the created DTO (incl.
     ``workoutId``). Raises on HTTP error (callers handle write failures)."""

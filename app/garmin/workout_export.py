@@ -132,6 +132,32 @@ def workout_name(w) -> str:
     return name[:80]   # Garmin caps the workout name length
 
 
+def clone_workout(raw: dict, name: str) -> dict:
+    """Turn a saved Garmin workout DTO into a create-payload for our own copy: strip the
+    server-assigned ids and ownership, keep the structure (steps/exercises), set ``name``.
+    Used to schedule a strength template (Day 1/Day 2) without touching the original."""
+    import copy
+    tpl = copy.deepcopy(raw)
+    for k in ("workoutId", "ownerId", "updatedDate", "createdDate", "author",
+              "trainingPlanId", "consumer", "consumerName", "consumerImageURL",
+              "consumerWebsiteURL", "workoutProvider", "workoutSourceId",
+              "atpPlanId", "shared", "sharedWithUsers"):
+        tpl.pop(k, None)
+    tpl["workoutName"] = name[:80]
+    for seg in tpl.get("workoutSegments", []) or []:
+        seg.pop("segmentId", None)
+        for st in seg.get("workoutSteps", []) or []:
+            _strip_step_ids(st)
+    return tpl
+
+
+def _strip_step_ids(step: dict) -> None:
+    step.pop("stepId", None)
+    step.pop("childStepId", None)
+    for sub in step.get("workoutSteps", []) or []:   # repeat groups nest steps
+        _strip_step_ids(sub)
+
+
 def build_workout(w) -> dict:
     """Build the Garmin create-workout payload from a ``PlannedWorkout``.
 

@@ -20,6 +20,20 @@ from app.routers.admin import INDEX_COLS, _run_charts
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+
+def _hm(hours):
+    """Decimal hours → 'Xг Yхв' (8.6 → '8 год 36 хв'); empty for None."""
+    if hours is None:
+        return ""
+    total = round(hours * 60)
+    h, m = divmod(total, 60)
+    if h and m:
+        return f"{h} год {m} хв"
+    return f"{h} год" if h else f"{m} хв"
+
+
+templates.env.filters["hm"] = _hm
+
 # Only the user's own data tables (all carry user_id).
 TABLES = {
     "daily_metrics": DailyMetric,
@@ -164,7 +178,7 @@ def _recovery_ring(day):
         "metric": "готовність" if day.get("readiness") is not None else "сон, бал",
         "circ": _RING_CIRC, "dash": round(_RING_CIRC * min(val, 100) / 100, 1),
         "r": _RING_R, "date": day["date"],
-        "sleep_h": day.get("sleep_h"), "hrv_avg": day.get("hrv_avg"), "rhr": day.get("rhr"),
+        "sleep_hm": _hm(day.get("sleep_h")), "hrv_avg": day.get("hrv_avg"), "rhr": day.get("rhr"),
     }
 
 
