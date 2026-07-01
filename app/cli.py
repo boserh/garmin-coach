@@ -231,6 +231,32 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     return 0
 
 
+async def _list_workouts(email: str) -> int:
+    """Print the user's saved Garmin workouts (id · sport · name) — to find the strength
+    routines (Day 1 / Day 2) to reference in the plan."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import client
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        async with user_runtime(session, user):
+            await run_in_threadpool(get_provider().login)
+            rows = await run_in_threadpool(client.fetch_workouts)
+    if not rows:
+        print("No saved workouts found.")
+        return 0
+    for w in rows:
+        print(f"  {w['id']}  [{w['sport'] or '—'}]  {w['name']}")
+    return 0
+
+
 async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
     await init_db()  # zero-config safety; Alembic remains the source of truth
     async with async_session_maker() as session:
@@ -315,6 +341,9 @@ def main(argv=None) -> int:
     up.add_argument("--email", required=True)
     up.add_argument("--date", help="remove only the session on this ISO date")
 
+    lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
+    lw.add_argument("--email", required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
@@ -333,6 +362,8 @@ def main(argv=None) -> int:
         return asyncio.run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
         return asyncio.run(_unpush_plan(args.email, args.date))
+    if args.cmd == "list-workouts":
+        return asyncio.run(_list_workouts(args.email))
     return 0
 
 
