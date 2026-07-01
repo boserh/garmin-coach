@@ -56,8 +56,8 @@
     </div>
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
 
-    {% for week_no, items in weeks %}
-      <div class="week">Тиждень {{ week_no }}</div>
+    {% for week_no, week_range, items in weeks %}
+      <div class="week">Тиждень {{ week_no }}{% if week_range %} · {{ week_range }}{% endif %}</div>
       {% for w in items %}
         <div class="wk {{ 'today' if w.date == today else '' }} {{ w.status }}">
           <div class="d">{{ w.date }}</div>

@@ -115,6 +115,22 @@ def test_fmt_step_renders_human_labels():
     assert rep == "5× (біг 3 хв @ 5:15–5:24/км + відновлення 2 хв)"
 
 
+def test_by_week_groups_by_calendar_monday():
+    from types import SimpleNamespace
+
+    from app.routers.plan import _by_week
+    ws = [SimpleNamespace(date=d, week=1) for d in
+          ("2026-07-02", "2026-07-05", "2026-07-07", "2026-07-12", "2026-07-14")]
+    weeks = _by_week(ws)
+    # 07-02(Thu)+07-05(Sun) share Mon 06-29; 07-07+07-12 share Mon 07-06; 07-14 → Mon 07-13
+    assert [[w.date for w in items] for _, _, items in weeks] == [
+        ["2026-07-02", "2026-07-05"],
+        ["2026-07-07", "2026-07-12"],
+        ["2026-07-14"],
+    ]
+    assert weeks[0][0] == 1 and "чер" in weeks[0][1] and "лип" in weeks[0][1]
+
+
 def test_coerce_edit_parses():
     e = _coerce_edit(
         '{"summary": "додаю", "operations": [{"action": "add", "date": "2026-07-02", '
