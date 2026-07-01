@@ -115,6 +115,7 @@ async def _activity_cards(session, user_id, limit, offset):
     for r in rows:
         emoji, color = _act_meta(r.type)
         runwalk = (r.type or "").lower() in _RUNWALK
+        strain_ring = {"color": "#3aa0ff", **_ring_geom(r.load / 2, 24)} if r.load else None
         cards.append({
             "id": r.id, "emoji": emoji, "color": color,
             "label": (r.type or "—").replace("_", " ").capitalize(),
@@ -123,6 +124,7 @@ async def _activity_cards(session, user_id, limit, offset):
             "avg_hr": r.avg_hr, "max_hr": r.max_hr, "load": r.load,
             "pace": _pace_str(r.dist_km, r.dur_min) if runwalk else None,
             "spark": _spark(r.series) if runwalk else None,
+            "strain_ring": strain_ring,
             "has_analysis": bool(r.analysis),
         })
     return cards

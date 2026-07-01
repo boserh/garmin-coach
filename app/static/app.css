@@ -123,6 +123,9 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .act .ic{width:2.7rem;height:2.7rem;border-radius:14px;display:grid;place-items:center;font-size:1.35rem;
   background:#0e1219;background:color-mix(in srgb,var(--accent) 15%,#0e1219);
   border:1px solid #2a3140;border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
+.ic-wrap{position:relative;width:3.5rem;height:3.5rem;flex:none;display:grid;place-items:center}
+.ic-wrap .icring{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.ic-wrap .ic{width:2.5rem;height:2.5rem;border-radius:13px;font-size:1.2rem}
 .act .info{min-width:0}
 .act .atype{font-weight:600;font-size:.96rem;color:var(--ink)}
 .act .adate{color:var(--faint);font-size:.8rem;margin-top:.12rem}
@@ -227,6 +230,11 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .note b{color:var(--ink)}
 .note ol{margin:.5rem 0 0;padding-left:1.2rem}
 .note li{margin:.3rem 0}
+
+/* rings draw in from empty on load — the signature Whoop micro-interaction */
+@keyframes ringdraw{from{stroke-dashoffset:var(--from)}to{stroke-dashoffset:var(--to)}}
+.ring-anim{animation:ringdraw 1.1s cubic-bezier(.22,1,.36,1) both}
+@media(prefers-reduced-motion:reduce){.ring-anim{animation:none}}
 
 /* ---- recovery ring (Whoop-style hero) ---- */
 .hero-rec{display:flex;align-items:center;gap:1.8rem;flex-wrap:wrap;margin:1.7rem 0 .6rem;
