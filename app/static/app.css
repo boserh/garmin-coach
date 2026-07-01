@@ -11,21 +11,41 @@
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{
-  margin:0; background:var(--bg); color:var(--ink); line-height:1.5;
+  margin:0; color:var(--ink); line-height:1.5;
   font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
   font-feature-settings:"cv05","ss03"; -webkit-font-smoothing:antialiased;
   text-rendering:optimizeLegibility; padding:2.5rem 1.5rem 6rem;
+  /* aurora glow behind the page — subtle depth, not flat */
+  background:
+    radial-gradient(58rem 30rem at 82% -8%, rgba(122,162,247,.13), transparent 60%),
+    radial-gradient(48rem 26rem at -6% 4%, rgba(187,154,247,.10), transparent 60%),
+    var(--bg);
+  background-attachment:fixed;
 }
 .wrap{max-width:var(--maxw);margin:0 auto}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline;text-underline-offset:3px}
 
+/* Shared "glass" treatment for every card: layered surface, inset top highlight, soft
+   depth shadow, and an accent glow on hover — the thing that reads as a premium app. */
+.row,.act,.daycard,.rep,.stat,.bigstat,.listcard,.chart,.note,.center,.authcard,.loadbox{
+  background:linear-gradient(180deg, var(--surface-2), var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 8px 24px -14px rgba(0,0,0,.75);
+}
+.row:hover,.act:hover,.daycard:hover,.rep:hover,.stat:hover,.listcard:hover{
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),
+             0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
+             0 14px 34px -16px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
 /* ---- page head ---- */
 .crumb{font-size:.82rem;color:var(--muted);margin-bottom:1.7rem}
 .eyebrow{font-size:.72rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;
          color:var(--faint);margin:0 0 .55rem}
-.title{font-size:clamp(2rem,5.5vw,2.7rem);font-weight:650;letter-spacing:-.035em;
-       line-height:1.04;margin:0}
+.title{font-size:clamp(2rem,5.5vw,2.7rem);font-weight:700;letter-spacing:-.038em;
+       line-height:1.04;margin:0;
+       background:linear-gradient(96deg,#ffffff,#aec4ff 135%);
+       -webkit-background-clip:text;background-clip:text;color:transparent}
 .meta{margin:1rem 0 0;color:var(--muted);font-size:.9rem;font-variant-numeric:tabular-nums}
 .meta b{color:var(--ink);font-weight:600}
 .meta .sep{color:var(--faint);margin:0 .5rem}
@@ -129,7 +149,7 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .bigstats{display:flex;flex-wrap:wrap;gap:.7rem;margin:1.6rem 0}
 .bigstat{flex:1 1 6.5rem;min-width:5.5rem;padding:.85rem 1rem;border:1px solid var(--line-2);
          border-radius:13px;background:var(--surface)}
-.bigstat .v{font-size:1.4rem;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--ink)}
+.bigstat .v{font-size:1.55rem;font-weight:750;letter-spacing:-.025em;font-variant-numeric:tabular-nums;color:var(--ink)}
 .bigstat .k{color:var(--muted);font-size:.72rem;margin-top:.25rem;text-transform:uppercase;letter-spacing:.06em}
 .abody{white-space:pre-wrap;line-height:1.6;color:#cbd2dc;font-size:.92rem}
 
@@ -180,9 +200,12 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 .hint{color:var(--faint);font-size:.78rem;margin-top:.35rem;line-height:1.5}
 .check{display:flex;align-items:center;gap:.6rem;margin-top:1.35rem;color:var(--ink);font-weight:500;font-size:.9rem}
 .check input{width:auto}
-.btn{margin-top:1.7rem;padding:.62rem 1.35rem;border:0;border-radius:9px;background:var(--accent);
-     color:#08121f;font:inherit;font-weight:650;font-size:.95rem;cursor:pointer;transition:filter .12s}
-.btn:hover{filter:brightness(1.08)}
+.btn{margin-top:1.7rem;padding:.64rem 1.4rem;border:0;border-radius:10px;
+     background:linear-gradient(180deg,#8fb0ff,#6d92f2);color:#0a1020;font:inherit;font-weight:650;
+     font-size:.95rem;cursor:pointer;transition:filter .12s,box-shadow .12s,transform .06s;
+     box-shadow:0 8px 20px -8px rgba(122,162,247,.55)}
+.btn:hover{filter:brightness(1.06);box-shadow:0 10px 26px -8px rgba(122,162,247,.7)}
+.btn:active{transform:translateY(1px)}
 .saved{color:var(--easy);margin:1rem 0;font-size:.9rem}
 .err{color:#f7768e;font-size:.85rem}
 
