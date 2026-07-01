@@ -79,6 +79,14 @@
       урахуванням спеки/дощу/вітру). Порожнє — без погоди.
       {% if geo == "fail" %}<span class="err">Не вдалось знайти це місто — перевір назву.</span>{% endif %}</div>
 
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.75rem;font-weight:600">
+      <input type="checkbox" name="garmin_sync" {% if garmin_sync_enabled %}checked{% endif %}
+             style="width:auto">
+      Синхронізувати програму з Garmin-календарем
+    </label>
+    <div class="hint">Пушить заплановані тренування на годинник (ковзне вікно ~14 днів).
+      Вимкнеш — приберемо з календаря все, що ми туди додали.</div>
+
     <button type="submit">Зберегти</button>
   </form>
 

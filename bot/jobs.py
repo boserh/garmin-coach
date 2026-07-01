@@ -122,8 +122,10 @@ async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: s
 async def _sync_for_user(session, user: User) -> None:
     """Reconcile one user's Garmin calendar with their plan. Binds the user's provider;
     the cleanup pass runs even with no active plan (to remove a just-archived plan's
-    pushed workouts). Skips users with nothing to do or no Garmin credentials."""
+    pushed workouts). Skips users with sync disabled, nothing to do, or no creds."""
     try:
+        if not user.garmin_sync_enabled:
+            return
         plan = await repository.get_active_plan(session, user.id)
         pushed = await repository.list_pushed_workouts(session, user.id)
         if plan is None and not pushed:

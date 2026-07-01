@@ -96,6 +96,14 @@
     <label for="notes">Нотатки (необовʼязково)</label>
     <textarea id="notes" name="notes" rows="3" placeholder="травми, обмеження, дні які зайняті тощо"></textarea>
 
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.75rem;font-weight:600">
+      <input type="checkbox" name="sync_garmin" {% if garmin_sync_enabled %}checked{% endif %}
+             style="width:auto">
+      Синхронізувати з Garmin-календарем
+    </label>
+    <div class="hint">Зніми галочку, щоб спершу переглянути й перевірити програму, а
+      синк увімкнути пізніше в Налаштуваннях.</div>
+
     <button id="submitbtn" type="submit">Скласти програму</button>
   </form>
 

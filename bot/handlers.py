@@ -288,11 +288,12 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         # Mirror just the edited sessions onto the Garmin calendar (best-effort — the
         # daily job reconciles anything missed; a Garmin outage never blocks the edit).
-        try:
-            async with user_runtime(session, user):
-                await plan_sync.resync_workouts(session, user.id, affected)
-        except Exception:
-            logger.exception(f"PLAN edit sync failed user={user.id}")
+        if user.garmin_sync_enabled:
+            try:
+                async with user_runtime(session, user):
+                    await plan_sync.resync_workouts(session, user.id, affected)
+            except Exception:
+                logger.exception(f"PLAN edit sync failed user={user.id}")
     await q.edit_message_text(f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.")
 
 
