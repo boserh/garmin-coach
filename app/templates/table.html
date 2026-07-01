@@ -4,27 +4,34 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ table }} — Garmin DB</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #0f1115; color: #e6e6e6; }
-    a { color: #6cb6ff; text-decoration: none; }
+    body { font-family: "Inter", system-ui, sans-serif; margin: 1.75rem; background: #090b0f; color: #eef1f5;
+           -webkit-font-smoothing: antialiased; }
+    a { color: #7aa2f7; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .bar { margin: .5rem 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
-    .tabs a { padding: .2rem .5rem; border: 1px solid #2a2f3a; border-radius: 6px; }
-    .tabs a.active { background: #1a1e27; border-color: #6cb6ff; }
-    .meta { color: #9aa4b2; }
-    .wrap { overflow: auto; max-height: 78vh; border: 1px solid #2a2f3a; border-radius: 8px; }
-    table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-    th, td { border-bottom: 1px solid #2a2f3a; padding: .4rem .6rem; text-align: left;
+    .bar { margin: .6rem 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .tabs { gap: .5rem; }
+    .tabs a { padding: .28rem .62rem; border: 1px solid #313a49; border-radius: 8px; color: #909aa8; font-size: .85rem; }
+    .tabs a:hover { color: #eef1f5; text-decoration: none; }
+    .tabs a.active { background: #1a2029; border-color: #7aa2f7; color: #eef1f5; }
+    .meta { color: #909aa8; }
+    .wrap { overflow: auto; max-height: 78vh; border: 1px solid #313a49; border-radius: 12px; }
+    table { border-collapse: collapse; width: 100%; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    th, td { border-bottom: 1px solid #232a36; padding: .5rem .7rem; text-align: left;
              white-space: nowrap; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; }
-    th { background: #1a1e27; position: sticky; top: 0; }
-    tr:nth-child(even) td { background: #12151c; }
-    .charts { display: flex; flex-wrap: wrap; gap: 1rem; margin: .5rem 0 1rem; }
-    .chart { flex: 1 1 22rem; border: 1px solid #2a2f3a; border-radius: 8px; padding: .6rem .8rem; background: #14171f; }
-    .chead { font-size: .9rem; margin-bottom: .3rem; }
+    th { background: #151a23; position: sticky; top: 0; color: #b6bfca; font-weight: 600; letter-spacing: .02em; }
+    tr:nth-child(even) td { background: #10141b; }
+    tr:hover td { background: #1a2029; }
+    .charts { display: flex; flex-wrap: wrap; gap: 1rem; margin: .6rem 0 1.2rem; }
+    .chart { flex: 1 1 22rem; border: 1px solid #313a49; border-radius: 12px; padding: .75rem .9rem; background: #151a23; }
+    .chead { font-size: .9rem; margin-bottom: .4rem; }
     .chart svg { display: block; width: 100%; height: auto; }
     .xaxis { display: flex; justify-content: space-between; }
-    button.del { padding: .1rem .5rem; border: 0; border-radius: 5px; cursor: pointer;
-                 background: #3a2326; color: #ff7b72; font-size: .82rem; }
+    button.del { padding: .15rem .55rem; border: 0; border-radius: 6px; cursor: pointer;
+                 background: rgba(247,118,142,.12); color: #f7768e; font-size: .82rem; }
   </style>
 </head>
 <body>

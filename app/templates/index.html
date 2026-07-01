@@ -3,31 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Garmin DB</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6; }
-    h1 { font-weight: 600; }
-    a { color: #6cb6ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .card { display: inline-block; min-width: 9rem; margin: .5rem; padding: 1rem 1.5rem;
-            border: 1px solid #2a2f3a; border-radius: 10px; background: #14171f; }
-    .card:hover { border-color: #6cb6ff; }
-    .name { color: #9aa4b2; font-size: .9rem; }
-    .n { font-size: 1.8rem; font-weight: 700; }
-    nav { margin-bottom: 1rem; color: #9aa4b2; }
-  </style>
+  <title>{{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   {% set base = base or '/ui' %}
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
-  <h1>{{ title }}</h1>
   {% set q = '?token=' ~ token if token else '' %}
-  {% for name, n in counts.items() %}
-    <a class="card" href="{{ base }}/{{ name }}{{ q }}">
-      <div class="name">{{ name }}</div>
-      <div class="n">{{ n }}</div>
-    </a>
-  {% endfor %}
+  <div class="wrap">
+    <p class="eyebrow">{{ 'База даних' if base == '/ui' else 'Мої дані' }}</p>
+    <h1 class="title" style="font-size:1.7rem">{{ title }}</h1>
+    <div class="stats">
+      {% for name, n in counts.items() %}
+        <a class="stat" href="{{ base }}/{{ name }}{{ q }}">
+          <div class="sname">{{ name }}</div>
+          <div class="snum">{{ n }}</div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
 </body>
 </html>
