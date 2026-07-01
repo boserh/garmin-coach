@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Відновлення — {{ date }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {% set active = 'me' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <a class="back" href="/me/daily_metrics">← Відновлення</a>
+    <div class="ahead">
+      <div>
+        <div class="atitle" style="font-size:1.4rem">{{ date }}</div>
+        {% if m.hrv_status %}<div style="margin-top:.45rem"><span class="hrvpill" style="background:{{ hrv_color }}">HRV {{ m.hrv_status }}</span></div>{% endif %}
+      </div>
+    </div>
+
+    <div class="bigstats">
+      {% if m.sleep_score %}<div class="bigstat"><div class="v">{{ m.sleep_score }}</div><div class="k">сон бал</div></div>{% endif %}
+      {% if m.sleep_h %}<div class="bigstat"><div class="v">{{ '%.1f'|format(m.sleep_h) }}</div><div class="k">год сну</div></div>{% endif %}
+      {% if m.hrv_avg %}<div class="bigstat"><div class="v">{{ m.hrv_avg }}</div><div class="k">HRV avg</div></div>{% endif %}
+      {% if extra.resting_hr %}<div class="bigstat"><div class="v">{{ extra.resting_hr }}</div><div class="k">RHR</div></div>{% endif %}
+      {% if m.stress_avg %}<div class="bigstat"><div class="v">{{ m.stress_avg }}</div><div class="k">стрес сер</div></div>{% endif %}
+      {% if extra.readiness_score %}<div class="bigstat"><div class="v">{{ extra.readiness_score }}</div><div class="k">готовність</div></div>{% endif %}
+    </div>
+
+    {% if m.deep_h or m.rem_h or m.light_h or m.awake_h %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Сон</h2>
+    <div class="mrow">
+      {% if m.deep_h %}<span class="mchip"><b>{{ '%.1f'|format(m.deep_h) }}</b><span class="u">глибокий</span></span>{% endif %}
+      {% if m.rem_h %}<span class="mchip"><b>{{ '%.1f'|format(m.rem_h) }}</b><span class="u">REM</span></span>{% endif %}
+      {% if m.light_h %}<span class="mchip"><b>{{ '%.1f'|format(m.light_h) }}</b><span class="u">легкий</span></span>{% endif %}
+      {% if m.awake_h %}<span class="mchip"><b>{{ '%.1f'|format(m.awake_h) }}</b><span class="u">неспання</span></span>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if m.bb_charged or m.bb_drained or m.stress_max %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Body Battery / стрес</h2>
+    <div class="mrow">
+      {% if m.bb_charged %}<span class="mchip"><b>+{{ m.bb_charged }}</b><span class="u">заряд</span></span>{% endif %}
+      {% if m.bb_drained %}<span class="mchip"><b>−{{ m.bb_drained }}</b><span class="u">розряд</span></span>{% endif %}
+      {% if m.stress_max %}<span class="mchip"><b>{{ m.stress_max }}</b><span class="u">стрес макс</span></span>{% endif %}
+    </div>
+    {% endif %}
+
+    {% set rest = [] %}
+    {% for k, v in extra.items() if v is not none and (v is string or v is number) and k not in ('resting_hr', 'readiness_score') %}
+      {% if rest.append(k) %}{% endif %}
+    {% endfor %}
+    {% if rest %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Ще показники</h2>
+    <div class="mrow">
+      {% for k in rest %}<span class="mchip"><b>{{ extra[k] }}</b><span class="u">{{ k }}</span></span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</body>
+</html>
