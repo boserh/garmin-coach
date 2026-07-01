@@ -10,9 +10,11 @@ Alembic remains the source of truth) and disposes the engine on shutdown.
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core import logging as app_logging
@@ -56,6 +58,12 @@ def create_app() -> FastAPI:
         ms = (time.perf_counter() - start) * 1000
         logger.info(f"{request.method} {path} → {response.status_code} {ms:.0f}ms")
         return response
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+        name="static",
+    )
 
     @app.exception_handler(RequiresLogin)
     async def _redirect_to_login(request: Request, exc: RequiresLogin):
