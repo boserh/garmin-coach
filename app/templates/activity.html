@@ -15,6 +15,32 @@
   <div class="wrap" style="--accent:{{ a.color }}">
     <a class="back" href="/me/activities">← Активності</a>
 
+    {% if strain %}
+    <div class="hero-rec">
+      <div class="ringbox">
+        <svg viewBox="0 0 176 176" style="filter:drop-shadow(0 0 13px {{ strain.color }}66)">
+          <circle cx="88" cy="88" r="{{ strain.r }}" fill="none" stroke="#252b37" stroke-width="13"/>
+          <circle cx="88" cy="88" r="{{ strain.r }}" fill="none" stroke="{{ strain.color }}" stroke-width="13"
+                  stroke-linecap="round" class="ring-anim"
+                  stroke-dasharray="{{ strain.circ }}" stroke-dashoffset="{{ strain.circ - strain.dash }}"
+                  style="--from:{{ strain.circ }};--to:{{ strain.circ - strain.dash }}"/>
+        </svg>
+        <div class="ringc">
+          <div class="ringv" style="color:{{ strain.color }}">{{ strain.value }}</div>
+          <div class="ringl">{{ strain.label }}</div>
+        </div>
+      </div>
+      <div class="hero-side">
+        <div style="display:flex;align-items:center;gap:.9rem">
+          <div class="ic">{{ a.emoji }}</div>
+          <div>
+            <div class="atitle" style="font-size:1.35rem">{{ a.label }}</div>
+            <div class="adate">{{ a.date }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% else %}
     <div class="ahead">
       <div class="ic">{{ a.emoji }}</div>
       <div>
@@ -22,6 +48,7 @@
         <div class="adate">{{ a.date }}</div>
       </div>
     </div>
+    {% endif %}
 
     <div class="bigstats">
       {% if a.dist_km %}<div class="bigstat"><div class="v">{{ '%.1f'|format(a.dist_km) }}</div><div class="k">км</div></div>{% endif %}

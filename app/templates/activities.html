@@ -27,7 +27,16 @@
     <div class="acts">
       {% for a in acts %}
       <a class="act" href="/me/activities/{{ a.id }}" style="--accent:{{ a.color }}">
-        <div class="ic">{{ a.emoji }}</div>
+        <div class="ic-wrap">
+          {% if a.strain_ring %}
+          <svg class="icring" viewBox="0 0 62 62">
+            <circle cx="31" cy="31" r="{{ a.strain_ring.r }}" fill="none" stroke="#252b37" stroke-width="4"/>
+            <circle cx="31" cy="31" r="{{ a.strain_ring.r }}" fill="none" stroke="{{ a.strain_ring.color }}" stroke-width="4"
+                    stroke-linecap="round" stroke-dasharray="{{ a.strain_ring.dash }} {{ a.strain_ring.circ }}"/>
+          </svg>
+          {% endif %}
+          <div class="ic">{{ a.emoji }}</div>
+        </div>
         <div class="info">
           <div class="atype">{{ a.label }}{% if a.has_analysis %} <span class="badge-an" title="є розбір">💬</span>{% endif %}</div>
           <div class="adate">{{ a.date }}</div>
