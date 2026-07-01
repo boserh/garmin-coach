@@ -1,0 +1,21 @@
+{% if hero %}
+<div class="hero-rec">
+  <div class="ringbox">
+    <svg viewBox="0 0 176 176" style="filter:drop-shadow(0 0 13px {{ hero.color }}66)">
+      <circle cx="88" cy="88" r="{{ hero.r }}" fill="none" stroke="#252b37" stroke-width="13"/>
+      <circle cx="88" cy="88" r="{{ hero.r }}" fill="none" stroke="{{ hero.color }}" stroke-width="13"
+              stroke-linecap="round" stroke-dasharray="{{ hero.dash }} {{ hero.circ }}"/>
+    </svg>
+    <div class="ringc">
+      <div class="ringv" style="color:{{ hero.color }}">{{ hero.value }}<small>%</small></div>
+      <div class="ringl">{{ hero.label }}</div>
+    </div>
+  </div>
+  <div class="hero-side">
+    <div class="hero-date">{{ hero.date }} · {{ hero.metric }}</div>
+    {% if hero.sleep_h %}<div class="hs"><span class="hv">{{ '%.1f'|format(hero.sleep_h) }}</span><span class="hk">год сну</span></div>{% endif %}
+    {% if hero.hrv_avg %}<div class="hs"><span class="hv">{{ hero.hrv_avg }}</span><span class="hk">HRV</span></div>{% endif %}
+    {% if hero.rhr %}<div class="hs"><span class="hv">{{ hero.rhr }}</span><span class="hk">RHR спокою</span></div>{% endif %}
+  </div>
+</div>
+{% endif %}
