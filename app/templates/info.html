@@ -4,25 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Інфо</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #e6e6e6;
-           line-height: 1.55; }
-    a { color: #6cb6ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    h1 { font-weight: 600; font-size: 1.4rem; }
-    h2 { font-weight: 600; font-size: 1.1rem; margin: 2rem 0 .5rem; }
-    .wrap { max-width: 42rem; }
-    ol, ul { padding-left: 1.3rem; }
-    li { margin: .35rem 0; }
-    code { background: #14171f; border: 1px solid #2a2f3a; border-radius: 5px;
-           padding: .1rem .4rem; font-size: .9em; }
-    .muted { color: #9aa4b2; }
-  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   {% set active = 'info' %}
   {% include "_nav.html" %}
-  <div class="wrap">
+  <div class="wrap prose">
+    <p class="eyebrow">Довідка</p>
     <h1>Як це працює</h1>
     <p>Сервіс читає твої дані з Garmin Connect (сон, HRV, стрес, body battery,
        тренування), стискає їх і дає Claude проаналізувати — у Telegram або тут, у вебі.</p>
