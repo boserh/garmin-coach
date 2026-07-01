@@ -144,9 +144,6 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
     from app.garmin.providers import get_provider
     from app.garmin.runtime import user_runtime
 
-    # rest/cross-training sessions aren't runs — don't push them to the watch.
-    skip_types = {"rest", "cross", "strength"}
-
     await init_db()
     async with async_session_maker() as session:
         user = await users.get_by_email(session, email)
@@ -161,7 +158,7 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
         upcoming = await repository.list_workouts(session, plan.id, upcoming_only=True)
         todo = [w for w in upcoming
                 if (w.date == date if date else w.date <= end)
-                and (w.type or "").lower() not in skip_types
+                and plan_sync._pushable(w)
                 and w.garmin_workout_id is None]
         if not todo:
             scope = date if date else f"next {days} days"
@@ -173,9 +170,13 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
               f"for {email} ({where})...")
         if dry_run:
             for w in todo:
-                payload = workout_export.build_workout(w)
-                n = len(payload["workoutSegments"][0]["workoutSteps"])
-                print(f"  {w.date}  {payload['workoutName']}  ({n} step(s))")
+                if w.garmin_template_id:
+                    print(f"  {w.date}  🏋️ {w.description or 'Силова'}  "
+                          f"(clone template {w.garmin_template_id})")
+                else:
+                    payload = workout_export.build_workout(w)
+                    n = len(payload["workoutSegments"][0]["workoutSteps"])
+                    print(f"  {w.date}  {payload['workoutName']}  ({n} step(s))")
             return 0
 
         async with user_runtime(session, user):
@@ -183,8 +184,9 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
             done = 0
             for w in todo:
                 wid = await plan_sync.push_workout(session, w)
-                done += 1
-                print(f"  {w.date}  {workout_export.workout_name(w)}  → workout {wid}")
+                if wid:
+                    done += 1
+                    print(f"  {w.date}  {workout_export.workout_name(w)}  → workout {wid}")
                 await asyncio.sleep(0.3)  # be gentle on Garmin
         print(f"Done: {done}/{len(todo)} pushed to the Garmin calendar.")
     return 0

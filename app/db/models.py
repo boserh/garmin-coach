@@ -208,6 +208,10 @@ class PlannedWorkout(Base):
     # and lets edits/archival unschedule what we put there.
     garmin_workout_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     garmin_schedule_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # A saved Garmin workout to CLONE from (e.g. a strength Day 1/Day 2 template). When
+    # set, push creates OUR OWN copy of it and schedules that (like a run) — the user's
+    # template is never scheduled or deleted; cleanup removes only our copy.
+    garmin_template_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

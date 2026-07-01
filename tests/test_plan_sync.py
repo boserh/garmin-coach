@@ -55,6 +55,27 @@ async def test_sync_skips_rest_and_already_pushed(session):
     create.assert_not_called()
 
 
+async def test_push_clones_strength_template_not_build(session):
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    await _seed_plan(session, workouts=[
+        dict(date=fut, week=2, type="strength", status="planned",
+             description="Day 1", garmin_template_id=931013083),
+    ])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "fetch_workout_full",
+                      return_value={"workoutSegments": [{"workoutSteps": []}]}) as fetch, \
+         patch.object(plan_sync.client, "create_workout", return_value={"workoutId": 555}), \
+         patch.object(plan_sync.client, "schedule_workout",
+                      return_value={"workoutScheduleId": 556}), \
+         patch.object(plan_sync.workout_export, "build_workout") as build:
+        res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
+    assert res == {"pushed": 1, "removed": 0}
+    fetch.assert_called_once_with(931013083)   # cloned the template
+    build.assert_not_called()                   # not built from steps
+    (w,) = await repository.list_pushed_workouts(session, U1)
+    assert w.garmin_workout_id == 555           # our own copy, not the template id
+
+
 async def test_sync_removes_pushed_from_archived_plan(session):
     fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
     await _seed_plan(session, status="archived", workouts=[

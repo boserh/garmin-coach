@@ -17,6 +17,25 @@ def test_speed_conversion_matches_garmin():
     assert round(wx._speed(7 + 10 / 60), 5) == 2.32558     # 7:10/km
 
 
+def test_clone_workout_strips_ids_keeps_structure():
+    raw = {"workoutId": 931013083, "ownerId": 5, "author": {"x": 1}, "workoutName": "Day 1",
+           "sportType": {"sportTypeKey": "strength_training"},
+           "workoutSegments": [{"segmentId": 9, "workoutSteps": [
+               {"stepId": 1, "stepType": {"stepTypeKey": "warmup"}},
+               {"stepId": 2, "childStepId": 1, "type": "RepeatGroupDTO",
+                "workoutSteps": [{"stepId": 3, "childStepId": 1, "exerciseName": "SQUAT"}]}]}]}
+    c = wx.clone_workout(raw, "🏋️ Day 1 · W2")
+    assert c["workoutName"] == "🏋️ Day 1 · W2"
+    assert "workoutId" not in c and "ownerId" not in c and "author" not in c
+    assert c["sportType"]["sportTypeKey"] == "strength_training"     # structure kept
+    seg = c["workoutSegments"][0]
+    assert "segmentId" not in seg
+    steps = seg["workoutSteps"]
+    assert all("stepId" not in s and "childStepId" not in s for s in steps)
+    nested = steps[1]["workoutSteps"][0]
+    assert "stepId" not in nested and nested["exerciseName"] == "SQUAT"   # exercise preserved
+
+
 def test_name_marker_by_type():
     assert wx.workout_name(_w(week=3, type="intervals", dist_km=6.0)) == "⚡ Intervals 6km · W3"
     assert wx.workout_name(_w(week=1, type="easy", dist_km=3.5)) == "🌿 Easy 3.5km · W1"
