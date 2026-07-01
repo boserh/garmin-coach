@@ -4,6 +4,7 @@
 Telegram chat id (secrets are Fernet-encrypted via ``app.core.crypto`` on write and
 never rendered back). ``/admin/users`` lets an admin create further accounts.
 """
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -18,7 +19,11 @@ from app.core.crypto import decrypt, encrypt, hash_password, verify_password
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
+from app.garmin import plan_sync
+from app.garmin.runtime import user_runtime
 from app.weather import geocode
+
+logger = logging.getLogger("api")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -55,6 +60,7 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "has_garth_token": bool(user.garth_token_enc),
             "telegram_chat_id": user.telegram_chat_id or "",
             "weather_location": user.weather_location or "",
+            "garmin_sync_enabled": user.garmin_sync_enabled,
             "saved": request.query_params.get("saved") == "1",
             "geo": request.query_params.get("geo"),
             "pw": request.query_params.get("pw"),
@@ -71,6 +77,7 @@ async def settings_save(
     anthropic_key: str = Form(""),
     telegram_chat_id: str = Form(""),
     weather_location: str = Form(""),
+    garmin_sync: str = Form(""),   # checkbox: "on" when ticked, absent otherwise
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -101,7 +108,24 @@ async def settings_save(
         else:
             geo_failed = True  # keep the previous location, tell the user
 
+    # Garmin calendar sync toggle. When it changes, apply it immediately (best-effort):
+    # on → push the current window; off → clear everything we pushed.
+    sync_on = bool(garmin_sync)
+    sync_changed = sync_on != user.garmin_sync_enabled
+    user.garmin_sync_enabled = sync_on
+
     await session.commit()
+
+    if sync_changed:
+        try:
+            async with user_runtime(session, user) as creds:
+                if sync_on and creds.has_garmin:
+                    await plan_sync.sync_plan_to_garmin(session, user.id)
+                elif not sync_on:
+                    await plan_sync.unpush_all(session, user.id)
+        except Exception:
+            logger.exception(f"Garmin sync toggle apply failed user={user.id}")
+
     if geo_failed:
         return RedirectResponse("/settings?saved=1&geo=fail", status_code=303)
     return RedirectResponse("/settings?saved=1", status_code=303)

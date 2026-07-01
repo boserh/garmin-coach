@@ -109,11 +109,13 @@ async def _generate_plan_bg(user_id: int, params: dict) -> None:
                 plan = await run_plan_generation(
                     session, user_id=user_id, api_key=creds.anthropic_key, **params)
                 # A fresh plan archives the prior one — sync now to remove the old plan's
-                # pushed workouts and push the new window. Never fail generation over it.
-                try:
-                    await plan_sync.sync_plan_to_garmin(session, user_id)
-                except Exception:
-                    logger.exception(f"PLAN gen sync failed user={user_id}")
+                # pushed workouts and push the new window (only if the user opted in).
+                # Never fail generation over it.
+                if user.garmin_sync_enabled:
+                    try:
+                        await plan_sync.sync_plan_to_garmin(session, user_id)
+                    except Exception:
+                        logger.exception(f"PLAN gen sync failed user={user_id}")
             await repository.set_state(session, user_id, PLAN_GEN_KEY, "")  # done
             logger.info(f"PLAN created id={plan.id} user={user_id} (background)")
         except AnalystError as e:
@@ -168,6 +170,7 @@ async def plan_page(
             {"user": user, "goals": GOALS, "weekdays": WEEKDAYS,
              "default_days": ["tue", "thu", "sun"], "default_long": "sun",
              "today": dt.date.today().isoformat(),
+             "garmin_sync_enabled": user.garmin_sync_enabled,
              "error": error},
         )
     workouts = await repository.list_workouts(session, plan.id)
@@ -221,6 +224,7 @@ async def plan_create(
     recent_5k: str = Form(""),
     longest_run_km: str = Form(""),
     notes: str = Form(""),
+    sync_garmin: str = Form(""),   # checkbox: push this plan to the Garmin calendar
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -250,8 +254,12 @@ async def plan_create(
         "days_per_week": len(run_days), "intensity": intensity, "intake": intake,
         "run_days": run_days, "long_run_day": long_run_day,
     }
+    # Persist the Garmin-sync preference from the form before generation runs (the
+    # background task reads it via the DB); set_state's commit persists it too.
+    user.garmin_sync_enabled = bool(sync_garmin)
     await repository.set_state(session, user.id, PLAN_GEN_KEY, f"pending:{int(time.time())}")
-    logger.info(f"PLAN generate requested user={user.id} goal={goal} days={run_days}")
+    logger.info(f"PLAN generate requested user={user.id} goal={goal} days={run_days} "
+                f"sync={user.garmin_sync_enabled}")
     _spawn_plan_generation(user.id, params)
     return RedirectResponse("/plan", status_code=303)
 
@@ -265,10 +273,11 @@ async def plan_archive(
     if plan:
         await repository.archive_plan(session, plan)
         # Remove the archived plan's pushed workouts from the Garmin calendar now (the
-        # daily job would also catch it). Don't fail the archive if Garmin is unreachable.
-        try:
-            async with user_runtime(session, user):
-                await plan_sync.sync_plan_to_garmin(session, user.id)
-        except Exception:
-            logger.exception(f"PLAN archive sync failed user={user.id}")
+        # daily job would also catch it). Skip if sync is off; don't fail on a Garmin error.
+        if user.garmin_sync_enabled:
+            try:
+                async with user_runtime(session, user):
+                    await plan_sync.sync_plan_to_garmin(session, user.id)
+            except Exception:
+                logger.exception(f"PLAN archive sync failed user={user.id}")
     return RedirectResponse("/plan", status_code=303)
