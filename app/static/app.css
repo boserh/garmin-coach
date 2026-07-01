@@ -1,0 +1,85 @@
+/* Editorial design system — dark, restrained, one accent, lots of air.
+   Shared across the web UI; page-specific bits live in the templates. */
+:root{
+  --bg:#0b0d11; --surface:#0f1218; --line:#1b1f28; --line-2:#262b36;
+  --ink:#e7e9ee; --muted:#7a828f; --faint:#4b525d;
+  --accent:#7aa2f7;
+  --easy:#9ece6a; --recovery:#73daca; --long:#7dcfff; --tempo:#e0af68;
+  --intervals:#f7768e; --race:#bb9af7; --rest:#565f89;
+  --maxw:44rem;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink); line-height:1.5;
+  font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-feature-settings:"cv05","ss03"; -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility; padding:2.5rem 1.5rem 6rem;
+}
+.wrap{max-width:var(--maxw);margin:0 auto}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline;text-underline-offset:3px}
+
+/* ---- page head ---- */
+.crumb{font-size:.82rem;color:var(--muted);margin-bottom:1.7rem}
+.eyebrow{font-size:.72rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;
+         color:var(--faint);margin:0 0 .55rem}
+.title{font-size:clamp(2rem,5.5vw,2.7rem);font-weight:650;letter-spacing:-.035em;
+       line-height:1.04;margin:0}
+.meta{margin:1rem 0 0;color:var(--muted);font-size:.9rem;font-variant-numeric:tabular-nums}
+.meta b{color:var(--ink);font-weight:600}
+.meta .sep{color:var(--faint);margin:0 .5rem}
+.summary{max-width:38rem;margin:1.7rem 0 0;padding-left:1.05rem;
+         border-left:2px solid var(--line-2);color:#aab2be;font-size:.95rem;line-height:1.62}
+.ok{margin:0 0 1.3rem;padding:.7rem 1rem;border-radius:10px;font-size:.9rem;color:var(--easy);
+    background:rgba(158,206,106,.07);border:1px solid rgba(158,206,106,.2)}
+
+/* ---- week section ---- */
+.week{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;
+      margin:2.9rem 0 .3rem;padding-bottom:.75rem;border-bottom:1px solid var(--line)}
+.week .wn{font-size:.74rem;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+.week .wr{font-size:.8rem;color:var(--faint);font-variant-numeric:tabular-nums}
+
+/* ---- workout row ---- */
+.row{display:grid;grid-template-columns:4.25rem 1fr auto;gap:1.1rem;align-items:start;
+     padding:1.2rem 0;border-bottom:1px solid var(--line)}
+.row .when{font-variant-numeric:tabular-nums;line-height:1.25}
+.row .dd{font-weight:600;font-size:.92rem}
+.row .dw{font-size:.76rem;color:var(--faint);margin-top:.1rem}
+.row .main{min-width:0}
+.kind{display:inline-flex;align-items:center;gap:.5rem;margin-bottom:.4rem}
+.dot{width:.5rem;height:.5rem;border-radius:50%;flex:none}
+.klabel{font-size:.74rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.badge-today{font-size:.64rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--accent)}
+.st{font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.st.done{color:var(--easy)} .st.skip{color:var(--muted)}
+.desc{color:#b4bcc7;font-size:.92rem;line-height:1.55}
+.dist{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;font-size:.95rem;white-space:nowrap}
+.dist small{display:block;font-weight:500;font-size:.7rem;color:var(--faint);letter-spacing:.03em;margin-top:.05rem}
+
+/* structured steps — one per line, role-labelled (a real workout breakdown) */
+.steps{margin-top:.7rem;display:flex;flex-direction:column;gap:.32rem;
+       border-left:1px solid var(--line);padding-left:.85rem}
+.step{display:flex;gap:.7rem;align-items:baseline;font-size:.8rem;line-height:1.3}
+.step .lbl{flex:none;min-width:5.2rem;color:var(--muted);font-weight:500}
+.step .val{color:#cfd5de;font-variant-numeric:tabular-nums}
+.step .val .pace{color:var(--faint)}
+.step.rep{align-items:flex-start}
+.step.rep .lbl{color:var(--ink);font-weight:600}
+.step .sub{margin-top:.28rem;display:flex;flex-direction:column;gap:.28rem;
+           border-left:1px solid var(--line);padding-left:.7rem}
+
+/* today / status */
+.row.today .dd{color:var(--accent)}
+.row.done{opacity:.6}
+.row.skipped{opacity:.45}
+.row.skipped .desc{text-decoration:line-through}
+
+/* ---- footer / actions ---- */
+.foot{margin-top:2.6rem;color:var(--faint);font-size:.85rem;line-height:1.6}
+.foot b{color:var(--muted);font-weight:600}
+.arch{margin-top:1.1rem;padding:.5rem 1.05rem;border:1px solid var(--line-2);border-radius:9px;
+      background:transparent;color:var(--muted);font:inherit;font-size:.85rem;cursor:pointer;
+      transition:border-color .12s,color .12s,background .12s}
+.arch:hover{border-color:#3a2a2c;color:#e0817a;background:rgba(224,129,122,.05)}
+form.inline{display:inline}
