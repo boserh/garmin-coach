@@ -74,6 +74,32 @@
       <textarea id="notes" name="notes" rows="3" placeholder="травми, обмеження, дні які зайняті тощо"></textarea>
 
       <label class="check">
+        <input type="checkbox" name="strength_enabled" id="strength_enabled">
+        Додати силові тренування
+      </label>
+      <div id="strength_opts" style="display:none;margin-top:.5rem">
+        <label>Дні залу</label>
+        <div class="days">
+          {% for slug, lbl in weekdays.items() %}
+            <label class="day"><input type="checkbox" name="gym_days" value="{{ slug }}"> {{ lbl }}</label>
+          {% endfor %}
+        </div>
+        {% if strength_workouts %}
+        <label>Які тренування чергувати</label>
+        <div class="days">
+          {% for w in strength_workouts %}
+            <label class="day"><input type="checkbox" name="strength_ids" value="{{ w.id }}" checked> {{ w.name }}</label>
+          {% endfor %}
+        </div>
+        <div class="hint">Ми клонуємо їх як власні копії й розкладаємо по днях залу —
+          твої оригінали (шаблони) лишаються недоторканими.</div>
+        {% else %}
+        <div class="hint">Не знайшов силових воркаутів у Garmin (напр. Day 1/Day 2).
+          Створи їх у Garmin Connect — і зможеш обрати тут.</div>
+        {% endif %}
+      </div>
+
+      <label class="check">
         <input type="checkbox" name="sync_garmin" {% if garmin_sync_enabled %}checked{% endif %}>
         Синхронізувати з Garmin-календарем
       </label>
@@ -118,6 +144,14 @@
       cb.addEventListener('change', update);
     });
     update();
+
+    var se = document.getElementById('strength_enabled');
+    var so = document.getElementById('strength_opts');
+    if (se && so) {
+      se.addEventListener('change', function () {
+        so.style.display = se.checked ? 'block' : 'none';
+      });
+    }
 
     f.addEventListener('submit', function (e) {
       if (checkedDays().length < 2) { e.preventDefault(); return; }
