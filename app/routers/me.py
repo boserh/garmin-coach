@@ -44,9 +44,11 @@ _ACT_META = {
     "walking": ("🚶", "#73daca"), "hiking": ("🥾", "#9ece6a"),
     "cycling": ("🚴", "#7dcfff"), "road_biking": ("🚴", "#7dcfff"),
     "mountain_biking": ("🚵", "#9ece6a"), "indoor_cycling": ("🚴", "#7dcfff"),
+    "gravel_cycling": ("🚵", "#e0af68"), "gravel_ride": ("🚵", "#e0af68"),
     "strength_training": ("🏋️", "#e0af68"), "cardio": ("❤️", "#f7768e"),
     "yoga": ("🧘", "#bb9af7"), "swimming": ("🏊", "#7dcfff"),
     "lap_swimming": ("🏊", "#7dcfff"), "kitesurfing": ("🪁", "#7dcfff"),
+    "tennis": ("🎾", "#c3e88d"),
 }
 _RUNWALK = {"running", "treadmill_running", "trail_running", "track_running",
             "walking", "hiking"}
@@ -212,6 +214,26 @@ async def me_row(
     ).scalar_one_or_none()
     if obj is None:
         raise HTTPException(status_code=404, detail="Row not found")  # not yours / missing
+
+    # Activities get a dedicated hero + stats + charts view.
+    if table == "activities":
+        emoji, color = _act_meta(obj.type)
+        runwalk = (obj.type or "").lower() in _RUNWALK
+        a = {
+            "id": obj.id, "emoji": emoji, "color": color,
+            "label": (obj.type or "—").replace("_", " ").capitalize(),
+            "date": _nice_date(obj.date),
+            "dist_km": obj.dist_km, "dur_min": obj.dur_min,
+            "avg_hr": obj.avg_hr, "max_hr": obj.max_hr, "load": obj.load,
+            "pace": _pace_str(obj.dist_km, obj.dur_min) if runwalk else None,
+            "exercises": obj.exercises,
+        }
+        charts, first_x, last_x = _run_charts(obj.series or [])
+        return templates.TemplateResponse(
+            request, "activity.html",
+            {"a": a, "charts": charts, "first_x": first_x, "last_x": last_x,
+             "analysis": obj.analysis, "user": user, "base": "/me", "token": ""},
+        )
 
     fields = [(c.name, getattr(obj, c.name))
               for c in model.__table__.columns if c.name not in ("series", "analysis")]
