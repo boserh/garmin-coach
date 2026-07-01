@@ -15,7 +15,7 @@
   </div>
   <div class="hero-side">
     <div class="hero-date">{{ hero.date }} · {{ hero.metric }}</div>
-    {% if hero.sleep_h %}<div class="hs"><span class="hv">{{ '%.1f'|format(hero.sleep_h) }}</span><span class="hk">год сну</span></div>{% endif %}
+    {% if hero.sleep_hm %}<div class="hs"><span class="hv">{{ hero.sleep_hm }}</span><span class="hk">сну</span></div>{% endif %}
     {% if hero.hrv_avg %}<div class="hs"><span class="hv">{{ hero.hrv_avg }}</span><span class="hk">HRV</span></div>{% endif %}
     {% if hero.rhr %}<div class="hs"><span class="hv">{{ hero.rhr }}</span><span class="hk">RHR спокою</span></div>{% endif %}
   </div>

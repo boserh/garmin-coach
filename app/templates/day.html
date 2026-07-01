@@ -23,7 +23,7 @@
 
     <div class="bigstats">
       {% if m.sleep_score %}<div class="bigstat"><div class="v">{{ m.sleep_score }}</div><div class="k">сон бал</div></div>{% endif %}
-      {% if m.sleep_h %}<div class="bigstat"><div class="v">{{ '%.1f'|format(m.sleep_h) }}</div><div class="k">год сну</div></div>{% endif %}
+      {% if m.sleep_h %}<div class="bigstat"><div class="v" style="font-size:1.15rem">{{ m.sleep_h|hm }}</div><div class="k">сон</div></div>{% endif %}
       {% if m.hrv_avg %}<div class="bigstat"><div class="v">{{ m.hrv_avg }}</div><div class="k">HRV avg</div></div>{% endif %}
       {% if extra.resting_hr %}<div class="bigstat"><div class="v">{{ extra.resting_hr }}</div><div class="k">RHR</div></div>{% endif %}
       {% if m.stress_avg %}<div class="bigstat"><div class="v">{{ m.stress_avg }}</div><div class="k">стрес сер</div></div>{% endif %}
@@ -33,10 +33,10 @@
     {% if m.deep_h or m.rem_h or m.light_h or m.awake_h %}
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Сон</h2>
     <div class="mrow">
-      {% if m.deep_h %}<span class="mchip"><b>{{ '%.1f'|format(m.deep_h) }}</b><span class="u">глибокий</span></span>{% endif %}
-      {% if m.rem_h %}<span class="mchip"><b>{{ '%.1f'|format(m.rem_h) }}</b><span class="u">REM</span></span>{% endif %}
-      {% if m.light_h %}<span class="mchip"><b>{{ '%.1f'|format(m.light_h) }}</b><span class="u">легкий</span></span>{% endif %}
-      {% if m.awake_h %}<span class="mchip"><b>{{ '%.1f'|format(m.awake_h) }}</b><span class="u">неспання</span></span>{% endif %}
+      {% if m.deep_h %}<span class="mchip"><b>{{ m.deep_h|hm }}</b><span class="u">глибокий</span></span>{% endif %}
+      {% if m.rem_h %}<span class="mchip"><b>{{ m.rem_h|hm }}</b><span class="u">REM</span></span>{% endif %}
+      {% if m.light_h %}<span class="mchip"><b>{{ m.light_h|hm }}</b><span class="u">легкий</span></span>{% endif %}
+      {% if m.awake_h %}<span class="mchip"><b>{{ m.awake_h|hm }}</b><span class="u">неспання</span></span>{% endif %}
     </div>
     {% endif %}
 
