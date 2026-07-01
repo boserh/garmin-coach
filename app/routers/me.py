@@ -126,6 +126,65 @@ async def _activity_cards(session, user_id, limit, offset):
     return cards
 
 
+# ---- daily recovery metrics ----
+def _hrv_color(status):
+    s = (status or "").upper()
+    if s == "BALANCED":
+        return "#9ece6a"
+    if s in ("UNBALANCED", "LOW", "POOR"):
+        return "#f7768e"
+    return "#e0af68"
+
+
+async def _daily_cards(session, user_id, limit, offset):
+    rows = (await session.execute(
+        select(DailyMetric).where(DailyMetric.user_id == user_id)
+        .order_by(DailyMetric.date.desc()).limit(limit).offset(offset)
+    )).scalars().all()
+    out = []
+    for r in rows:
+        ex = r.extra or {}
+        out.append({
+            "id": r.id, "date": _nice_date(r.date),
+            "sleep_score": r.sleep_score, "sleep_h": r.sleep_h,
+            "hrv_avg": r.hrv_avg, "hrv_status": r.hrv_status, "hrv_color": _hrv_color(r.hrv_status),
+            "stress_avg": r.stress_avg,
+            "bb_charged": r.bb_charged, "bb_drained": r.bb_drained,
+            "rhr": ex.get("resting_hr"), "readiness": ex.get("readiness_score"),
+        })
+    return out
+
+
+# ---- report history ----
+_KIND_META = {
+    "report": ("Звіт", "#7aa2f7"), "morning": ("Ранок", "#e0af68"),
+    "deep": ("Глибокий", "#bb9af7"), "ask": ("Питання", "#7dcfff"),
+    "activity": ("Активність", "#9ece6a"), "plan": ("План", "#bb9af7"),
+    "plan_edit": ("Правка", "#73daca"),
+}
+
+
+def _kind_meta(k):
+    return _KIND_META.get(k, (k or "—", "#909aa8"))
+
+
+async def _report_cards(session, user_id, limit, offset):
+    rows = (await session.execute(
+        select(ReportLog).where(ReportLog.user_id == user_id)
+        .order_by(ReportLog.created_at.desc()).limit(limit).offset(offset)
+    )).scalars().all()
+    out = []
+    for r in rows:
+        label, color = _kind_meta(r.kind)
+        out.append({
+            "id": r.id, "label": label, "color": color, "ok": r.ok, "cached": r.cached,
+            "when": r.created_at.strftime("%d.%m %H:%M") if r.created_at else "",
+            "cost": r.cost_usd, "in_tok": r.input_tokens, "out_tok": r.output_tokens,
+            "preview": ((r.report_text or r.question or r.error or "").strip()[:140]),
+        })
+    return out
+
+
 @router.get("/me", response_class=HTMLResponse)
 async def me_index(
     request: Request,
@@ -153,13 +212,31 @@ async def me_table(
     if model is None:
         raise HTTPException(status_code=404, detail="Unknown table")
 
-    # Activities get a dedicated card view (type icon, stats, run sparkline).
+    # Dedicated card views for the user-facing tables.
     if table == "activities":
         cards = await _activity_cards(session, user.id, limit, offset)
         total = await _count(session, model, user.id)
         return templates.TemplateResponse(
             request, "activities.html",
             {"acts": cards, "user": user, "tables": list(TABLES), "base": "/me",
+             "token": "", "limit": limit, "offset": offset, "total": total},
+        )
+    if table == "daily_metrics":
+        days = await _daily_cards(session, user.id, limit, offset)
+        charts, first_date, last_date = await _daily_charts(session, user.id)
+        total = await _count(session, model, user.id)
+        return templates.TemplateResponse(
+            request, "daily.html",
+            {"days": days, "charts": charts, "first_date": first_date, "last_date": last_date,
+             "user": user, "tables": list(TABLES), "base": "/me", "token": "",
+             "limit": limit, "offset": offset, "total": total},
+        )
+    if table == "report_logs":
+        reports = await _report_cards(session, user.id, limit, offset)
+        total = await _count(session, model, user.id)
+        return templates.TemplateResponse(
+            request, "reports.html",
+            {"reports": reports, "user": user, "tables": list(TABLES), "base": "/me",
              "token": "", "limit": limit, "offset": offset, "total": total},
         )
 
@@ -233,6 +310,23 @@ async def me_row(
             request, "activity.html",
             {"a": a, "charts": charts, "first_x": first_x, "last_x": last_x,
              "analysis": obj.analysis, "user": user, "base": "/me", "token": ""},
+        )
+
+    if table == "report_logs":
+        label, color = _kind_meta(obj.kind)
+        return templates.TemplateResponse(
+            request, "report.html",
+            {"r": obj, "label": label, "color": color,
+             "when": obj.created_at.strftime("%d.%m.%Y %H:%M") if obj.created_at else "",
+             "user": user, "base": "/me", "token": ""},
+        )
+
+    if table == "daily_metrics":
+        ex = obj.extra or {}
+        return templates.TemplateResponse(
+            request, "day.html",
+            {"m": obj, "date": _nice_date(obj.date), "hrv_color": _hrv_color(obj.hrv_status),
+             "extra": ex, "user": user, "base": "/me", "token": ""},
         )
 
     fields = [(c.name, getattr(obj, c.name))
