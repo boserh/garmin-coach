@@ -20,7 +20,7 @@ from app.core.auth import current_user
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.dependencies import get_session
-from app.garmin import repository
+from app.garmin import plan_sync, repository
 from app.garmin.runtime import user_runtime
 
 # Per-user BotState key tracking an in-flight (Opus, slow) plan generation: "pending"
@@ -108,6 +108,12 @@ async def _generate_plan_bg(user_id: int, params: dict) -> None:
             async with user_runtime(session, user) as creds:
                 plan = await run_plan_generation(
                     session, user_id=user_id, api_key=creds.anthropic_key, **params)
+                # A fresh plan archives the prior one — sync now to remove the old plan's
+                # pushed workouts and push the new window. Never fail generation over it.
+                try:
+                    await plan_sync.sync_plan_to_garmin(session, user_id)
+                except Exception:
+                    logger.exception(f"PLAN gen sync failed user={user_id}")
             await repository.set_state(session, user_id, PLAN_GEN_KEY, "")  # done
             logger.info(f"PLAN created id={plan.id} user={user_id} (background)")
         except AnalystError as e:
@@ -258,4 +264,11 @@ async def plan_archive(
     plan = await repository.get_active_plan(session, user.id)
     if plan:
         await repository.archive_plan(session, plan)
+        # Remove the archived plan's pushed workouts from the Garmin calendar now (the
+        # daily job would also catch it). Don't fail the archive if Garmin is unreachable.
+        try:
+            async with user_runtime(session, user):
+                await plan_sync.sync_plan_to_garmin(session, user.id)
+        except Exception:
+            logger.exception(f"PLAN archive sync failed user={user.id}")
     return RedirectResponse("/plan", status_code=303)

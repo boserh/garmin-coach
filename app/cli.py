@@ -140,7 +140,7 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
 
     from fastapi.concurrency import run_in_threadpool
 
-    from app.garmin import client, repository, workout_export
+    from app.garmin import plan_sync, repository, workout_export
     from app.garmin.providers import get_provider
     from app.garmin.runtime import user_runtime
 
@@ -182,15 +182,9 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
             await run_in_threadpool(get_provider().login)
             done = 0
             for w in todo:
-                payload = workout_export.build_workout(w)
-                created = await run_in_threadpool(client.create_workout, payload)
-                wid = created.get("workoutId")
-                sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
-                w.garmin_workout_id = wid
-                w.garmin_schedule_id = sched.get("workoutScheduleId")
-                await session.commit()
+                wid = await plan_sync.push_workout(session, w)
                 done += 1
-                print(f"  {w.date}  {payload['workoutName']}  → workout {wid}")
+                print(f"  {w.date}  {workout_export.workout_name(w)}  → workout {wid}")
                 await asyncio.sleep(0.3)  # be gentle on Garmin
         print(f"Done: {done}/{len(todo)} pushed to the Garmin calendar.")
     return 0
@@ -203,7 +197,7 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     your manual/Runna workouts."""
     from fastapi.concurrency import run_in_threadpool
 
-    from app.garmin import client, repository
+    from app.garmin import plan_sync, repository
     from app.garmin.providers import get_provider
     from app.garmin.runtime import user_runtime
 
@@ -227,17 +221,11 @@ async def _unpush_plan(email: str, date: str = None) -> int:
         async with user_runtime(session, user):
             await run_in_threadpool(get_provider().login)
             for w in pushed:
-                # delete_workout removes the saved workout AND its calendar schedule.
-                # Tolerate "already gone" (deleted by hand in the UI) — still clear the id.
                 wid = w.garmin_workout_id
-                try:
-                    await run_in_threadpool(client.delete_workout, wid)
+                if await plan_sync.remove_workout(session, w):
                     print(f"  {w.date}  removed workout {wid}")
-                except Exception as e:
-                    print(f"  {w.date}  workout {wid} already gone ({type(e).__name__})")
-                w.garmin_workout_id = None
-                w.garmin_schedule_id = None
-                await session.commit()
+                else:
+                    print(f"  {w.date}  workout {wid} already gone")
                 await asyncio.sleep(0.3)
         print("Done.")
     return 0

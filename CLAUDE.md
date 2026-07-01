@@ -151,9 +151,32 @@ Optional, with defaults:
   (`1000/(min_km*60)`; One = faster bound), distance/time map to `endCondition`
   distance(metres)/time(s), and `repeat` → `RepeatGroupDTO` with continuous `stepOrder`.
   `client.create_workout`/`schedule_workout`/`delete_workout`/`delete_schedule` are the
-  POST/DELETE calls. Each pushed session records `garmin_workout_id`/`garmin_schedule_id`
-  on the row so re-runs are **idempotent** (skip what's already there) and a later edit/
-  archive can unschedule it. `--dry-run` builds + prints the payloads without writing.
+  POST/DELETE calls. Workout names carry a per-type emoji (`workout_export._TYPE_MARK`:
+  🌿 easy / 🗻 long / 🔥 tempo / ⚡ intervals …) so they read at a glance and are visibly
+  not Runna's. Each pushed session records `garmin_workout_id`/`garmin_schedule_id` on the
+  row so re-runs are **idempotent** (skip what's already there). `--dry-run` builds +
+  prints the payloads without writing; `--date YYYY-MM-DD` targets one session;
+  `unpush-plan --email [--date]` removes pushed workouts (by stored id; tolerant of a
+  workout already deleted in the UI — never touches manual/Runna workouts).
+- **Live calendar sync** (`app.garmin.plan_sync.sync_plan_to_garmin`): the automated
+  rolling-window keeper (the CLI's manual cousin). Two passes — **forward** (push the
+  active plan's upcoming in-window unpushed runs) and **cleanup** (remove anything we
+  pushed that's now stale: past date, non-`planned` status, or belonging to a plan that's
+  no longer active — i.e. archived/regenerated). Cleanup keys off
+  `repository.list_pushed_workouts` (all of a user's pushed rows) vs the active plan id.
+  Run from three hooks: a **separate daily bot job** (`bot.jobs.plan_sync_job`, scheduled
+  via `JobQueue.run_daily` at `PLAN_SYNC_HOUR` Europe/Warsaw — deliberately **not** in
+  `morning_job`, which is a different concern and fires every 20 min), the
+  **`/plan/archive`** route (immediate
+  unpush of the archived plan), and **background plan generation** (`_generate_plan_bg`,
+  to swap the old plan's calendar for the new one). All hooks bind `user_runtime` and are
+  best-effort (a Garmin outage never breaks the action; the daily job reconciles later).
+  `push_workout`/`remove_workout` are the shared one-session helpers reused by the CLI.
+  A **bot plan edit** (`/plan <text>` → confirm) re-syncs **only the touched sessions** via
+  `plan_sync.resync_workouts` (in `plan_callback`): `apply_plan_ops` now returns the
+  affected `PlannedWorkout`s, and each gets its old Garmin copy dropped + re-pushed if it's
+  still an upcoming in-window run (a `move` lands on the new date, `skip`/past just get
+  removed) — the cheap per-edit diff, with the daily job as the full backstop.
 
 ## Structure
 
