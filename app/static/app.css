@@ -75,6 +75,42 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .row.skipped{opacity:.45}
 .row.skipped .desc{text-decoration:line-through}
 
+/* ---- prose / content pages ---- */
+.prose h1{font-size:clamp(1.7rem,4.5vw,2.15rem);font-weight:650;letter-spacing:-.03em;margin:0 0 .4rem}
+.prose h2{font-size:1.15rem;font-weight:650;letter-spacing:-.02em;margin:2.5rem 0 .6rem;color:var(--ink)}
+.prose p{margin:.75rem 0;color:#c2c9d3;line-height:1.64}
+.prose ul,.prose ol{padding-left:1.25rem;margin:.6rem 0}
+.prose li{margin:.42rem 0;color:#c2c9d3;line-height:1.55}
+.prose b{color:var(--ink)}
+.muted{color:var(--muted)}
+code{background:var(--surface);border:1px solid var(--line-2);border-radius:6px;padding:.12rem .42rem;
+     font-size:.88em;font-family:"SF Mono",ui-monospace,Menlo,monospace;color:#cfd5de}
+
+/* ---- forms ---- */
+.form{max-width:32rem}
+.form label{display:block;color:var(--muted);font-size:.8rem;font-weight:500;
+            letter-spacing:.01em;margin:1.35rem 0 .4rem}
+.form input[type=email],.form input[type=password],.form input[type=text],.form input[type=number]{
+  width:100%;padding:.6rem .8rem;border-radius:9px;border:1px solid var(--line-2);
+  background:var(--surface);color:var(--ink);font:inherit;font-size:.95rem;transition:border-color .12s}
+.form input:focus{outline:none;border-color:var(--accent)}
+.form .hint{color:var(--faint);font-size:.78rem;margin-top:.35rem;line-height:1.5}
+.form .check{display:flex;align-items:center;gap:.6rem;margin-top:1.35rem;
+             color:var(--ink);font-weight:500;font-size:.9rem}
+.form .check input{width:auto}
+.btn{margin-top:1.7rem;padding:.6rem 1.35rem;border:0;border-radius:9px;background:var(--accent);
+     color:#0b0d11;font:inherit;font-weight:600;font-size:.95rem;cursor:pointer;transition:filter .12s}
+.btn:hover{filter:brightness(1.08)}
+.saved{color:var(--easy);margin:1rem 0;font-size:.9rem}
+.err{color:#f7768e;font-size:.85rem}
+.sec{font-size:1.15rem;font-weight:650;letter-spacing:-.02em;margin:2.9rem 0 0}
+.divide{border:0;border-top:1px solid var(--line);margin:2.6rem 0 0;max-width:32rem}
+.note{max-width:32rem;margin:1.2rem 0 0;padding:1.05rem 1.25rem;border-radius:14px;
+      border:1px solid var(--line);background:var(--surface);font-size:.9rem;line-height:1.55;color:#aab2be}
+.note b{color:var(--ink)}
+.note ol{margin:.5rem 0 0;padding-left:1.2rem}
+.note li{margin:.3rem 0}
+
 /* ---- footer / actions ---- */
 .foot{margin-top:2.6rem;color:var(--faint);font-size:.85rem;line-height:1.6}
 .foot b{color:var(--muted);font-weight:600}
