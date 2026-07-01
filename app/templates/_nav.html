@@ -1,11 +1,12 @@
 <style>
-  .topnav { display: flex; gap: 1.1rem; align-items: center; flex-wrap: wrap;
-            margin-bottom: 1.5rem; padding-bottom: .8rem; font-size: .9rem;
-            border-bottom: 1px solid #2a2f3a; }
-  .topnav a { color: #9aa4b2; text-decoration: none; }
-  .topnav a:hover { color: #6cb6ff; }
-  .topnav a.active { color: #e6e6e6; font-weight: 600; }
-  .topnav .logout { margin-left: auto; color: #8b949e; }
+  .topnav { display: flex; gap: 1.35rem; align-items: center; flex-wrap: wrap;
+            margin-bottom: 2rem; padding-bottom: .9rem; font-size: .85rem;
+            border-bottom: 1px solid #1b1f28; }
+  .topnav a { color: #7a828f; text-decoration: none; letter-spacing: .01em; transition: color .12s; }
+  .topnav a:hover { color: #e7e9ee; }
+  .topnav a.active { color: #e7e9ee; font-weight: 600; }
+  .topnav .logout { margin-left: auto; color: #4b525d; }
+  .topnav .logout:hover { color: #f7768e; }
 </style>
 <nav class="topnav">
   <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
