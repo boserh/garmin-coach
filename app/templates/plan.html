@@ -15,9 +15,10 @@
 
   {% set DOT = {"easy":"var(--easy)","recovery":"var(--recovery)","long":"var(--long)",
                 "tempo":"var(--tempo)","intervals":"var(--intervals)","race":"var(--race)",
-                "rest":"var(--rest)","cross":"var(--rest)"} %}
+                "rest":"var(--rest)","cross":"var(--rest)","strength":"#3aa0ff"} %}
   {% set TLABEL = {"easy":"Легкий","recovery":"Відновлення","long":"Довгий","tempo":"Темповий",
-                   "intervals":"Інтервали","race":"Забіг","rest":"Відпочинок","cross":"Крос"} %}
+                   "intervals":"Інтервали","race":"Забіг","rest":"Відпочинок","cross":"Крос",
+                   "strength":"🏋️ Силова"} %}
 
   <div class="wrap">
     {% if created %}<div class="ok">✅ Програму створено — {{ count }} тренувань.</div>{% endif %}

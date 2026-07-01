@@ -681,6 +681,20 @@ async def run_plan_generation(
         start_date=start_date, days_per_week=days_per_week, intensity=intensity,
         intake=intake, summary=plan_out.summary, workouts=plan_out.workouts,
     )
+    # Optional strength: schedule the user's chosen saved workouts (Day 1/Day 2) on their
+    # gym days across the plan — cloned to our own copies on push. Best-effort (needs the
+    # bound provider to resolve workout names); never fails plan creation.
+    strength = (intake or {}).get("strength") or {}
+    if strength.get("enabled") and strength.get("days") and strength.get("ids"):
+        try:
+            from app.garmin import client
+            saved = {w["id"]: w["name"]
+                     for w in await run_in_threadpool(client.fetch_workouts)}
+            templates = [{"id": i, "name": saved.get(i, "Силова")} for i in strength["ids"]]
+            n = await repository.add_strength_workouts(session, plan, strength["days"], templates)
+            logger.info(f"PLAN strength user={user_id}: +{n} sessions")
+        except Exception:
+            logger.exception(f"PLAN strength add failed user={user_id}")
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
