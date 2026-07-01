@@ -81,6 +81,15 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .row.skipped{opacity:.5}
 .row.skipped .desc{text-decoration:line-through}
 
+/* ---- db browser (index counts) ---- */
+.stats{display:flex;flex-wrap:wrap;gap:.85rem;margin-top:1.5rem}
+.stat{min-width:9rem;padding:1.1rem 1.35rem;border:1px solid var(--line-2);border-radius:14px;
+      background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.35);
+      transition:border-color .12s,background .12s}
+.stat:hover{border-color:var(--accent);background:var(--surface-2)}
+.stat .sname{color:var(--muted);font-size:.82rem}
+.stat .snum{font-size:1.9rem;font-weight:700;letter-spacing:-.02em;margin-top:.25rem;color:var(--ink)}
+
 /* ---- prose / content pages ---- */
 .prose h1{font-size:clamp(1.7rem,4.5vw,2.15rem);font-weight:650;letter-spacing:-.03em;margin:0 0 .4rem}
 .prose h2{font-size:1.15rem;font-weight:650;letter-spacing:-.02em;margin:2.5rem 0 .6rem;color:var(--ink)}
