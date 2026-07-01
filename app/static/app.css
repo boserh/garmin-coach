@@ -228,6 +228,23 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .note ol{margin:.5rem 0 0;padding-left:1.2rem}
 .note li{margin:.3rem 0}
 
+/* ---- recovery ring (Whoop-style hero) ---- */
+.hero-rec{display:flex;align-items:center;gap:1.8rem;flex-wrap:wrap;margin:1.7rem 0 .6rem;
+  padding:1.5rem 1.7rem;border-radius:22px;border:1px solid var(--line-2);
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 20px 46px -22px rgba(0,0,0,.85)}
+.ringbox{position:relative;width:10.5rem;height:10.5rem;flex:none}
+.ringbox svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ringc{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ringv{font-size:2.8rem;font-weight:800;letter-spacing:-.045em;line-height:1;font-variant-numeric:tabular-nums}
+.ringv small{font-size:1.1rem;font-weight:700;margin-left:.06rem}
+.ringl{font-size:.76rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-top:.45rem}
+.hero-side{display:flex;flex-direction:column;gap:.55rem;min-width:9rem}
+.hero-side .hs{display:flex;align-items:baseline;gap:.5rem}
+.hero-side .hv{font-size:1.35rem;font-weight:750;font-variant-numeric:tabular-nums;color:var(--ink)}
+.hero-side .hk{color:var(--muted);font-size:.82rem}
+.hero-date{color:var(--faint);font-size:.8rem;margin-bottom:.2rem;text-transform:capitalize}
+
 /* ---- metric chips (daily / reuse) ---- */
 .mrow{display:flex;flex-wrap:wrap;gap:.35rem .95rem;margin-top:.5rem;font-variant-numeric:tabular-nums}
 .mchip{font-size:.84rem;color:#cbd2dc}
