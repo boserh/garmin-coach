@@ -90,6 +90,34 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .stat .sname{color:var(--muted);font-size:.82rem}
 .stat .snum{font-size:1.9rem;font-weight:700;letter-spacing:-.02em;margin-top:.25rem;color:var(--ink)}
 
+/* ---- activities (card view) ---- */
+.tabs{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem}
+.tabs a{padding:.3rem .72rem;border:1px solid var(--line-2);border-radius:9px;color:var(--muted);font-size:.85rem}
+.tabs a:hover{color:var(--ink);text-decoration:none}
+.tabs a.active{background:var(--surface-2);border-color:var(--accent);color:var(--ink)}
+.acts{display:flex;flex-direction:column;gap:.7rem;margin-top:1.4rem}
+.act{display:grid;grid-template-columns:auto 1fr auto;gap:1rem;align-items:center;
+     background:var(--surface);border:1px solid var(--line-2);border-radius:14px;padding:.9rem 1.1rem;
+     box-shadow:0 1px 3px rgba(0,0,0,.35);transition:border-color .12s,background .12s}
+.act:hover{border-color:var(--accent);background:var(--surface-2)}
+.act .ic{width:2.7rem;height:2.7rem;border-radius:14px;display:grid;place-items:center;font-size:1.35rem;
+  background:#0e1219;background:color-mix(in srgb,var(--accent) 15%,#0e1219);
+  border:1px solid #2a3140;border-color:color-mix(in srgb,var(--accent) 32%,transparent)}
+.act .info{min-width:0}
+.act .atype{font-weight:600;font-size:.96rem;color:var(--ink)}
+.act .adate{color:var(--faint);font-size:.8rem;margin-top:.12rem}
+.act .stats{display:flex;flex-wrap:wrap;gap:.4rem .95rem;margin-top:.5rem;font-variant-numeric:tabular-nums}
+.act .m{font-size:.85rem;color:#cbd2dc}
+.act .m b{color:var(--ink);font-weight:600}
+.act .m span{color:var(--faint);font-size:.72rem;margin-left:.12rem}
+.act .badge-an{font-size:.72rem}
+.act .spark{width:160px;flex:none}
+.act .spark svg{display:block;width:100%;height:36px}
+@media(max-width:36rem){.act .spark{display:none}}
+.pager{display:flex;gap:1.1rem;align-items:center;margin-top:1.4rem;color:var(--muted);font-size:.85rem;
+       font-variant-numeric:tabular-nums}
+.empty{margin-top:2rem;color:var(--muted)}
+
 /* ---- prose / content pages ---- */
 .prose h1{font-size:clamp(1.7rem,4.5vw,2.15rem);font-weight:650;letter-spacing:-.03em;margin:0 0 .4rem}
 .prose h2{font-size:1.15rem;font-weight:650;letter-spacing:-.02em;margin:2.5rem 0 .6rem;color:var(--ink)}

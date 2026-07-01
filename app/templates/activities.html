@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Активності</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {% set active = 'me' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <div class="tabs">
+      <a href="/me">← огляд</a>
+      {% for t in tables %}
+        <a class="{{ 'active' if t == 'activities' else '' }}" href="/me/{{ t }}">{{ t }}</a>
+      {% endfor %}
+    </div>
+
+    <p class="eyebrow">Активності</p>
+    <h1 class="title" style="font-size:1.7rem">Тренування</h1>
+
+    {% if not acts %}<div class="empty">Поки що немає активностей.</div>{% endif %}
+    <div class="acts">
+      {% for a in acts %}
+      <a class="act" href="/me/activities/{{ a.id }}" style="--accent:{{ a.color }}">
+        <div class="ic">{{ a.emoji }}</div>
+        <div class="info">
+          <div class="atype">{{ a.label }}{% if a.has_analysis %} <span class="badge-an" title="є розбір">💬</span>{% endif %}</div>
+          <div class="adate">{{ a.date }}</div>
+          <div class="stats">
+            {% if a.dist_km %}<span class="m"><b>{{ '%.1f'|format(a.dist_km) }}</b><span>км</span></span>{% endif %}
+            {% if a.pace %}<span class="m"><b>{{ a.pace }}</b><span>/км</span></span>{% endif %}
+            {% if a.dur_min %}<span class="m"><b>{{ a.dur_min|int }}</b><span>хв</span></span>{% endif %}
+            {% if a.avg_hr %}<span class="m"><b>{{ a.avg_hr }}</b><span>уд</span></span>{% endif %}
+            {% if a.load %}<span class="m"><b>{{ a.load|int }}</b><span>load</span></span>{% endif %}
+          </div>
+        </div>
+        {% if a.spark %}
+        <div class="spark">
+          <svg viewBox="0 0 160 36" preserveAspectRatio="none" aria-hidden="true">
+            <polyline fill="none" stroke="{{ a.color }}" stroke-width="2"
+                      stroke-linejoin="round" stroke-linecap="round" points="{{ a.spark }}"/>
+          </svg>
+        </div>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+
+    {% if total > limit %}
+    <div class="pager">
+      {% if offset > 0 %}<a href="/me/activities?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}">← новіші</a>{% endif %}
+      <span>{{ offset + 1 }}–{{ offset + acts|length }} з {{ total }}</span>
+      {% if offset + limit < total %}<a href="/me/activities?limit={{ limit }}&offset={{ offset + limit }}">старіші →</a>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+</body>
+</html>
