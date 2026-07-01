@@ -68,7 +68,28 @@ def _pace(dec: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+_DOW_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+
+
+def _dow(iso: str) -> str:
+    """ISO date → Ukrainian weekday abbreviation."""
+    try:
+        return _DOW_UK[dt.date.fromisoformat(iso).weekday()]
+    except (ValueError, TypeError):
+        return ""
+
+
+def _dm(iso: str) -> str:
+    """ISO date → 'day month' (7 лип)."""
+    try:
+        return _fmt_day(dt.date.fromisoformat(iso))
+    except (ValueError, TypeError):
+        return iso
+
+
 templates.env.filters["fmt_step"] = _fmt_step
+templates.env.filters["dow"] = _dow
+templates.env.filters["dm"] = _dm
 
 logger = logging.getLogger("plan")
 
