@@ -21,7 +21,9 @@
         <svg viewBox="0 0 176 176" style="filter:drop-shadow(0 0 13px {{ strain.color }}66)">
           <circle cx="88" cy="88" r="{{ strain.r }}" fill="none" stroke="#252b37" stroke-width="13"/>
           <circle cx="88" cy="88" r="{{ strain.r }}" fill="none" stroke="{{ strain.color }}" stroke-width="13"
-                  stroke-linecap="round" stroke-dasharray="{{ strain.dash }} {{ strain.circ }}"/>
+                  stroke-linecap="round" class="ring-anim"
+                  stroke-dasharray="{{ strain.circ }}" stroke-dashoffset="{{ strain.circ - strain.dash }}"
+                  style="--from:{{ strain.circ }};--to:{{ strain.circ - strain.dash }}"/>
         </svg>
         <div class="ringc">
           <div class="ringv" style="color:{{ strain.color }}">{{ strain.value }}</div>
