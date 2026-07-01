@@ -120,6 +120,7 @@ class PlanOp(BaseModel):
     dist_km: Optional[float] = None
     description: Optional[str] = None
     steps: Optional[List[PlanStep]] = None   # structured breakdown for add/modify
+    garmin_template_id: Optional[int] = None  # add/modify a strength day → saved workout to clone
 
 
 class PlanEdit(BaseModel):
