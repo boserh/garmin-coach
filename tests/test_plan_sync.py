@@ -1,6 +1,7 @@
 """Garmin calendar sync: forward push + cleanup sweep (client/provider mocked)."""
 import datetime as dt
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from app.db.models import PlannedWorkout, TrainingPlan
 from app.garmin import plan_sync, repository
@@ -102,6 +103,28 @@ async def test_resync_skipped_only_removes(session):
     assert res == {"pushed": 0, "removed": 1}
     dele.assert_called_once_with(10)
     create.assert_not_called()
+
+
+async def test_unpush_all_removes_every_pushed(session):
+    fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="easy", status="planned",
+             garmin_workout_id=1, garmin_schedule_id=2),
+    ])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "delete_workout") as dele:
+        n = await plan_sync.unpush_all(session, U1)
+    assert n == 1
+    dele.assert_called_once_with(1)
+    assert await repository.list_pushed_workouts(session, U1) == []
+
+
+async def test_sync_for_user_skips_when_toggle_off(session):
+    from bot import jobs
+    user = SimpleNamespace(id=U1, garmin_sync_enabled=False)
+    with patch.object(jobs.plan_sync, "sync_plan_to_garmin", new=AsyncMock()) as m:
+        await jobs._sync_for_user(session, user)
+    m.assert_not_called()
 
 
 async def test_sync_removes_past_and_pushes_future(session):

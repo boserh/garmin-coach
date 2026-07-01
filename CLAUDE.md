@@ -177,6 +177,13 @@ Optional, with defaults:
   affected `PlannedWorkout`s, and each gets its old Garmin copy dropped + re-pushed if it's
   still an upcoming in-window run (a `move` lands on the new date, `skip`/past just get
   removed) — the cheap per-edit diff, with the daily job as the full backstop.
+- **Sync toggle** (`User.garmin_sync_enabled`, default on): a per-user master switch. All
+  four **automatic** hooks (daily job, archive, generation, edit) check it and skip when
+  off; the **manual** `push-plan` CLI ignores it (explicit override). Set on the plan-setup
+  form (a checkbox — uncheck to generate + validate a plan without touching the calendar)
+  and in `/settings`. Flipping it in settings applies immediately (best-effort):
+  on → `sync_plan_to_garmin` (push the window), off → `plan_sync.unpush_all` (clear
+  everything we pushed).
 
 ## Structure
 
