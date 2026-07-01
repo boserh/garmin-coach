@@ -218,6 +218,25 @@ def _spawn_plan_generation(user_id: int, params: dict) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+async def _strength_workouts(session, user):
+    """The user's saved Garmin strength workouts (Day 1/Day 2) for the setup picker.
+    Best-effort — no creds / a Garmin outage just yields [] (strength option hidden)."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import client
+    from app.garmin.providers import get_provider
+    try:
+        async with user_runtime(session, user) as creds:
+            if not creds.has_garmin:
+                return []
+            await run_in_threadpool(get_provider().login)
+            return [w for w in await run_in_threadpool(client.fetch_workouts)
+                    if (w.get("sport") or "") == "strength_training"]
+    except Exception:
+        logger.exception(f"strength workouts fetch failed user={user.id}")
+        return []
+
+
 @router.get("/plan", response_class=HTMLResponse)
 async def plan_page(
     request: Request,
@@ -246,6 +265,7 @@ async def plan_page(
              "default_days": ["tue", "thu", "sun"], "default_long": "sun",
              "today": dt.date.today().isoformat(),
              "garmin_sync_enabled": user.garmin_sync_enabled,
+             "strength_workouts": await _strength_workouts(session, user),
              "error": error},
         )
     workouts = await repository.list_workouts(session, plan.id)
@@ -300,6 +320,9 @@ async def plan_create(
     longest_run_km: str = Form(""),
     notes: str = Form(""),
     sync_garmin: str = Form(""),   # checkbox: push this plan to the Garmin calendar
+    strength_enabled: str = Form(""),      # checkbox: add strength sessions
+    gym_days: list[str] = Form(default=[]),
+    strength_ids: list[str] = Form(default=[]),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -316,6 +339,12 @@ async def plan_create(
         "notes": notes.strip() or None,
         "run_days": run_days, "long_run_day": long_run_day,
     }
+    if strength_enabled:
+        intake["strength"] = {
+            "enabled": True,
+            "days": [d for d in WEEKDAYS if d in gym_days],
+            "ids": [int(x) for x in strength_ids if x.isdigit()],
+        }
     # Ignore a duplicate submit while one is already running (and not stale).
     cur = await repository.get_state(session, user.id, PLAN_GEN_KEY) or ""
     if cur.startswith("pending") and not _pending_stale(cur):

@@ -184,6 +184,17 @@ Optional, with defaults:
   and in `/settings`. Flipping it in settings applies immediately (best-effort):
   on → `sync_plan_to_garmin` (push the window), off → `plan_sync.unpush_all` (clear
   everything we pushed).
+- **Strength sessions** (opt-in): the plan-setup form can add gym days + pick the user's
+  saved Garmin strength workouts (Day 1/Day 2, fetched by `client.fetch_workouts` /
+  `plan.py:_strength_workouts`). `repository.add_strength_workouts` then lays
+  `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on those weekdays across
+  the plan, rotating the chosen templates. On push, a session with a `garmin_template_id`
+  is **cloned** (`client.fetch_workout_full` + `workout_export.clone_workout` strips ids,
+  keeps exercises, names it `🏋️ Day X · Wn`) into **our own** copy which is then scheduled —
+  so the user's reusable Day 1/Day 2 templates are never scheduled or deleted (cleanup only
+  removes our copy). `plan_sync._pushable` lets strength-with-template past the run-only
+  filter. `list-workouts --email` prints saved workout ids. **Not yet**: chat-editing
+  strength days and AI progression on the exercises.
 
 ## Structure
 
