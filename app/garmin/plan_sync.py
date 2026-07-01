@@ -90,6 +90,19 @@ async def sync_plan_to_garmin(session, user_id: int, *, days: int = 14) -> dict:
     return {"pushed": pushed, "removed": removed}
 
 
+async def unpush_all(session, user_id: int) -> int:
+    """Remove every workout we pushed for this user (across all plans) from the Garmin
+    calendar and clear the stored ids. Used when the sync toggle is turned off. Requires
+    a bound user provider."""
+    await run_in_threadpool(get_provider().login)
+    pushed = await repository.list_pushed_workouts(session, user_id)
+    for w in pushed:
+        await remove_workout(session, w)
+    if pushed:
+        logger.info(f"GARMIN unpush-all user={user_id}: removed {len(pushed)}")
+    return len(pushed)
+
+
 async def resync_workouts(session, user_id: int, workouts, *, days: int = 14) -> dict:
     """Mirror an edit onto the calendar — only the touched sessions, not the whole plan.
     For each: drop its old Garmin copy (move changed the date, modify the content), then

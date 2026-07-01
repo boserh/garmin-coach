@@ -64,6 +64,11 @@ class User(Base):
     latitude: Mapped[Optional[float]] = mapped_column(Float)
     longitude: Mapped[Optional[float]] = mapped_column(Float)
 
+    # Master switch for pushing plan workouts to the Garmin-Connect calendar. Off → all
+    # automatic sync hooks skip this user (the manual push-plan CLI still works). Lets a
+    # user generate + validate a plan first, then enable pushing.
+    garmin_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
