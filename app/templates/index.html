@@ -18,10 +18,11 @@
     <p class="eyebrow">{{ 'База даних' if base == '/ui' else 'Мої дані' }}</p>
     <h1 class="title" style="font-size:1.7rem">{{ title }}</h1>
     {% include "_hero_ring.html" %}
+    {% set NICE = {"daily_metrics": "Відновлення", "activities": "Тренування", "report_logs": "Звіти"} %}
     <div class="stats">
       {% for name, n in counts.items() %}
         <a class="stat" href="{{ base }}/{{ name }}{{ q }}">
-          <div class="sname">{{ name }}</div>
+          <div class="sname">{{ NICE.get(name, name) if base == '/me' else name }}</div>
           <div class="snum">{{ n }}</div>
         </a>
       {% endfor %}
