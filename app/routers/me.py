@@ -2,6 +2,7 @@
 reports (scoped to their user_id). Mirrors the admin /ui browser but never spans
 other users, and excludes the users / bot_state tables."""
 import datetime as dt
+import math
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -129,6 +130,34 @@ async def _activity_cards(session, user_id, limit, offset):
 
 # ---- daily recovery metrics ----
 _SVG_W, _SVG_H, _SVG_PAD = 720, 120, 22
+_RING_R = 76
+_RING_CIRC = round(2 * math.pi * _RING_R, 1)
+
+
+def _recovery_band(v):
+    """Whoop-style recovery zone for a 0–100 score → (colour, label)."""
+    if v is None:
+        return "#6b7490", "—"
+    if v >= 67:
+        return "#16e08a", "Відновлено"
+    if v >= 34:
+        return "#ffd23f", "Помірно"
+    return "#ff5470", "Втома"
+
+
+def _recovery_ring(day):
+    """Hero ring model from the latest day: readiness if present, else sleep score."""
+    val = day["readiness"] if day.get("readiness") is not None else day.get("sleep_score")
+    if val is None:
+        return None
+    color, label = _recovery_band(val)
+    return {
+        "value": int(val), "color": color, "label": label,
+        "metric": "готовність" if day.get("readiness") is not None else "сон, бал",
+        "circ": _RING_CIRC, "dash": round(_RING_CIRC * min(val, 100) / 100, 1),
+        "r": _RING_R, "date": day["date"],
+        "sleep_h": day.get("sleep_h"), "hrv_avg": day.get("hrv_avg"), "rhr": day.get("rhr"),
+    }
 
 
 def _trend_series(values, dates):
@@ -268,10 +297,11 @@ async def me_table(
         days = await _daily_cards(session, user.id, limit, offset)
         charts, first_date, last_date = await _daily_trends(session, user.id)
         total = await _count(session, model, user.id)
+        hero = _recovery_ring(days[0]) if offset == 0 and days else None
         return templates.TemplateResponse(
             request, "daily.html",
             {"days": days, "charts": charts, "first_date": first_date, "last_date": last_date,
-             "user": user, "tables": list(TABLES), "base": "/me", "token": "",
+             "hero": hero, "user": user, "tables": list(TABLES), "base": "/me", "token": "",
              "limit": limit, "offset": offset, "total": total},
         )
     if table == "report_logs":
