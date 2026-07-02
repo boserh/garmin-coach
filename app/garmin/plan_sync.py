@@ -32,9 +32,9 @@ def _runnable(w) -> bool:
 
 
 def _pushable(w) -> bool:
-    """A session we send to the watch: a run, or a strength session with a template to
-    clone (strength type is otherwise skipped)."""
-    return _runnable(w) or bool(w.garmin_template_id)
+    """A session we send to the watch: a run, a strength session with a template to clone,
+    or a from-scratch generated strength session (``strength_plan``)."""
+    return _runnable(w) or bool(w.garmin_template_id) or bool(w.strength_plan)
 
 
 async def push_workout(session, w):
@@ -42,7 +42,13 @@ async def push_workout(session, w):
     None if a strength template couldn't be cloned). A strength session carries a
     ``garmin_template_id`` — we clone that saved workout into our own copy instead of
     building from ``steps``; runs build from ``steps``."""
-    if w.garmin_template_id:
+    if w.strength_plan:
+        sp = w.strength_plan
+        name = sp.get("name") or (
+            f"🏋️ {w.description or 'Силова'}" + (f" · W{w.week}" if w.week else ""))
+        payload = workout_export.build_strength_workout(
+            name, sp.get("blocks") or [], warmup_s=sp.get("warmup_s") or 0)
+    elif w.garmin_template_id:
         raw = await run_in_threadpool(client.fetch_workout_full, w.garmin_template_id)
         if not raw:
             logger.warning(f"GARMIN push: template {w.garmin_template_id} unavailable — skip")
