@@ -188,15 +188,32 @@ Optional, with defaults:
   dropdown for each day of the week choosing one of the user's saved Garmin strength
   workouts (Day 1/Day 2, fetched by `client.fetch_workouts` / `plan.py:_strength_workouts`),
   or "— нема —". The form posts `strength_<slug>` fields → `intake["strength"]["assignments"]`
-  (`{weekday_slug: workout_id}`). `repository.add_strength_workouts(plan, assignments)` then
-  lays `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on each chosen
-  weekday **every week** — a **fixed** day→workout pairing (no rotation, so Day 1 always
-  falls on the same weekday). On push, a session with a `garmin_template_id`
+  (`{weekday_slug: workout_id}`). `repository.add_strength_workouts(plan, assignments,
+  snapshots)` then lays `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on
+  each chosen weekday **every week** — a **fixed** day→workout pairing (no rotation, so Day 1
+  always falls on the same weekday). On push, a session with a `garmin_template_id`
   is **cloned** (`client.fetch_workout_full` + `workout_export.clone_workout` strips ids,
   keeps exercises, names it `🏋️ Day X · Wn`) into **our own** copy which is then scheduled —
   so the user's reusable Day 1/Day 2 templates are never scheduled or deleted (cleanup only
   removes our copy). `plan_sync._pushable` lets strength-with-template past the run-only
   filter. `list-workouts --email` prints saved workout ids.
+- **Strength exercise snapshot for the plan view**: a clone day's exercises live in the
+  Garmin **template**, not our DB — so to render the `/plan` exercise accordion without a
+  fetch-per-render, `run_plan_generation` snapshots each chosen template once at build time
+  (`client.fetch_workout_full` → `workout_export.read_exercises`) into
+  `PlannedWorkout.strength_snapshot` (JSON `{name?, exercises:[{category, exercise?, reps?}]}`,
+  **display-only** — never used on push; the real template is still cloned live).
+  `plan.py:_strength_details` builds the accordion from `strength_plan` (from-scratch),
+  `strength_snapshot` (clone, from the DB), and only **falls back to a live template fetch**
+  for clone days on plans made before snapshots existed (best-effort; Garmin outage → the
+  page renders without the exercise list). `plan.html` renders `strength_view[w.id]` blocks
+  and shows the snapshot's real name in place of "Силова".
+- **Plan-generation model toggle**: the setup form has an Opus/Fable radio (`plan_model`
+  slug → `service.resolve_plan_model` → `PLAN_GEN_MODELS`; default `MODEL_PLAN_GEN`=Opus,
+  alt `MODEL_PLAN_GEN_ALT`=`claude-fable-5`). The chosen id flows through `params["model"]`
+  → `run_plan_generation(..., model=)` → `generate_plan_with_stats(..., model=)`. Opus =
+  more accurate/pricier, Fable = faster/cheaper. (`claude-fable-5` `PRICES` entry is a
+  **placeholder** pending confirmed list pricing.)
 - **Editing exercises in a strength day** (chat): «заміни гіперекстензію на станову тягу» →
   `SYSTEM_PLAN_EDIT` emits a `swap_exercise` op (`from_category`/`to_category`/`exercise`/
   `reps`), mapping the UA name to a **Garmin category code**. The valid codes come from
