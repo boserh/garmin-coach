@@ -19,6 +19,7 @@ from app.db.models import (
     ReportLog,
     TrainingPlan,
 )
+from app.garmin import exercises
 from app.garmin.schemas import DailySummary, Payload
 
 _DAILY_FIELDS = (
@@ -564,6 +565,20 @@ async def apply_plan_ops(
                 w.steps = _dump_steps(op.steps)
             if getattr(op, "garmin_template_id", None) is not None:
                 w.garmin_template_id = op.garmin_template_id
+            affected.append(w)
+        elif op.action == "swap_exercise":
+            frm = (getattr(op, "from_category", None) or "").upper()
+            to = (getattr(op, "to_category", None) or "").upper()
+            # reject an unmapped/invalid target so a hallucinated code never reaches Garmin
+            if not frm or not exercises.valid_category(to):
+                continue
+            ex = getattr(op, "exercise", None)
+            edit = {
+                "from": frm, "to": to,
+                "exercise": ex.upper() if ex else None,
+                "reps": getattr(op, "reps", None),
+            }
+            w.exercise_edits = list(w.exercise_edits or []) + [edit]
             affected.append(w)
     await session.commit()
     return affected
