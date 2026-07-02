@@ -17,9 +17,16 @@ conversion is ``speed = 1000 / (min_km * 60)`` (verified: 6:40/km → 2.5 m/s).
 The module is pure (no DB, no network) so it unit-tests trivially; the push
 orchestration lives in ``app.cli``.
 """
+import re
 from typing import List, Optional
 
 _RUN_SPORT = {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1}
+
+
+def clean_workout_name(name) -> str:
+    """Tidy a Garmin workout name: drop the trailing ' manual' marker Garmin tacks onto
+    hand-entered workouts, so 'Day 1 manual' reads as 'Day 1'."""
+    return re.sub(r"\s+manual$", "", (name or "").strip(), flags=re.IGNORECASE).strip()
 
 # our PlanStep.kind → (stepTypeId, stepTypeKey)
 _STEP_TYPE = {
