@@ -13,10 +13,11 @@
   {% set active = 'me' %}
   {% include "_nav.html" %}
   <div class="wrap">
+    {% set NICE = {"daily_metrics": "Відновлення", "activities": "Тренування", "report_logs": "Звіти"} %}
     <div class="tabs">
       <a href="/me">← огляд</a>
       {% for t in tables %}
-        <a class="{{ 'active' if t == 'activities' else '' }}" href="/me/{{ t }}">{{ t }}</a>
+        <a class="{{ 'active' if t == 'activities' else '' }}" href="/me/{{ t }}">{{ NICE.get(t, t) }}</a>
       {% endfor %}
     </div>
 
