@@ -253,16 +253,25 @@ pace_min_km діапазон [швидший,повільніший] у деся
 "type":"strength","garmin_template_id":123,"description":"Day 1"}
 Приклад заміни вправи: {"action":"swap_exercise","date":"YYYY-MM-DD",
 "from_category":"HYPEREXTENSION","to_category":"DEADLIFT","exercise":null,"reps":null}
-ГЕНЕРАЦІЯ СИЛОВОЇ «схожої на Day 1/2» під фокус (напр. «додай силову на ноги схожу на
-Day 1», «зроби силову як Day 2 але без станової»): візьми найдоречніший шаблон, спершу
-ДОДАЙ силовий день (add, type="strength", garmin_template_id = його id, description =
-короткий укр. підпис фокуса, напр. «Ноги (як Day 1)»), а тоді на ТУ САМУ date додай
-swap_exercise-операції, що адаптують вправи шаблону (з його exercises) під фокус —
-підмінюючи недоречні на доречні (to_category лише з exercise_categories). НЕ вигадуй нові
-кроки й НЕ прибирай — лише заміняй наявні (кількість кроків незмінна). Приклад — «ноги, як
-Day 1», де в Day 1 є BENCH_PRESS і ROW: [{"action":"add",...,"type":"strength",
-"garmin_template_id":123,"description":"Ноги (як Day 1)"},
-{"action":"swap_exercise","date":"...","from_category":"BENCH_PRESS","to_category":"SQUAT"},
-{"action":"swap_exercise","date":"...","from_category":"ROW","to_category":"LEG_CURL"}].
+ГЕНЕРАЦІЯ СИЛОВОЇ з нуля (напр. «додай силову на ноги», «згенеруй силову на верх», «зроби
+силову як Day 1 але на ноги»): action=add, type="strength", і поле strength = сама сесія
+(БЕЗ garmin_template_id — ми будуємо воркаут самі, не клонуємо шаблон):
+strength = {"name": "<укр. підпис, напр. Ноги>", "warmup_s": 300,
+ "blocks": [{"reps": <к-сть підходів>, "rest_s": <відпочинок між колами, с>,
+   "exercises": [{"category": "<КОД з exercise_categories>", "exercise": <варіант або null>,
+                  "reps": <повтори>, "weight_kg": <кг або null для власної ваги>}]}]}.
+category — ЛИШЕ з exercise_categories (не вигадуй код). Підбери доречні під фокус вправи,
+2-4 блоки, реалістичні підходи/повтори/вагу. Якщо просять «схожу на Day 1/2» — візьми
+структуру відповідного шаблону (strength_templates[].exercises: блоки/підходи/повтори) як
+орієнтир, але постав вправи під фокус. Приклад «силова на ноги»:
+{"action":"add","date":"YYYY-MM-DD","type":"strength","description":"Ноги",
+ "strength":{"name":"Ноги","warmup_s":300,"blocks":[
+   {"reps":3,"rest_s":90,"exercises":[
+     {"category":"SQUAT","exercise":"GOBLET_SQUAT","reps":12,"weight_kg":20},
+     {"category":"LUNGE","exercise":null,"reps":10,"weight_kg":null}]},
+   {"reps":3,"rest_s":90,"exercises":[
+     {"category":"DEADLIFT","exercise":"ROMANIAN_DEADLIFT","reps":10,"weight_kg":40}]}]}}.
+garmin_template_id (клон) — ЛИШЕ коли користувач хоче саме готовий Day 1/Day 2 як є, без
+зміни вправ. swap_exercise — для правки вже наявного силового дня на основі шаблону.
 Для ризикованого: "risky": true, alt_summary і alt_operations заповнені (та сама схема, що
 operations). Не додавай полів поза схемою."""

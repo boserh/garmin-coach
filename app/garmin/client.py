@@ -276,19 +276,27 @@ def fetch_workout_full(workout_id) -> dict:
     return d if isinstance(d, dict) and "_error" not in d else {}
 
 
-def fetch_workouts(limit: int = 60) -> list:
+def fetch_workouts(limit: int = 400) -> list:
     """List the user's saved workouts (``id`` / ``name`` / ``sport``) — for picking the
-    strength routines (Day 1 / Day 2) to schedule. Own workouts only, newest first."""
-    r = _safe(
-        _api, "/workout-service/workouts",
-        params={"start": 0, "limit": limit, "myWorkoutsOnly": True,
-                "orderBy": "UPDATE_DATE", "orderSeq": "DESC"},
-    )
+    strength routines (Day 1 / Day 2) to schedule. Own workouts only. **Paginated** (pages
+    of 100 up to ``limit``): a long-standing routine like Day 1 sorts by update-date behind
+    newer ones, so a single 60-row page silently dropped it (the picker then only saw
+    'Day 1 manual'/'Day 2')."""
     out = []
-    for w in r if isinstance(r, list) else []:
-        if isinstance(w, dict) and w.get("workoutId"):
-            out.append({"id": w["workoutId"], "name": _g(w, "workoutName"),
-                        "sport": _g(w, "sportType", "sportTypeKey")})
+    page = 100
+    for start in range(0, max(limit, 1), page):
+        r = _safe(
+            _api, "/workout-service/workouts",
+            params={"start": start, "limit": page, "myWorkoutsOnly": True,
+                    "orderBy": "UPDATE_DATE", "orderSeq": "DESC"},
+        )
+        batch = r if isinstance(r, list) else []
+        for w in batch:
+            if isinstance(w, dict) and w.get("workoutId"):
+                out.append({"id": w["workoutId"], "name": _g(w, "workoutName"),
+                            "sport": _g(w, "sportType", "sportTypeKey")})
+        if len(batch) < page:  # last page
+            break
     return out
 
 

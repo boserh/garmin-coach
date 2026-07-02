@@ -775,9 +775,10 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
                       "description": w.description,
                       "garmin_template_id": w.garmin_template_id} for w in ws],
         "strength_templates": strength_templates,
-        # valid Garmin exercise category codes for swap_exercise (only when there's a
-        # strength day to edit — keeps the run-only case's tokens down)
-        "exercise_categories": exercises.CATEGORIES if templates else [],
+        # valid Garmin exercise category codes — the vocabulary for both swap_exercise and
+        # from-scratch strength generation (always provided so "згенеруй силову" works even
+        # when the plan has no strength day yet)
+        "exercise_categories": exercises.CATEGORIES,
     }
     try:
         edit, stats = await run_in_threadpool(plan_edit_with_stats, context, api_key)

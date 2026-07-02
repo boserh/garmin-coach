@@ -217,6 +217,13 @@ class PlannedWorkout(Base):
     # "weight_kg": null}] — set by a chat edit ("заміни гіперекстензію на станову"),
     # validated against app.garmin.exercises. See workout_export.apply_exercise_edits.
     exercise_edits: Mapped[Optional[list]] = mapped_column(JSON)
+    # A from-scratch generated strength session (no template to clone): a compact dict
+    # {name?, warmup_s?, blocks:[{reps(sets), rest_s?, exercises:[{category, exercise?,
+    # reps?, weight_kg?}]}]} produced by the LLM (categories validated against the Garmin
+    # catalog). On push, workout_export.build_strength_workout turns it into a native
+    # strength workout DTO — no Day 1/2 clone needed. Takes precedence over
+    # garmin_template_id when both are set.
+    strength_plan: Mapped[Optional[dict]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

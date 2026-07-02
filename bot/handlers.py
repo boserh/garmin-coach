@@ -260,6 +260,10 @@ def _ops_hint(ops: list) -> str:
         if d:
             return f" · {d:.0f} км"
     for o in ops:
+        if o.get("action") == "add" and o.get("type") == "strength":
+            nm = (o.get("strength") or {}).get("name") or o.get("description")
+            return f" · 🏋️ {nm}" if nm else " · 🏋️ силова"
+    for o in ops:
         if o.get("action") == "swap_exercise" and o.get("to_category"):
             from app.garmin import exercises
             return f" · {exercises.label(o['to_category'])}"
