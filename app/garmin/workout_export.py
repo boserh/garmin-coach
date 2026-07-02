@@ -17,9 +17,16 @@ conversion is ``speed = 1000 / (min_km * 60)`` (verified: 6:40/km → 2.5 m/s).
 The module is pure (no DB, no network) so it unit-tests trivially; the push
 orchestration lives in ``app.cli``.
 """
+import re
 from typing import List, Optional
 
 _RUN_SPORT = {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1}
+
+
+def clean_workout_name(name) -> str:
+    """Tidy a Garmin workout name: drop the trailing ' manual' marker Garmin tacks onto
+    hand-entered workouts, so 'Day 1 manual' reads as 'Day 1'."""
+    return re.sub(r"\s+manual$", "", (name or "").strip(), flags=re.IGNORECASE).strip()
 
 # our PlanStep.kind → (stepTypeId, stepTypeKey)
 _STEP_TYPE = {
@@ -193,6 +200,115 @@ def apply_exercise_edits(payload: dict, edits: list) -> int:
     for seg in payload.get("workoutSegments", []) or []:
         walk(seg.get("workoutSteps", []) or [])
     return changed
+
+
+_STRENGTH_SPORT = {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5}
+_COND_REPS = {"conditionTypeId": 10, "conditionTypeKey": "reps"}
+_KG_UNIT = {"unitId": 8, "unitKey": "kilogram", "factor": 1000.0}
+
+
+def _strength_step(order: int, *, kind, cat=None, ex=None, reps=None, dur_s=None,
+                   weight_kg=None) -> dict:
+    """One strength ExecutableStepDTO, mirroring the real Garmin shape: exercises end on
+    reps + carry category/exerciseName/weightValue (kg; -1.0 = bodyweight); rests end on
+    time (or lap.button when no duration). No pace/target (no.target)."""
+    type_id, type_key = _STEP_TYPE.get(kind, (3, "interval"))
+    out: dict = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": order,
+        "stepType": {"stepTypeId": type_id, "stepTypeKey": type_key},
+        "description": None,
+        "targetType": dict(_TARGET_NONE),
+    }
+    if reps:
+        out["endCondition"] = dict(_COND_REPS)
+        out["endConditionValue"] = float(reps)
+    elif dur_s:
+        out["endCondition"] = dict(_COND_TIME)
+        out["endConditionValue"] = float(dur_s)
+    else:
+        out["endCondition"] = dict(_COND_LAP)
+        out["endConditionValue"] = 0.0
+    if cat:
+        out["category"] = cat.upper()
+        out["exerciseName"] = ex.upper() if ex else None
+        out["weightValue"] = float(weight_kg) if weight_kg else -1.0
+        out["weightUnit"] = dict(_KG_UNIT)
+    return out
+
+
+def build_strength_workout(name: str, blocks: list, *, warmup_s: int = 0) -> dict:
+    """Build a from-scratch Garmin **strength** workout DTO (sportType 5). ``blocks`` is a
+    list of ``{reps, rest_s, exercises: [{category, exercise, reps, weight_kg}]}`` — each
+    becomes a RepeatGroupDTO (its exercises + a trailing rest), with a lap-button rest
+    between groups, mirroring Garmin's own strength layout. ``stepOrder`` is continuous
+    across the tree. NB: unverified on-watch — validate with a test push before relying."""
+    counter = [0]
+
+    def nxt() -> int:
+        counter[0] += 1
+        return counter[0]
+
+    steps: list = []
+    if warmup_s:
+        steps.append(_strength_step(nxt(), kind="warmup", dur_s=warmup_s))
+    for bi, block in enumerate(blocks or []):
+        if bi:  # a press-lap rest between groups, as Garmin lays them out
+            steps.append(_strength_step(nxt(), kind="rest"))
+        order = nxt()  # the group's own order, then its children
+        children = []
+        for ex in block.get("exercises") or []:
+            children.append(_strength_step(
+                nxt(), kind="interval", cat=ex.get("category"), ex=ex.get("exercise"),
+                reps=ex.get("reps"), weight_kg=ex.get("weight_kg")))
+        rest_s = block.get("rest_s")
+        if rest_s:
+            children.append(_strength_step(nxt(), kind="rest", dur_s=rest_s))
+        iters = int(block.get("reps") or 1)
+        steps.append({
+            "type": "RepeatGroupDTO",
+            "stepOrder": order,
+            "stepType": {"stepTypeId": 6, "stepTypeKey": "repeat"},
+            "numberOfIterations": iters,
+            "smartRepeat": False,
+            "endCondition": dict(_COND_ITER),
+            "endConditionValue": float(iters),
+            "workoutSteps": children,
+        })
+    return {
+        "workoutName": name[:80],
+        "sportType": dict(_STRENGTH_SPORT),
+        "workoutSegments": [{
+            "segmentOrder": 1,
+            "sportType": dict(_STRENGTH_SPORT),
+            "workoutSteps": steps,
+        }],
+    }
+
+
+def read_exercises(raw: dict) -> list:
+    """Extract a strength workout's exercise list from its Garmin DTO, in order:
+    ``[{category, exercise, reps}]`` (reps only when the step ends on reps). Used to show
+    the LLM a template's contents so it can adapt them toward a requested focus."""
+    out: list = []
+
+    def walk(steps: list) -> None:
+        for st in steps or []:
+            walk(st.get("workoutSteps"))  # repeat groups nest their steps
+            cat = (st.get("category") or "").upper()
+            if not cat:
+                continue
+            end = st.get("endCondition") or {}
+            reps = st.get("endConditionValue") if end.get("conditionTypeKey") == "reps" else None
+            out.append({
+                "category": cat,
+                "exercise": (st.get("exerciseName") or None),
+                "reps": int(reps) if reps else None,
+            })
+
+    for seg in raw.get("workoutSegments", []) or []:
+        walk(seg.get("workoutSteps", []) or [])
+    return out
 
 
 def build_workout(w) -> dict:

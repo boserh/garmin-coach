@@ -207,8 +207,17 @@ Optional, with defaults:
   `workout_export.apply_exercise_edits` mutates the **cloned** template DTO — finds the
   step whose `category` matches `from`, swaps `category`/`exerciseName`/`reps` (recurses
   into repeat groups; weight left alone — unit unverified) — so the swap lands on the
-  watch (via `plan_sync.resync_workouts`, remove+repush of just the touched day). **Not
-  yet**: AI progression on the exercises (weights/sets over the plan).
+  watch (via `plan_sync.resync_workouts`, remove+repush of just the touched day).
+- **Generating a strength day "similar to Day 1/2"** (chat, free-text focus): «додай силову
+  на ноги схожу на Day 1» → `run_plan_edit` feeds each template's exercise list
+  (`workout_export.read_exercises` over `fetch_workout_full`, best-effort) into
+  `strength_templates[].exercises`, and `SYSTEM_PLAN_EDIT` emits an `add` (type=strength,
+  the template id) **plus** `swap_exercise` ops on that date that adapt the template's
+  exercises toward the focus — **swap only, no fabricated steps** (Phase 1 clones the
+  proven template DTO; building a strength workout from scratch is deferred until the DTO
+  is validated live on the watch). The add + same-date swaps apply in one `apply_plan_ops`
+  call (autoflush makes the new workout visible to the swap lookup). **Not yet**:
+  from-scratch strength DTO, AI progression on the exercises (weights/sets over the plan).
 
 ## Structure
 

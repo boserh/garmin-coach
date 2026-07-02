@@ -86,3 +86,40 @@ def test_repeat_group_and_continuous_step_order():
     assert run["endConditionValue"] == 180.0
     assert cooldown["stepOrder"] == 5
     assert cooldown["stepType"]["stepTypeKey"] == "cooldown"
+
+
+def test_build_strength_workout_structure():
+    import app.garmin.workout_export as wx
+    dto = wx.build_strength_workout("🏋️ Ноги", [
+        {"reps": 3, "rest_s": 90, "exercises": [
+            {"category": "squat", "exercise": "goblet_squat", "reps": 12, "weight_kg": 20},
+            {"category": "LUNGE", "exercise": None, "reps": 10, "weight_kg": None}]},
+        {"reps": 4, "rest_s": 60, "exercises": [
+            {"category": "DEADLIFT", "exercise": "ROMANIAN_DEADLIFT", "reps": 8,
+             "weight_kg": 40}]},
+    ], warmup_s=300)
+    assert dto["sportType"]["sportTypeId"] == 5  # strength_training
+    steps = dto["workoutSegments"][0]["workoutSteps"]
+    # warmup, group, lap-rest, group
+    assert [s["type"] for s in steps] == [
+        "ExecutableStepDTO", "RepeatGroupDTO", "ExecutableStepDTO", "RepeatGroupDTO"]
+    assert steps[0]["stepType"]["stepTypeKey"] == "warmup"
+    assert steps[2]["endCondition"]["conditionTypeKey"] == "lap.button"  # between groups
+    g1 = steps[1]
+    assert g1["numberOfIterations"] == 3
+    squat, lunge, rest = g1["workoutSteps"]
+    assert squat["category"] == "SQUAT" and squat["exerciseName"] == "GOBLET_SQUAT"
+    assert squat["endCondition"]["conditionTypeKey"] == "reps"
+    assert squat["endConditionValue"] == 12.0
+    assert squat["weightValue"] == 20.0 and squat["weightUnit"]["unitKey"] == "kilogram"
+    assert lunge["weightValue"] == -1.0  # bodyweight
+    assert rest["stepType"]["stepTypeKey"] == "rest" and rest["endConditionValue"] == 90.0
+    # continuous stepOrder across the whole tree
+    orders = []
+    def collect(sts):
+        for s in sts:
+            orders.append(s["stepOrder"])
+            if s["type"] == "RepeatGroupDTO":
+                collect(s["workoutSteps"])
+    collect(steps)
+    assert orders == list(range(1, len(orders) + 1))
