@@ -207,8 +207,9 @@ SYSTEM_PLAN_EDIT = """Ти тренер, що коригує наявну про
 
 ВХІДНІ ДАНІ (JSON): today (сьогодні, ISO), upcoming (майбутні тренування — кожне з
 date/type/dist_km/description/garmin_template_id), strength_templates (наявні силові
-шаблони: id + name, напр. Day 1/Day 2), exercise_categories (валідні Garmin-коди вправ —
-для swap_exercise бери to_category ЛИШЕ звідси), instruction (прохання вільним текстом).
+шаблони: id + name + exercises — список вправ шаблону [{category, exercise, reps}]),
+exercise_categories (валідні Garmin-коди вправ — для swap_exercise бери to_category ЛИШЕ
+звідси), instruction (прохання вільним текстом).
 
 ЗАВДАННЯ: переклади прохання у мінімальний набір операцій над тренуваннями. Дати — ISO.
 Типи операцій (action):
@@ -252,5 +253,16 @@ pace_min_km діапазон [швидший,повільніший] у деся
 "type":"strength","garmin_template_id":123,"description":"Day 1"}
 Приклад заміни вправи: {"action":"swap_exercise","date":"YYYY-MM-DD",
 "from_category":"HYPEREXTENSION","to_category":"DEADLIFT","exercise":null,"reps":null}
+ГЕНЕРАЦІЯ СИЛОВОЇ «схожої на Day 1/2» під фокус (напр. «додай силову на ноги схожу на
+Day 1», «зроби силову як Day 2 але без станової»): візьми найдоречніший шаблон, спершу
+ДОДАЙ силовий день (add, type="strength", garmin_template_id = його id, description =
+короткий укр. підпис фокуса, напр. «Ноги (як Day 1)»), а тоді на ТУ САМУ date додай
+swap_exercise-операції, що адаптують вправи шаблону (з його exercises) під фокус —
+підмінюючи недоречні на доречні (to_category лише з exercise_categories). НЕ вигадуй нові
+кроки й НЕ прибирай — лише заміняй наявні (кількість кроків незмінна). Приклад — «ноги, як
+Day 1», де в Day 1 є BENCH_PRESS і ROW: [{"action":"add",...,"type":"strength",
+"garmin_template_id":123,"description":"Ноги (як Day 1)"},
+{"action":"swap_exercise","date":"...","from_category":"BENCH_PRESS","to_category":"SQUAT"},
+{"action":"swap_exercise","date":"...","from_category":"ROW","to_category":"LEG_CURL"}].
 Для ризикованого: "risky": true, alt_summary і alt_operations заповнені (та сама схема, що
 operations). Не додавай полів поза схемою."""

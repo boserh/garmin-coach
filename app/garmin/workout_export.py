@@ -202,6 +202,31 @@ def apply_exercise_edits(payload: dict, edits: list) -> int:
     return changed
 
 
+def read_exercises(raw: dict) -> list:
+    """Extract a strength workout's exercise list from its Garmin DTO, in order:
+    ``[{category, exercise, reps}]`` (reps only when the step ends on reps). Used to show
+    the LLM a template's contents so it can adapt them toward a requested focus."""
+    out: list = []
+
+    def walk(steps: list) -> None:
+        for st in steps or []:
+            walk(st.get("workoutSteps"))  # repeat groups nest their steps
+            cat = (st.get("category") or "").upper()
+            if not cat:
+                continue
+            end = st.get("endCondition") or {}
+            reps = st.get("endConditionValue") if end.get("conditionTypeKey") == "reps" else None
+            out.append({
+                "category": cat,
+                "exercise": (st.get("exerciseName") or None),
+                "reps": int(reps) if reps else None,
+            })
+
+    for seg in raw.get("workoutSegments", []) or []:
+        walk(seg.get("workoutSteps", []) or [])
+    return out
+
+
 def build_workout(w) -> dict:
     """Build the Garmin create-workout payload from a ``PlannedWorkout``.
 
