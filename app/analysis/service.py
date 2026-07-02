@@ -747,11 +747,19 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
     if plan is None:
         raise AnalystError("Немає активної програми. Створи її на сторінці /plan у вебі.")
     ws = await repository.list_workouts(session, plan.id, upcoming_only=True)
+    # Distinct strength templates already in the plan (Day 1/Day 2) — so the model can add
+    # a strength day referencing the right saved workout to clone.
+    templates: dict = {}
+    for w in await repository.list_workouts(session, plan.id):
+        if w.type == "strength" and w.garmin_template_id:
+            templates.setdefault(w.garmin_template_id, w.description or "Силова")
     context = {
         "today": dt.date.today().isoformat(),
         "instruction": instruction,
         "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
-                      "description": w.description} for w in ws],
+                      "description": w.description,
+                      "garmin_template_id": w.garmin_template_id} for w in ws],
+        "strength_templates": [{"id": tid, "name": nm} for tid, nm in templates.items()],
     }
     try:
         edit, stats = await run_in_threadpool(plan_edit_with_stats, context, api_key)

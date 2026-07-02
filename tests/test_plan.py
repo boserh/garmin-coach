@@ -186,6 +186,15 @@ async def test_apply_plan_ops(session):
     assert by_date["2026-07-01"].status == "skipped"
 
 
+async def test_apply_plan_ops_add_strength_carries_template(session):
+    plan = await _seed_plan(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="strength",
+        garmin_template_id=931013083, description="Day 1")])
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert w.type == "strength" and w.garmin_template_id == 931013083 and w.description == "Day 1"
+
+
 async def test_add_strength_workouts_rotates_on_gym_days(session):
     from app.db.models import TrainingPlan
     plan = TrainingPlan(user_id=U1, goal="g", status="active",

@@ -537,7 +537,9 @@ async def apply_plan_ops(
                 plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
                 type=op.type or "easy", dist_km=op.dist_km,
                 description=op.description or "",
-                steps=_dump_steps(getattr(op, "steps", None)), status="planned",
+                steps=_dump_steps(getattr(op, "steps", None)),
+                garmin_template_id=getattr(op, "garmin_template_id", None),
+                status="planned",
             )
             session.add(w)
             affected.append(w)
@@ -560,6 +562,8 @@ async def apply_plan_ops(
                 w.description = op.description
             if getattr(op, "steps", None) is not None:
                 w.steps = _dump_steps(op.steps)
+            if getattr(op, "garmin_template_id", None) is not None:
+                w.garmin_template_id = op.garmin_template_id
             affected.append(w)
     await session.commit()
     return affected

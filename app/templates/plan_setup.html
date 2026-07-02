@@ -88,7 +88,7 @@
         <label>Які тренування чергувати</label>
         <div class="days">
           {% for w in strength_workouts %}
-            <label class="day"><input type="checkbox" name="strength_ids" value="{{ w.id }}" checked> {{ w.name }}</label>
+            <label class="day"><input type="checkbox" name="strength_ids" value="{{ w.id }}"> {{ w.name }}</label>
           {% endfor %}
         </div>
         <div class="hint">Ми клонуємо їх як власні копії й розкладаємо по днях залу —
