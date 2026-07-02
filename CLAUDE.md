@@ -211,9 +211,9 @@ Optional, with defaults:
 - **Plan-generation model toggle**: the setup form has an Opus/Fable radio (`plan_model`
   slug → `service.resolve_plan_model` → `PLAN_GEN_MODELS`; default `MODEL_PLAN_GEN`=Opus,
   alt `MODEL_PLAN_GEN_ALT`=`claude-fable-5`). The chosen id flows through `params["model"]`
-  → `run_plan_generation(..., model=)` → `generate_plan_with_stats(..., model=)`. Opus =
-  more accurate/pricier, Fable = faster/cheaper. (`claude-fable-5` `PRICES` entry is a
-  **placeholder** pending confirmed list pricing.)
+  → `run_plan_generation(..., model=)` → `generate_plan_with_stats(..., model=)`. `PRICES`:
+  Opus 4.8 $5/$25, Fable 5 $10/$50 per 1M in/out (Anthropic list price) — so Fable is **2×
+  Opus**; the form shows both prices so the choice is cost-aware (Opus is the cheaper default).
 - **Editing exercises in a strength day** (chat): «заміни гіперекстензію на станову тягу» →
   `SYSTEM_PLAN_EDIT` emits a `swap_exercise` op (`from_category`/`to_category`/`exercise`/
   `reps`), mapping the UA name to a **Garmin category code**. The valid codes come from
@@ -419,10 +419,12 @@ incl. weather, without consuming the day's guard.
 **Models**: `/report` + morning + `/ask` + `/activity` use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
-(`MODEL_PLAN`) — small and mechanical. Every call is logged to `ReportLog` (tokens, cost,
-ok/error). `PRICES` carries Sonnet 5's **introductory** rate ($2/$10 per 1M in/out through
-2026-08-31) — bump to $3/$15 on 2026-09-01. NB Sonnet 5 uses the newer tokenizer (~30%
-more tokens for the same text than Sonnet 4.6), so per-request token counts rise.
+(`MODEL_PLAN`) — small and mechanical. Plan generation also accepts a **Fable** engine via
+the setup-form toggle (see the strength/plan section). Every call is logged to `ReportLog`
+(tokens, cost, ok/error). `PRICES` (Anthropic list prices, $/1M in/out): Sonnet 5 **intro**
+$2/$10 through 2026-08-31 (bump to $3/$15 on 2026-09-01), Sonnet 4.6 $3/$15, Opus 4.8
+$5/$25, Fable 5 $10/$50. NB Sonnet 5 uses the newer tokenizer (~30% more tokens for the
+same text than Sonnet 4.6), so per-request token counts rise.
 
 **`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
 (3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
