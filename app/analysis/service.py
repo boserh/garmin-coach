@@ -35,13 +35,23 @@ PRICES = {
     "claude-sonnet-5":   (2.0, 10.0),   # (input, output) $/1M
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-8":   (15.0, 75.0),
+    "claude-fable-5":    (5.0, 25.0),   # TODO: verify Fable 5 list pricing
 }
 MODEL_DAILY = "claude-sonnet-5"
 MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-5"   # follow-up Q&A: cheap, grounded in recent reports
 MODEL_ACTIVITY = "claude-sonnet-5"   # single-activity analysis (/activity)
-MODEL_PLAN_GEN = MODEL_DEEP          # plan generation: reasoning-heavy + rare → Opus
+MODEL_PLAN_GEN = MODEL_DEEP          # plan generation default: reasoning-heavy + rare → Opus
+MODEL_PLAN_GEN_ALT = "claude-fable-5"   # alternative plan-gen engine (form toggle)
 MODEL_PLAN = "claude-sonnet-5"       # plan edits (/plan <text>): small, mechanical → Sonnet
+
+# Which models the plan-setup form may pick from, keyed by the form's short slug.
+PLAN_GEN_MODELS = {"opus": MODEL_PLAN_GEN, "fable": MODEL_PLAN_GEN_ALT}
+
+
+def resolve_plan_model(slug: Optional[str]) -> str:
+    """Map the form's model slug ('opus'/'fable') to a real model id; default Opus."""
+    return PLAN_GEN_MODELS.get((slug or "").lower(), MODEL_PLAN_GEN)
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
@@ -604,12 +614,13 @@ def _coerce_plan(text: str) -> GeneratedPlan:
 
 
 def generate_plan_with_stats(
-    context: dict, api_key: Optional[str] = None
+    context: dict, api_key: Optional[str] = None, model: Optional[str] = None
 ) -> Tuple[GeneratedPlan, CallStats]:
     """Generate a structured training plan. Returns (GeneratedPlan, stats); one retry
     with a stricter JSON nudge before giving up. Raises AnalystError on API/parse failure.
-    Not dedup-cached — dates are relative to today, so every generation is fresh."""
-    model = MODEL_PLAN_GEN
+    Not dedup-cached — dates are relative to today, so every generation is fresh.
+    ``model`` picks the engine (Opus default, Fable via the form toggle)."""
+    model = model or MODEL_PLAN_GEN
     text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=16000)
     try:
         return _coerce_plan(text), stats
@@ -633,9 +644,12 @@ async def run_plan_generation(
     target_date: Optional[str], start_date: Optional[str], days_per_week: Optional[int],
     intensity: Optional[str], intake: Optional[dict], api_key: Optional[str] = None,
     run_days: Optional[list] = None, long_run_day: Optional[str] = None,
+    model: Optional[str] = None,
 ):
     """Build context, generate the plan, persist it (archiving any active plan), log a
-    ReportLog(kind="plan"), and return the new TrainingPlan."""
+    ReportLog(kind="plan"), and return the new TrainingPlan. ``model`` selects the
+    generation engine (Opus default; Fable via the setup-form toggle)."""
+    gen_model = model or MODEL_PLAN_GEN
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import repository
@@ -669,10 +683,11 @@ async def run_plan_generation(
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
-        plan_out, stats = await run_in_threadpool(generate_plan_with_stats, context, api_key)
+        plan_out, stats = await run_in_threadpool(
+            generate_plan_with_stats, context, api_key, gen_model)
     except AnalystError as e:
         await repository.log_report(
-            session, user_id=user_id, kind="plan", model=MODEL_PLAN_GEN, ok=False,
+            session, user_id=user_id, kind="plan", model=gen_model, ok=False,
             question=goal, error=str(e)[:512],
         )
         raise
@@ -694,7 +709,17 @@ async def run_plan_generation(
                      for w in await run_in_threadpool(client.fetch_workouts)}
             amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
                     for slug, wid in assignments.items()}
-            n = await repository.add_strength_workouts(session, plan, amap)
+            # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
+            # so /plan renders the accordion from the DB instead of re-fetching every load.
+            snapshots: dict = {}
+            for tid in set(assignments.values()):
+                raw = await run_in_threadpool(client.fetch_workout_full, tid)
+                if raw:
+                    snapshots[tid] = {
+                        "name": (raw.get("workoutName") or "").strip() or None,
+                        "exercises": workout_export.read_exercises(raw),
+                    }
+            n = await repository.add_strength_workouts(session, plan, amap, snapshots)
             logger.info(f"PLAN strength user={user_id}: +{n} sessions")
         except Exception:
             logger.exception(f"PLAN strength add failed user={user_id}")

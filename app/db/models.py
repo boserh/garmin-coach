@@ -224,6 +224,11 @@ class PlannedWorkout(Base):
     # strength workout DTO — no Day 1/2 clone needed. Takes precedence over
     # garmin_template_id when both are set.
     strength_plan: Mapped[Optional[dict]] = mapped_column(JSON)
+    # Display-only cache of a CLONED template's contents, snapshotted at plan-build time
+    # ({name?, exercises:[{category, exercise?, reps?}]}) so /plan renders the exercise
+    # accordion from the DB instead of re-fetching the Garmin template on every load.
+    # Not used on push (the real template is cloned live). Null for run/from-scratch days.
+    strength_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
