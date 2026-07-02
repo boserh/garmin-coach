@@ -208,16 +208,26 @@ Optional, with defaults:
   step whose `category` matches `from`, swaps `category`/`exerciseName`/`reps` (recurses
   into repeat groups; weight left alone — unit unverified) — so the swap lands on the
   watch (via `plan_sync.resync_workouts`, remove+repush of just the touched day).
-- **Generating a strength day "similar to Day 1/2"** (chat, free-text focus): «додай силову
-  на ноги схожу на Day 1» → `run_plan_edit` feeds each template's exercise list
-  (`workout_export.read_exercises` over `fetch_workout_full`, best-effort) into
-  `strength_templates[].exercises`, and `SYSTEM_PLAN_EDIT` emits an `add` (type=strength,
-  the template id) **plus** `swap_exercise` ops on that date that adapt the template's
-  exercises toward the focus — **swap only, no fabricated steps** (Phase 1 clones the
-  proven template DTO; building a strength workout from scratch is deferred until the DTO
-  is validated live on the watch). The add + same-date swaps apply in one `apply_plan_ops`
-  call (autoflush makes the new workout visible to the swap lookup). **Not yet**:
-  from-scratch strength DTO, AI progression on the exercises (weights/sets over the plan).
+- **Generating a strength day from scratch** (chat, free-text focus): «додай силову на ноги»,
+  «згенеруй силову на верх», «зроби силову як Day 1 але на ноги» → `SYSTEM_PLAN_EDIT` emits an
+  `add` (type=strength) carrying a **`strength`** object (`schemas.StrengthSession`:
+  `{name, warmup_s, blocks:[{reps=sets, rest_s, exercises:[{category, exercise, reps,
+  weight_kg}]}]}`) — the model **builds the session itself** (no template clone).
+  `apply_plan_ops` runs it through `repository._sanitize_strength` (keeps only exercises whose
+  `category` is a real Garmin code from `exercises.CATEGORIES`, drops empty blocks — a
+  hallucinated code never reaches the watch) and stores it on `PlannedWorkout.strength_plan`
+  (JSON). On push, `plan_sync.push_workout` sees `strength_plan` **first** (before
+  `garmin_template_id`) and calls `workout_export.build_strength_workout` → a native Garmin
+  strength DTO (sportType 5; repeat-group blocks of `interval`(reps) exercises + a trailing
+  rest, lap-button rests between groups, `weightValue` in **kg** / `-1.0` = bodyweight,
+  continuous `stepOrder`). The DTO shape was verified field-for-field against a real saved
+  strength workout and validated live on the watch. `run_plan_edit` always feeds
+  `exercise_categories` (so generation works even when the plan has no strength day yet) plus
+  `strength_templates[].exercises` (`read_exercises`) as a structural seed for "similar to
+  Day 1/2" requests. `_pushable` allows a `strength_plan` session. The older **clone** path
+  (`garmin_template_id` + `swap_exercise` → `exercise_edits`) is kept only for scheduling a
+  saved Day 1/Day 2 **as-is** or editing such a cloned day. **Not yet**: AI progression on the
+  exercises (weights/sets over the plan), a setup-form surface for generation (chat-only).
 
 ## Structure
 

@@ -161,6 +161,9 @@ def test_ops_hint_label():
     # a swap shows the new exercise (label falls back to prettified code w/o translations)
     hint = _ops_hint([{"action": "swap_exercise", "date": "x", "to_category": "DEADLIFT"}])
     assert hint == " · Deadlift"
+    # a from-scratch strength add shows its name
+    assert _ops_hint([{"action": "add", "date": "x", "type": "strength",
+                       "strength": {"name": "Ноги"}}]) == " · 🏋️ Ноги"
 
 
 async def test_apply_plan_ops_swap_exercise(session):
@@ -183,6 +186,32 @@ async def test_apply_plan_ops_swap_exercise(session):
         to_category="NOT_A_REAL_CATEGORY")])
     w2 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
     assert len(w2.exercise_edits) == 1  # unchanged
+
+
+async def test_apply_plan_ops_add_strength_from_scratch(session):
+    plan = await _seed_plan(session)
+    affected = await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="strength", description="Ноги",
+        strength={"name": "Ноги", "warmup_s": 300, "blocks": [
+            {"reps": 3, "rest_s": 90, "exercises": [
+                {"category": "squat", "exercise": "goblet_squat", "reps": 12, "weight_kg": 20},
+                {"category": "NOT_A_CAT", "reps": 10}]},   # invalid category dropped
+            {"reps": 3, "exercises": []},                  # empty block dropped
+        ]})])
+    assert len(affected) == 1
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    sp = w.strength_plan
+    assert sp["name"] == "Ноги" and sp["warmup_s"] == 300
+    assert len(sp["blocks"]) == 1                          # only the valid block survives
+    exs = sp["blocks"][0]["exercises"]
+    assert len(exs) == 1 and exs[0]["category"] == "SQUAT"  # codes upper-cased
+    assert exs[0]["exercise"] == "GOBLET_SQUAT" and exs[0]["weight_kg"] == 20
+    # nothing valid → strength_plan stays None (won't push a broken session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-05", type="strength",
+        strength={"blocks": [{"reps": 3, "exercises": [{"category": "BOGUS"}]}]})])
+    w2 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-05"]
+    assert w2.strength_plan is None
 
 
 async def _seed_plan(session):
