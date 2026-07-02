@@ -40,14 +40,16 @@
   {% include "_nav.html" %}
   {% set q = '&token=' ~ token if token else '' %}
   {% set qf = '?token=' ~ token if token else '' %}
+  {% set NICE = {"daily_metrics": "Відновлення", "activities": "Тренування",
+                 "report_logs": "Звіти", "users": "Користувачі", "bot_state": "Стан бота"} %}
   <div class="bar tabs">
     <a href="{{ base }}{{ qf }}">← огляд</a>
     {% for t in tables %}
-      <a class="{{ 'active' if t == table else '' }}" href="{{ base }}/{{ t }}{{ qf }}">{{ t }}</a>
+      <a class="{{ 'active' if t == table else '' }}" href="{{ base }}/{{ t }}{{ qf }}">{{ NICE.get(t, t) }}</a>
     {% endfor %}
   </div>
   <div class="bar">
-    <b>{{ table }}</b>
+    <b>{{ NICE.get(table, table) }}</b>
     <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}</span>
     {% if offset > 0 %}
       <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
