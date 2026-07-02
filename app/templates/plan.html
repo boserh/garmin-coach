@@ -58,7 +58,7 @@
             {% if w.status == 'done' %}<span class="st done">✓ виконано</span>
             {% elif w.status == 'skipped' %}<span class="st skip">пропущено</span>{% endif %}
           </div>
-          {% if w.description %}<div class="desc">{{ w.description }}</div>{% endif %}
+          {% if w.description %}<div class="desc">{{ (strength_names or {}).get(w.id, w.description) }}</div>{% endif %}
           {% if w.steps %}
           <div class="steps">
             {% for s in w.steps %}
@@ -83,12 +83,13 @@
             {% endfor %}
           </div>
           {% endif %}
-          {% if w.strength_plan and w.strength_plan.blocks %}
+          {% set sblocks = (strength_view or {}).get(w.id) %}
+          {% if sblocks %}
           <details class="strength-acc">
             <summary>Вправи<span class="chev">▾</span></summary>
-            {% for b in w.strength_plan.blocks %}
+            {% for b in sblocks %}
             <div class="sblock">
-              <div class="sbhead">{{ b.reps or 1 }}× підходи{% if b.rest_s %} · відпочинок {{ b.rest_s }}с{% endif %}</div>
+              {% if b.reps %}<div class="sbhead">{{ b.reps }}× підходи{% if b.rest_s %} · відпочинок {{ b.rest_s }}с{% endif %}</div>{% endif %}
               {% for ex in b.exercises %}
               <div class="sex">
                 <span class="sxname">{{ ex.category|exlabel(ex.exercise) }}</span>
