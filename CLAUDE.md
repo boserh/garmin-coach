@@ -193,8 +193,22 @@ Optional, with defaults:
   keeps exercises, names it `🏋️ Day X · Wn`) into **our own** copy which is then scheduled —
   so the user's reusable Day 1/Day 2 templates are never scheduled or deleted (cleanup only
   removes our copy). `plan_sync._pushable` lets strength-with-template past the run-only
-  filter. `list-workouts --email` prints saved workout ids. **Not yet**: chat-editing
-  strength days and AI progression on the exercises.
+  filter. `list-workouts --email` prints saved workout ids.
+- **Editing exercises in a strength day** (chat): «заміни гіперекстензію на станову тягу» →
+  `SYSTEM_PLAN_EDIT` emits a `swap_exercise` op (`from_category`/`to_category`/`exercise`/
+  `reps`), mapping the UA name to a **Garmin category code**. The valid codes come from
+  `app.garmin.exercises` (Garmin's own taxonomy in `exercise_catalog.json` — top-level
+  category → exercise variants; a built-in `_FALLBACK_CATEGORIES` set keeps validation
+  working before the file is dropped in; `exercise_types.properties` gives display labels
+  via `label()`). `run_plan_edit` feeds `exercises.CATEGORIES` as the vocabulary so the
+  model can't invent a code; `repository.apply_plan_ops` **validates** `to_category`
+  against the catalog (rejects hallucinated codes) and appends the swap to
+  `PlannedWorkout.exercise_edits` (JSON list of `{from,to,exercise,reps}`). On push,
+  `workout_export.apply_exercise_edits` mutates the **cloned** template DTO — finds the
+  step whose `category` matches `from`, swaps `category`/`exerciseName`/`reps` (recurses
+  into repeat groups; weight left alone — unit unverified) — so the swap lands on the
+  watch (via `plan_sync.resync_workouts`, remove+repush of just the touched day). **Not
+  yet**: AI progression on the exercises (weights/sets over the plan).
 
 ## Structure
 
