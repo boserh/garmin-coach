@@ -41,7 +41,9 @@
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
   {% set qf = '?token=' ~ token if token else '' %}
-  <div class="bar"><a href="{{ base }}/{{ table }}{{ qf }}">← {{ table }}</a></div>
+  {% set NICE = {"daily_metrics": "Відновлення", "activities": "Тренування",
+                 "report_logs": "Звіти", "users": "Користувачі", "bot_state": "Стан бота"} %}
+  <div class="bar"><a href="{{ base }}/{{ table }}{{ qf }}">← {{ NICE.get(table, table) }}</a></div>
   {% if analysis %}
     <div class="analysis">
       <h2>💬 Аналіз</h2>

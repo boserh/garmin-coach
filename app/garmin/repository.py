@@ -480,12 +480,17 @@ _WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
 
 
 async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
-                                weekdays: list, templates: list) -> int:
-    """Add strength sessions on the given gym ``weekdays`` (slugs) across the plan's date
-    range, rotating through ``templates`` ([{id, name}, ...]). Each carries a
-    ``garmin_template_id`` (a saved Garmin workout cloned on push). Returns the count."""
-    gym = {_WEEKDAY[s] for s in weekdays if s in _WEEKDAY}
-    if not gym or not templates:
+                                assignments: dict) -> int:
+    """Add strength sessions on fixed weekdays across the plan's date range. ``assignments``
+    maps a weekday slug (mon..sun) → {"id", "name"} of the saved Garmin workout to place on
+    that weekday **every week** (a fixed pairing, not a rotation). Each carries a
+    ``garmin_template_id`` (cloned on push). Returns the count."""
+    by_wd = {}
+    for slug, t in (assignments or {}).items():
+        wd = _WEEKDAY.get(slug)
+        if wd is not None and t and t.get("id"):
+            by_wd[wd] = t
+    if not by_wd:
         return 0
     try:
         start = dt.date.fromisoformat(plan.start_date)
@@ -497,17 +502,16 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
         end = start + dt.timedelta(weeks=12)
     if end < start:
         end = start + dt.timedelta(weeks=12)
-    i = added = 0
+    added = 0
     d = start
     while d <= end:
-        if d.weekday() in gym:
-            t = templates[i % len(templates)]
+        t = by_wd.get(d.weekday())
+        if t is not None:
             session.add(PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=d.isoformat(),
                 week=(d - start).days // 7 + 1, type="strength",
                 description=t.get("name") or "Силова",
                 garmin_template_id=t.get("id"), status="planned"))
-            i += 1
             added += 1
         d += dt.timedelta(days=1)
     await session.commit()
