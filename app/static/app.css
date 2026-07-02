@@ -213,6 +213,12 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 .strength-row{display:flex;align-items:center;gap:.7rem}
 .strength-row .sd-label{width:2.2rem;color:var(--faint);font-size:.86rem;font-weight:500}
 .strength-row select{flex:1;margin:0}
+.modeltoggle{display:flex;gap:.6rem;margin-top:.5rem;max-width:22rem}
+.modeltoggle .mt{flex:1;display:flex;align-items:center;gap:.5rem;margin:0;padding:.6rem .7rem;
+  border:1px solid var(--border);border-radius:10px;cursor:pointer;background:var(--surface)}
+.modeltoggle .mt:has(input:checked){border-color:var(--accent);background:var(--surface-2)}
+.modeltoggle .mt span{display:flex;flex-direction:column;line-height:1.2}
+.modeltoggle .mt small{color:var(--faint);font-size:.72rem;font-weight:400}
 .btn:disabled{opacity:.55;cursor:default}
 .spin.sm{width:1.1rem;height:1.1rem;border-width:2px;margin:0}
 .loadbox{max-width:32rem;margin:1.5rem 0;padding:1.1rem 1.3rem;border-radius:14px;

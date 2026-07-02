@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analysis.service import AnalystError, run_plan_generation
+from app.analysis.service import AnalystError, resolve_plan_model, run_plan_generation
 from app.core.auth import current_user
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -245,19 +245,28 @@ async def _strength_details(session, user, workouts):
     """Exercise lists for the plan view's strength accordion, keyed by workout id.
 
     - From-scratch days (``strength_plan``) are used directly (blocks with reps/rest/weight).
-    - Clone days (``garmin_template_id``, no ``strength_plan``) have their exercises **in the
-      Garmin template**, not in our DB — so fetch each saved workout once (deduped by id) and
-      read its exercises + real name. Returns ``({workout_id: blocks}, {workout_id: name})``.
+    - Clone days (``garmin_template_id``) carry a ``strength_snapshot`` cached at build time
+      ({name?, exercises}) — served straight from the DB, no Garmin call.
+    - Only clone days **without** a snapshot (plans made before snapshots existed) fall back
+      to a live template fetch. Returns ``({workout_id: blocks}, {workout_id: name})``.
 
-    Best-effort: only binds Garmin when there are clone days to resolve; on any outage the
+    Best-effort: only binds Garmin when there are snapshot-less clone days; on any outage the
     maps stay empty and the page still renders (just without the exercise list)."""
     view: dict = {}
     names: dict = {}
     for w in workouts:
-        if w.type == "strength" and w.strength_plan and (w.strength_plan.get("blocks")):
+        if w.type != "strength":
+            continue
+        if w.strength_plan and w.strength_plan.get("blocks"):
             view[w.id] = w.strength_plan["blocks"]
+        elif w.strength_snapshot and w.strength_snapshot.get("exercises"):
+            snap = w.strength_snapshot
+            view[w.id] = [{"reps": None, "rest_s": None, "exercises": snap["exercises"]}]
+            if snap.get("name"):
+                names[w.id] = snap["name"]
     clones = [w for w in workouts
-              if w.type == "strength" and w.garmin_template_id and not w.strength_plan]
+              if w.type == "strength" and w.garmin_template_id
+              and not w.strength_plan and not w.strength_snapshot]
     if not clones:
         return view, names
 
@@ -370,6 +379,7 @@ async def plan_create(
     run_days: list[str] = Form(default=[]),
     long_run_day: str = Form("sun"),
     intensity: str = Form("moderate"),
+    plan_model: str = Form("opus"),   # generation engine toggle: opus | fable
     recent_5k: str = Form(""),
     longest_run_km: str = Form(""),
     notes: str = Form(""),
@@ -418,6 +428,7 @@ async def plan_create(
         "target_date": target_date or None, "start_date": dt.date.today().isoformat(),
         "days_per_week": len(run_days), "intensity": intensity, "intake": intake,
         "run_days": run_days, "long_run_day": long_run_day,
+        "model": resolve_plan_model(plan_model),
     }
     # Persist the Garmin-sync preference from the form before generation runs (the
     # background task reads it via the DB); set_state's commit persists it too.
