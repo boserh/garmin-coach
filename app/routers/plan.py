@@ -241,6 +241,52 @@ async def _strength_workouts(session, user):
         return []
 
 
+async def _strength_details(session, user, workouts):
+    """Exercise lists for the plan view's strength accordion, keyed by workout id.
+
+    - From-scratch days (``strength_plan``) are used directly (blocks with reps/rest/weight).
+    - Clone days (``garmin_template_id``, no ``strength_plan``) have their exercises **in the
+      Garmin template**, not in our DB — so fetch each saved workout once (deduped by id) and
+      read its exercises + real name. Returns ``({workout_id: blocks}, {workout_id: name})``.
+
+    Best-effort: only binds Garmin when there are clone days to resolve; on any outage the
+    maps stay empty and the page still renders (just without the exercise list)."""
+    view: dict = {}
+    names: dict = {}
+    for w in workouts:
+        if w.type == "strength" and w.strength_plan and (w.strength_plan.get("blocks")):
+            view[w.id] = w.strength_plan["blocks"]
+    clones = [w for w in workouts
+              if w.type == "strength" and w.garmin_template_id and not w.strength_plan]
+    if not clones:
+        return view, names
+
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import client, workout_export
+    from app.garmin.providers import get_provider
+    cache: dict = {}   # template id → (exercises, name)
+    try:
+        async with user_runtime(session, user) as creds:
+            if not creds.has_garmin:
+                return view, names
+            await run_in_threadpool(get_provider().login)
+            for w in clones:
+                tid = w.garmin_template_id
+                if tid not in cache:
+                    raw = await run_in_threadpool(client.fetch_workout_full, tid)
+                    exs = workout_export.read_exercises(raw) if raw else []
+                    cache[tid] = (exs, (raw.get("workoutName") or "").strip() if raw else "")
+                exs, nm = cache[tid]
+                if exs:   # one pseudo-block (no set/rest structure from a bare template read)
+                    view[w.id] = [{"reps": None, "rest_s": None, "exercises": exs}]
+                if nm:
+                    names[w.id] = nm
+    except Exception:
+        logger.exception(f"strength details fetch failed user={user.id}")
+    return view, names
+
+
 @router.get("/plan", response_class=HTMLResponse)
 async def plan_page(
     request: Request,
@@ -273,10 +319,12 @@ async def plan_page(
              "error": error},
         )
     workouts = await repository.list_workouts(session, plan.id)
+    strength_view, strength_names = await _strength_details(session, user, workouts)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
+         "strength_view": strength_view, "strength_names": strength_names,
          "created": request.query_params.get("created") == "1",
          "count": len(workouts), "readonly": False},
     )
@@ -305,10 +353,12 @@ async def plan_view(
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan not found")
     workouts = await repository.list_workouts(session, plan.id)
+    strength_view, strength_names = await _strength_details(session, user, workouts)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
+         "strength_view": strength_view, "strength_names": strength_names,
          "count": len(workouts), "readonly": True},
     )
 
