@@ -86,10 +86,11 @@
         Додати силові тренування
       </label>
       <div id="strength_opts" style="display:none;margin-top:.5rem">
-        {% if strength_workouts %}
         <label>Силові по днях тижня</label>
-        <div class="hint">Обери воркаут для потрібних днів — він стоятиме на цьому дні
-          щотижня. Клонуємо в наші копії, оригінали (шаблони) лишаються недоторканими.</div>
+        <div class="hint">Обери на потрібний день збережений воркаут (клонуємо в наші копії —
+          оригінали недоторкані) або «інше…» й опиши, яку силову треба — складемо з нуля.
+          {% if not strength_workouts %}У Garmin не знайшов збережених силових (Day 1/Day 2) —
+          доступне лише «інше…».{% endif %}</div>
         <div class="strength-days">
           {% for slug, lbl in weekdays.items() %}
           <div class="strength-row">
@@ -99,14 +100,13 @@
               {% for w in strength_workouts %}
               <option value="{{ w.id }}">{{ w.name }}</option>
               {% endfor %}
+              <option value="custom">🆕 інше…</option>
             </select>
+            <input class="sd-desc" name="strength_desc_{{ slug }}" style="display:none"
+                   placeholder="напр. силова на ноги, або як Day 1 але легша">
           </div>
           {% endfor %}
         </div>
-        {% else %}
-        <div class="hint">Не знайшов силових воркаутів у Garmin (напр. Day 1/Day 2).
-          Створи їх у Garmin Connect — і зможеш обрати тут.</div>
-        {% endif %}
       </div>
 
       <label class="check">
@@ -162,6 +162,14 @@
         so.style.display = se.checked ? 'block' : 'none';
       });
     }
+
+    // Reveal a weekday's free-text box only when "інше…" is picked.
+    f.querySelectorAll('.strength-row select').forEach(function (sel) {
+      var desc = sel.parentNode.querySelector('.sd-desc');
+      function toggle() { if (desc) desc.style.display = sel.value === 'custom' ? 'block' : 'none'; }
+      sel.addEventListener('change', toggle);
+      toggle();
+    });
 
     f.addEventListener('submit', function (e) {
       if (checkedDays().length < 2) { e.preventDefault(); return; }

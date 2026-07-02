@@ -385,13 +385,20 @@ async def plan_create(
     notes: str = Form(""),
     sync_garmin: str = Form(""),   # checkbox: push this plan to the Garmin calendar
     strength_enabled: str = Form(""),      # checkbox: add strength sessions
-    strength_mon: str = Form(""),          # per-weekday workout id ("" = no gym that day)
+    strength_mon: str = Form(""),          # per-weekday: workout id, "custom", or "" (none)
     strength_tue: str = Form(""),
     strength_wed: str = Form(""),
     strength_thu: str = Form(""),
     strength_fri: str = Form(""),
     strength_sat: str = Form(""),
     strength_sun: str = Form(""),
+    strength_desc_mon: str = Form(""),     # free-text session for a weekday set to "custom"
+    strength_desc_tue: str = Form(""),
+    strength_desc_wed: str = Form(""),
+    strength_desc_thu: str = Form(""),
+    strength_desc_fri: str = Form(""),
+    strength_desc_sat: str = Form(""),
+    strength_desc_sun: str = Form(""),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -412,10 +419,21 @@ async def plan_create(
         picks = {"mon": strength_mon, "tue": strength_tue, "wed": strength_wed,
                  "thu": strength_thu, "fri": strength_fri, "sat": strength_sat,
                  "sun": strength_sun}
-        # weekday slug → chosen workout id (skip days left on "— нема —")
+        descs = {"mon": strength_desc_mon, "tue": strength_desc_tue, "wed": strength_desc_wed,
+                 "thu": strength_desc_thu, "fri": strength_desc_fri, "sat": strength_desc_sat,
+                 "sun": strength_desc_sun}
+        # weekday slug → chosen saved workout id (skip days left on "— нема —")
         assignments = {slug: int(v) for slug, v in picks.items() if v.isdigit()}
-        if assignments:
-            intake["strength"] = {"enabled": True, "assignments": assignments}
+        # weekday slug → free-text description (days set to "інше…" with text) — generated
+        # from scratch into a strength_plan during plan generation.
+        custom = {slug: descs[slug].strip() for slug, v in picks.items()
+                  if v == "custom" and descs[slug].strip()}
+        if assignments or custom:
+            intake["strength"] = {"enabled": True}
+            if assignments:
+                intake["strength"]["assignments"] = assignments
+            if custom:
+                intake["strength"]["custom"] = custom
     # Ignore a duplicate submit while one is already running (and not stale).
     cur = await repository.get_state(session, user.id, PLAN_GEN_KEY) or ""
     if cur.startswith("pending") and not _pending_stale(cur):
