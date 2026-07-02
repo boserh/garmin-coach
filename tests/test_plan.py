@@ -268,6 +268,29 @@ async def test_add_strength_workouts_fixed_weekday_pairing(session):
     assert [w.description for w in ws] == ["Day 1", "Day 2", "Day 1", "Day 2"]
 
 
+async def test_add_strength_workouts_stores_snapshot(session):
+    from app.db.models import TrainingPlan
+    plan = TrainingPlan(user_id=U1, goal="g", status="active",
+                        start_date="2026-07-06", target_date="2026-07-12")
+    session.add(plan)
+    await session.flush()
+    snaps = {931013083: {"name": "Day 1",
+                         "exercises": [{"category": "SQUAT", "exercise": None, "reps": 10}]}}
+    await repository.add_strength_workouts(
+        session, plan, {"mon": {"id": 931013083, "name": "Day 1"}}, snaps)
+    w = (await repository.list_workouts(session, plan.id))[0]
+    # The template's exercises are snapshotted onto the row so /plan renders from the DB.
+    assert w.strength_snapshot == snaps[931013083]
+
+
+def test_resolve_plan_model_maps_toggle():
+    from app.analysis import service as svc
+    assert svc.resolve_plan_model("opus") == svc.MODEL_PLAN_GEN
+    assert svc.resolve_plan_model("fable") == svc.MODEL_PLAN_GEN_ALT
+    assert svc.resolve_plan_model("nonsense") == svc.MODEL_PLAN_GEN   # safe default
+    assert svc.resolve_plan_model(None) == svc.MODEL_PLAN_GEN
+
+
 async def test_generate_strength_add_then_swaps_same_call(session):
     """Generation flow: add a strength day from a template + swap its exercises toward a
     focus, all in one apply_plan_ops call (the swap must find the just-added workout)."""

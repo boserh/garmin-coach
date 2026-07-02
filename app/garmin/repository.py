@@ -480,11 +480,14 @@ _WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
 
 
 async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
-                                assignments: dict) -> int:
+                                assignments: dict, snapshots: Optional[dict] = None) -> int:
     """Add strength sessions on fixed weekdays across the plan's date range. ``assignments``
     maps a weekday slug (mon..sun) → {"id", "name"} of the saved Garmin workout to place on
     that weekday **every week** (a fixed pairing, not a rotation). Each carries a
-    ``garmin_template_id`` (cloned on push). Returns the count."""
+    ``garmin_template_id`` (cloned on push). ``snapshots`` (optional, keyed by workout id)
+    caches each template's contents ({name?, exercises}) onto the row's ``strength_snapshot``
+    so ``/plan`` renders the exercise accordion from the DB. Returns the count."""
+    snapshots = snapshots or {}
     by_wd = {}
     for slug, t in (assignments or {}).items():
         wd = _WEEKDAY.get(slug)
@@ -511,7 +514,8 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
                 plan_id=plan.id, user_id=plan.user_id, date=d.isoformat(),
                 week=(d - start).days // 7 + 1, type="strength",
                 description=t.get("name") or "Силова",
-                garmin_template_id=t.get("id"), status="planned"))
+                garmin_template_id=t.get("id"),
+                strength_snapshot=snapshots.get(t.get("id")), status="planned"))
             added += 1
         d += dt.timedelta(days=1)
     await session.commit()
