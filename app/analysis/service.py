@@ -22,10 +22,11 @@ from app.analysis.prompts import (
     SYSTEM_ASK,
     SYSTEM_PLAN,
     SYSTEM_PLAN_EDIT,
+    SYSTEM_STRENGTH_GEN,
 )
 from app.core.config import settings
 from app.garmin import exercises
-from app.garmin.schemas import GeneratedPlan, Payload, PlanEdit
+from app.garmin.schemas import GeneratedPlan, Payload, PlanEdit, StrengthSession
 
 logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -640,6 +641,37 @@ def generate_plan_with_stats(
             )
 
 
+def generate_strength_with_stats(
+    context: dict, api_key: Optional[str] = None, model: Optional[str] = None
+) -> Tuple[StrengthSession, CallStats]:
+    """Generate ONE from-scratch strength session from a free-text description (the setup
+    form's "інше…" option). Returns (StrengthSession, stats); one retry on a parse miss.
+    Raises AnalystError on failure. Categories are validated later by _sanitize_strength."""
+    model = model or MODEL_PLAN_GEN
+
+    def _parse(t: str) -> StrengthSession:
+        s = t.strip()
+        i, j = s.find("{"), s.rfind("}")
+        if i != -1 and j != -1:
+            s = s[i:j + 1]
+        return StrengthSession(**json.loads(s))
+
+    text, stats = _complete(model, SYSTEM_STRENGTH_GEN, context, "plan", api_key, max_tokens=1500)
+    try:
+        return _parse(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON сесії за схемою.")
+        text, st2 = _complete(model, SYSTEM_STRENGTH_GEN, retry, "plan", api_key, max_tokens=1500)
+        stats.input_tokens += st2.input_tokens
+        stats.output_tokens += st2.output_tokens
+        stats.cost_usd += st2.cost_usd
+        try:
+            return _parse(text), stats
+        except Exception as e:
+            logger.error(f"STRENGTH gen parse failed: {e}")
+            raise AnalystError("Не вдалось згенерувати силову з опису. Спробуй інакше.")
+
+
 async def run_plan_generation(
     session, *, user_id: int, goal: str, goal_label: Optional[str],
     target_date: Optional[str], start_date: Optional[str], days_per_week: Optional[int],
@@ -698,30 +730,56 @@ async def run_plan_generation(
         start_date=start_date, days_per_week=days_per_week, intensity=intensity,
         intake=intake, summary=plan_out.summary, workouts=plan_out.workouts,
     )
-    # Optional strength: schedule the user's chosen saved workouts (Day 1/Day 2) on their
-    # gym days across the plan — cloned to our own copies on push. Best-effort (needs the
-    # bound provider to resolve workout names); never fails plan creation.
+    # Optional strength on the chosen weekdays. Two sources, both best-effort (never fail
+    # plan creation): saved Day 1/Day 2 workouts the user picked (cloned to our own copies
+    # on push), and free-text "інше…" descriptions we generate from scratch here.
     strength = (intake or {}).get("strength") or {}
     assignments = strength.get("assignments") or {}
-    if strength.get("enabled") and assignments:
+    custom = strength.get("custom") or {}
+    if strength.get("enabled") and (assignments or custom):
         try:
             from app.garmin import client, workout_export
-            saved = {w["id"]: workout_export.clean_workout_name(w["name"])
-                     for w in await run_in_threadpool(client.fetch_workouts)}
-            amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
-                    for slug, wid in assignments.items()}
-            # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
-            # so /plan renders the accordion from the DB instead of re-fetching every load.
+            amap: dict = {}
             snapshots: dict = {}
-            for tid in set(assignments.values()):
-                raw = await run_in_threadpool(client.fetch_workout_full, tid)
-                if raw:
-                    snapshots[tid] = {
-                        "name": (raw.get("workoutName") or "").strip() or None,
-                        "exercises": workout_export.read_exercises(raw),
-                    }
-            n = await repository.add_strength_workouts(session, plan, amap, snapshots)
-            logger.info(f"PLAN strength user={user_id}: +{n} sessions")
+            if assignments:
+                saved = {w["id"]: workout_export.clean_workout_name(w["name"])
+                         for w in await run_in_threadpool(client.fetch_workouts)}
+                amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
+                        for slug, wid in assignments.items()}
+                # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
+                # so /plan renders the accordion from the DB instead of re-fetching per load.
+                for tid in set(assignments.values()):
+                    raw = await run_in_threadpool(client.fetch_workout_full, tid)
+                    if raw:
+                        snapshots[tid] = {
+                            "name": (raw.get("workoutName") or "").strip() or None,
+                            "exercises": workout_export.read_exercises(raw),
+                        }
+            # Generate each distinct free-text session once, sanitise categories, and lay it
+            # on its weekday as a from-scratch strength_plan (built natively on push).
+            custom_plans: dict = {}
+            gen_cache: dict = {}
+            for slug, desc in custom.items():
+                key = (desc or "").strip().lower()
+                if not key:
+                    continue
+                if key not in gen_cache:
+                    try:
+                        sess, _ = await run_in_threadpool(
+                            generate_strength_with_stats,
+                            {"description": desc, "fitness": fitness or None,
+                             "exercise_categories": exercises.CATEGORIES},
+                            api_key, gen_model)
+                        gen_cache[key] = repository._sanitize_strength(sess)
+                    except Exception:
+                        logger.exception(f"PLAN strength gen failed user={user_id}")
+                        gen_cache[key] = None
+                if gen_cache[key]:
+                    custom_plans[slug] = gen_cache[key]
+            n = await repository.add_strength_workouts(
+                session, plan, amap, snapshots, custom_plans)
+            logger.info(f"PLAN strength user={user_id}: +{n} sessions "
+                        f"({len(amap)} saved, {len(custom_plans)} custom)")
         except Exception:
             logger.exception(f"PLAN strength add failed user={user_id}")
     await repository.log_report(

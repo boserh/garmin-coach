@@ -283,6 +283,26 @@ async def test_add_strength_workouts_stores_snapshot(session):
     assert w.strength_snapshot == snaps[931013083]
 
 
+async def test_add_strength_workouts_custom_lays_strength_plan(session):
+    from app.db.models import TrainingPlan
+    plan = TrainingPlan(user_id=U1, goal="g", status="active",
+                        start_date="2026-07-06", target_date="2026-07-19")  # two weeks
+    session.add(plan)
+    await session.flush()
+    sp = {"name": "Ноги", "warmup_s": 300,
+          "blocks": [{"reps": 3, "rest_s": 90,
+                      "exercises": [{"category": "SQUAT", "exercise": None,
+                                     "reps": 10, "weight_kg": 40.0}]}]}
+    n = await repository.add_strength_workouts(
+        session, plan, {}, None, {"wed": sp})
+    ws = await repository.list_workouts(session, plan.id)
+    assert n == 2                       # every Wednesday in the range
+    assert all(w.type == "strength" for w in ws)
+    assert all(w.garmin_template_id is None for w in ws)   # from-scratch, not a clone
+    assert ws[0].strength_plan == sp
+    assert ws[0].description == "Ноги"
+
+
 def test_resolve_plan_model_maps_toggle():
     from app.analysis import service as svc
     assert svc.resolve_plan_model("opus") == svc.MODEL_PLAN_GEN

@@ -480,20 +480,28 @@ _WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
 
 
 async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
-                                assignments: dict, snapshots: Optional[dict] = None) -> int:
+                                assignments: dict, snapshots: Optional[dict] = None,
+                                custom: Optional[dict] = None) -> int:
     """Add strength sessions on fixed weekdays across the plan's date range. ``assignments``
     maps a weekday slug (mon..sun) → {"id", "name"} of the saved Garmin workout to place on
     that weekday **every week** (a fixed pairing, not a rotation). Each carries a
     ``garmin_template_id`` (cloned on push). ``snapshots`` (optional, keyed by workout id)
     caches each template's contents ({name?, exercises}) onto the row's ``strength_snapshot``
-    so ``/plan`` renders the exercise accordion from the DB. Returns the count."""
+    so ``/plan`` renders the exercise accordion from the DB. ``custom`` maps a weekday slug →
+    an already-sanitised ``strength_plan`` dict (the setup form's free-text "інше…" sessions,
+    built natively on push). A weekday in both prefers the saved workout. Returns the count."""
     snapshots = snapshots or {}
     by_wd = {}
     for slug, t in (assignments or {}).items():
         wd = _WEEKDAY.get(slug)
         if wd is not None and t and t.get("id"):
             by_wd[wd] = t
-    if not by_wd:
+    custom_by_wd = {}
+    for slug, sp in (custom or {}).items():
+        wd = _WEEKDAY.get(slug)
+        if wd is not None and sp:
+            custom_by_wd[wd] = sp
+    if not by_wd and not custom_by_wd:
         return 0
     try:
         start = dt.date.fromisoformat(plan.start_date)
@@ -508,14 +516,24 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
     added = 0
     d = start
     while d <= end:
-        t = by_wd.get(d.weekday())
+        wd = d.weekday()
+        week = (d - start).days // 7 + 1
+        t = by_wd.get(wd)
+        cp = custom_by_wd.get(wd)
         if t is not None:
             session.add(PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=d.isoformat(),
-                week=(d - start).days // 7 + 1, type="strength",
+                week=week, type="strength",
                 description=t.get("name") or "Силова",
                 garmin_template_id=t.get("id"),
                 strength_snapshot=snapshots.get(t.get("id")), status="planned"))
+            added += 1
+        elif cp is not None:
+            session.add(PlannedWorkout(
+                plan_id=plan.id, user_id=plan.user_id, date=d.isoformat(),
+                week=week, type="strength",
+                description=cp.get("name") or "Силова",
+                strength_plan=cp, status="planned"))
             added += 1
         d += dt.timedelta(days=1)
     await session.commit()
