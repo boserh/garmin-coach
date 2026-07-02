@@ -93,6 +93,21 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .step .sub{margin-top:.3rem;display:flex;flex-direction:column;gap:.3rem;
            border-left:2px solid var(--line-2);padding-left:.75rem}
 
+/* strength exercises accordion */
+.strength-acc{margin-top:.7rem}
+.strength-acc>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;
+  gap:.35rem;font-size:.8rem;font-weight:600;color:var(--muted);user-select:none}
+.strength-acc>summary::-webkit-details-marker{display:none}
+.strength-acc>summary .chev{font-size:.7rem;transition:transform .15s}
+.strength-acc[open]>summary .chev{transform:rotate(180deg)}
+.strength-acc[open]>summary{margin-bottom:.5rem;color:var(--ink)}
+.sblock{border-left:2px solid var(--line-2);padding-left:.95rem;margin-bottom:.55rem}
+.sblock:last-child{margin-bottom:0}
+.sbhead{font-size:.74rem;font-weight:600;color:var(--faint);letter-spacing:.02em;margin-bottom:.28rem}
+.sex{display:flex;justify-content:space-between;gap:.7rem;font-size:.82rem;line-height:1.4;padding:.06rem 0}
+.sex .sxname{color:#dbe0e8}
+.sex .sxval{flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
+
 /* today / status */
 .row.today{border-color:var(--accent);
   box-shadow:0 0 0 1px rgba(122,162,247,.3),0 10px 28px -14px rgba(122,162,247,.55)}
