@@ -525,6 +525,32 @@ async def _workout_on(session: AsyncSession, plan_id: int, date: str):
     ).scalar_one_or_none()
 
 
+def _sanitize_strength(sp) -> Optional[dict]:
+    """Validate a ``StrengthSession``(-like) into the stored ``strength_plan`` dict: keep
+    only exercises whose ``category`` is a real Garmin code (so a hallucinated code never
+    reaches the watch), drop empty blocks. Returns None if nothing valid remains."""
+    if sp is None:
+        return None
+    data = sp.model_dump() if hasattr(sp, "model_dump") else dict(sp)
+    blocks_out = []
+    for b in data.get("blocks") or []:
+        exs = []
+        for e in b.get("exercises") or []:
+            cat = (e.get("category") or "").upper()
+            if not exercises.valid_category(cat):
+                continue
+            ex = e.get("exercise")
+            exs.append({"category": cat, "exercise": ex.upper() if ex else None,
+                        "reps": e.get("reps"), "weight_kg": e.get("weight_kg")})
+        if exs:
+            blocks_out.append({"reps": int(b.get("reps") or 1),
+                               "rest_s": b.get("rest_s"), "exercises": exs})
+    if not blocks_out:
+        return None
+    return {"name": data.get("name"), "warmup_s": data.get("warmup_s"),
+            "blocks": blocks_out}
+
+
 async def apply_plan_ops(
     session: AsyncSession, plan: TrainingPlan, ops: list
 ) -> List[PlannedWorkout]:
@@ -540,6 +566,7 @@ async def apply_plan_ops(
                 description=op.description or "",
                 steps=_dump_steps(getattr(op, "steps", None)),
                 garmin_template_id=getattr(op, "garmin_template_id", None),
+                strength_plan=_sanitize_strength(getattr(op, "strength", None)),
                 status="planned",
             )
             session.add(w)
@@ -565,6 +592,10 @@ async def apply_plan_ops(
                 w.steps = _dump_steps(op.steps)
             if getattr(op, "garmin_template_id", None) is not None:
                 w.garmin_template_id = op.garmin_template_id
+            if getattr(op, "strength", None) is not None:
+                sp = _sanitize_strength(op.strength)
+                if sp:
+                    w.strength_plan = sp
             affected.append(w)
         elif op.action == "swap_exercise":
             frm = (getattr(op, "from_category", None) or "").upper()

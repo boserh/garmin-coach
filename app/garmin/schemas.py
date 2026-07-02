@@ -106,6 +106,41 @@ class GeneratedPlan(BaseModel):
     workouts: List[PlanWorkout]
 
 
+class StrengthExercise(BaseModel):
+    """One exercise inside a generated strength block. ``category`` is a Garmin category
+    code (validated against the catalog); ``exercise`` an optional variant; ``weight_kg``
+    in kilograms (omit/None = bodyweight)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    category: str
+    exercise: Optional[str] = None
+    reps: Optional[int] = None
+    weight_kg: Optional[float] = None
+
+
+class StrengthBlock(BaseModel):
+    """One circuit/superset: its exercises repeated ``reps`` (sets) times with ``rest_s``
+    between rounds."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    reps: int = 1                    # number of sets (repeat-group iterations)
+    rest_s: Optional[int] = None     # rest between rounds (seconds)
+    exercises: List[StrengthExercise] = []
+
+
+class StrengthSession(BaseModel):
+    """A from-scratch strength workout (no template to clone) — built into a native Garmin
+    strength DTO by ``workout_export.build_strength_workout``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: Optional[str] = None
+    warmup_s: Optional[int] = None
+    blocks: List[StrengthBlock] = []
+
+
 class PlanOp(BaseModel):
     """One edit operation on a plan (Claude's structured output for a free-text tweak).
     ``date`` targets an existing workout (or the new one for ``add``)."""
@@ -121,6 +156,8 @@ class PlanOp(BaseModel):
     description: Optional[str] = None
     steps: Optional[List[PlanStep]] = None   # structured breakdown for add/modify
     garmin_template_id: Optional[int] = None  # add/modify a strength day → saved workout to clone
+    # add/modify a strength day generated FROM SCRATCH (preferred over a template clone):
+    strength: Optional[StrengthSession] = None
     # swap_exercise (strength day): replace exercise `from_category` with `to_category`
     # (Garmin category codes), optionally a specific `exercise` variant and new `reps`.
     from_category: Optional[str] = None
