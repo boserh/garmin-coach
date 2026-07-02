@@ -323,8 +323,13 @@ async def plan_create(
     notes: str = Form(""),
     sync_garmin: str = Form(""),   # checkbox: push this plan to the Garmin calendar
     strength_enabled: str = Form(""),      # checkbox: add strength sessions
-    gym_days: list[str] = Form(default=[]),
-    strength_ids: list[str] = Form(default=[]),
+    strength_mon: str = Form(""),          # per-weekday workout id ("" = no gym that day)
+    strength_tue: str = Form(""),
+    strength_wed: str = Form(""),
+    strength_thu: str = Form(""),
+    strength_fri: str = Form(""),
+    strength_sat: str = Form(""),
+    strength_sun: str = Form(""),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -342,11 +347,13 @@ async def plan_create(
         "run_days": run_days, "long_run_day": long_run_day,
     }
     if strength_enabled:
-        intake["strength"] = {
-            "enabled": True,
-            "days": [d for d in WEEKDAYS if d in gym_days],
-            "ids": [int(x) for x in strength_ids if x.isdigit()],
-        }
+        picks = {"mon": strength_mon, "tue": strength_tue, "wed": strength_wed,
+                 "thu": strength_thu, "fri": strength_fri, "sat": strength_sat,
+                 "sun": strength_sun}
+        # weekday slug → chosen workout id (skip days left on "— нема —")
+        assignments = {slug: int(v) for slug, v in picks.items() if v.isdigit()}
+        if assignments:
+            intake["strength"] = {"enabled": True, "assignments": assignments}
     # Ignore a duplicate submit while one is already running (and not stale).
     cur = await repository.get_state(session, user.id, PLAN_GEN_KEY) or ""
     if cur.startswith("pending") and not _pending_stale(cur):
