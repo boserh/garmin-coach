@@ -158,6 +158,43 @@ def _strip_step_ids(step: dict) -> None:
         _strip_step_ids(sub)
 
 
+def apply_exercise_edits(payload: dict, edits: list) -> int:
+    """Mutate a cloned strength workout in place: for each edit swap the first exercise
+    step whose ``category`` matches ``from`` to ``to`` (+ optional ``exercise`` variant and
+    ``reps``). One edit consumes one step; unmatched edits are skipped. Returns the number
+    of steps changed. Weight is intentionally left untouched (unit unverified)."""
+    pending = [e for e in (edits or []) if e.get("from") and e.get("to")]
+    if not pending:
+        return 0
+    used = [False] * len(pending)
+    changed = 0
+
+    def walk(steps: list) -> None:
+        nonlocal changed
+        for st in steps or []:
+            walk(st.get("workoutSteps"))  # repeat groups nest their steps
+            cat = (st.get("category") or "").upper()
+            if not cat:
+                continue
+            for i, e in enumerate(pending):
+                if used[i] or cat != (e["from"] or "").upper():
+                    continue
+                st["category"] = (e["to"] or "").upper()
+                ex = (e.get("exercise") or "").upper()
+                st["exerciseName"] = ex or None
+                reps = e.get("reps")
+                end = st.get("endCondition") or {}
+                if reps and end.get("conditionTypeKey") == "reps":
+                    st["endConditionValue"] = float(reps)
+                used[i] = True
+                changed += 1
+                break
+
+    for seg in payload.get("workoutSegments", []) or []:
+        walk(seg.get("workoutSteps", []) or [])
+    return changed
+
+
 def build_workout(w) -> dict:
     """Build the Garmin create-workout payload from a ``PlannedWorkout``.
 

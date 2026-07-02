@@ -112,7 +112,7 @@ class PlanOp(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    action: str                     # add / move / modify / skip
+    action: str                     # add / move / modify / skip / swap_exercise
     date: str                       # target workout date (ISO); for `add`, the new date
     to_date: Optional[str] = None   # `move` destination
     week: Optional[int] = None
@@ -121,6 +121,12 @@ class PlanOp(BaseModel):
     description: Optional[str] = None
     steps: Optional[List[PlanStep]] = None   # structured breakdown for add/modify
     garmin_template_id: Optional[int] = None  # add/modify a strength day → saved workout to clone
+    # swap_exercise (strength day): replace exercise `from_category` with `to_category`
+    # (Garmin category codes), optionally a specific `exercise` variant and new `reps`.
+    from_category: Optional[str] = None
+    to_category: Optional[str] = None
+    exercise: Optional[str] = None
+    reps: Optional[int] = None
 
 
 class PlanEdit(BaseModel):

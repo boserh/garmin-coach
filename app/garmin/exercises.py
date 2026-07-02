@@ -47,8 +47,22 @@ def _load_labels() -> dict:
     return labels
 
 
+# Garmin's strength/cardio exercise *categories* (top-level codes). Kept as a built-in so
+# category validation works even before the full `exercise_catalog.json` is dropped in
+# (the catalog then adds the per-category exercise *variants*).
+_FALLBACK_CATEGORIES = {
+    "BANDED_EXERCISES", "BATTLE_ROPE", "BENCH_PRESS", "BIKE_OUTDOOR", "CALF_RAISE",
+    "CARDIO", "CARRY", "CHOP", "CORE", "CRUNCH", "CURL", "DEADLIFT", "ELLIPTICAL",
+    "FLOOR_CLIMB", "FLYE", "HIP_RAISE", "HIP_STABILITY", "HIP_SWING", "HYPEREXTENSION",
+    "INDOOR_BIKE", "LADDER", "LATERAL_RAISE", "LEG_CURL", "LEG_RAISE", "LUNGE",
+    "OLYMPIC_LIFT", "PLANK", "PLYO", "PULL_UP", "PUSH_UP", "ROW", "RUN", "RUN_INDOOR",
+    "SANDBAG", "SHOULDER_PRESS", "SHOULDER_STABILITY", "SHRUG", "SIT_UP", "SLED",
+    "SLEDGE_HAMMER", "SQUAT", "STAIR_STEPPER", "SUSPENSION", "TIRE", "TOTAL_BODY",
+    "TRICEPS_EXTENSION", "WARM_UP",
+}
+
 CATALOG = _load()
-CATEGORIES = sorted(CATALOG)
+CATEGORIES = sorted(set(CATALOG) | _FALLBACK_CATEGORIES)
 LABELS = _load_labels()
 
 
@@ -57,7 +71,7 @@ def _exercises(category: str) -> dict:
 
 
 def valid_category(category: str) -> bool:
-    return bool(category) and category.upper() in CATALOG
+    return bool(category) and category.upper() in (set(CATALOG) | _FALLBACK_CATEGORIES)
 
 
 def valid_exercise(category: str, exercise: str) -> bool:
@@ -65,7 +79,10 @@ def valid_exercise(category: str, exercise: str) -> bool:
     Garmin allows a bare category, like the user's HYPEREXTENSION step)."""
     if not exercise:
         return True
-    return exercise.upper() in _exercises(category)
+    variants = _exercises(category)
+    if not variants:  # catalog absent → can't validate the variant, accept it
+        return True
+    return exercise.upper() in variants
 
 
 def exercises_for(category: str) -> list:

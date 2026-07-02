@@ -212,6 +212,11 @@ class PlannedWorkout(Base):
     # set, push creates OUR OWN copy of it and schedules that (like a run) — the user's
     # template is never scheduled or deleted; cleanup removes only our copy.
     garmin_template_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # Strength exercise swaps to apply when cloning the template on push, e.g.
+    # [{"from": "HYPEREXTENSION", "to": "DEADLIFT", "exercise": null, "reps": null,
+    # "weight_kg": null}] — set by a chat edit ("заміни гіперекстензію на станову"),
+    # validated against app.garmin.exercises. See workout_export.apply_exercise_edits.
+    exercise_edits: Mapped[Optional[list]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
