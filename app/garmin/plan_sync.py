@@ -49,6 +49,9 @@ async def push_workout(session, w):
             return None
         name = f"🏋️ {w.description or 'Силова'}" + (f" · W{w.week}" if w.week else "")
         payload = workout_export.clone_workout(raw, name)
+        if w.exercise_edits:
+            n = workout_export.apply_exercise_edits(payload, w.exercise_edits)
+            logger.info(f"GARMIN push: applied {n} exercise edit(s) to {w.date}")
     else:
         payload = workout_export.build_workout(w)
     created = await run_in_threadpool(client.create_workout, payload)
