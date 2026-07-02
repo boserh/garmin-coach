@@ -249,17 +249,19 @@ async def test_apply_plan_ops_add_strength_carries_template(session):
     assert w.type == "strength" and w.garmin_template_id == 931013083 and w.description == "Day 1"
 
 
-async def test_add_strength_workouts_rotates_on_gym_days(session):
+async def test_add_strength_workouts_fixed_weekday_pairing(session):
     from app.db.models import TrainingPlan
     plan = TrainingPlan(user_id=U1, goal="g", status="active",
                         start_date="2026-07-06", target_date="2026-07-19")
     session.add(plan)
     await session.flush()
-    n = await repository.add_strength_workouts(
-        session, plan, ["mon", "thu"],
-        [{"id": 931013083, "name": "Day 1"}, {"id": 937200561, "name": "Day 2"}])
+    # Fixed pairing: Mon → Day 1, Thu → Day 2 (same every week, not a rotation).
+    n = await repository.add_strength_workouts(session, plan, {
+        "mon": {"id": 931013083, "name": "Day 1"},
+        "thu": {"id": 937200561, "name": "Day 2"},
+    })
     ws = await repository.list_workouts(session, plan.id)   # ordered by date
-    # Mon 07-06, Thu 07-09, Mon 07-13, Thu 07-16 → 4 sessions, templates alternate
+    # Mon 07-06, Thu 07-09, Mon 07-13, Thu 07-16 → 4 sessions, each weekday keeps its workout
     assert n == 4 and len(ws) == 4
     assert all(w.type == "strength" for w in ws)
     assert [w.garmin_template_id for w in ws] == [931013083, 937200561, 931013083, 937200561]

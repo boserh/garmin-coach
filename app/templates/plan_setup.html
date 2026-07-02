@@ -78,21 +78,23 @@
         Додати силові тренування
       </label>
       <div id="strength_opts" style="display:none;margin-top:.5rem">
-        <label>Дні залу</label>
-        <div class="days">
-          {% for slug, lbl in weekdays.items() %}
-            <label class="day"><input type="checkbox" name="gym_days" value="{{ slug }}"> {{ lbl }}</label>
-          {% endfor %}
-        </div>
         {% if strength_workouts %}
-        <label>Які тренування чергувати</label>
-        <div class="days">
-          {% for w in strength_workouts %}
-            <label class="day"><input type="checkbox" name="strength_ids" value="{{ w.id }}"> {{ w.name }}</label>
+        <label>Силові по днях тижня</label>
+        <div class="hint">Обери воркаут для потрібних днів — він стоятиме на цьому дні
+          щотижня. Клонуємо в наші копії, оригінали (шаблони) лишаються недоторканими.</div>
+        <div class="strength-days">
+          {% for slug, lbl in weekdays.items() %}
+          <div class="strength-row">
+            <span class="sd-label">{{ lbl }}</span>
+            <select name="strength_{{ slug }}">
+              <option value="">— нема —</option>
+              {% for w in strength_workouts %}
+              <option value="{{ w.id }}">{{ w.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
           {% endfor %}
         </div>
-        <div class="hint">Ми клонуємо їх як власні копії й розкладаємо по днях залу —
-          твої оригінали (шаблони) лишаються недоторканими.</div>
         {% else %}
         <div class="hint">Не знайшов силових воркаутів у Garmin (напр. Day 1/Day 2).
           Створи їх у Garmin Connect — і зможеш обрати тут.</div>

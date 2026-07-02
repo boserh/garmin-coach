@@ -184,11 +184,14 @@ Optional, with defaults:
   and in `/settings`. Flipping it in settings applies immediately (best-effort):
   on → `sync_plan_to_garmin` (push the window), off → `plan_sync.unpush_all` (clear
   everything we pushed).
-- **Strength sessions** (opt-in): the plan-setup form can add gym days + pick the user's
-  saved Garmin strength workouts (Day 1/Day 2, fetched by `client.fetch_workouts` /
-  `plan.py:_strength_workouts`). `repository.add_strength_workouts` then lays
-  `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on those weekdays across
-  the plan, rotating the chosen templates. On push, a session with a `garmin_template_id`
+- **Strength sessions** (opt-in): the plan-setup form has a **per-weekday picker** — a
+  dropdown for each day of the week choosing one of the user's saved Garmin strength
+  workouts (Day 1/Day 2, fetched by `client.fetch_workouts` / `plan.py:_strength_workouts`),
+  or "— нема —". The form posts `strength_<slug>` fields → `intake["strength"]["assignments"]`
+  (`{weekday_slug: workout_id}`). `repository.add_strength_workouts(plan, assignments)` then
+  lays `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on each chosen
+  weekday **every week** — a **fixed** day→workout pairing (no rotation, so Day 1 always
+  falls on the same weekday). On push, a session with a `garmin_template_id`
   is **cloned** (`client.fetch_workout_full` + `workout_export.clone_workout` strips ids,
   keeps exercises, names it `🏋️ Day X · Wn`) into **our own** copy which is then scheduled —
   so the user's reusable Day 1/Day 2 templates are never scheduled or deleted (cleanup only

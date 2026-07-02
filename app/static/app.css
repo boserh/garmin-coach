@@ -194,6 +194,10 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
      border:1px solid var(--line-2);border-radius:9px;background:var(--surface);color:var(--ink);
      font-size:.9rem;cursor:pointer;width:auto}
 .day input{width:auto}
+.strength-days{display:flex;flex-direction:column;gap:.4rem;margin-top:.5rem;max-width:22rem}
+.strength-row{display:flex;align-items:center;gap:.7rem}
+.strength-row .sd-label{width:2.2rem;color:var(--faint);font-size:.86rem;font-weight:500}
+.strength-row select{flex:1;margin:0}
 .btn:disabled{opacity:.55;cursor:default}
 .spin.sm{width:1.1rem;height:1.1rem;border-width:2px;margin:0}
 .loadbox{max-width:32rem;margin:1.5rem 0;padding:1.1rem 1.3rem;border-radius:14px;
