@@ -83,6 +83,22 @@
             {% endfor %}
           </div>
           {% endif %}
+          {% if w.strength_plan and w.strength_plan.blocks %}
+          <details class="strength-acc">
+            <summary>Вправи<span class="chev">▾</span></summary>
+            {% for b in w.strength_plan.blocks %}
+            <div class="sblock">
+              <div class="sbhead">{{ b.reps or 1 }}× підходи{% if b.rest_s %} · відпочинок {{ b.rest_s }}с{% endif %}</div>
+              {% for ex in b.exercises %}
+              <div class="sex">
+                <span class="sxname">{{ ex.category|exlabel(ex.exercise) }}</span>
+                <span class="sxval">{% if ex.reps %}{{ ex.reps }} повт.{% endif %}{% if ex.weight_kg %} · {{ '%g'|format(ex.weight_kg) }} кг{% endif %}</span>
+              </div>
+              {% endfor %}
+            </div>
+            {% endfor %}
+          </details>
+          {% endif %}
         </div>
         <div class="dist">{% if w.dist_km %}{{ '%.1f'|format(w.dist_km) }}<small>КМ</small>{% endif %}</div>
       </div>
