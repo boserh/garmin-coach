@@ -20,6 +20,7 @@ from app.core.auth import current_user
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.dependencies import get_session
+from app.garmin import exercises as _exercises
 from app.garmin import plan_sync, repository
 from app.garmin.runtime import user_runtime
 
@@ -123,6 +124,7 @@ templates.env.filters["dm"] = _dm
 templates.env.filters["step_label"] = _step_label
 templates.env.filters["step_amount"] = _step_amount
 templates.env.filters["step_pace"] = _step_pace
+templates.env.filters["exlabel"] = lambda cat, ex="": _exercises.label(cat or "", ex or "")
 
 logger = logging.getLogger("plan")
 
