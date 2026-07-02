@@ -229,10 +229,10 @@ async def _strength_workouts(session, user):
         async with user_runtime(session, user) as creds:
             if not creds.has_garmin:
                 return []
-            from app.garmin.workout_export import clean_workout_name
             await run_in_threadpool(get_provider().login)
-            return [{**w, "name": clean_workout_name(w.get("name"))}
-                    for w in await run_in_threadpool(client.fetch_workouts)
+            # Show names verbatim: the user has both a "Day 1" and a "Day 1 manual" —
+            # stripping " manual" collapsed them into one label, hiding the distinction.
+            return [w for w in await run_in_threadpool(client.fetch_workouts)
                     if (w.get("sport") or "") == "strength_training"]
     except Exception:
         logger.exception(f"strength workouts fetch failed user={user.id}")
