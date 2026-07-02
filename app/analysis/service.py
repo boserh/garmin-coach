@@ -688,10 +688,10 @@ async def run_plan_generation(
     strength = (intake or {}).get("strength") or {}
     if strength.get("enabled") and strength.get("days") and strength.get("ids"):
         try:
-            from app.garmin import client
-            saved = {w["id"]: w["name"]
+            from app.garmin import client, workout_export
+            saved = {w["id"]: workout_export.clean_workout_name(w["name"])
                      for w in await run_in_threadpool(client.fetch_workouts)}
-            templates = [{"id": i, "name": saved.get(i, "Силова")} for i in strength["ids"]]
+            templates = [{"id": i, "name": saved.get(i) or "Силова"} for i in strength["ids"]]
             n = await repository.add_strength_workouts(session, plan, strength["days"], templates)
             logger.info(f"PLAN strength user={user_id}: +{n} sessions")
         except Exception:
