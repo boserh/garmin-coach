@@ -13,6 +13,9 @@ from pathlib import Path
 logger = logging.getLogger("garmin")
 
 _PATH = Path(__file__).resolve().parent / "exercise_catalog.json"
+# Garmin's translations (key=value): `<CATEGORY>_<EXERCISE>=Label`,
+# `category_type_<CATEGORY>=Label`, `exercise_type_<EXERCISE>=Label`.
+_PROPS_PATH = Path(__file__).resolve().parent / "exercise_types.properties"
 
 
 def _load() -> dict:
@@ -27,8 +30,26 @@ def _load() -> dict:
         return {}
 
 
+def _load_labels() -> dict:
+    labels: dict = {}
+    try:
+        with open(_PROPS_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] in "#!" or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                labels[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass  # labels are optional — fall back to prettified codes
+    except OSError as e:
+        logger.warning(f"exercise translations load failed: {e}")
+    return labels
+
+
 CATALOG = _load()
 CATEGORIES = sorted(CATALOG)
+LABELS = _load_labels()
 
 
 def _exercises(category: str) -> dict:
@@ -55,3 +76,16 @@ def exercises_for(category: str) -> list:
 def prettify(code: str) -> str:
     """A readable label from a Garmin code: 'BARBELL_DEADLIFT' → 'Barbell Deadlift'."""
     return (code or "").strip("_").replace("_", " ").title()
+
+
+def label(category: str, exercise: str = "") -> str:
+    """Human label for a code, via Garmin's translations, else a prettified fallback.
+    Prefers the specific `<CATEGORY>_<EXERCISE>` string, then the bare category name."""
+    cat, exn = (category or "").upper(), (exercise or "").upper()
+    if exn:
+        for key in (f"{cat}_{exn}", f"exercise_type_{exn}"):
+            if key in LABELS:
+                return LABELS[key]
+    if f"category_type_{cat}" in LABELS:
+        return LABELS[f"category_type_{cat}"]
+    return prettify(exercise or category)
