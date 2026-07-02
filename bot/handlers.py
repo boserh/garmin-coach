@@ -254,11 +254,15 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
 
 
 def _ops_hint(ops: list) -> str:
-    """A short ' · N км' hint for a button label, from the first op carrying a distance."""
+    """A short hint for a button label — the first op's distance, else an exercise swap."""
     for o in ops:
         d = o.get("dist_km")
         if d:
             return f" · {d:.0f} км"
+    for o in ops:
+        if o.get("action") == "swap_exercise" and o.get("to_category"):
+            from app.garmin import exercises
+            return f" · {exercises.label(o['to_category'])}"
     return ""
 
 
