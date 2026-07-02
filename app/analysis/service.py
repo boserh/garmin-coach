@@ -754,13 +754,27 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
     for w in await repository.list_workouts(session, plan.id):
         if w.type == "strength" and w.garmin_template_id:
             templates.setdefault(w.garmin_template_id, w.description or "Силова")
+    # For each template, pull its exercise list (best-effort — a bound provider; a Garmin
+    # outage just omits it) so the model can generate a session "similar to Day 1/2 for
+    # <focus>" by adapting the real exercises via swap_exercise ops.
+    strength_templates = []
+    for tid, nm in templates.items():
+        entry = {"id": tid, "name": nm}
+        try:
+            from app.garmin import client, workout_export
+            raw = await run_in_threadpool(client.fetch_workout_full, tid)
+            if raw:
+                entry["exercises"] = workout_export.read_exercises(raw)
+        except Exception:
+            logger.debug(f"template {tid} exercises unavailable", exc_info=True)
+        strength_templates.append(entry)
     context = {
         "today": dt.date.today().isoformat(),
         "instruction": instruction,
         "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
                       "description": w.description,
                       "garmin_template_id": w.garmin_template_id} for w in ws],
-        "strength_templates": [{"id": tid, "name": nm} for tid, nm in templates.items()],
+        "strength_templates": strength_templates,
         # valid Garmin exercise category codes for swap_exercise (only when there's a
         # strength day to edit — keeps the run-only case's tokens down)
         "exercise_categories": exercises.CATEGORIES if templates else [],

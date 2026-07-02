@@ -237,6 +237,45 @@ async def test_add_strength_workouts_rotates_on_gym_days(session):
     assert [w.description for w in ws] == ["Day 1", "Day 2", "Day 1", "Day 2"]
 
 
+async def test_generate_strength_add_then_swaps_same_call(session):
+    """Generation flow: add a strength day from a template + swap its exercises toward a
+    focus, all in one apply_plan_ops call (the swap must find the just-added workout)."""
+    plan = await _seed_plan(session)
+    affected = await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="add", date="2026-07-02", type="strength",
+               garmin_template_id=931013083, description="Ноги (як Day 1)"),
+        PlanOp(action="swap_exercise", date="2026-07-02",
+               from_category="BENCH_PRESS", to_category="SQUAT"),
+        PlanOp(action="swap_exercise", date="2026-07-02",
+               from_category="ROW", to_category="LEG_CURL"),
+    ])
+    assert len(affected) == 3
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert w.type == "strength" and w.garmin_template_id == 931013083
+    assert w.exercise_edits == [
+        {"from": "BENCH_PRESS", "to": "SQUAT", "exercise": None, "reps": None},
+        {"from": "ROW", "to": "LEG_CURL", "exercise": None, "reps": None},
+    ]
+
+
+def test_read_exercises_parses_template():
+    from app.garmin.workout_export import read_exercises
+    raw = {"workoutSegments": [{"workoutSteps": [
+        {"category": "BENCH_PRESS", "exerciseName": "BARBELL_BENCH_PRESS",
+         "endCondition": {"conditionTypeKey": "reps"}, "endConditionValue": 8.0},
+        {"category": "PLANK", "exerciseName": None,
+         "endCondition": {"conditionTypeKey": "time"}, "endConditionValue": 60.0},
+        {"workoutSteps": [{"category": "ROW", "exerciseName": "DUMBBELL_ROW",
+                           "endCondition": {"conditionTypeKey": "reps"},
+                           "endConditionValue": 10.0}]},
+    ]}]}
+    assert read_exercises(raw) == [
+        {"category": "BENCH_PRESS", "exercise": "BARBELL_BENCH_PRESS", "reps": 8},
+        {"category": "PLANK", "exercise": None, "reps": None},  # time-based → no reps
+        {"category": "ROW", "exercise": "DUMBBELL_ROW", "reps": 10},  # nested repeat group
+    ]
+
+
 async def test_run_plan_edit_proposes_without_applying(session):
     plan = await _seed_plan(session)
     edit = PlanEdit(summary="додаю біг", operations=[
