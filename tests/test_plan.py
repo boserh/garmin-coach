@@ -158,6 +158,31 @@ def test_ops_hint_label():
     from bot.handlers import _ops_hint
     assert _ops_hint([{"action": "modify", "date": "x", "dist_km": 20.0}]) == " · 20 км"
     assert _ops_hint([{"action": "skip", "date": "x"}]) == ""
+    # a swap shows the new exercise (label falls back to prettified code w/o translations)
+    hint = _ops_hint([{"action": "swap_exercise", "date": "x", "to_category": "DEADLIFT"}])
+    assert hint == " · Deadlift"
+
+
+async def test_apply_plan_ops_swap_exercise(session):
+    plan = await _seed_plan(session)
+    # a strength day to edit
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="strength",
+        garmin_template_id=931013083, description="Day 1")])
+    # valid swap → appended to exercise_edits (codes upper-cased, variant + reps carried)
+    affected = await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="swap_exercise", date="2026-07-02", from_category="hyperextension",
+        to_category="deadlift", exercise="romanian_deadlift", reps=10)])
+    assert len(affected) == 1
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert w.exercise_edits == [{"from": "HYPEREXTENSION", "to": "DEADLIFT",
+                                 "exercise": "ROMANIAN_DEADLIFT", "reps": 10}]
+    # an unmapped/invalid target category is rejected (nothing appended)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="swap_exercise", date="2026-07-02", from_category="PLANK",
+        to_category="NOT_A_REAL_CATEGORY")])
+    w2 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert len(w2.exercise_edits) == 1  # unchanged
 
 
 async def _seed_plan(session):

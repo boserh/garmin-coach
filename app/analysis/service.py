@@ -24,6 +24,7 @@ from app.analysis.prompts import (
     SYSTEM_PLAN_EDIT,
 )
 from app.core.config import settings
+from app.garmin import exercises
 from app.garmin.schemas import GeneratedPlan, Payload, PlanEdit
 
 logger = logging.getLogger("claude")
@@ -760,6 +761,9 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
                       "description": w.description,
                       "garmin_template_id": w.garmin_template_id} for w in ws],
         "strength_templates": [{"id": tid, "name": nm} for tid, nm in templates.items()],
+        # valid Garmin exercise category codes for swap_exercise (only when there's a
+        # strength day to edit — keeps the run-only case's tokens down)
+        "exercise_categories": exercises.CATEGORIES if templates else [],
     }
     try:
         edit, stats = await run_in_threadpool(plan_edit_with_stats, context, api_key)
