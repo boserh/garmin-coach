@@ -187,9 +187,16 @@ Optional, with defaults:
 - **Strength sessions** (opt-in): the plan-setup form has a **per-weekday picker** — a
   dropdown for each day of the week choosing one of the user's saved Garmin strength
   workouts (Day 1/Day 2, fetched by `client.fetch_workouts` / `plan.py:_strength_workouts`),
-  or "— нема —". The form posts `strength_<slug>` fields → `intake["strength"]["assignments"]`
-  (`{weekday_slug: workout_id}`). `repository.add_strength_workouts(plan, assignments,
-  snapshots)` then lays `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on
+  **"🆕 інше…"** (a free-text session generated from scratch — reveals a description input),
+  or "— нема —". The form posts `strength_<slug>` (id | `"custom"` | "") + `strength_desc_<slug>`
+  → `intake["strength"]` with `assignments` (`{weekday_slug: workout_id}`) for saved picks and
+  `custom` (`{weekday_slug: description}`) for free-text ones. On generation,
+  `run_plan_generation` turns each distinct description into a `StrengthSession` via
+  `generate_strength_with_stats` (`SYSTEM_STRENGTH_GEN`, deduped, sanitised by
+  `_sanitize_strength`) and lays it as a from-scratch `strength_plan` day (built natively on
+  push — the same path as chat "додай силову"; renders in the `/plan` accordion with no
+  snapshot needed). `repository.add_strength_workouts(plan, assignments, snapshots, custom)`
+  lays `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on
   each chosen weekday **every week** — a **fixed** day→workout pairing (no rotation, so Day 1
   always falls on the same weekday). On push, a session with a `garmin_template_id`
   is **cloned** (`client.fetch_workout_full` + `workout_export.clone_workout` strips ids,
