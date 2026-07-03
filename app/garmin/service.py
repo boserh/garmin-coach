@@ -235,7 +235,7 @@ def build_payload(days: int = 7, activity_limit: int = 30) -> Payload:
 
 async def build_payload_cached(
     session, user_id: int, days: int = 7, activity_limit: int = 30
-) -> Payload:
+) -> Tuple[Payload, List]:
     """Async build that uses the DB as a per-user day-level cache and persists
     results.
 
@@ -243,7 +243,11 @@ async def build_payload_cached(
     today is always refetched. Everything fetched is upserted back so history
     grows over time. Blocking Garmin/aggregation calls run in a threadpool. The
     Garmin provider for ``user_id`` is taken from the runtime context (see
-    ``app.garmin.runtime.user_runtime``)."""
+    ``app.garmin.runtime.user_runtime``).
+
+    Returns ``(payload, new_activities)`` — ``new_activities`` are the
+    ``ActivityRecord`` rows that were newly inserted this call (never updates),
+    used by the bot to trigger auto-analysis of freshly synced activities."""
     from app.garmin import repository  # local import to avoid an import cycle
 
     await run_in_threadpool(login)
@@ -282,6 +286,6 @@ async def build_payload_cached(
         planned_runs=planned,
     )
 
-    await repository.persist_payload(session, user_id, payload, act_pairs)
+    new_activities = await repository.persist_payload(session, user_id, payload, act_pairs)
     await session.commit()
-    return payload
+    return payload, new_activities
