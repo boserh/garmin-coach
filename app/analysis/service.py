@@ -119,7 +119,8 @@ def _as_dict(payload: Union[Payload, dict]) -> dict:
 
 
 def _cache_key(data: dict, question: str, model: str, previous_report: Optional[dict] = None,
-               weather: Optional[dict] = None) -> str:
+               weather: Optional[dict] = None,
+               plan_today: Optional[list] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -129,6 +130,7 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "model": model,
         "prev": previous_report,
         "weather": weather,
+        "plan_today": plan_today,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -177,6 +179,7 @@ def analyze_with_stats(
     previous_report: Optional[dict] = None,
     api_key: Optional[str] = None,
     weather: Optional[dict] = None,
+    plan_today: Optional[list] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -193,7 +196,7 @@ def analyze_with_stats(
     data = _as_dict(payload)
     effective_q = question or _DEFAULT_DAILY_Q
 
-    key = _cache_key(data, effective_q, model, previous_report, weather)
+    key = _cache_key(data, effective_q, model, previous_report, weather, plan_today)
     cached = _cache.get(key)
     if cached and cached[1] > _time.time():
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -208,6 +211,8 @@ def analyze_with_stats(
         user_content["previous_report"] = previous_report
     if weather:
         user_content["weather"] = weather
+    if plan_today:
+        user_content["plan_today"] = plan_today
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -540,15 +545,31 @@ async def run_analysis(
     # only — /deep is a one-off deep dive that doesn't need it). Fetched before the
     # new ReportLog is written, so it never picks up the report we're about to make.
     previous_report = None
+    plan_today = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
             text_prev, date_prev = last
             previous_report = {"date": date_prev, "text": text_prev}
 
+        if user_id is not None:
+            ws = await repository.upcoming_plan_workouts(session, user_id, days=2)
+            if ws:
+                plan_today = [
+                    {k: v for k, v in {
+                        "date": w.date,
+                        "type": w.type,
+                        "dist_km": w.dist_km,
+                        "description": w.description,
+                        "steps": w.steps,
+                    }.items() if v is not None}
+                    for w in ws
+                ]
+
     try:
         text, stats = await run_in_threadpool(
-            analyze_with_stats, payload, question, deep, kind, previous_report, api_key, weather
+            analyze_with_stats, payload, question, deep, kind, previous_report, api_key, weather,
+            plan_today
         )
     except AnalystError as e:
         await repository.log_report(

@@ -414,6 +414,28 @@ async def list_workouts(
     return (await session.execute(stmt.order_by(PlannedWorkout.date))).scalars().all()
 
 
+async def upcoming_plan_workouts(
+    session: AsyncSession, user_id: int, days: int = 2
+) -> List[PlannedWorkout]:
+    """Today's and the next ``days-1`` days' planned workouts from the active plan.
+    Returns [] when there is no active plan or nothing in the window."""
+    plan = await get_active_plan(session, user_id)
+    if plan is None:
+        return []
+    today = dt.date.today()
+    window_end = (today + dt.timedelta(days=days - 1)).isoformat()
+    return (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id == plan.id,
+                PlannedWorkout.date >= today.isoformat(),
+                PlannedWorkout.date <= window_end,
+                PlannedWorkout.status == "planned",
+            ).order_by(PlannedWorkout.date)
+        )
+    ).scalars().all()
+
+
 async def list_pushed_workouts(session: AsyncSession, user_id: int) -> List[PlannedWorkout]:
     """This user's workouts already pushed to Garmin (``garmin_workout_id`` set), across
     all plans — for the sync cleanup pass. (A BigInteger column → real SQL NULL, so
