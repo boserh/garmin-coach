@@ -19,6 +19,7 @@
   {% set TLABEL = {"easy":"Легкий","recovery":"Відновлення","long":"Довгий","tempo":"Темповий",
                    "intervals":"Інтервали","race":"Забіг","rest":"Відпочинок","cross":"Крос",
                    "strength":"🏋️ Силова"} %}
+  {% set ST_BADGE = {"done":"✅","partial":"⚠️","missed":"❌","skipped":"⏭"} %}
 
   <div class="wrap">
     {% if created %}<div class="ok">✅ Програму створено — {{ count }} тренувань.</div>{% endif %}
@@ -39,10 +40,22 @@
     </div>
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
 
-    {% for week_no, week_range, items in weeks %}
+    {% for week_no, week_range, iso_week, items in weeks %}
+      {% set cb = (compliance or {}).get(iso_week) %}
       <div class="week">
         <span class="wn">Тиждень {{ week_no }}</span>
         {% if week_range %}<span class="wr">{{ week_range }}</span>{% endif %}
+        {% if cb and cb.total > 0 %}
+          <span class="compliance">
+            {{- cb.done }}/{{ cb.total }}
+            {%- if cb.pace_deltas %}
+              {%- set avg_delta = (cb.pace_deltas | sum) / (cb.pace_deltas | length) %}
+              {%- if avg_delta > 0.05 %} · на {{ (avg_delta * 60) | round | int }} с/км повільніше
+              {%- elif avg_delta < -0.05 %} · на {{ (avg_delta * -60) | round | int }} с/км швидше
+              {%- endif %}
+            {%- endif %}
+          </span>
+        {% endif %}
       </div>
       {% for w in items %}
       <div class="row {{ 'today' if w.date == today else '' }} {{ w.status }}">
@@ -55,8 +68,17 @@
             <span class="dot" style="background:{{ DOT.get(w.type, 'var(--muted)') }}"></span>
             <span class="klabel">{{ TLABEL.get(w.type, w.type) }}</span>
             {% if w.date == today %}<span class="badge-today">сьогодні</span>{% endif %}
-            {% if w.status == 'done' %}<span class="st done">✓ виконано</span>
-            {% elif w.status == 'skipped' %}<span class="st skip">пропущено</span>{% endif %}
+            {% if w.status in ST_BADGE %}
+              <span class="st st-{{ w.status }}">{{ ST_BADGE[w.status] }}
+              {%- if w.status == 'done' %} виконано
+              {%- elif w.status == 'partial' %} частково
+              {%- elif w.status == 'missed' %} пропущено
+              {%- elif w.status == 'skipped' %} скіпнуто
+              {%- endif %}</span>
+              {%- if w.match_info and w.match_info.actual_dist_km %}
+                <span class="match-dist">{{ '%.1f'|format(w.match_info.actual_dist_km) }} км факт</span>
+              {%- endif %}
+            {% endif %}
           </div>
           {% if w.description %}<div class="desc">{{ (strength_names or {}).get(w.id, w.description) }}</div>{% endif %}
           {% if w.steps %}

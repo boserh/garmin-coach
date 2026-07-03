@@ -20,7 +20,7 @@ from app import weather
 from app.analysis.service import AnalystError, run_activity_analysis, run_analysis
 from app.db.base import async_session_maker
 from app.db.models import User
-from app.garmin import plan_sync, repository, service
+from app.garmin import matching, plan_sync, repository, service
 from app.garmin.runtime import user_runtime
 from bot.handlers import TZ
 
@@ -152,6 +152,15 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
                 session, user.id, days=3, activity_limit=20
             )
             await _activity_watch_for_user(ctx, session, user, creds, new_activities)
+
+            # Match freshly synced activities to planned workouts — best-effort,
+            # same pattern as _sync_for_user (a failure here must not block the tick).
+            try:
+                result = await matching.match_activities(session, user.id)
+                if any(result.values()):
+                    logger.info(f"MATCH user={user.id}: {result}")
+            except Exception:
+                logger.exception(f"MATCH failed user={user.id}")
 
             if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
                 return
