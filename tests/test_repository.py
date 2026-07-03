@@ -299,7 +299,8 @@ async def test_upcoming_plan_workouts_returns_window(session):
     future = (today + dt.timedelta(days=3)).isoformat()
 
     plan = await _make_plan(session, 1, past, future)
-    for d, t in [(past, "easy"), (today.isoformat(), "tempo"), (tomorrow, "long"), (future, "rest")]:
+    for d, t in [(past, "easy"), (today.isoformat(), "tempo"),
+                 (tomorrow, "long"), (future, "rest")]:
         session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=d, type=t,
                                    status="planned"))
     await session.flush()
