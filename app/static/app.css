@@ -75,7 +75,10 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .klabel{font-size:.75rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#b6bfca}
 .badge-today{font-size:.64rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--accent)}
 .st{font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.st.done{color:var(--easy)} .st.skip{color:var(--muted)}
+.st.done,.st-done{color:var(--easy)} .st.skip,.st-skipped{color:var(--muted)}
+.st-partial{color:#f0a500} .st-missed{color:var(--intervals)}
+.match-dist{font-size:.68rem;color:var(--muted);font-weight:500}
+.compliance{font-size:.72rem;font-weight:600;color:var(--muted);margin-left:auto}
 .desc{color:#cbd2dc;font-size:.92rem;line-height:1.55}
 .dist{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:1rem;
       color:var(--ink);white-space:nowrap}
@@ -113,8 +116,10 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
   box-shadow:0 0 0 1px rgba(122,162,247,.3),0 10px 28px -14px rgba(122,162,247,.55)}
 .row.today .dd{color:var(--accent)}
 .row.done{opacity:.62}
+.row.partial{opacity:.75}
+.row.missed{opacity:.5;border-color:rgba(255,90,90,.25)}
 .row.skipped{opacity:.5}
-.row.skipped .desc{text-decoration:line-through}
+.row.skipped .desc,.row.missed .desc{text-decoration:line-through}
 
 /* ---- db browser (index counts) ---- */
 .stats{display:flex;flex-wrap:wrap;gap:.85rem;margin-top:1.5rem}

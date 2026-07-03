@@ -125,6 +125,7 @@ templates.env.filters["step_label"] = _step_label
 templates.env.filters["step_amount"] = _step_amount
 templates.env.filters["step_pace"] = _step_pace
 templates.env.filters["exlabel"] = lambda cat, ex="": _exercises.label(cat or "", ex or "")
+templates.env.filters["pace_fmt"] = _pace  # decimal min/km → "m:ss"
 
 logger = logging.getLogger("plan")
 
@@ -155,7 +156,8 @@ def _fmt_day(d: dt.date) -> str:
 def _by_week(workouts):
     """Group workouts into **Monday–Sunday calendar weeks** (by date, not the plan's
     ``week`` field), ordered and numbered sequentially. Returns
-    ``[(week_no, "29 чер – 5 лип", [workouts...]), ...]``."""
+    ``[(week_no, "29 чер – 5 лип", iso_week_key, [workouts...]), ...]``
+    where ``iso_week_key`` is the '%G-W%V' string for the Monday of that week."""
     weeks: dict = {}
     for w in workouts:
         try:
@@ -167,9 +169,10 @@ def _by_week(workouts):
     out = []
     for i, monday in enumerate(sorted(k for k in weeks if k is not None), 1):
         sunday = monday + dt.timedelta(days=6)
-        out.append((i, f"{_fmt_day(monday)} – {_fmt_day(sunday)}", weeks[monday]))
+        iso_key = monday.strftime("%G-W%V")
+        out.append((i, f"{_fmt_day(monday)} – {_fmt_day(sunday)}", iso_key, weeks[monday]))
     if None in weeks:   # undated (shouldn't happen) — keep them visible at the end
-        out.append((len(out) + 1, "", weeks[None]))
+        out.append((len(out) + 1, "", None, weeks[None]))
     return out
 
 
@@ -329,11 +332,13 @@ async def plan_page(
         )
     workouts = await repository.list_workouts(session, plan.id)
     strength_view, strength_names = await _strength_details(session, user, workouts)
+    compliance = await repository.weekly_compliance(session, plan.id)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
+         "compliance": compliance,
          "created": request.query_params.get("created") == "1",
          "count": len(workouts), "readonly": False},
     )
@@ -363,11 +368,13 @@ async def plan_view(
         raise HTTPException(status_code=404, detail="Plan not found")
     workouts = await repository.list_workouts(session, plan.id)
     strength_view, strength_names = await _strength_details(session, user, workouts)
+    compliance = await repository.weekly_compliance(session, plan.id)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
+         "compliance": compliance,
          "count": len(workouts), "readonly": True},
     )
 
