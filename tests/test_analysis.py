@@ -67,6 +67,50 @@ def test_ask_cache_key_varies_with_question_and_reports():
     assert base == _ask_cache_key(list(_REPORTS), "чи бігти?", "claude-sonnet-4-6", [])
 
 
+_FITNESS = {"acwr_pct": 95.0, "readiness_score": 72, "resting_hr": 52}
+
+
+def test_cache_key_includes_fitness():
+    base = _cache_key(_DATA, "q", "claude-sonnet-4-6")
+    with_fitness = _cache_key(_DATA, "q", "claude-sonnet-4-6", fitness=_FITNESS)
+    assert base != with_fitness
+
+
+def test_cache_key_stable_with_same_fitness():
+    a = _cache_key(_DATA, "q", "claude-sonnet-4-6", fitness=_FITNESS)
+    b = _cache_key(_DATA, "q", "claude-sonnet-4-6", fitness=dict(_FITNESS))
+    assert a == b
+
+
+def test_cache_key_none_fitness_equals_no_fitness():
+    """None fitness (no history) produces the same key as omitting the arg."""
+    assert _cache_key(_DATA, "q", "claude-sonnet-4-6", fitness=None) == \
+           _cache_key(_DATA, "q", "claude-sonnet-4-6")
+
+
+def test_build_fitness_snapshot_empty_returns_none():
+    from app.analysis.service import _build_fitness_snapshot
+    assert _build_fitness_snapshot({}) is None
+    assert _build_fitness_snapshot({"unknown_key": 42}) is None
+
+
+def test_build_fitness_snapshot_filters_nulls_and_unknown():
+    from app.analysis.service import _build_fitness_snapshot
+    snap = _build_fitness_snapshot({
+        "vo2max": 46.5,
+        "readiness_score": None,
+        "unknown_key": 99,
+    })
+    assert snap == {"vo2max": 46.5}
+
+
+def test_build_fitness_snapshot_known_keys_pass_through():
+    from app.analysis.service import _build_fitness_snapshot
+    ex = {"acwr_pct": 110.0, "recovery_time_h": 18, "resting_hr": 50, "hrv_baseline_low": 42}
+    snap = _build_fitness_snapshot(ex)
+    assert snap == ex
+
+
 def test_get_client_caches_per_key(monkeypatch):
     import anthropic
 
