@@ -31,6 +31,26 @@ def _runnable(w) -> bool:
     return (w.type or "").lower() not in _SKIP_TYPES
 
 
+def _calendar_stale(w, active_id, today: str) -> bool:
+    """True when a pushed workout should be removed from the Garmin calendar.
+
+    Keep rules (NOT stale):
+    * Same active plan, future-or-today date, status=planned → keep (upcoming).
+    * Same active plan, date==today, status done/partial → keep until tomorrow so the
+      watch history still shows the completed session during the day.
+    Anything else (wrong plan, past, skipped, missed) is stale and gets cleaned up."""
+    if w.plan_id != active_id:
+        return True
+    if w.date < today:
+        return True
+    # date >= today from here
+    if w.status == "planned":
+        return False
+    if w.status in ("done", "partial") and w.date == today:
+        return False  # just completed today — leave on calendar
+    return True
+
+
 def _pushable(w) -> bool:
     """A session we send to the watch: a run, a strength session with a template to clone,
     or a from-scratch generated strength session (``strength_plan``)."""
@@ -95,8 +115,10 @@ async def sync_plan_to_garmin(session, user_id: int, *, days: int = 14) -> dict:
     active_id = active.id if active else None
 
     # cleanup: anything WE pushed that no longer belongs in the calendar.
+    # Keep today's just-completed (done/partial) workouts on the calendar until tomorrow
+    # so the watch history still shows the session for the rest of the day.
     stale = [w for w in await repository.list_pushed_workouts(session, user_id)
-             if w.plan_id != active_id or w.date < today or w.status != "planned"]
+             if _calendar_stale(w, active_id, today)]
     removed = 0
     for w in stale:
         await remove_workout(session, w)

@@ -148,6 +148,25 @@ async def test_sync_for_user_skips_when_toggle_off(session):
     m.assert_not_called()
 
 
+async def test_today_done_workout_stays_on_calendar(session):
+    """A workout completed today (status=done) must not be removed until tomorrow."""
+    today = dt.date.today().isoformat()
+    await _seed_plan(session, workouts=[
+        dict(date=today, week=1, type="easy", status="done",
+             garmin_workout_id=777, garmin_schedule_id=666),
+    ])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "delete_workout") as dele, \
+         patch.object(plan_sync.client, "create_workout") as create:
+        res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
+    assert res == {"pushed": 0, "removed": 0}
+    dele.assert_not_called()
+    create.assert_not_called()
+    # ids still set on the row
+    (w,) = await repository.list_pushed_workouts(session, U1)
+    assert w.garmin_workout_id == 777
+
+
 async def test_sync_removes_past_and_pushes_future(session):
     past = (dt.date.today() - dt.timedelta(days=2)).isoformat()
     fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()

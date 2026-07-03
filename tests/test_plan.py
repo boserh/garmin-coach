@@ -123,7 +123,7 @@ def test_by_week_groups_by_calendar_monday():
           ("2026-07-02", "2026-07-05", "2026-07-07", "2026-07-12", "2026-07-14")]
     weeks = _by_week(ws)
     # 07-02(Thu)+07-05(Sun) share Mon 06-29; 07-07+07-12 share Mon 07-06; 07-14 → Mon 07-13
-    assert [[w.date for w in items] for _, _, items in weeks] == [
+    assert [[w.date for w in items] for _, _, _, items in weeks] == [
         ["2026-07-02", "2026-07-05"],
         ["2026-07-07", "2026-07-12"],
         ["2026-07-14"],

@@ -186,6 +186,16 @@ class TrainingPlan(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class WorkoutStatus:
+    """Canonical status values for PlannedWorkout.status — single source of truth used by
+    matching.py, plan_sync.py, and the plan templates."""
+    PLANNED = "planned"
+    DONE = "done"
+    PARTIAL = "partial"   # completed but distance off by > DIST_PARTIAL_THRESH
+    MISSED = "missed"     # date passed with no matching activity
+    SKIPPED = "skipped"   # explicitly skipped by the user (chat op or bot button)
+
+
 class PlannedWorkout(Base):
     """One dated session of a TrainingPlan. ``description`` carries the free-text
     prescription (what to do + target pace/effort); ``status`` tracks progress."""
@@ -229,7 +239,16 @@ class PlannedWorkout(Base):
     # accordion from the DB instead of re-fetching the Garmin template on every load.
     # Not used on push (the real template is cloned live). Null for run/from-scratch days.
     strength_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
-    status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/done/skipped
+    # Plan/actual matching: the ActivityRecord (by DB id) that satisfied this session, set
+    # by matching.match_activities. Null until matched. See WorkoutStatus for status values.
+    completed_activity_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("activities.id"), nullable=True
+    )
+    # Snapshot of the match at the time it was made: distances, pace comparison.
+    # {dist_delta_km, actual_dist_km, activity_date, actual_pace_minkm?, plan_pace_minkm?}
+    match_info: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    status: Mapped[str] = mapped_column(String(16), default="planned")  # see WorkoutStatus
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

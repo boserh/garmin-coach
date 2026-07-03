@@ -449,6 +449,44 @@ async def upcoming_plan_workouts(
     ).scalars().all()
 
 
+async def weekly_compliance(
+    session: AsyncSession, plan_id: int
+) -> dict:
+    """Per-week compliance summary for a plan, keyed by ISO week string ('YYYY-Www').
+
+    Each entry: ``{total, done, pace_deltas: [float, ...]}``.
+    * ``total`` — run-type workouts (not rest/cross/strength) in that week.
+    * ``done`` — workouts with status done or partial.
+    * ``pace_deltas`` — list of (actual − plan) pace values in min/km for matched workouts
+      where both sides are known (positive = slower, negative = faster).
+    """
+    workouts = (
+        await session.execute(
+            select(PlannedWorkout).where(PlannedWorkout.plan_id == plan_id)
+        )
+    ).scalars().all()
+
+    _SKIP = {"rest", "cross", "strength"}
+    buckets: dict = {}
+    for w in workouts:
+        if (w.type or "").lower() in _SKIP:
+            continue
+        try:
+            week = dt.date.fromisoformat(w.date).strftime("%G-W%V")
+        except (ValueError, TypeError):
+            continue
+        b = buckets.setdefault(week, {"total": 0, "done": 0, "pace_deltas": []})
+        b["total"] += 1
+        if w.status in ("done", "partial"):
+            b["done"] += 1
+            if isinstance(w.match_info, dict):
+                ap = w.match_info.get("actual_pace_minkm")
+                pp = w.match_info.get("plan_pace_minkm")
+                if ap is not None and pp is not None:
+                    b["pace_deltas"].append(round(ap - pp, 2))
+    return buckets
+
+
 async def list_pushed_workouts(session: AsyncSession, user_id: int) -> List[PlannedWorkout]:
     """This user's workouts already pushed to Garmin (``garmin_workout_id`` set), across
     all plans — for the sync cleanup pass. (A BigInteger column → real SQL NULL, so
