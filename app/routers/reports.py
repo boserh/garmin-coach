@@ -26,7 +26,9 @@ async def report_json(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     async with user_runtime(session, user) as creds:
-        payload = await service.build_payload_cached(session, user.id, days=7, activity_limit=20)
+        payload, _ = await service.build_payload_cached(
+            session, user.id, days=7, activity_limit=20
+        )
         try:
             text = await run_analysis(
                 session, payload, user_id=user.id, question=_REPORT_Q,
@@ -49,7 +51,9 @@ async def deep(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     async with user_runtime(session, user) as creds:
-        payload = await service.build_payload_cached(session, user.id, days=14, activity_limit=30)
+        payload, _ = await service.build_payload_cached(
+            session, user.id, days=14, activity_limit=30
+        )
         try:
             text = await run_analysis(
                 session, payload, user_id=user.id, question=q or _DEEP_Q,

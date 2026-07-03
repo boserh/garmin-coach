@@ -4,7 +4,7 @@ request/command and persist a freshly minted garth session token.
 Usage::
 
     async with user_runtime(session, user) as creds:
-        payload = await service.build_payload_cached(session, days=7)
+        payload, _ = await service.build_payload_cached(session, days=7)
         text = await run_analysis(session, payload, api_key=creds.anthropic_key)
 
 Inside the block, ``service``/``client`` resolve the user's provider through the
