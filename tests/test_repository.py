@@ -1,7 +1,9 @@
 """Repository upsert idempotency, per-user isolation, and history reads."""
+import datetime as dt
+
 from sqlalchemy import func, select
 
-from app.db.models import ActivityRecord, DailyMetric, ReportLog
+from app.db.models import ActivityRecord, DailyMetric, PlannedWorkout, ReportLog, TrainingPlan
 from app.garmin import repository
 from app.garmin.schemas import DailySummary
 
@@ -280,3 +282,62 @@ async def test_weekly_run_volume_groups_by_iso_week(session):
         assert weeks[w]["km"] == round(e["km"], 1)
         assert weeks[w]["runs"] == e["runs"]
         assert weeks[w]["longest_km"] == round(e["longest"], 1)
+
+
+async def _make_plan(session, user_id: int, start: str, end: str) -> TrainingPlan:
+    plan = TrainingPlan(user_id=user_id, goal="g", status="active",
+                        start_date=start, target_date=end)
+    session.add(plan)
+    await session.flush()
+    return plan
+
+
+async def test_upcoming_plan_workouts_returns_window(session):
+    today = dt.date.today()
+    tomorrow = (today + dt.timedelta(days=1)).isoformat()
+    past = (today - dt.timedelta(days=1)).isoformat()
+    future = (today + dt.timedelta(days=3)).isoformat()
+
+    plan = await _make_plan(session, 1, past, future)
+    for d, t in [(past, "easy"), (today.isoformat(), "tempo"), (tomorrow, "long"), (future, "rest")]:
+        session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=d, type=t,
+                                   status="planned"))
+    await session.flush()
+
+    ws = await repository.upcoming_plan_workouts(session, user_id=1, days=2)
+    assert [w.date for w in ws] == [today.isoformat(), tomorrow]
+    assert [w.type for w in ws] == ["tempo", "long"]
+
+
+async def test_upcoming_plan_workouts_excludes_non_planned(session):
+    today = dt.date.today().isoformat()
+    plan = await _make_plan(session, 1, today, today)
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=today, type="easy",
+                               status="completed"))
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=today, type="tempo",
+                               status="planned"))
+    await session.flush()
+
+    ws = await repository.upcoming_plan_workouts(session, user_id=1, days=2)
+    assert len(ws) == 1 and ws[0].type == "tempo"
+
+
+async def test_upcoming_plan_workouts_user_scoped(session):
+    today = dt.date.today().isoformat()
+    plan1 = await _make_plan(session, 1, today, today)
+    plan2 = await _make_plan(session, 2, today, today)
+    session.add(PlannedWorkout(plan_id=plan1.id, user_id=1, date=today, type="easy",
+                               status="planned"))
+    session.add(PlannedWorkout(plan_id=plan2.id, user_id=2, date=today, type="tempo",
+                               status="planned"))
+    await session.flush()
+
+    ws1 = await repository.upcoming_plan_workouts(session, user_id=1, days=2)
+    ws2 = await repository.upcoming_plan_workouts(session, user_id=2, days=2)
+    assert len(ws1) == 1 and ws1[0].type == "easy"
+    assert len(ws2) == 1 and ws2[0].type == "tempo"
+
+
+async def test_upcoming_plan_workouts_no_plan(session):
+    ws = await repository.upcoming_plan_workouts(session, user_id=99, days=2)
+    assert ws == []
