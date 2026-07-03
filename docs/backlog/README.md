@@ -10,7 +10,7 @@
 | [ST-01](ST-01-morning-report-plan-context.md) | ~~Ранковий звіт бачить сьогоднішнє тренування з плану~~ ✅ | S | — |
 | [ST-02](ST-02-extra-metrics-in-reports.md) | ~~`extra`-метрики (readiness, ACWR, RHR) у щоденних звітах~~ ✅ | S | — |
 | [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | — |
-| [ST-04](ST-04-auto-activity-analysis.md) | Автоаналіз нової пробіжки після синку | M | — |
+| [ST-04](ST-04-auto-activity-analysis.md) | ~~Автоаналіз нової пробіжки після синку~~ ✅ | M | — |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — |
 | [ST-06](ST-06-remote-mfa-relogin.md) | Remote MFA re-login | M | — (enabler для деплою на Pi) |
 
