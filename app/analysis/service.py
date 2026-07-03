@@ -118,9 +118,28 @@ def _as_dict(payload: Union[Payload, dict]) -> dict:
     return payload.model_dump() if isinstance(payload, Payload) else payload
 
 
+_FITNESS_KEYS = (
+    "vo2max", "fitness_age",
+    "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
+    "endurance_score", "endurance_class",
+    "acwr_pct", "acwr_feedback", "acute_load", "recovery_time_h",
+    "readiness_score", "readiness_level",
+    "hrv_baseline_low", "hrv_baseline_high",
+    "resting_hr", "spo2_avg", "respiration_avg", "breathing_disruption_sev",
+)
+
+
+def _build_fitness_snapshot(ex: dict) -> Optional[dict]:
+    """Filter a get_recent_extra coalesced dict down to the fitness keys used in analysis.
+    Returns None when no relevant data is present (new user, no history)."""
+    snap = {k: ex[k] for k in _FITNESS_KEYS if ex.get(k) is not None}
+    return snap or None
+
+
 def _cache_key(data: dict, question: str, model: str, previous_report: Optional[dict] = None,
                weather: Optional[dict] = None,
-               plan_today: Optional[list] = None) -> str:
+               plan_today: Optional[list] = None,
+               fitness: Optional[dict] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -131,6 +150,7 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "prev": previous_report,
         "weather": weather,
         "plan_today": plan_today,
+        "fitness": fitness,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -180,6 +200,7 @@ def analyze_with_stats(
     api_key: Optional[str] = None,
     weather: Optional[dict] = None,
     plan_today: Optional[list] = None,
+    fitness: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -196,7 +217,7 @@ def analyze_with_stats(
     data = _as_dict(payload)
     effective_q = question or _DEFAULT_DAILY_Q
 
-    key = _cache_key(data, effective_q, model, previous_report, weather, plan_today)
+    key = _cache_key(data, effective_q, model, previous_report, weather, plan_today, fitness)
     cached = _cache.get(key)
     if cached and cached[1] > _time.time():
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -213,6 +234,8 @@ def analyze_with_stats(
         user_content["weather"] = weather
     if plan_today:
         user_content["plan_today"] = plan_today
+    if fitness:
+        user_content["fitness"] = fitness
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -546,6 +569,7 @@ async def run_analysis(
     # new ReportLog is written, so it never picks up the report we're about to make.
     previous_report = None
     plan_today = None
+    fitness = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -565,11 +589,13 @@ async def run_analysis(
                     }.items() if v is not None}
                     for w in ws
                 ]
+            ex = await repository.get_recent_extra(session, user_id)
+            fitness = _build_fitness_snapshot(ex)
 
     try:
         text, stats = await run_in_threadpool(
             analyze_with_stats, payload, question, deep, kind, previous_report, api_key, weather,
-            plan_today
+            plan_today, fitness
         )
     except AnalystError as e:
         await repository.log_report(
@@ -713,19 +739,7 @@ async def run_plan_generation(
     recovery = await repository.read_history(session, user_id, days=30)
     weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
     ex = await repository.get_recent_extra(session, user_id, days=21)
-    # Latest fitness/load/health snapshot used to calibrate volume and paces. Current
-    # fitness (vo2/race predictions/endurance), training-load & injury risk (ACWR, acute
-    # load, recovery time, readiness), and recovery baselines (HRV band, resting HR, SpO2,
-    # respiration). Drop nulls so the context stays compact.
-    fitness = {k: ex[k] for k in (
-        "vo2max", "fitness_age",
-        "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
-        "endurance_score", "endurance_class",
-        "acwr_pct", "acwr_feedback", "acute_load", "recovery_time_h",
-        "readiness_score", "readiness_level",
-        "hrv_baseline_low", "hrv_baseline_high",
-        "resting_hr", "spo2_avg", "respiration_avg", "breathing_disruption_sev",
-    ) if ex.get(k) is not None}
+    fitness = _build_fitness_snapshot(ex)
     context = {
         "today": dt.date.today().isoformat(),
         "goal": goal, "start_date": start_date, "target_date": target_date,
