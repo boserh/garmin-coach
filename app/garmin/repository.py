@@ -211,9 +211,12 @@ async def upsert_daily(session: AsyncSession, user_id: int, s: DailySummary) -> 
 
 async def upsert_activity(
     session: AsyncSession, user_id: int, activity_id: Optional[int], row: dict
-) -> None:
+) -> Optional[ActivityRecord]:
+    """Upsert one activity. Returns the ORM row if it was newly inserted (so the
+    caller can detect "just synced" activities), or None for an update to an
+    existing row / a missing id."""
     if not activity_id:
-        return
+        return None
     existing = (
         await session.execute(
             select(ActivityRecord).where(
@@ -236,19 +239,29 @@ async def upsert_activity(
     if existing:
         for k, v in fields.items():
             setattr(existing, k, v)
-    else:
-        session.add(ActivityRecord(user_id=user_id, activity_id=int(activity_id), **fields))
+        return None
+    rec = ActivityRecord(user_id=user_id, activity_id=int(activity_id), **fields)
+    session.add(rec)
+    return rec
 
 
 async def persist_payload(
     session: AsyncSession, user_id: int, payload: Payload, act_pairs
-) -> None:
-    """Upsert everything the payload carries for this user (does not commit)."""
+) -> List[ActivityRecord]:
+    """Upsert everything the payload carries for this user (does not commit).
+    Returns newly inserted activity rows (never updates) — the caller uses this to
+    trigger auto-analysis of freshly synced activities."""
     for d in payload.daily:
         if d.has_data:
             await upsert_daily(session, user_id, d)
+    new_activities: List[ActivityRecord] = []
     for activity_id, row in act_pairs:
-        await upsert_activity(session, user_id, activity_id, row)
+        rec = await upsert_activity(session, user_id, activity_id, row)
+        if rec is not None:
+            new_activities.append(rec)
+    if new_activities:
+        await session.flush()  # assign ids before the caller reads them
+    return new_activities
 
 
 async def get_last_report(session: AsyncSession, user_id: int):

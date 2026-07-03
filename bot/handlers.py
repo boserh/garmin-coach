@@ -61,7 +61,7 @@ async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         await update.message.reply_text("Тягну дані з Garmin...")
         async with user_runtime(session, user) as creds:
-            payload = await service.build_payload_cached(
+            payload, _ = await service.build_payload_cached(
                 session, user.id, days=7, activity_limit=20
             )
             note = "" if payload.synced_today else _REPORT_STALE
@@ -85,7 +85,7 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         await update.message.reply_text("Думаю глибше...")
         async with user_runtime(session, user) as creds:
-            payload = await service.build_payload_cached(
+            payload, _ = await service.build_payload_cached(
                 session, user.id, days=14, activity_limit=30
             )
             try:

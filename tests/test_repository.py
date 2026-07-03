@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 
 from app.db.models import ActivityRecord, DailyMetric, PlannedWorkout, ReportLog, TrainingPlan
 from app.garmin import repository
-from app.garmin.schemas import DailySummary
+from app.garmin.schemas import DailySummary, Payload
 
 U1, U2 = 1, 2  # FK enforcement is off in SQLite, so bare ids are fine for unit tests
 
@@ -76,9 +76,42 @@ async def test_upsert_activity_is_idempotent(session):
 
 
 async def test_upsert_activity_skips_when_no_id(session):
-    await repository.upsert_activity(session, U1, None, {"date": "2026-06-20"})
+    rec = await repository.upsert_activity(session, U1, None, {"date": "2026-06-20"})
     await session.commit()
+    assert rec is None
     assert await _count(session, ActivityRecord) == 0
+
+
+async def test_upsert_activity_returns_record_only_when_new(session):
+    row = {"date": "2026-06-20", "type": "running", "dist_km": 5.0}
+    rec = await repository.upsert_activity(session, U1, 500, row)
+    await session.commit()
+    assert rec is not None
+    assert rec.activity_id == 500
+
+    # an update to the same activity_id is NOT reported as new
+    rec2 = await repository.upsert_activity(session, U1, 500, dict(row, dist_km=5.5))
+    await session.commit()
+    assert rec2 is None
+
+
+async def test_persist_payload_returns_only_new_activities(session):
+    payload = Payload(
+        generated="2026-06-24T08:00", window_days=1, synced_today=False,
+        daily=[], recent_activities=[], planned_runs=[],
+    )
+    act_pairs = [
+        (100, {"date": "2026-06-24", "type": "running", "dist_km": 5.0}),
+        (200, {"date": "2026-06-24", "type": "running", "dist_km": 3.0}),
+    ]
+    new_activities = await repository.persist_payload(session, U1, payload, act_pairs)
+    await session.commit()
+    assert {a.activity_id for a in new_activities} == {100, 200}
+
+    # persisting the same pairs again yields no new activities (idempotent re-fetch)
+    new_again = await repository.persist_payload(session, U1, payload, act_pairs)
+    await session.commit()
+    assert new_again == []
 
 
 async def test_log_report_stores_text(session):
