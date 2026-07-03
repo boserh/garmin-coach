@@ -1,9 +1,13 @@
-"""Scheduled morning auto-report, per user.
+"""Scheduled per-user tick: Garmin fetch, activity auto-analysis, morning report.
 
-Every CHECK_INTERVAL_MIN within the Europe/Warsaw window the job loops over every
-registered user with a Telegram chat id and Garmin credentials, sending each their
-report once today's data has synced (or after the deadline with a stale-data note).
-The once-a-day guard lives in the DB (BotState), keyed per user.
+Every CHECK_INTERVAL_MIN within the wider Europe/Warsaw window (07:00-23:00) the job
+loops over every registered user with a Telegram chat id and Garmin credentials,
+fetching their data once via ``build_payload_cached``. That single fetch feeds two
+concerns from the same tick (no duplicate Garmin calls):
+* activity watch — any freshly synced running activity (within ACTIVITY_FRESH_DAYS)
+  gets auto-analyzed and DMed, all day;
+* the morning report — sent once, only within the narrower 07-12 window, guarded by
+  BotState so a re-run of the job doesn't resend it.
 """
 import datetime as dt
 import logging
@@ -13,7 +17,7 @@ from sqlalchemy import select
 from telegram.ext import ContextTypes
 
 from app import weather
-from app.analysis.service import AnalystError, run_analysis
+from app.analysis.service import AnalystError, run_activity_analysis, run_analysis
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.garmin import plan_sync, repository, service
@@ -24,6 +28,13 @@ logger = logging.getLogger("bot")
 
 MORNING_START_HOUR = 7
 MORNING_DEADLINE_HOUR = 12
+# Activity watch runs across a wider daily window than the morning report itself, so
+# an evening run still gets an automatic recap the same day.
+ACTIVITY_WATCH_END_HOUR = 23
+# Only auto-analyze activities synced in the last N days — never a GDPR-export
+# backfill (which doesn't go through build_payload_cached anyway) and never a huge
+# first-ever fetch for a long-idle user.
+ACTIVITY_FRESH_DAYS = 2
 CHECK_INTERVAL_MIN = 20
 MORNING_STATE_KEY = "morning_sent_date"
 
@@ -55,14 +66,12 @@ async def _fetch_user_weather(user: User):
     return wx
 
 
-async def _deliver_morning(ctx, session, user: User, creds, now: dt.datetime, today: str,
-                           *, force: bool = False) -> bool:
-    """Build the payload + weather, run the morning analysis and send it. Returns True
-    if a report was sent. With ``force`` the not-yet-synced wait is skipped (send with the
-    stale note) — used by the on-demand /test_morning trigger. Does NOT touch the
-    once-a-day guard; the caller owns that."""
-    payload = await service.build_payload_cached(session, user.id, days=3, activity_limit=20)
-
+async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.datetime,
+                           today: str, *, force: bool = False) -> bool:
+    """Run the morning analysis on an already-fetched ``payload`` and send it. Returns
+    True if a report was sent. With ``force`` the not-yet-synced wait is skipped (send
+    with the stale note) — used by the on-demand /test_morning trigger. Does NOT touch
+    the once-a-day guard; the caller owns that."""
     if not _recovery_synced(payload, today):
         if not force and now.hour < MORNING_DEADLINE_HOUR:
             logger.info(f"MORNING skip user={user.id}: recovery data not synced yet "
@@ -99,24 +108,61 @@ async def force_morning_for_user(ctx, session, user: User) -> None:
         if not creds.has_garmin:
             await ctx.bot.send_message(user.telegram_chat_id, "🧪 Немає Garmin-кредів.")
             return
-        await _deliver_morning(ctx, session, user, creds, now, today, force=True)
+        payload, _ = await service.build_payload_cached(
+            session, user.id, days=3, activity_limit=20
+        )
+        await _deliver_morning(ctx, session, user, creds, payload, now, today, force=True)
 
 
-async def _morning_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
+def _activity_head(act) -> str:
+    parts = [act.type or "активність"]
+    if act.dist_km:
+        parts.append(f"{act.dist_km:.1f} км")
+    return f"🏃 Нова активність: {' · '.join(parts)} ({act.date})"
+
+
+async def _activity_watch_for_user(ctx, session, user: User, creds, new_activities) -> None:
+    """Auto-analyze freshly synced running activities and DM each result. Best-effort
+    per activity — a Claude/Telegram failure here must not break the tick or block
+    the remaining activities."""
+    if not new_activities:
+        return
+    cutoff = (dt.date.today() - dt.timedelta(days=ACTIVITY_FRESH_DAYS)).isoformat()
+    for act in new_activities:
+        if not act.date or act.date < cutoff or "run" not in (act.type or ""):
+            continue
+        try:
+            text = await run_activity_analysis(
+                session, act, user_id=user.id, api_key=creds.anthropic_key
+            )
+            await ctx.bot.send_message(user.telegram_chat_id, f"{_activity_head(act)}\n\n{text}")
+            logger.info(f"ACTIVITY_WATCH sent user={user.id} activity={act.id}")
+        except Exception:
+            logger.exception(f"ACTIVITY_WATCH failed user={user.id} activity={act.id}")
+
+
+async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
-        if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
-            logger.debug(f"MORNING skip user={user.id}: already sent today")
-            return
-
         async with user_runtime(session, user) as creds:
             if not creds.has_garmin:
-                logger.debug(f"MORNING skip user={user.id}: no Garmin credentials")
+                logger.debug(f"TICK skip user={user.id}: no Garmin credentials")
                 return
-            if await _deliver_morning(ctx, session, user, creds, now, today):
+
+            payload, new_activities = await service.build_payload_cached(
+                session, user.id, days=3, activity_limit=20
+            )
+            await _activity_watch_for_user(ctx, session, user, creds, new_activities)
+
+            if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
+                return
+            if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
+                logger.debug(f"MORNING skip user={user.id}: already sent today")
+                return
+            if await _deliver_morning(ctx, session, user, creds, payload, now, today):
                 await repository.set_state(session, user.id, MORNING_STATE_KEY, today)
                 logger.info(f"MORNING sent for {today} user={user.id}")
     except Exception:
-        logger.exception(f"MORNING failed for user={user.id}")
+        logger.exception(f"TICK failed for user={user.id}")
 
 
 async def _sync_for_user(session, user: User) -> None:
@@ -157,12 +203,14 @@ async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Per-tick entry point: fetch once per user (07:00-23:00), run activity watch,
+    and — within the narrower 07-12 window — the morning report. See module docstring."""
     try:
         now = dt.datetime.now(TZ)
         today = now.date().isoformat()
 
-        if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
-            logger.debug(f"MORNING skip: outside window (hour={now.hour})")
+        if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
+            logger.debug(f"TICK skip: outside window (hour={now.hour})")
             return
 
         async with async_session_maker() as session:
@@ -176,7 +224,7 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
                 )
             ).scalars().all()
             for user in recipients:
-                await _morning_for_user(ctx, session, user, now, today)
+                await _tick_for_user(ctx, session, user, now, today)
 
     except Exception:
         logger.exception("MORNING job failed")
