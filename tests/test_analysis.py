@@ -35,6 +35,27 @@ _REPORTS = [{"date": "2026-06-22", "text": "звіт B"},
             {"date": "2026-06-21", "text": "звіт A"}]
 
 
+def test_cache_key_varies_with_plan_today():
+    base = _cache_key(_DATA, "q", "claude-sonnet-4-6")
+    plan = [{"date": "2026-07-03", "type": "tempo", "dist_km": 8.0, "description": "темп"}]
+    with_plan = _cache_key(_DATA, "q", "claude-sonnet-4-6", plan_today=plan)
+    assert base != with_plan
+
+
+def test_cache_key_stable_without_plan_changes():
+    plan = [{"date": "2026-07-03", "type": "easy", "dist_km": 5.0}]
+    a = _cache_key(_DATA, "q", "claude-sonnet-4-6", plan_today=plan)
+    b = _cache_key(_DATA, "q", "claude-sonnet-4-6", plan_today=list(plan))
+    assert a == b
+
+
+def test_cache_key_changes_when_plan_changes():
+    plan_a = [{"date": "2026-07-03", "type": "easy", "dist_km": 5.0}]
+    plan_b = [{"date": "2026-07-03", "type": "tempo", "dist_km": 8.0}]
+    assert _cache_key(_DATA, "q", "claude-sonnet-4-6", plan_today=plan_a) != \
+           _cache_key(_DATA, "q", "claude-sonnet-4-6", plan_today=plan_b)
+
+
 def test_ask_cache_key_varies_with_question_and_reports():
     base = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [])
     assert base != _ask_cache_key(_REPORTS, "інше питання", "claude-sonnet-4-6", [])
