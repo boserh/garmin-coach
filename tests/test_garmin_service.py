@@ -124,7 +124,7 @@ def test_fetch_workout_detail_parses_description(monkeypatch):
     assert d["steps"][0]["pace_min_km"] is None
 
 
-def test_auto_activities_skips_confirmed_and_sleep(monkeypatch):
+def test_auto_activities_skips_confirmed_and_sleep():
     events = [
         {"activityId": 111, "activityType": {"typeKey": "running"}},  # already confirmed
         {"eventType": {"typeKey": "sleep"}, "activityType": {"typeKey": "generic"}},
@@ -133,6 +133,16 @@ def test_auto_activities_skips_confirmed_and_sleep(monkeypatch):
     ]
     assert service._auto_activities(events) == "08:15 cycling 45хв"
     assert service._auto_activities([]) is None
+
+
+def test_auto_activities_tolerates_malformed_fields():
+    events = [
+        {"activityType": {"typeKey": "cycling"}, "durationInSeconds": "not-a-number",
+         "startTimestampLocal": 12345},                       # wrong types, no crash
+        {"activityType": {"typeKey": {"nested": "dict"}}},    # non-string sport, skipped
+        {"activityType": None},                               # no sport at all, skipped
+    ]
+    assert service._auto_activities(events) == "cycling"
 
 
 def test_daily_summary_includes_auto_activities(monkeypatch):
