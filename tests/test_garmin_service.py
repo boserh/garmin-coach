@@ -124,6 +124,34 @@ def test_fetch_workout_detail_parses_description(monkeypatch):
     assert d["steps"][0]["pace_min_km"] is None
 
 
+def test_auto_activities_skips_confirmed_and_sleep(monkeypatch):
+    events = [
+        {"activityId": 111, "activityType": {"typeKey": "running"}},  # already confirmed
+        {"eventType": {"typeKey": "sleep"}, "activityType": {"typeKey": "generic"}},
+        {"activityType": {"typeKey": "cycling"}, "durationInSeconds": 2700,
+         "startTimestampLocal": "2026-07-03T08:15:00.0"},
+    ]
+    assert service._auto_activities(events) == "08:15 cycling 45хв"
+    assert service._auto_activities([]) is None
+
+
+def test_daily_summary_includes_auto_activities(monkeypatch):
+    fp = FakeProvider()
+
+    def connectapi(self, path, **kwargs):
+        if "dailyEvents" in path:
+            return [{"activityType": {"typeKey": "cycling"}, "durationInSeconds": 1800,
+                      "startTimestampLocal": "2026-06-21T20:00:00.0"}]
+        return FakeProvider.connectapi(self, path, **kwargs)
+
+    monkeypatch.setattr(FakeProvider, "connectapi", connectapi)
+    monkeypatch.setattr(client, "get_provider", lambda: fp)
+    monkeypatch.setattr(service, "get_provider", lambda: fp)
+
+    payload = service.build_payload(days=1, activity_limit=5)
+    assert payload.daily[0].extra["auto_activities"] == "20:00 cycling 30хв"
+
+
 def test_payload_dump_keys_are_stable(monkeypatch):
     fp = FakeProvider()
     monkeypatch.setattr(client, "get_provider", lambda: fp)
