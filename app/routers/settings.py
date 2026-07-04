@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -19,7 +20,9 @@ from app.core.crypto import decrypt, encrypt, hash_password, verify_password
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
-from app.garmin import plan_sync
+from app.garmin import mfa, plan_sync, providers
+from app.garmin.credentials import load_credentials
+from app.garmin.mfa import MFANotPending, MFARequired
 from app.garmin.runtime import user_runtime
 from app.weather import geocode
 
@@ -65,9 +68,53 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "saved": request.query_params.get("saved") == "1",
             "geo": request.query_params.get("geo"),
             "pw": request.query_params.get("pw"),
+            "garmin": request.query_params.get("garmin"),
+            "garmin_mfa_pending": mfa.has_pending(user.id),
             "bot_username": settings.TELEGRAM_BOT_USERNAME,
         },
     )
+
+
+@router.post("/settings/garmin-connect")
+async def garmin_connect(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Try (re)connecting this user's Garmin session now, in this process — the only
+    way to actually reach the MFA gate and park on it for /settings/garmin-mfa."""
+    creds = load_credentials(user)
+    if not (creds.garmin_email and creds.garmin_password):
+        return RedirectResponse("/settings?garmin=nocreds", status_code=303)
+    provider = providers.build_user_provider(creds)
+    try:
+        await run_in_threadpool(provider.login)
+    except MFARequired:
+        return RedirectResponse("/settings?garmin=mfa", status_code=303)
+    except Exception:
+        logger.exception(f"GARMIN connect failed user={user.id}")
+        return RedirectResponse("/settings?garmin=fail", status_code=303)
+    if provider.new_token:
+        user.garth_token_enc = encrypt(provider.new_token)
+        await session.commit()
+    return RedirectResponse("/settings?garmin=ok", status_code=303)
+
+
+@router.post("/settings/garmin-mfa")
+async def garmin_mfa_submit(
+    code: str = Form(...),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        token = await run_in_threadpool(mfa.submit_code, user.id, code.strip())
+    except MFANotPending:
+        return RedirectResponse("/settings?garmin=expired", status_code=303)
+    except Exception:
+        logger.exception(f"GARMIN mfa submit failed user={user.id}")
+        return RedirectResponse("/settings?garmin=badcode", status_code=303)
+    user.garth_token_enc = encrypt(token)
+    await session.commit()
+    return RedirectResponse("/settings?garmin=ok", status_code=303)
 
 
 @router.post("/settings")
@@ -92,6 +139,8 @@ async def settings_save(
     if garmin_password.strip():
         user.garmin_password_enc = encrypt(garmin_password.strip())
         user.garth_token_enc = None  # new password → re-login next time
+    if garmin_email or garmin_password.strip():
+        mfa.cancel(user.id)  # any pending MFA login was for the old creds
     if anthropic_key.strip():
         user.anthropic_key_enc = encrypt(anthropic_key.strip())
 

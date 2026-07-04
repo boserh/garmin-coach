@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -21,6 +21,7 @@ from app.core import logging as app_logging
 from app.core.auth import RequiresLogin
 from app.core.config import settings
 from app.db.base import dispose_db, init_db
+from app.garmin.mfa import MFARequired
 from app.routers import admin, auth, health, history, me, plan, reports
 from app.routers import settings as settings_router
 
@@ -68,6 +69,17 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequiresLogin)
     async def _redirect_to_login(request: Request, exc: RequiresLogin):
         return RedirectResponse("/login", status_code=303)
+
+    @app.exception_handler(MFARequired)
+    async def _mfa_required(request: Request, exc: MFARequired):
+        return JSONResponse(
+            {
+                "error": "garmin_mfa_required",
+                "message": "Garmin просить код підтвердження — заверши вхід у Налаштуваннях.",
+                "settings_url": "/settings",
+            },
+            status_code=409,
+        )
 
     @app.get("/")
     async def root(request: Request):

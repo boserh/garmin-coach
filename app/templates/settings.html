@@ -78,6 +78,28 @@
       <button class="btn" type="submit">Зберегти</button>
     </form>
 
+    {% if garmin_mfa_pending or garmin == "mfa" %}
+    <div class="note">
+      <b>Garmin просить код підтвердження (MFA)</b> — перевір телефон/пошту і введи
+      код нижче протягом кількох хвилин.
+    </div>
+    <form class="form" method="post" action="/settings/garmin-mfa">
+      <label for="mfa_code">Код підтвердження</label>
+      <input id="mfa_code" name="code" type="text" inputmode="numeric"
+             autocomplete="one-time-code" required autofocus>
+      <button class="btn" type="submit">Підтвердити</button>
+    </form>
+    {% else %}
+    <form class="form" method="post" action="/settings/garmin-connect">
+      <button class="btn" type="submit">🔐 Перевірити з'єднання з Garmin</button>
+    </form>
+    {% endif %}
+    {% if garmin == "ok" %}<div class="saved">✅ Garmin підключено.</div>
+    {% elif garmin == "fail" %}<div class="err" style="margin:1rem 0">Не вдалось увійти — перевір email/пароль.</div>
+    {% elif garmin == "badcode" %}<div class="err" style="margin:1rem 0">Невірний код або сесія протухла. Спробуй ще раз.</div>
+    {% elif garmin == "expired" %}<div class="err" style="margin:1rem 0">Час на введення коду вийшов. Спробуй підключення ще раз.</div>
+    {% elif garmin == "nocreds" %}<div class="err" style="margin:1rem 0">Спершу збережи Garmin email і пароль вище.</div>{% endif %}
+
     <hr class="divide">
     <h2 class="sec">Зміна пароля</h2>
     {% if pw == "ok" %}<div class="saved">✅ Пароль змінено.</div>
