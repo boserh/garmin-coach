@@ -69,6 +69,10 @@ class User(Base):
     # user generate + validate a plan first, then enable pushing.
     garmin_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Master switch for the adaptive-plan hooks (weekly review + morning nudge, EP-02).
+    # Off → plan_adapt_job and the morning readiness check skip this user entirely.
+    plan_adapt_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -153,13 +157,16 @@ class ReportLog(Base):
 
 class BotState(Base):
     """Generic key/value bot state (e.g. last morning-report date). Replaces the
-    old in-memory ``_sent_today`` + ``state.json``."""
+    old in-memory ``_sent_today`` + ``state.json``.
+
+    ``value`` is ``Text`` (not a short varchar) because EP-02 also stores a pending
+    plan-adaptation proposal here (serialized ``PlanOp`` JSON — steps and all)."""
 
     __tablename__ = "bot_state"
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[Optional[str]] = mapped_column(String(256))
+    value: Mapped[Optional[str]] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )

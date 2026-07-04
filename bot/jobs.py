@@ -10,19 +10,27 @@ concerns from the same tick (no duplicate Garmin calls):
   BotState so a re-run of the job doesn't resend it.
 """
 import datetime as dt
+import json
 import logging
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from app import weather
-from app.analysis.service import AnalystError, run_activity_analysis, run_analysis
+from app.analysis.service import (
+    AnalystError,
+    run_activity_analysis,
+    run_analysis,
+    run_plan_adaptation,
+)
+from app.core.config import settings
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.garmin import matching, plan_sync, repository, service
 from app.garmin.runtime import user_runtime
-from bot.handlers import TZ
+from bot.handlers import PENDING_ADAPT_KEY, TZ
 
 logger = logging.getLogger("bot")
 
@@ -42,6 +50,12 @@ MORNING_STATE_KEY = "morning_sent_date"
 # stale ones). Kept out of the morning report — different concern. Scheduled via
 # run_daily at a fixed hour (Europe/Warsaw), before the morning window.
 PLAN_SYNC_HOUR = 5
+
+# EP-02 adaptive plan: weekly review hour/day come from settings (PLAN_ADAPT_HOUR /
+# PLAN_ADAPT_WEEKLY_DOW). The morning nudge fires only for these session types, and at
+# most once/day per user (guarded via bot_state, key below + today's date).
+ADAPT_HEAVY_TYPES = {"tempo", "intervals", "long"}
+ADAPT_GUARD_PREFIX = "adapt_suggested:"
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
@@ -166,12 +180,121 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
                 return
             if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
                 logger.debug(f"MORNING skip user={user.id}: already sent today")
-                return
-            if await _deliver_morning(ctx, session, user, creds, payload, now, today):
+            elif await _deliver_morning(ctx, session, user, creds, payload, now, today):
                 await repository.set_state(session, user.id, MORNING_STATE_KEY, today)
                 logger.info(f"MORNING sent for {today} user={user.id}")
+
+            # Independent guard from the morning report above — runs even on a later
+            # tick within the same 07-12 window after the report already went out.
+            await _adapt_morning_check(ctx, session, user, creds, today)
     except Exception:
         logger.exception(f"TICK failed for user={user.id}")
+
+
+def _adapt_ops_dump(edit) -> str:
+    return json.dumps(
+        {"ops": [op.model_dump() for op in edit.operations],
+         "alt": [op.model_dump() for op in (edit.alt_operations or [])]},
+        ensure_ascii=False,
+    )
+
+
+async def _send_adapt_proposal(ctx, session, user: User, edit) -> None:
+    """Store the proposed ops in bot_state (survives a bot restart, unlike
+    context.user_data — see EP-02 pitfalls) and send the confirm/reject buttons."""
+    await repository.set_state(session, user.id, PENDING_ADAPT_KEY, _adapt_ops_dump(edit))
+    if edit.risky and edit.alt_operations:
+        text = "📅 Пропоную скоригувати план.\n\n⚠️ " + edit.summary
+        if edit.alt_summary:
+            text += "\n\n🛡 Безпечніше: " + edit.alt_summary
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Як пропоновано", callback_data="adapt_apply")],
+            [InlineKeyboardButton("🛡 Безпечніший варіант", callback_data="adapt_apply_alt")],
+            [InlineKeyboardButton("❌ Відхилити", callback_data="adapt_cancel")],
+        ])
+    else:
+        text = "📅 Пропоную скоригувати план.\n\n" + edit.summary
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Прийняти", callback_data="adapt_apply"),
+            InlineKeyboardButton("❌ Відхилити", callback_data="adapt_cancel"),
+        ]])
+    await ctx.bot.send_message(user.telegram_chat_id, text, reply_markup=kb)
+    logger.info(f"ADAPT proposal sent user={user.id}: {len(edit.operations)} op(s)")
+
+
+async def _adapt_morning_check(ctx, session, user: User, creds, today: str) -> None:
+    """One-off morning nudge: if today's plan session is heavy (tempo/intervals/long)
+    and readiness is low, ask Claude whether to ease/move just that session. Silent
+    when the plan is fine or there's nothing heavy today. Guarded to at most once/day
+    (the guard is set as soon as the check actually runs, not just when it proposes
+    something, so a re-tick with the same low readiness doesn't re-query Claude)."""
+    if not user.plan_adapt_enabled or not user.telegram_chat_id:
+        return
+    guard_key = ADAPT_GUARD_PREFIX + today
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    ws = await repository.upcoming_plan_workouts(session, user.id, days=1)
+    if not any((w.type or "").lower() in ADAPT_HEAVY_TYPES for w in ws):
+        return
+    ex = await repository.get_recent_extra(session, user.id, days=3)
+    readiness = ex.get("readiness_score")
+    if readiness is None or readiness >= settings.PLAN_ADAPT_READINESS_MIN:
+        return
+
+    await repository.set_state(session, user.id, guard_key, "1")
+    try:
+        plan, edit = await run_plan_adaptation(
+            session, user_id=user.id, api_key=creds.anthropic_key,
+            trigger="morning", window_days=0,
+        )
+    except AnalystError:
+        logger.exception(f"ADAPT morning check failed user={user.id}")
+        return
+    if plan is None or not edit.operations:
+        return
+    await _send_adapt_proposal(ctx, session, user, edit)
+
+
+async def _adapt_weekly_for_user(ctx, session, user: User) -> None:
+    if not user.plan_adapt_enabled or not user.telegram_chat_id:
+        return
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None:
+        return
+    try:
+        async with user_runtime(session, user) as creds:
+            if not creds.anthropic_key:
+                return
+            _plan, edit = await run_plan_adaptation(
+                session, user_id=user.id, api_key=creds.anthropic_key, trigger="weekly",
+            )
+    except AnalystError:
+        logger.exception(f"ADAPT weekly failed user={user.id}")
+        return
+    if not edit.operations:
+        return
+    await _send_adapt_proposal(ctx, session, user, edit)
+
+
+async def plan_adapt_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Weekly (Sunday evening by default) plan-adaptation review: propose a correction
+    to the next window when compliance/recovery signals call for it. Silent when the
+    plan is fine (no message sent) — see SYSTEM_PLAN_ADAPT."""
+    try:
+        async with async_session_maker() as session:
+            recipients = (
+                await session.execute(
+                    select(User).where(
+                        User.telegram_chat_id.is_not(None),
+                        User.is_active.is_(True),
+                        User.is_approved.is_(True),
+                    )
+                )
+            ).scalars().all()
+            for user in recipients:
+                await _adapt_weekly_for_user(ctx, session, user)
+    except Exception:
+        logger.exception("PLAN adapt job failed")
 
 
 async def _sync_for_user(session, user: User) -> None:

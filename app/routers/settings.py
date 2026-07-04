@@ -61,6 +61,7 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "telegram_chat_id": user.telegram_chat_id or "",
             "weather_location": user.weather_location or "",
             "garmin_sync_enabled": user.garmin_sync_enabled,
+            "plan_adapt_enabled": user.plan_adapt_enabled,
             "saved": request.query_params.get("saved") == "1",
             "geo": request.query_params.get("geo"),
             "pw": request.query_params.get("pw"),
@@ -78,6 +79,7 @@ async def settings_save(
     telegram_chat_id: str = Form(""),
     weather_location: str = Form(""),
     garmin_sync: str = Form(""),   # checkbox: "on" when ticked, absent otherwise
+    plan_adapt: str = Form(""),    # checkbox: "on" when ticked, absent otherwise
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -113,6 +115,10 @@ async def settings_save(
     sync_on = bool(garmin_sync)
     sync_changed = sync_on != user.garmin_sync_enabled
     user.garmin_sync_enabled = sync_on
+
+    # Adaptive-plan toggle (EP-02) — no side effect needed, the weekly/morning hooks
+    # just check this flag on their next run.
+    user.plan_adapt_enabled = bool(plan_adapt)
 
     await session.commit()
 
