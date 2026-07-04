@@ -178,6 +178,19 @@ def fetch_calendar(year: int, month_index: int):
     return _safe(_api, f"/calendar-service/year/{year}/month/{month_index}")
 
 
+def fetch_daily_events(date: dt.date) -> list:
+    """Garmin's daily events feed: includes activities the watch auto-detected
+    (e.g. a bike ride) even when the user never confirmed/saved them as a real
+    Activity — those never show up in ``fetch_activities``. Parsed defensively
+    by ``service._auto_activities`` since the exact field names aren't
+    documented; unexpected shapes are logged there for tuning."""
+    r = _safe(
+        _api, "/wellness-service/wellness/dailyEvents",
+        params={"calendarDate": date.isoformat()},
+    )
+    return r if isinstance(r, list) else []
+
+
 # Garmin exercise NAME codes → readable names, mapped at return time so the cache
 # stays language-neutral. Unknown names are logged once (so they can be added to
 # exercise_names.py) and fall back to a prettified form.
