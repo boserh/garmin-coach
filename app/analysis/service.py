@@ -115,7 +115,13 @@ _cache = _load_cache()
 
 
 def _as_dict(payload: Union[Payload, dict]) -> dict:
-    return payload.model_dump() if isinstance(payload, Payload) else payload
+    d = payload.model_dump() if isinstance(payload, Payload) else payload
+    # Strip per-point pace/HR series from activities — it's used only for single-activity
+    # analysis (activity_payload/_segments), not for daily reports, and adds 5-6 KB per run.
+    acts = d.get("recent_activities")
+    if acts:
+        d = {**d, "recent_activities": [{k: v for k, v in a.items() if k != "series"} for a in acts]}
+    return d
 
 
 _FITNESS_KEYS = (
@@ -241,7 +247,7 @@ def analyze_with_stats(
 
         msg = _get_client(api_key).messages.create(
             model=model,
-            max_tokens=1200,
+            max_tokens=2000,
             system=SYSTEM,
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
@@ -254,10 +260,15 @@ def analyze_with_stats(
             stats.output_tokens = usage.output_tokens
             stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
             logger.info(
-                f"CLAUDE OK  {model}  in={usage.input_tokens} out={usage.output_tokens} "
+                f"CLAUDE OK  {model}  stop={msg.stop_reason}  "
+                f"in={usage.input_tokens} out={usage.output_tokens} "
                 f"~${stats.cost_usd:.4f}"
             )
         text = "".join(b.text for b in msg.content if b.type == "text")
+        if not text:
+            logger.error(f"CLAUDE empty response  model={model} stop={msg.stop_reason} "
+                         f"content_types={[b.type for b in msg.content]}")
+            raise AnalystError("Порожня відповідь від Claude. Спробуй ще раз.")
         _cache[key] = (text, _time.time() + CACHE_TTL_S)
         _save_cache()
         return text, stats
