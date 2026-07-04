@@ -21,6 +21,7 @@ from bot.jobs import (
     CHECK_INTERVAL_MIN,
     PLAN_SYNC_HOUR,
     morning_job,
+    plan_adapt_job,
     plan_sync_job,
 )
 
@@ -60,6 +61,7 @@ def main() -> None:
     app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("plan", handlers.plan))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
+    app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
     app.add_handler(CommandHandler("test_on", handlers.test_on))
     app.add_handler(CommandHandler("test_off", handlers.test_off))
     app.add_handler(CommandHandler("test_morning", handlers.test_morning))
@@ -78,6 +80,12 @@ def main() -> None:
     app.job_queue.run_daily(
         plan_sync_job,
         time=time(hour=PLAN_SYNC_HOUR, tzinfo=handlers.TZ),
+    )
+    # EP-02 adaptive plan: weekly review. days follow PTB's 0=Sunday..6=Saturday.
+    app.job_queue.run_daily(
+        plan_adapt_job,
+        time=time(hour=settings.PLAN_ADAPT_HOUR, tzinfo=handlers.TZ),
+        days=(settings.PLAN_ADAPT_WEEKLY_DOW,),
     )
 
     logger.info("Bot started")
