@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     CLAUDE_CACHE_FILE: str = "claude_cache.json"
     GARMIN_CACHE_FILE: str = "garmin_cache.json"
 
+    # --- Adaptive plan (EP-02) ---
+    # Weekly review: hour (Europe/Warsaw) + day-of-week it runs on. python-telegram-bot's
+    # JobQueue.run_daily ``days`` convention is 0=Sunday..6=Saturday.
+    PLAN_ADAPT_HOUR: int = 20
+    PLAN_ADAPT_WEEKLY_DOW: int = 0  # Sunday
+    # Morning one-off nudge fires only when today's readiness score is below this AND
+    # today's plan session is tempo/intervals/long.
+    PLAN_ADAPT_READINESS_MIN: int = 50
+
 
 @lru_cache
 def get_settings() -> Settings:
