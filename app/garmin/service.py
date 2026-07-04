@@ -85,6 +85,38 @@ def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
     return {k: v for k, v in raw.items() if v is not None}
 
 
+def _auto_activities(events: list) -> Optional[str]:
+    """Compact summary of activities the watch auto-detected but that were never
+    confirmed/saved as a real Activity (e.g. an unrecorded bike ride) — so they
+    never reach ``recent_activities``. Skips anything carrying an ``activityId``
+    (already a confirmed activity, covered by ``fetch_activities``) and non-sport
+    events (sleep/naps).
+
+    Garmin doesn't document ``dailyEvents``' exact field names, so this parses
+    defensively (several key spellings) and logs the raw shape of anything it
+    can't classify, so the parsing can be corrected against a real account."""
+    labels: List[str] = []
+    for e in events:
+        if not isinstance(e, dict) or e.get("activityId"):
+            continue
+        sport = (_g(e, "activityType", "typeKey") or _g(e, "activityType", "parentTypeKey")
+                 or e.get("activityTypeKey"))
+        event_kind = _g(e, "eventType", "typeKey") or e.get("eventTypeKey")
+        if not sport or event_kind in ("sleep", "nap"):
+            continue
+        dur_s = e.get("durationInSeconds") or e.get("duration")
+        if dur_s is None and e.get("durationInMilliseconds"):
+            dur_s = e["durationInMilliseconds"] / 1000
+        start = (e.get("startTimestampLocal") or e.get("startTimeLocal") or "")[11:16]
+        label = str(sport).replace("_", " ").lower()
+        if dur_s:
+            label += f" {round(dur_s / 60)}хв"
+        labels.append(f"{start} {label}".strip() if start else label)
+    if events and not labels:
+        logger.debug(f"DAILY EVENTS unclassified, raw sample: {events[:2]}")
+    return "; ".join(labels) or None
+
+
 def _daily_extra_metrics(uds: dict, vo2: dict, race: dict, endurance: dict) -> dict:
     """Daily summary (steps/intensity/floors/BB range), VO2max, race-time predictions
     and endurance score — from the metrics + usersummary endpoints."""
@@ -119,6 +151,7 @@ def daily_summary(date: dt.date) -> dict:
     vo2 = client.fetch_vo2max(date)
     race = client.fetch_race_predictions()
     endurance = client.fetch_endurance(date)
+    events = client.fetch_daily_events(date)
     dto = _g(sleep, "dailySleepDTO") or {}
     sec = lambda v: round(v / 3600, 2) if isinstance(v, (int, float)) else None
 
@@ -126,6 +159,9 @@ def daily_summary(date: dt.date) -> dict:
         **_daily_extra(sleep, hrv, dto, readiness),
         **_daily_extra_metrics(uds, vo2, race, endurance),
     }
+    auto = _auto_activities(events)
+    if auto:
+        extra["auto_activities"] = auto
     result = {
         "date": date.isoformat(),
         "sleep_score": _g(dto, "sleepScores", "overall", "value"),
