@@ -120,7 +120,9 @@ def _as_dict(payload: Union[Payload, dict]) -> dict:
     # analysis (activity_payload/_segments), not for daily reports, and adds 5-6 KB per run.
     acts = d.get("recent_activities")
     if acts:
-        d = {**d, "recent_activities": [{k: v for k, v in a.items() if k != "series"} for a in acts]}
+        d = {**d, "recent_activities": [
+            {k: v for k, v in a.items() if k != "series"} for a in acts
+        ]}
     return d
 
 
