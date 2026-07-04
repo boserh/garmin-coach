@@ -21,6 +21,7 @@ from app.analysis.prompts import (
     SYSTEM_ACTIVITY,
     SYSTEM_ASK,
     SYSTEM_PLAN,
+    SYSTEM_PLAN_ADAPT,
     SYSTEM_PLAN_EDIT,
     SYSTEM_STRENGTH_GEN,
 )
@@ -914,5 +915,116 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=instruction[:200], report_text=edit.summary,
+    )
+    return plan, edit
+
+
+# ---------- ADAPTIVE PLAN (EP-02) ----------
+
+ADAPT_WINDOW_DAYS_DEFAULT = 14
+ADAPT_COMPLIANCE_WEEKS = 3
+
+
+def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS) -> dict:
+    """Slice a ``weekly_compliance`` dict down to the most recent ``weeks`` ISO weeks
+    (week strings sort lexically in date order)."""
+    if not compliance:
+        return {}
+    return dict(sorted(compliance.items())[-weeks:])
+
+
+def _in_adapt_window(date_s, today: dt.date, window_days: int) -> bool:
+    try:
+        d = dt.date.fromisoformat(date_s)
+    except (TypeError, ValueError):
+        return False
+    return today <= d <= today + dt.timedelta(days=window_days)
+
+
+def _filter_ops_to_window(ops: list, today: dt.date, window_days: int) -> list:
+    """Drop operations whose target date falls outside the adaptation window — a
+    guardrail so the model can't rewrite the whole plan (see EP-02 pitfalls)."""
+    return [op for op in ops if _in_adapt_window(op.date, today, window_days)]
+
+
+def plan_adapt_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Propose a plan correction (or none) from recovery/compliance signals — same JSON
+    schema as ``plan_edit_with_stats`` (``PlanEdit``). One retry on a parse miss."""
+    model = MODEL_PLAN
+    text, stats = _complete(model, SYSTEM_PLAN_ADAPT, context, "adapt", api_key, max_tokens=1500)
+    try:
+        return _coerce_edit(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(
+            model, SYSTEM_PLAN_ADAPT, retry, "adapt", api_key, max_tokens=1500
+        )
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_edit(text), stats
+        except Exception as e:
+            logger.error(f"PLAN_ADAPT parse failed: {e}")
+            raise AnalystError("Не вдалось сформувати пропозицію адаптації плану.")
+
+
+async def run_plan_adaptation(
+    session, *, user_id: int, api_key: Optional[str] = None,
+    trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
+):
+    """Look at the active plan's upcoming window, compliance (EP-01) and recovery/load
+    signals; propose a correction (empty ``operations`` if the plan is fine). Does NOT
+    apply the change — the caller confirms via bot buttons, same as :func:`run_plan_edit`.
+
+    Returns ``(plan, PlanEdit)``, or ``(None, None)`` when there's no active plan. Logs
+    ``ReportLog(kind="adapt")`` on every call (even a no-op) so adaptation cost is
+    tracked. ``trigger`` picks the prompt framing ("weekly" review of the next
+    ``window_days`` vs a "morning" one-off nudge, called with ``window_days=0`` so only
+    today's session is in scope); ``window_days`` also bounds which operation dates are
+    kept — anything the model proposes outside ``today..today+window_days`` is dropped.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        return None, None
+
+    today = dt.date.today()
+    window_end = (today + dt.timedelta(days=window_days)).isoformat()
+    ws = [w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
+          if w.date <= window_end]
+    compliance = _recent_compliance(await repository.weekly_compliance(session, plan.id))
+    ex = await repository.get_recent_extra(session, user_id)
+    fitness = _build_fitness_snapshot(ex)
+    context = {
+        "today": today.isoformat(),
+        "trigger": trigger,
+        "window_days": window_days,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description} for w in ws],
+        "compliance": compliance or None,
+        "fitness": fitness or None,
+    }
+    try:
+        edit, stats = await run_in_threadpool(plan_adapt_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="adapt", model=MODEL_PLAN, ok=False,
+            question=f"adapt:{trigger}", error=str(e)[:512],
+        )
+        raise
+    edit.operations = _filter_ops_to_window(edit.operations, today, window_days)
+    if edit.alt_operations:
+        edit.alt_operations = _filter_ops_to_window(edit.alt_operations, today, window_days)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"adapt:{trigger}", report_text=edit.summary,
     )
     return plan, edit

@@ -5,6 +5,7 @@ handlers only orchestrate fetch → analyze → reply, each within a DB session 
 matched user's runtime context (their Garmin provider + Claude key). The bot is one
 global identity; a chat is authorised by mapping its chat_id to a registered user.
 """
+import json
 import logging
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,10 @@ from app.garmin.schemas import PlanOp
 logger = logging.getLogger("bot")
 
 TZ = ZoneInfo("Europe/Warsaw")
+
+# bot_state key for a pending adaptive-plan proposal (EP-02) — stored per-user, not
+# context.user_data, because the proposal can originate from a job (no chat context).
+PENDING_ADAPT_KEY = "pending_adapt"
 
 _REPORT_Q = "Оціни відновлення і дай пораду до наступної запланованої пробіжки."
 _DEEP_Q = "Глибокий розбір сну, HRV і навантаження за два тижні."
@@ -302,6 +307,48 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await plan_sync.resync_workouts(session, user.id, affected)
             except Exception:
                 logger.exception(f"PLAN edit sync failed user={user.id}")
+    await q.edit_message_text(f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.")
+
+
+async def adapt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Confirm/reject a proposal from the adaptive-plan hooks (EP-02: weekly review or
+    the morning nudge). Mirrors ``plan_callback`` but reads pending ops from bot_state
+    (``PENDING_ADAPT_KEY``) since the proposal may have been sent by a background job,
+    not a live chat turn."""
+    q = update.callback_query
+    await q.answer()
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        pending_raw = await repository.get_state(session, user.id, PENDING_ADAPT_KEY)
+        await repository.set_state(session, user.id, PENDING_ADAPT_KEY, "")  # single-use
+
+        if q.data == "adapt_cancel":
+            await q.edit_message_text("Відхилено. План без змін.")
+            return
+        if not pending_raw:
+            await q.edit_message_text("Пропозиція вже неактуальна.")
+            return
+        pending = json.loads(pending_raw)
+        ops_data = pending.get("alt" if q.data == "adapt_apply_alt" else "ops")
+        if not ops_data:
+            await q.edit_message_text("Немає змін для застосування.")
+            return
+        plan_obj = await repository.get_active_plan(session, user.id)
+        if plan_obj is None:
+            await q.edit_message_text("Немає активної програми.")
+            return
+        affected = await repository.apply_plan_ops(
+            session, plan_obj, [PlanOp(**o) for o in ops_data]
+        )
+        if user.garmin_sync_enabled:
+            try:
+                async with user_runtime(session, user):
+                    await plan_sync.resync_workouts(session, user.id, affected)
+            except Exception:
+                logger.exception(f"ADAPT sync failed user={user.id}")
     await q.edit_message_text(f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.")
 
 
