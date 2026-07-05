@@ -128,6 +128,58 @@ async def _backfill_series(email: str, since: str) -> int:
     return 0
 
 
+async def _backfill_auto_activities(email: str, since: str) -> int:
+    """Re-fetch dailyEvents from Garmin for stored days that have no auto_activities
+    in extra. Idempotent — skips rows that already have the key."""
+    import asyncio
+    import datetime as dt
+
+    from fastapi.concurrency import run_in_threadpool
+    from sqlalchemy import select
+
+    from app.db.models import DailyMetric
+    from app.garmin import client
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+    from app.garmin.service import _auto_activities
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+
+        stmt = select(DailyMetric).where(DailyMetric.user_id == user.id)
+        if since:
+            stmt = stmt.where(DailyMetric.date >= since)
+        stmt = stmt.order_by(DailyMetric.date.desc())
+        rows = (await session.execute(stmt)).scalars().all()
+        rows = [r for r in rows if not (r.extra or {}).get("auto_activities")]
+        if not rows:
+            print("Nothing to backfill.")
+            return 0
+
+        print(f"Backfilling auto_activities for {len(rows)} day(s)...")
+        done = 0
+        async with user_runtime(session, user):
+            await run_in_threadpool(get_provider().login)
+            for r in rows:
+                date_obj = dt.date.fromisoformat(r.date[:10])
+                events = await run_in_threadpool(client.fetch_daily_events, date_obj)
+                auto = _auto_activities(events)
+                if auto:
+                    extra = dict(r.extra or {})
+                    extra["auto_activities"] = auto
+                    r.extra = extra
+                    done += 1
+                    print(f"  {r.date}: {auto}")
+                await asyncio.sleep(0.3)
+            await session.commit()
+        print(f"Done: {done}/{len(rows)} day(s) updated.")
+    return 0
+
+
 async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> int:
     """Push the user's active-plan workouts in the next ``days`` to the Garmin calendar.
 
@@ -322,6 +374,13 @@ def main(argv=None) -> int:
     bf.add_argument("--email", required=True)
     bf.add_argument("--since", help="only runs from this ISO date onward (e.g. 2025-06-01)")
 
+    baa = sub.add_parser(
+        "backfill-auto-activities",
+        help="Re-fetch auto-detected activities for stored days missing them",
+    )
+    baa.add_argument("--email", required=True)
+    baa.add_argument("--since", help="only days from this ISO date onward (e.g. 2025-06-01)")
+
     ie = sub.add_parser("import-export", help="Backfill daily_metrics from a Garmin GDPR export")
     ie.add_argument("--email", required=True)
     ie.add_argument("--path", required=True, help="export folder (top-level or DI_CONNECT)")
@@ -356,6 +415,8 @@ def main(argv=None) -> int:
         return asyncio.run(_import_garth_token(args.email))
     if args.cmd == "backfill-series":
         return asyncio.run(_backfill_series(args.email, args.since))
+    if args.cmd == "backfill-auto-activities":
+        return asyncio.run(_backfill_auto_activities(args.email, args.since))
     if args.cmd == "import-export":
         return asyncio.run(_import_export(args.email, args.path, args.overwrite, args.since))
     if args.cmd == "import-fit-series":
