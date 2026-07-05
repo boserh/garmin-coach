@@ -45,7 +45,7 @@
         {% endfor %}
       </div>
 
-      {# date picker — custom range; navigates via JS URLSearchParams #}
+      {# date picker + sort on one row #}
       <div class="fgroup">
         <label class="dp-label">Від
           <input class="dp-input" type="date" value="{{ date_from }}"
@@ -59,10 +59,6 @@
         {% if date_from or date_to %}
         <a class="fpill dp-clear" href="?type={{ type_filter }}&sort={{ sort }}&days=0">✕</a>
         {% endif %}
-      </div>
-
-      {# sort #}
-      <div class="fgroup">
         <select class="fsort" onchange="location.href=this.value">
           {% for val, lbl in sort_options %}
           <option value="?type={{ type_filter }}&sort={{ val }}&days={{ days_filter }}&date_from={{ date_from }}&date_to={{ date_to }}"
