@@ -230,6 +230,94 @@ def _hrv_color(status):
     return "#e0af68"
 
 
+def _fmt_race(s) -> str:
+    if not isinstance(s, (int, float)) or s <= 0:
+        return str(s)
+    t = int(s)
+    h, rem = divmod(t, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def _fmt_dist(m) -> str:
+    if not isinstance(m, (int, float)):
+        return str(m)
+    return f"{m / 1000:.1f} км" if m >= 1000 else f"{int(m)} м"
+
+
+_SKIP_KEYS = frozenset({
+    "resting_hr", "readiness_score", "auto_activities",
+    "sleep_feedback", "hrs_feedback", "hrv_feedback",
+    "readiness_feedback", "acwr_feedback", "endurance_class",
+    "hrv_5day_high",
+})
+
+_SECTIONS_DEF = [
+    ("Сон", [
+        ("overnight_hrv",    "HRV нічний",       None),
+        ("avg_hr_sleep",     "пульс уві сні",    None),
+        ("awake_count",      "пробуджень",        None),
+        ("restless_moments", "неспок. моменти",   None),
+        ("sleep_need_h",     "потреба, год",      None),
+        ("skin_temp_dev_c",  "темп. шкіри °C",   None),
+        ("spo2_avg",         "SpO₂ %",            None),
+        ("respiration_avg",  "дихання / хв",      None),
+        ("body_battery_change", "BB зміна",       None),
+    ]),
+    ("HRV (деталі)", [
+        ("hrv_weekly_avg",   "тижн. серед.",      None),
+        ("hrv_5min_high",    "5хв макс",          None),
+        ("hrv_baseline_low", "норма від",         None),
+        ("hrv_baseline_high","норма до",          None),
+    ]),
+    ("Тренувальне навантаження", [
+        ("recovery_time_h",  "відновлення, год",  None),
+        ("acute_load",       "гостре навант.",    None),
+        ("acwr_pct",         "ACWR %",            None),
+    ]),
+    ("Активність дня", [
+        ("steps",            "кроки",             None),
+        ("distance_m",       "відстань",          _fmt_dist),
+        ("calories",         "ккал",              None),
+        ("moderate_min",     "помірна, хв",       None),
+        ("active_min",       "активні, хв",       None),
+        ("floors",           "поверхи",           None),
+        ("min_hr",           "мін. пульс",        None),
+        ("bb_high",          "BB макс",           None),
+        ("bb_low",           "BB мін",            None),
+    ]),
+    ("Прогнози", [
+        ("race_5k_s",        "5К",                _fmt_race),
+        ("race_10k_s",       "10К",               _fmt_race),
+        ("race_half_s",      "напівмарафон",      _fmt_race),
+        ("race_marathon_s",  "марафон",           _fmt_race),
+        ("vo2max",           "VO₂max",            None),
+        ("fitness_age",      "фітнес-вік",        None),
+        ("endurance_score",  "витривалість",      None),
+    ]),
+]
+
+
+def _day_sections(ex: dict) -> list:
+    known = {k for _, fields in _SECTIONS_DEF for k, *_ in fields} | _SKIP_KEYS
+    out = []
+    for title, fields in _SECTIONS_DEF:
+        items = [
+            {"label": lbl, "value": fmt(ex[k]) if fmt else ex[k]}
+            for k, lbl, fmt in fields if ex.get(k) is not None
+        ]
+        if items:
+            out.append({"title": title, "items": items})
+    leftovers = [
+        {"label": k.replace("_", " "), "value": v}
+        for k, v in ex.items()
+        if k not in known and v is not None and isinstance(v, (int, float, str))
+    ]
+    if leftovers:
+        out.append({"title": "Інше", "items": leftovers})
+    return out
+
+
 async def _daily_cards(session, user_id, limit, offset):
     rows = (await session.execute(
         select(DailyMetric).where(DailyMetric.user_id == user_id)
@@ -252,6 +340,7 @@ async def _daily_cards(session, user_id, limit, offset):
             "stress_avg": r.stress_avg,
             "bb_charged": r.bb_charged, "bb_drained": r.bb_drained,
             "rhr": ex.get("resting_hr"), "readiness": ex.get("readiness_score"),
+            "auto_activities": ex.get("auto_activities"),
             "ring": ring,
         })
     return out
@@ -438,7 +527,7 @@ async def me_row(
         return templates.TemplateResponse(
             request, "day.html",
             {"m": obj, "date": _nice_date(obj.date), "hrv_color": _hrv_color(obj.hrv_status),
-             "extra": ex, "user": user, "base": "/me", "token": ""},
+             "extra": ex, "sections": _day_sections(ex), "user": user, "base": "/me", "token": ""},
         )
 
     fields = [(c.name, getattr(obj, c.name))

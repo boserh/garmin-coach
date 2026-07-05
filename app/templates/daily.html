@@ -94,6 +94,7 @@
               {% if d.stress_avg %}<span class="mchip"><b>{{ d.stress_avg }}</b><span class="u">стрес</span></span>{% endif %}
               {% if d.bb_charged %}<span class="mchip"><b>+{{ d.bb_charged }}</b><span class="u">BB</span></span>{% endif %}
             </div>
+            {% if d.auto_activities %}<div class="auto-acts">{{ d.auto_activities }}</div>{% endif %}
           </div>
         </div>
       </a>
