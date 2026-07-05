@@ -64,6 +64,7 @@ _ACT_META = {
     "strength_training": ("🏋️", "#e0af68"), "cardio": ("❤️", "#f7768e"),
     "yoga": ("🧘", "#bb9af7"), "swimming": ("🏊", "#7dcfff"),
     "lap_swimming": ("🏊", "#7dcfff"), "kitesurfing": ("🪁", "#7dcfff"),
+    "kiteboarding": ("🪁", "#7dcfff"), "kiteboarding_v2": ("🪁", "#7dcfff"),
     "tennis": ("🎾", "#c3e88d"),
 }
 _RUNWALK = {"running", "treadmill_running", "trail_running", "track_running",
