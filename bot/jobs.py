@@ -29,8 +29,9 @@ from app.core.config import settings
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.garmin import matching, plan_sync, repository, service
+from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
-from bot.handlers import PENDING_ADAPT_KEY, TZ
+from bot.handlers import MFA_REQUIRED_MSG, PENDING_ADAPT_KEY, TZ
 
 logger = logging.getLogger("bot")
 
@@ -45,6 +46,7 @@ ACTIVITY_WATCH_END_HOUR = 23
 ACTIVITY_FRESH_DAYS = 2
 CHECK_INTERVAL_MIN = 20
 MORNING_STATE_KEY = "morning_sent_date"
+MFA_NOTIFIED_PREFIX = "mfa_notified:"
 
 # A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
 # stale ones). Kept out of the morning report — different concern. Scheduled via
@@ -187,6 +189,15 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
             # Independent guard from the morning report above — runs even on a later
             # tick within the same 07-12 window after the report already went out.
             await _adapt_morning_check(ctx, session, user, creds, today)
+    except MFARequired:
+        # A different process (this one) can't finish the login Garmin is asking
+        # about — just point the user at /settings once/day, don't spam every tick.
+        guard_key = MFA_NOTIFIED_PREFIX + today
+        if await repository.get_state(session, user.id, guard_key) != "1":
+            await repository.set_state(session, user.id, guard_key, "1")
+            if user.telegram_chat_id:
+                await ctx.bot.send_message(user.telegram_chat_id, MFA_REQUIRED_MSG)
+        logger.warning(f"TICK MFA required user={user.id}")
     except Exception:
         logger.exception(f"TICK failed for user={user.id}")
 
