@@ -63,7 +63,7 @@
     {% for sec in sections %}
     <h2 class="sec">{{ sec.title }}</h2>
     <div class="mrow">
-      {% for item in sec.items %}
+      {% for item in sec.rows %}
       <span class="mchip"><b>{{ item.value }}</b><span class="u">{{ item.label }}</span></span>
       {% endfor %}
     </div>
