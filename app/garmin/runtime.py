@@ -27,6 +27,8 @@ async def user_runtime(session, user: User):
     provider = providers.build_user_provider(creds)
     token = providers.set_current_provider(provider)
     try:
+        # A login that hits Garmin's MFA gate raises MFARequired (app.garmin.mfa) —
+        # deliberately not caught here, so routers/bot handlers can react to it.
         yield creds
     finally:
         providers.reset_current_provider(token)

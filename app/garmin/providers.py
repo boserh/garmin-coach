@@ -125,7 +125,9 @@ class _UserGarthProvider:
         email, password = self._creds.garmin_email, self._creds.garmin_password
         if not email or not password:
             raise RuntimeError("No Garmin credentials configured for this user.")
-        self._client.login(email, password)
+        from app.garmin.mfa import start_login  # local import: avoid a cycle at module load
+
+        start_login(self._creds.user_id, self._client, email, password)
         self._logged_in = True
         self.new_token = self._client.dumps()
 

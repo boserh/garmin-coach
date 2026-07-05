@@ -12,7 +12,7 @@
 | [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | — |
 | [ST-04](ST-04-auto-activity-analysis.md) | ~~Автоаналіз нової пробіжки після синку~~ ✅ | M | — |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — |
-| [ST-06](ST-06-remote-mfa-relogin.md) | Remote MFA re-login | M | — (enabler для деплою на Pi) |
+| [ST-06](ST-06-remote-mfa-relogin.md) | ~~Remote MFA re-login~~ ✅ | M | — (enabler для деплою на Pi) |
 
 ## Епіки (L/XL)
 

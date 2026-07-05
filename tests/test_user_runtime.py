@@ -30,7 +30,7 @@ class FakeGarthClient:
     def username(self):
         return "tester"
 
-    def login(self, email, password):
+    def login(self, email, password, prompt_mfa=None):
         self.logged_in_with = (email, password)
 
     def dumps(self):

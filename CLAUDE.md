@@ -98,9 +98,34 @@ Optional, with defaults:
   `UserCredentials`.
 - **Per-user runtime**: `app.garmin.runtime.user_runtime(session, user)` binds that
   user's Garmin provider (a `garth.Client` resumed from the stored token, else
-  email+password login — no MFA — saving a fresh token) via a ContextVar, and yields
+  email+password login — saving a fresh token) via a ContextVar, and yields
   decrypted creds (so `run_analysis(..., api_key=creds.anthropic_key)` uses their key).
-  All data reads/writes are scoped by `user_id`.
+  All data reads/writes are scoped by `user_id`. A login that hits Garmin's MFA gate
+  raises `MFARequired` rather than hanging or silently failing — `user_runtime` lets it
+  propagate (see the MFA re-login bullet below).
+- **Remote MFA re-login**: the installed `garth` (0.4.47) has no `return_on_mfa`/
+  `resume_login` pair — `Client.login(email, password, prompt_mfa=...)` just blocks on
+  a callback until it returns a code. `app.garmin.mfa` bridges that into a two-request
+  web flow: `start_login` runs the real `login()` on a background thread whose
+  `prompt_mfa` parks on a `queue.Queue`; the initiating call waits up to ~25s for either
+  a fast (no-MFA) result or the MFA gate. On the gate it raises `MFARequired(user_id)`
+  and leaves the thread parked (module-level `_pending` dict, in-memory, TTL ~10 min —
+  deliberately per-process, since an MFA trigger from the bot can't be finished there).
+  A follow-up `submit_code(user_id, code)` delivers the code into the same paused
+  thread and returns the fresh token. On `/settings`, `POST /settings/garmin-connect`
+  kicks off `start_login` for the current user (the only way to actually reach the MFA
+  gate — it must run in the web process); if it raises `MFARequired`, `GET /settings`
+  shows a code-entry form (`garmin_mfa_pending` via `mfa.has_pending`) whose
+  `POST /settings/garmin-mfa` calls `submit_code` and persists the resulting token.
+  A wrong/expired code clears the pending state so the user just retries the whole
+  connect step. The bot's global `on_error` and the morning job's `_tick_for_user`
+  both catch `MFARequired` and send a friendly "finish the login in /settings" message
+  instead of a generic error (the morning job guards it to once/day via `bot_state`,
+  key `mfa_notified:<date>`); a top-level FastAPI `exception_handler(MFARequired)` in
+  `app.main` covers the JSON endpoints (`/report.json`, `/deep`, …) with a 409.
+  Changing Garmin email/password in `/settings` cancels any pending MFA state (it was
+  for the old creds). Normal token-resume and no-MFA logins are unaffected — the bridge
+  only engages once Garmin actually asks for a code.
 - **Registration**: `/register` is public — a self-signup creates an unapproved,
   non-admin user (`is_approved=False`) that **cannot log in** until an admin approves
   it at `/admin/users` (approve / delete buttons). Admin- and CLI-created users are
@@ -534,4 +559,4 @@ to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
 
 - Validate the `gconn` provider against the live Garmin API.
 - Deploy to Raspberry Pi 4 (systemd units for `bot.main` and `uvicorn`).
-- Optional: dashboard/history visualization, remote MFA re-login flow.
+- Optional: dashboard/history visualization.
