@@ -45,27 +45,20 @@
         {% endfor %}
       </div>
 
-      {# date picker — custom range; submits with days=0 #}
-      <form class="fgroup" id="dpform" method="get" action="">
-        <input type="hidden" name="type" value="{{ type_filter }}">
-        <input type="hidden" name="sort" value="{{ sort }}">
-        <input type="hidden" name="days" value="0">
+      {# date picker + sort on one row #}
+      <div class="fgroup">
         <label class="dp-label">Від
-          <input class="dp-input" type="date" name="date_from" value="{{ date_from }}"
+          <input class="dp-input" type="date" value="{{ date_from }}"
                  id="dp_from" max="{{ date_to or '' }}">
         </label>
         <span class="dp-sep">—</span>
         <label class="dp-label">До
-          <input class="dp-input" type="date" name="date_to" value="{{ date_to }}"
+          <input class="dp-input" type="date" value="{{ date_to }}"
                  id="dp_to" min="{{ date_from or '' }}">
         </label>
         {% if date_from or date_to %}
-        <a class="fpill dp-clear" href="?type={{ type_filter }}&sort={{ sort }}&days={{ days_filter }}">✕</a>
+        <a class="fpill dp-clear" href="?type={{ type_filter }}&sort={{ sort }}&days=0">✕</a>
         {% endif %}
-      </form>
-
-      {# sort #}
-      <div class="fgroup">
         <select class="fsort" onchange="location.href=this.value">
           {% for val, lbl in sort_options %}
           <option value="?type={{ type_filter }}&sort={{ val }}&days={{ days_filter }}&date_from={{ date_from }}&date_to={{ date_to }}"
@@ -127,10 +120,16 @@
     (function () {
       var from = document.getElementById('dp_from');
       var to   = document.getElementById('dp_to');
-      var form = document.getElementById('dpform');
-      function submit() { form.submit(); }
-      from.addEventListener('change', function () { to.min = this.value; submit(); });
-      to.addEventListener('change',   function () { from.max = this.value; submit(); });
+      function go() {
+        var p = new URLSearchParams(window.location.search);
+        from.value ? p.set('date_from', from.value) : p.delete('date_from');
+        to.value   ? p.set('date_to',   to.value)   : p.delete('date_to');
+        p.set('days', '0');
+        p.delete('offset');
+        window.location.search = p.toString();
+      }
+      if (from) from.addEventListener('change', function () { to.min = this.value; go(); });
+      if (to)   to.addEventListener('change',   function () { from.max = this.value; go(); });
     })();
   </script>
 </body>
