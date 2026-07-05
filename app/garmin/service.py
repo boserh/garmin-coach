@@ -99,22 +99,29 @@ def _auto_activities(events: list) -> Optional[str]:
     for e in events:
         if not isinstance(e, dict) or e.get("activityId"):
             continue
-        sport = (_g(e, "activityType", "typeKey") or _g(e, "activityType", "parentTypeKey")
-                 or e.get("activityTypeKey"))
+        act_type = e.get("activityType")
+        sport = (
+            _g(e, "activityType", "typeKey") or _g(e, "activityType", "parentTypeKey")
+            or e.get("activityTypeKey")
+            or (act_type if isinstance(act_type, str) else None)
+        )
         event_kind = _g(e, "eventType", "typeKey") or e.get("eventTypeKey")
         if not sport or not isinstance(sport, str) or event_kind in ("sleep", "nap"):
             continue
-        dur_s = e.get("durationInSeconds") or e.get("duration")
-        if dur_s is None:
-            dur_s = e.get("durationInMilliseconds")
-            dur_s = dur_s / 1000 if isinstance(dur_s, (int, float)) else None
-        elif not isinstance(dur_s, (int, float)):
-            dur_s = None
+        # duration: durationInSeconds (old nested format) or duration (minutes, flat format)
+        dur_min: Optional[float] = None
+        dur_s = e.get("durationInSeconds")
+        if isinstance(dur_s, (int, float)):
+            dur_min = dur_s / 60
+        else:
+            raw_dur = e.get("duration") or e.get("durationInMilliseconds")
+            if isinstance(raw_dur, (int, float)):
+                dur_min = raw_dur / 60000 if e.get("durationInMilliseconds") else raw_dur
         raw_start = e.get("startTimestampLocal") or e.get("startTimeLocal")
         start = raw_start[11:16] if isinstance(raw_start, str) else ""
         label = sport.replace("_", " ").lower()
-        if dur_s:
-            label += f" {round(dur_s / 60)}хв"
+        if dur_min:
+            label += f" {round(dur_min)}хв"
         labels.append(f"{start} {label}".strip() if start else label)
     if events and not labels:
         logger.debug(f"DAILY EVENTS unclassified, raw sample: {events[:2]}")

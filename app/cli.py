@@ -167,16 +167,13 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
             for r in rows:
                 date_obj = dt.date.fromisoformat(r.date[:10])
                 events = await run_in_threadpool(client.fetch_daily_events, date_obj)
-                print(f"  {r.date}: {len(events)} event(s) raw")
-                if events:
-                    print(f"    sample: {events[0]}")
                 auto = _auto_activities(events)
                 if auto:
                     extra = dict(r.extra or {})
                     extra["auto_activities"] = auto
                     r.extra = extra
                     done += 1
-                    print(f"    → {auto}")
+                    print(f"  {r.date}: {auto}")
                 await asyncio.sleep(0.3)
             await session.commit()
         print(f"Done: {done}/{len(rows)} day(s) updated.")
