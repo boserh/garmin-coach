@@ -296,6 +296,13 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .fsort{font-size:.8rem;padding:.28rem .55rem;border-radius:10px;border:1px solid var(--line-2);
   background:var(--surface);color:var(--muted);cursor:pointer;outline:none}
 .fsort:focus{border-color:var(--accent)}
+.dp-label{font-size:.78rem;color:var(--muted);display:flex;align-items:center;gap:.3rem}
+.dp-input{font-size:.78rem;padding:.25rem .45rem;border-radius:8px;border:1px solid var(--line-2);
+  background:var(--surface);color:var(--ink);outline:none;cursor:pointer;
+  color-scheme:dark}
+.dp-input:focus{border-color:var(--accent)}
+.dp-sep{color:var(--faint);font-size:.8rem}
+.dp-clear{padding:.25rem .55rem;font-size:.8rem}
 
 /* ---- metric chips (daily / reuse) ---- */
 .mrow{display:flex;flex-wrap:wrap;gap:.35rem .95rem;margin-top:.5rem;font-variant-numeric:tabular-nums}
