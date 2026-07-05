@@ -285,6 +285,18 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .hero-side .hk{color:var(--muted);font-size:.82rem}
 .hero-date{color:var(--faint);font-size:.8rem;margin-bottom:.2rem;text-transform:capitalize}
 
+/* ---- activity filters ---- */
+.fbar{display:flex;flex-direction:column;gap:.6rem;margin:1.2rem 0 1rem}
+.fgroup{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center}
+.fpill{font-size:.8rem;padding:.28rem .7rem;border-radius:20px;border:1px solid var(--line-2);
+  color:var(--muted);background:var(--surface);white-space:nowrap;transition:border-color .1s,background .1s,color .1s}
+.fpill:hover{border-color:var(--accent);color:var(--ink);text-decoration:none}
+.fpill.active{background:var(--accent);border-color:var(--accent);color:#0d0f14;font-weight:600}
+.fpill .fcnt{font-size:.72rem;opacity:.7;margin-left:.2rem}
+.fsort{font-size:.8rem;padding:.28rem .55rem;border-radius:10px;border:1px solid var(--line-2);
+  background:var(--surface);color:var(--muted);cursor:pointer;outline:none}
+.fsort:focus{border-color:var(--accent)}
+
 /* ---- metric chips (daily / reuse) ---- */
 .mrow{display:flex;flex-wrap:wrap;gap:.35rem .95rem;margin-top:.5rem;font-variant-numeric:tabular-nums}
 .mchip{font-size:.84rem;color:#cbd2dc}
