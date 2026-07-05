@@ -275,14 +275,21 @@ async def _activity_count_filtered(session, user_id, type_filter="", days_filter
     return (await session.execute(stmt)).scalar_one()
 
 
-async def _activity_type_counts(session, user_id):
-    """Returns list of (type, count) sorted by count desc."""
-    rows = (await session.execute(
+async def _activity_type_counts(session, user_id, days_filter=0, date_from="", date_to=""):
+    """Returns list of (type, count) sorted by count desc, respecting date filter."""
+    stmt = (
         select(ActivityRecord.type, func.count().label("n"))
         .where(ActivityRecord.user_id == user_id)
-        .group_by(ActivityRecord.type)
-        .order_by(func.count().desc())
-    )).all()
+    )
+    if date_from:
+        stmt = stmt.where(ActivityRecord.date >= date_from)
+    if date_to:
+        stmt = stmt.where(ActivityRecord.date <= date_to)
+    elif days_filter:
+        cutoff = (dt.date.today() - dt.timedelta(days=days_filter)).isoformat()
+        stmt = stmt.where(ActivityRecord.date >= cutoff)
+    stmt = stmt.group_by(ActivityRecord.type).order_by(func.count().desc())
+    rows = (await session.execute(stmt)).all()
     return [
         {"type": t, "count": n,
          "emoji": _act_meta(t)[0],
@@ -572,7 +579,8 @@ async def me_table(
         total = await _activity_count_filtered(session, user.id, type_filter=type,
                                                days_filter=effective_days,
                                                date_from=date_from, date_to=date_to)
-        type_counts = await _activity_type_counts(session, user.id)
+        type_counts = await _activity_type_counts(session, user.id,
+    days_filter=effective_days, date_from=date_from, date_to=date_to)
         valid_sorts = {k for k, _ in _SORT_OPTIONS}
         safe_sort = sort if sort in valid_sorts else "date_desc"
         return templates.TemplateResponse(
