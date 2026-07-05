@@ -24,7 +24,40 @@
     <p class="eyebrow">Активності</p>
     <h1 class="title" style="font-size:1.7rem">Тренування</h1>
 
-    {% if not acts %}<div class="empty">Поки що немає активностей.</div>{% endif %}
+    {# ---- filter bar ---- #}
+    <div class="fbar">
+
+      {# type pills #}
+      <div class="fgroup">
+        <a href="?sort={{ sort }}&days={{ days_filter }}"
+           class="fpill{{ ' active' if not type_filter }}">Всі <span class="fcnt">{{ total if not type_filter else '' }}</span></a>
+        {% for tc in type_counts %}
+        <a href="?type={{ tc.type }}&sort={{ sort }}&days={{ days_filter }}"
+           class="fpill{{ ' active' if type_filter == tc.type }}">{{ tc.emoji }} {{ tc.label }} <span class="fcnt">{{ tc.count }}</span></a>
+        {% endfor %}
+      </div>
+
+      {# date range #}
+      <div class="fgroup">
+        {% for d, lbl in [(0, 'Весь час'), (30, '30 днів'), (90, '3 міс'), (365, 'Рік')] %}
+        <a href="?type={{ type_filter }}&sort={{ sort }}&days={{ d }}"
+           class="fpill{{ ' active' if days_filter == d }}">{{ lbl }}</a>
+        {% endfor %}
+      </div>
+
+      {# sort #}
+      <div class="fgroup">
+        <select class="fsort" onchange="location.href=this.value">
+          {% for val, lbl in sort_options %}
+          <option value="?type={{ type_filter }}&sort={{ val }}&days={{ days_filter }}"
+                  {{ 'selected' if sort == val }}>{{ lbl }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+    </div>
+
+    {% if not acts %}<div class="empty">Немає активностей за обраними фільтрами.</div>{% endif %}
     <div class="acts">
       {% for a in acts %}
       <a class="act" href="/me/activities/{{ a.id }}" style="--accent:{{ a.color }}">
@@ -62,10 +95,11 @@
     </div>
 
     {% if total > limit %}
+    {% set base_qs = "type=" ~ type_filter ~ "&sort=" ~ sort ~ "&days=" ~ days_filter ~ "&limit=" ~ limit %}
     <div class="pager">
-      {% if offset > 0 %}<a href="/me/activities?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}">← новіші</a>{% endif %}
+      {% if offset > 0 %}<a href="?{{ base_qs }}&offset={{ [offset - limit, 0]|max }}">← новіші</a>{% endif %}
       <span>{{ offset + 1 }}–{{ offset + acts|length }} з {{ total }}</span>
-      {% if offset + limit < total %}<a href="/me/activities?limit={{ limit }}&offset={{ offset + limit }}">старіші →</a>{% endif %}
+      {% if offset + limit < total %}<a href="?{{ base_qs }}&offset={{ offset + limit }}">старіші →</a>{% endif %}
     </div>
     {% endif %}
   </div>
