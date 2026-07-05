@@ -294,7 +294,8 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .fpill.active{background:var(--accent);border-color:var(--accent);color:#0d0f14;font-weight:600}
 .fpill .fcnt{font-size:.72rem;opacity:.7;margin-left:.2rem}
 .fsort{font-size:.8rem;padding:.28rem .55rem;border-radius:10px;border:1px solid var(--line-2);
-  background:var(--surface);color:var(--muted);cursor:pointer;outline:none}
+  background:var(--surface);color:var(--muted);cursor:pointer;outline:none;
+  width:auto;max-width:14rem}
 .fsort:focus{border-color:var(--accent)}
 .dp-label{font-size:.78rem;color:var(--muted);display:flex;align-items:center;gap:.3rem}
 .dp-input{font-size:.78rem;padding:.25rem .45rem;border-radius:8px;border:1px solid var(--line-2);
