@@ -142,11 +142,17 @@ def _spark(series, n: int = 48):
     return " ".join(pts)
 
 
-def _act_stmt(user_id, type_filter="", days_filter=0, sort="date_desc"):
+def _act_stmt(user_id, type_filter="", days_filter=0, sort="date_desc",
+              date_from="", date_to=""):
     stmt = select(ActivityRecord).where(ActivityRecord.user_id == user_id)
     if type_filter:
         stmt = stmt.where(ActivityRecord.type == type_filter)
-    if days_filter > 0:
+    if date_from or date_to:
+        if date_from:
+            stmt = stmt.where(ActivityRecord.date >= date_from)
+        if date_to:
+            stmt = stmt.where(ActivityRecord.date <= date_to)
+    elif days_filter > 0:
         since = (dt.date.today() - dt.timedelta(days=days_filter)).isoformat()
         stmt = stmt.where(ActivityRecord.date >= since)
     order = {
@@ -161,9 +167,11 @@ def _act_stmt(user_id, type_filter="", days_filter=0, sort="date_desc"):
 
 
 async def _activity_cards(session, user_id, limit, offset,
-                          type_filter="", days_filter=0, sort="date_desc"):
+                          type_filter="", days_filter=0, sort="date_desc",
+                          date_from="", date_to=""):
     rows = (await session.execute(
-        _act_stmt(user_id, type_filter, days_filter, sort).limit(limit).offset(offset)
+        _act_stmt(user_id, type_filter, days_filter, sort,
+                  date_from, date_to).limit(limit).offset(offset)
     )).scalars().all()
     cards = []
     for r in rows:
@@ -185,12 +193,18 @@ async def _activity_cards(session, user_id, limit, offset,
     return cards
 
 
-async def _activity_count_filtered(session, user_id, type_filter="", days_filter=0):
+async def _activity_count_filtered(session, user_id, type_filter="", days_filter=0,
+                                    date_from="", date_to=""):
     stmt = (select(func.count()).select_from(ActivityRecord)
             .where(ActivityRecord.user_id == user_id))
     if type_filter:
         stmt = stmt.where(ActivityRecord.type == type_filter)
-    if days_filter > 0:
+    if date_from or date_to:
+        if date_from:
+            stmt = stmt.where(ActivityRecord.date >= date_from)
+        if date_to:
+            stmt = stmt.where(ActivityRecord.date <= date_to)
+    elif days_filter > 0:
         since = (dt.date.today() - dt.timedelta(days=days_filter)).isoformat()
         stmt = stmt.where(ActivityRecord.date >= since)
     return (await session.execute(stmt)).scalar_one()
@@ -474,6 +488,8 @@ async def me_table(
     type: str = Query(""),
     sort: str = Query("date_desc"),
     days: int = Query(0, ge=0),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -483,9 +499,14 @@ async def me_table(
 
     # Dedicated card views for the user-facing tables.
     if table == "activities":
+        # date_from/date_to take priority over days shortcut
+        effective_days = 0 if (date_from or date_to) else days
         cards = await _activity_cards(session, user.id, limit, offset,
-                                      type_filter=type, days_filter=days, sort=sort)
-        total = await _activity_count_filtered(session, user.id, type_filter=type, days_filter=days)
+                                      type_filter=type, days_filter=effective_days, sort=sort,
+                                      date_from=date_from, date_to=date_to)
+        total = await _activity_count_filtered(session, user.id, type_filter=type,
+                                               days_filter=effective_days,
+                                               date_from=date_from, date_to=date_to)
         type_counts = await _activity_type_counts(session, user.id)
         valid_sorts = {k for k, _ in _SORT_OPTIONS}
         safe_sort = sort if sort in valid_sorts else "date_desc"
@@ -493,7 +514,8 @@ async def me_table(
             request, "activities.html",
             {"acts": cards, "user": user, "tables": list(TABLES), "base": "/me",
              "token": "", "limit": limit, "offset": offset, "total": total,
-             "type_filter": type, "days_filter": days, "sort": safe_sort,
+             "type_filter": type, "days_filter": effective_days, "sort": safe_sort,
+             "date_from": date_from, "date_to": date_to,
              "type_counts": type_counts, "sort_options": _SORT_OPTIONS},
         )
     if table == "daily_metrics":
