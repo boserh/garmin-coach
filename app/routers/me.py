@@ -307,14 +307,14 @@ def _day_sections(ex: dict) -> list:
             for k, lbl, fmt in fields if ex.get(k) is not None
         ]
         if items:
-            out.append({"title": title, "items": items})
+            out.append({"title": title, "rows": items})
     leftovers = [
         {"label": k.replace("_", " "), "value": v}
         for k, v in ex.items()
         if k not in known and v is not None and isinstance(v, (int, float, str))
     ]
     if leftovers:
-        out.append({"title": "Інше", "items": leftovers})
+        out.append({"title": "Інше", "rows": leftovers})
     return out
 
 
