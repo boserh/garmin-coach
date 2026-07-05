@@ -49,16 +49,25 @@
     </div>
     {% endif %}
 
-    {% set rest = [] %}
-    {% for k, v in extra.items() if v is not none and (v is string or v is number) and k not in ('resting_hr', 'readiness_score') %}
-      {% if rest.append(k) %}{% endif %}
-    {% endfor %}
-    {% if rest %}
-    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Ще показники</h2>
-    <div class="mrow">
-      {% for k in rest %}<span class="mchip"><b>{{ extra[k] }}</b><span class="u">{{ k }}</span></span>{% endfor %}
+    {% if extra.auto_activities %}
+    <h2 class="sec">Авто-активності</h2>
+    <div class="auto-acts-list">
+      {% for act in extra.auto_activities.split(';') %}
+        {% set act = act.strip() %}{% if act %}
+        <span class="auto-act-pill">{{ act }}</span>
+        {% endif %}
+      {% endfor %}
     </div>
     {% endif %}
+
+    {% for sec in sections %}
+    <h2 class="sec">{{ sec.title }}</h2>
+    <div class="mrow">
+      {% for item in sec.items %}
+      <span class="mchip"><b>{{ item.value }}</b><span class="u">{{ item.label }}</span></span>
+      {% endfor %}
+    </div>
+    {% endfor %}
   </div>
 </body>
 </html>
