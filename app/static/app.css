@@ -291,6 +291,11 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .mchip b{color:var(--ink);font-weight:600}
 .mchip .u{color:var(--faint);font-size:.72rem;margin-left:.12rem}
 
+.auto-acts{font-size:.78rem;color:var(--muted);margin-top:.4rem}
+.auto-acts-list{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.55rem}
+.auto-act-pill{font-size:.82rem;color:var(--ink);background:var(--surface-2);
+  border:1px solid var(--line-2);border-radius:20px;padding:.2rem .65rem;white-space:nowrap}
+
 /* ---- daily recovery cards ---- */
 .daycard{display:block;padding:.9rem 1.1rem;margin:.6rem 0;border:1px solid var(--line-2);border-radius:14px;
   background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.35);transition:border-color .12s,background .12s}
