@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user
@@ -69,6 +69,29 @@ _ACT_META = {
 }
 _RUNWALK = {"running", "treadmill_running", "trail_running", "track_running",
             "walking", "hiking"}
+
+_TYPE_LABELS: dict[str, str] = {
+    "running": "Біг", "treadmill_running": "Біг (доріжка)",
+    "trail_running": "Трейл", "track_running": "Біг (трек)",
+    "walking": "Ходьба", "hiking": "Хайкінг",
+    "cycling": "Велосипед", "road_biking": "Шосе",
+    "mountain_biking": "МТБ", "indoor_cycling": "Велотренажер",
+    "gravel_cycling": "Гравел", "gravel_ride": "Гравел",
+    "strength_training": "Сила", "cardio": "Кардіо",
+    "yoga": "Йога", "swimming": "Плавання",
+    "lap_swimming": "Плавання", "kitesurfing": "Кайт",
+    "kiteboarding": "Кайт", "kiteboarding_v2": "Кайт",
+    "tennis": "Теніс", "tennis_v2": "Теніс",
+}
+
+_SORT_OPTIONS = [
+    ("date_desc",  "Дата ↓"),
+    ("date_asc",   "Дата ↑"),
+    ("dist_desc",  "Відстань ↓"),
+    ("dur_desc",   "Тривалість ↓"),
+    ("load_desc",  "Навантаження ↓"),
+    ("hr_desc",    "Пульс ↓"),
+]
 _MONTHS = ["січ", "лют", "бер", "кві", "тра", "чер", "лип", "сер", "вер", "жов", "лис", "гру"]
 _DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
@@ -119,21 +142,38 @@ def _spark(series, n: int = 48):
     return " ".join(pts)
 
 
-async def _activity_cards(session, user_id, limit, offset):
+def _act_stmt(user_id, type_filter="", days_filter=0, sort="date_desc"):
+    stmt = select(ActivityRecord).where(ActivityRecord.user_id == user_id)
+    if type_filter:
+        stmt = stmt.where(ActivityRecord.type == type_filter)
+    if days_filter > 0:
+        since = (dt.date.today() - dt.timedelta(days=days_filter)).isoformat()
+        stmt = stmt.where(ActivityRecord.date >= since)
+    order = {
+        "date_desc": [ActivityRecord.date.desc(), ActivityRecord.id.desc()],
+        "date_asc":  [ActivityRecord.date.asc(),  ActivityRecord.id.asc()],
+        "dist_desc": [nullslast(ActivityRecord.dist_km.desc()), ActivityRecord.date.desc()],
+        "dur_desc":  [nullslast(ActivityRecord.dur_min.desc()), ActivityRecord.date.desc()],
+        "load_desc": [nullslast(ActivityRecord.load.desc()),    ActivityRecord.date.desc()],
+        "hr_desc":   [nullslast(ActivityRecord.avg_hr.desc()),  ActivityRecord.date.desc()],
+    }.get(sort, [ActivityRecord.date.desc(), ActivityRecord.id.desc()])
+    return stmt.order_by(*order)
+
+
+async def _activity_cards(session, user_id, limit, offset,
+                          type_filter="", days_filter=0, sort="date_desc"):
     rows = (await session.execute(
-        select(ActivityRecord)
-        .where(ActivityRecord.user_id == user_id)
-        .order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
-        .limit(limit).offset(offset)
+        _act_stmt(user_id, type_filter, days_filter, sort).limit(limit).offset(offset)
     )).scalars().all()
     cards = []
     for r in rows:
         emoji, color = _act_meta(r.type)
         runwalk = (r.type or "").lower() in _RUNWALK
         strain_ring = {"color": "#3aa0ff", **_ring_geom(r.load / 2, 24)} if r.load else None
+        t = (r.type or "").lower()
+        label = _TYPE_LABELS.get(t) or t.replace("_", " ").capitalize()
         cards.append({
-            "id": r.id, "emoji": emoji, "color": color,
-            "label": (r.type or "—").replace("_", " ").capitalize(),
+            "id": r.id, "emoji": emoji, "color": color, "label": label,
             "date": _nice_date(r.date),
             "dist_km": r.dist_km, "dur_min": r.dur_min,
             "avg_hr": r.avg_hr, "max_hr": r.max_hr, "load": r.load,
@@ -143,6 +183,33 @@ async def _activity_cards(session, user_id, limit, offset):
             "has_analysis": bool(r.analysis),
         })
     return cards
+
+
+async def _activity_count_filtered(session, user_id, type_filter="", days_filter=0):
+    stmt = (select(func.count()).select_from(ActivityRecord)
+            .where(ActivityRecord.user_id == user_id))
+    if type_filter:
+        stmt = stmt.where(ActivityRecord.type == type_filter)
+    if days_filter > 0:
+        since = (dt.date.today() - dt.timedelta(days=days_filter)).isoformat()
+        stmt = stmt.where(ActivityRecord.date >= since)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _activity_type_counts(session, user_id):
+    """Returns list of (type, count) sorted by count desc."""
+    rows = (await session.execute(
+        select(ActivityRecord.type, func.count().label("n"))
+        .where(ActivityRecord.user_id == user_id)
+        .group_by(ActivityRecord.type)
+        .order_by(func.count().desc())
+    )).all()
+    return [
+        {"type": t, "count": n,
+         "emoji": _act_meta(t)[0],
+         "label": _TYPE_LABELS.get((t or "").lower()) or (t or "").replace("_", " ").capitalize()}
+        for t, n in rows if t
+    ]
 
 
 # ---- daily recovery metrics ----
@@ -404,6 +471,9 @@ async def me_table(
     request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    type: str = Query(""),
+    sort: str = Query("date_desc"),
+    days: int = Query(0, ge=0),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -413,12 +483,18 @@ async def me_table(
 
     # Dedicated card views for the user-facing tables.
     if table == "activities":
-        cards = await _activity_cards(session, user.id, limit, offset)
-        total = await _count(session, model, user.id)
+        cards = await _activity_cards(session, user.id, limit, offset,
+                                      type_filter=type, days_filter=days, sort=sort)
+        total = await _activity_count_filtered(session, user.id, type_filter=type, days_filter=days)
+        type_counts = await _activity_type_counts(session, user.id)
+        valid_sorts = {k for k, _ in _SORT_OPTIONS}
+        safe_sort = sort if sort in valid_sorts else "date_desc"
         return templates.TemplateResponse(
             request, "activities.html",
             {"acts": cards, "user": user, "tables": list(TABLES), "base": "/me",
-             "token": "", "limit": limit, "offset": offset, "total": total},
+             "token": "", "limit": limit, "offset": offset, "total": total,
+             "type_filter": type, "days_filter": days, "sort": safe_sort,
+             "type_counts": type_counts, "sort_options": _SORT_OPTIONS},
         )
     if table == "daily_metrics":
         days = await _daily_cards(session, user.id, limit, offset)
