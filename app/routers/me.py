@@ -65,23 +65,88 @@ _ACT_META = {
     "yoga": ("🧘", "#bb9af7"), "swimming": ("🏊", "#7dcfff"),
     "lap_swimming": ("🏊", "#7dcfff"), "kitesurfing": ("🪁", "#7dcfff"),
     "kiteboarding": ("🪁", "#7dcfff"), "kiteboarding_v2": ("🪁", "#7dcfff"),
-    "tennis": ("🎾", "#c3e88d"),
+    "tennis": ("🎾", "#c3e88d"), "tennis_v2": ("🎾", "#c3e88d"),
+    # street / virtual
+    "street_running": ("🏃", "#7aa2f7"), "virtual_run": ("🏃", "#7aa2f7"),
+    "ultra_run": ("🏔️", "#9ece6a"), "indoor_walking": ("🚶", "#73daca"),
+    "virtual_ride": ("🚴", "#7dcfff"),
+    # strength / gym
+    "hiit": ("🔥", "#f7768e"), "jump_rope": ("🪢", "#f7768e"),
+    "pilates": ("🤸", "#bb9af7"), "functional_training": ("🏋️", "#e0af68"),
+    "gymnastics": ("🤸", "#bb9af7"),
+    # mind / breathing
+    "meditation": ("🧘", "#bb9af7"), "breathing": ("🌬️", "#bb9af7"),
+    # water
+    "open_water_swimming": ("🌊", "#7dcfff"),
+    "surfing": ("🏄", "#7dcfff"), "surfing_v2": ("🏄", "#7dcfff"),
+    "stand_up_paddleboarding": ("🏄", "#73daca"),
+    "stand_up_paddleboarding_v2": ("🏄", "#73daca"),
+    "rowing": ("🚣", "#7dcfff"), "kayaking": ("🛶", "#7dcfff"),
+    "sailing": ("⛵", "#7dcfff"),
+    # snow / ice
+    "resort_skiing": ("⛷️", "#7dcfff"), "downhill_skiing": ("⛷️", "#7dcfff"),
+    "cross_country_skiing": ("⛷️", "#9ece6a"), "backcountry_skiing": ("⛷️", "#9ece6a"),
+    "snowboarding": ("🏂", "#7dcfff"),
+    "skating_ws": ("⛸️", "#7dcfff"), "inline_skating": ("🛼", "#73daca"),
+    # court / team
+    "pickleball": ("🏓", "#c3e88d"), "table_tennis": ("🏓", "#c3e88d"),
+    "basketball": ("🏀", "#e0af68"), "volleyball": ("🏐", "#e0af68"),
+    "soccer": ("⚽", "#9ece6a"), "football": ("🏈", "#e0af68"),
+    "badminton": ("🏸", "#c3e88d"), "squash": ("🎾", "#c3e88d"),
+    # climbing
+    "indoor_climbing": ("🧗", "#9ece6a"), "bouldering": ("🧗", "#9ece6a"),
+    "rock_climbing": ("🧗", "#9ece6a"),
+    # other
+    "golf": ("⛳", "#9ece6a"), "boxing": ("🥊", "#f7768e"),
+    "martial_arts": ("🥋", "#f7768e"),
 }
 _RUNWALK = {"running", "treadmill_running", "trail_running", "track_running",
             "walking", "hiking"}
 
 _TYPE_LABELS: dict[str, str] = {
+    # running
     "running": "Біг", "treadmill_running": "Біг (доріжка)",
     "trail_running": "Трейл", "track_running": "Біг (трек)",
-    "walking": "Ходьба", "hiking": "Хайкінг",
+    "street_running": "Стріт ран", "virtual_run": "Віртуальний біг",
+    "ultra_run": "Ультра",
+    # walking / hiking
+    "walking": "Ходьба", "hiking": "Хайкінг", "indoor_walking": "Ходьба",
+    # cycling
     "cycling": "Велосипед", "road_biking": "Шосе",
     "mountain_biking": "МТБ", "indoor_cycling": "Велотренажер",
     "gravel_cycling": "Гравел", "gravel_ride": "Гравел",
+    "virtual_ride": "Велосипед",
+    # strength / gym
     "strength_training": "Сила", "cardio": "Кардіо",
-    "yoga": "Йога", "swimming": "Плавання",
-    "lap_swimming": "Плавання", "kitesurfing": "Кайт",
-    "kiteboarding": "Кайт", "kiteboarding_v2": "Кайт",
+    "hiit": "HIIT", "jump_rope": "Скакалка",
+    "pilates": "Пілатес", "functional_training": "Функціональне",
+    "gymnastics": "Гімнастика",
+    # mind / flexibility
+    "yoga": "Йога", "meditation": "Медитація", "breathing": "Дихання",
+    # water
+    "swimming": "Плавання", "lap_swimming": "Плавання",
+    "open_water_swimming": "Відкрита вода",
+    "kitesurfing": "Кайт", "kiteboarding": "Кайт", "kiteboarding_v2": "Кайт",
+    "surfing": "Серфінг", "surfing_v2": "Серфінг",
+    "stand_up_paddleboarding": "SUP", "stand_up_paddleboarding_v2": "SUP",
+    "rowing": "Веслування", "kayaking": "Каяк", "sailing": "Вітрила",
+    # snow / ice
+    "resort_skiing": "Гірські лижі", "downhill_skiing": "Гірські лижі",
+    "cross_country_skiing": "Бігові лижі", "backcountry_skiing": "Бекантрі",
+    "snowboarding": "Сноуборд",
+    "skating_ws": "Ковзани", "inline_skating": "Ролики",
+    # court / team
     "tennis": "Теніс", "tennis_v2": "Теніс",
+    "pickleball": "Піклбол", "table_tennis": "Настільний теніс",
+    "basketball": "Баскетбол", "volleyball": "Волейбол",
+    "soccer": "Футбол", "football": "Американський футбол",
+    "badminton": "Бадмінтон", "squash": "Сквош",
+    # climbing
+    "indoor_climbing": "Скеледром", "bouldering": "Боулдеринг",
+    "rock_climbing": "Скелі",
+    # other
+    "golf": "Гольф", "boxing": "Бокс",
+    "martial_arts": "Єдиноборства",
 }
 
 _SORT_OPTIONS = [
