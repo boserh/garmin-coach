@@ -18,6 +18,7 @@
 | --- | --- | --- | --- |
 | [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | разом з CODE-05 |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — (філер, низький пріоритет) |
+| [ST-07](ST-07-plan-adjust-level.md) | Adjust level — межі автоадаптації плану (off/conservative/flexible) | M | EP-02 ✅; синергія EP-12, NF-01, NF-03 |
 
 ## Епіки (L/XL)
 
