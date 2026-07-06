@@ -15,7 +15,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analysis.service import AnalystError, resolve_plan_model, run_plan_generation
+from app.analysis.service import (
+    ADJUST_LEVELS,
+    AnalystError,
+    plan_adjust_level,
+    resolve_plan_model,
+    run_plan_generation,
+)
 from app.core.auth import current_user
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -142,6 +148,13 @@ GOALS = {
 WEEKDAYS = {
     "mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
     "fri": "Пт", "sat": "Сб", "sun": "Нд",
+}
+
+# adjust level slug → Ukrainian label (setup form + plan page badge, ST-07)
+ADJUST_LABELS = {
+    "conservative": "обережна",
+    "flexible": "гнучка",
+    "off": "вимкнена",
 }
 
 
@@ -339,6 +352,7 @@ async def plan_page(
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
          "compliance": compliance,
+         "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "count": len(workouts), "readonly": False},
     )
@@ -375,6 +389,7 @@ async def plan_view(
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
          "compliance": compliance,
+         "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "count": len(workouts), "readonly": True},
     )
 
@@ -386,6 +401,7 @@ async def plan_create(
     run_days: list[str] = Form(default=[]),
     long_run_day: str = Form("sun"),
     intensity: str = Form("moderate"),
+    adjust_level: str = Form(""),     # off | conservative | flexible ("" → goal default)
     plan_model: str = Form("opus"),   # generation engine toggle: opus | fable
     recent_5k: str = Form(""),
     longest_run_km: str = Form(""),
@@ -416,11 +432,14 @@ async def plan_create(
         return RedirectResponse("/plan?error=days", status_code=303)
     if long_run_day not in run_days:
         long_run_day = run_days[-1]
+    if adjust_level not in ADJUST_LEVELS:   # unset/garbage → default by goal (ST-07)
+        adjust_level = "conservative" if target_date else "flexible"
     intake = {
         "recent_5k": recent_5k.strip() or None,
         "longest_run_km": longest_run_km.strip() or None,
         "notes": notes.strip() or None,
         "run_days": run_days, "long_run_day": long_run_day,
+        "adjust_level": adjust_level,
     }
     if strength_enabled:
         picks = {"mon": strength_mon, "tue": strength_tue, "wed": strength_wed,
@@ -462,6 +481,23 @@ async def plan_create(
     logger.info(f"PLAN generate requested user={user.id} goal={goal} days={run_days} "
                 f"sync={user.garmin_sync_enabled}")
     _spawn_plan_generation(user.id, params)
+    return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/plan/adjust-level")
+async def plan_set_adjust_level(
+    adjust_level: str = Form(...),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Change the active plan's adaptation level without regenerating it (ST-07).
+    Takes effect on the next adaptation check — no Garmin/Claude call here."""
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is not None and adjust_level in ADJUST_LEVELS:
+        # Reassign (not mutate) the JSON column so SQLAlchemy sees the change.
+        plan.intake = dict(plan.intake or {}, adjust_level=adjust_level)
+        await session.commit()
+        logger.info(f"PLAN adjust_level={adjust_level} user={user.id} plan={plan.id}")
     return RedirectResponse("/plan", status_code=303)
 
 

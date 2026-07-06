@@ -64,6 +64,18 @@
         <option value="hard">Агресивна</option>
       </select>
 
+      <label>Рівень адаптації</label>
+      <div class="hint">Наскільки сміливо тренер може міняти тренування під твоє відновлення
+        (пропозиції завжди з кнопками підтвердження).</div>
+      <div class="modeltoggle" id="adjlvl">
+        <label class="mt"><input type="radio" name="adjust_level" value="conservative">
+          <span>Обережний <small>полегшити чи посунути на 1–2 дні; ключові сесії лишаються</small></span></label>
+        <label class="mt"><input type="radio" name="adjust_level" value="flexible" checked>
+          <span>Гнучкий <small>у розбитий ранок лонг може стати 2 км або скасуватись</small></span></label>
+        <label class="mt"><input type="radio" name="adjust_level" value="off">
+          <span>Вимкнено <small>без пропозицій — стан відновлення лише у звіті</small></span></label>
+      </div>
+
       <label>Модель генерації</label>
       <div class="modeltoggle">
         <label class="mt"><input type="radio" name="plan_model" value="opus" checked>
@@ -154,6 +166,17 @@
       cb.addEventListener('change', update);
     });
     update();
+
+    // Default adjust level follows the goal: a race date → conservative, open-ended →
+    // flexible. Stop auto-switching once the user picks a level explicitly.
+    var adj = document.getElementById('adjlvl');
+    var adjTouched = false;
+    adj.addEventListener('change', function () { adjTouched = true; });
+    document.getElementById('target_date').addEventListener('change', function () {
+      if (adjTouched) return;
+      var v = this.value ? 'conservative' : 'flexible';
+      f.querySelector('input[name=adjust_level][value=' + v + ']').checked = true;
+    });
 
     var se = document.getElementById('strength_enabled');
     var so = document.getElementById('strength_opts');

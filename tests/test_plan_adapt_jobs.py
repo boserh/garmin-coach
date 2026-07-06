@@ -124,6 +124,21 @@ async def test_morning_check_silent_when_no_ops(session):
     assert ctx.bot.sent == []
 
 
+async def test_morning_check_silent_when_level_off(session):
+    """run_plan_adaptation returns (plan, None) for a plan with adjust_level=off."""
+    user = await _make_user(session)
+    today = dt.date.today().isoformat()
+    await _seed_plan(session, user.id, workouts=[dict(date=today, type="long", status="planned")])
+    with patch.object(repository, "get_recent_extra",
+                       new=AsyncMock(return_value={"readiness_score": 20})), \
+         patch.object(jobs_module, "run_plan_adaptation",
+                      new=AsyncMock(return_value=(SimpleNamespace(id=1), None))):
+        ctx = _FakeCtx()
+        await jobs_module._adapt_morning_check(
+            ctx, session, user, SimpleNamespace(anthropic_key="k"), today)
+    assert ctx.bot.sent == []
+
+
 # ---------- weekly review ----------
 
 async def test_weekly_sends_proposal_when_ops_present(session):
@@ -137,6 +152,18 @@ async def test_weekly_sends_proposal_when_ops_present(session):
         ctx = _FakeCtx()
         await jobs_module._adapt_weekly_for_user(ctx, session, user)
     assert len(ctx.bot.sent) == 1
+
+
+async def test_weekly_silent_when_level_off(session):
+    user = await _make_user(session)
+    fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    await _seed_plan(session, user.id, workouts=[dict(date=fut, type="long", status="planned")])
+    with patch.object(jobs_module, "user_runtime", _fake_runtime), \
+         patch.object(jobs_module, "run_plan_adaptation",
+                      new=AsyncMock(return_value=(SimpleNamespace(id=1), None))):
+        ctx = _FakeCtx()
+        await jobs_module._adapt_weekly_for_user(ctx, session, user)
+    assert ctx.bot.sent == []
 
 
 async def test_weekly_silent_when_no_ops(session):

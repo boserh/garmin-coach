@@ -261,7 +261,7 @@ async def _adapt_morning_check(ctx, session, user: User, creds, today: str) -> N
     except AnalystError:
         logger.exception(f"ADAPT morning check failed user={user.id}")
         return
-    if plan is None or not edit.operations:
+    if plan is None or edit is None or not edit.operations:
         return
     await _send_adapt_proposal(ctx, session, user, edit)
 
@@ -282,7 +282,7 @@ async def _adapt_weekly_for_user(ctx, session, user: User) -> None:
     except AnalystError:
         logger.exception(f"ADAPT weekly failed user={user.id}")
         return
-    if not edit.operations:
+    if edit is None or not edit.operations:   # None → plan's adjust_level is off
         return
     await _send_adapt_proposal(ctx, session, user, edit)
 

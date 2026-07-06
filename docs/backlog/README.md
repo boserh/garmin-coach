@@ -18,7 +18,6 @@
 | --- | --- | --- | --- |
 | [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | разом з CODE-05 |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — (філер, низький пріоритет) |
-| [ST-07](ST-07-plan-adjust-level.md) | Adjust level — межі автоадаптації плану (off/conservative/flexible) | M | EP-02 ✅; синергія EP-12, NF-01, NF-03 |
 
 ## Епіки (L/XL)
 
@@ -114,6 +113,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [ST-06](ST-06-remote-mfa-relogin.md) | Remote MFA re-login | `app/garmin/mfa.py` + `/settings`-флоу (⚠️ спирається на garth-логін — подальша доля в OPS-01) |
 | [EP-01](EP-01-plan-vs-actual-matching.md) | План/факт: матчинг виконаних тренувань | `app/garmin/matching.py` + `tests/test_matching.py` |
 | [EP-02](EP-02-adaptive-plan.md) | Адаптивний план (замикання петлі) | `plan_adapt_job`/`_adapt_morning_check` у `bot/jobs.py`, `User.plan_adapt_enabled`, `tests/test_plan_adapt*.py` |
+| [ST-07](ST-07-plan-adjust-level.md) | Adjust level — межі автоадаптації плану | `intake["adjust_level"]` + `plan_adjust_level`/`_filter_ops_to_level` (`app/analysis/service.py`), правила рівнів у `SYSTEM_PLAN_ADAPT`, вибір на setup-формі + зміна на `/plan` без перегенерації |
 
 ## Наскрізна пастка
 
