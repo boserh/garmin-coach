@@ -525,9 +525,23 @@ returns a safer counter-proposal (`alt_summary`/`alt_operations`); the bot then 
 button (✅ as-asked / 🛡 take-suggestion / ❌ cancel — `plan_apply` / `plan_apply_alt` /
 `plan_cancel`), so the user decides with the risk spelled out. Plain `/plan` shows upcoming
 workouts. The shared `_complete` helper centralises
-the Claude call for both. Recovery-adaptive behaviour (reports reacting to HRV/sleep) is not
-wired yet. NB the prompt-for-JSON + Pydantic + one-retry choice avoids SDK tool-use, matching
-the rest of the `messages.create` usage.
+the Claude call for both. **Recovery-adaptive behaviour** (EP-02): `run_plan_adaptation`
+(`SYSTEM_PLAN_ADAPT` → the same `PlanEdit` ops + confirm buttons) runs from two hooks in
+`bot/jobs.py` — a weekly review (`plan_adapt_job`, Sunday `PLAN_ADAPT_HOUR`) over the next
+14 days, and a morning nudge (`_adapt_morning_check`, inside the morning tick) that fires only
+when today holds a heavy session (tempo/intervals/long) and readiness is below
+`PLAN_ADAPT_READINESS_MIN`. Ops outside `today..today+window_days` are dropped
+(`_filter_ops_to_window`); `User.plan_adapt_enabled` is the global master switch. **Adjust
+level** (ST-07, per-plan `intake["adjust_level"]`: off / conservative / flexible; picked on
+the setup form, changeable on `/plan` via `POST /plan/adjust-level` without regeneration;
+unset → `plan_adjust_level` defaults by goal: `target_date` ⇒ conservative, else flexible):
+bounds *how bold* adaptation may be — `off` skips the Claude call entirely
+(`run_plan_adaptation` → `(plan, None)`); `conservative` allows only modify (volume cut ≤30%)
+and move ≤2 days — enforced by `_filter_ops_to_level`, not just the prompt — with a stricter
+taper mode ≤14 days to `target_date` (no moves, cut ≤15%); `flexible` allows the full
+spectrum incl. skip/token-2km. Adapt calls are NOT dedup-cached (`_complete` has no cache),
+so level/context changes always take effect. NB the prompt-for-JSON + Pydantic + one-retry
+choice avoids SDK tool-use, matching the rest of the `messages.create` usage.
 
 ## Caching layers
 

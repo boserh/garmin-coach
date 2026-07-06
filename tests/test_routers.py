@@ -376,6 +376,64 @@ def test_plan_archive_and_readonly_view(auth_client):
     assert "Архівувати / почати нову" not in view  # readonly — no archive button
 
 
+def test_plan_adjust_level_stored_from_form(auth_client):
+    """ST-07: the form's adjust_level lands in intake; when omitted it defaults from
+    the goal — a target_date means race prep (conservative), none means flexible."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+
+    def clear_gen_state():   # the duplicate-submit guard would swallow the next POST
+        async def run():
+            async with async_session_maker() as s:
+                await repository.set_state(s, uid, plan_router.PLAN_GEN_KEY, "")
+        anyio.run(run)
+
+    base = {"goal": "first_5k", "run_days": ["tue", "thu"], "long_run_day": "thu",
+            "intensity": "moderate"}
+    cases = [
+        (dict(base, adjust_level="off"), "off"),
+        (dict(base, target_date="2026-10-01"), "conservative"),
+        (base, "flexible"),
+    ]
+    for data, expected in cases:
+        with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+            r = auth_client.post("/plan", data=data, follow_redirects=False)
+        assert r.status_code == 303
+        _uid, params = spawn.call_args.args
+        assert params["intake"]["adjust_level"] == expected
+        clear_gen_state()
+
+
+def test_plan_adjust_level_editable_on_page(auth_client):
+    """ST-07: the plan page shows the level and changes it without regeneration."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-07-01", days_per_week=2, intensity="moderate",
+                intake={}, summary="s", workouts=[])
+
+    anyio.run(seed)
+    assert "гнучка" in auth_client.get("/plan").text   # no target_date → flexible
+
+    r = auth_client.post("/plan/adjust-level", data={"adjust_level": "off"},
+                         follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/plan"
+    assert "вимкнена" in auth_client.get("/plan").text
+
+    # garbage is ignored — the stored level stays
+    auth_client.post("/plan/adjust-level", data={"adjust_level": "yolo"})
+    assert "вимкнена" in auth_client.get("/plan").text
+
+
 def test_info_requires_login(client):
     assert client.get("/info", follow_redirects=False).status_code == 303
 

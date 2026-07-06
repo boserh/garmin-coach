@@ -37,6 +37,9 @@
       {% if plan.intake and plan.intake.long_run_day %}
         <span class="sep">·</span>довгий — <b>{{ weekdays.get(plan.intake.long_run_day, plan.intake.long_run_day) }}</b>
       {% endif %}
+      {% if adjust_level %}
+        <span class="sep">·</span>адаптація — <b>{{ (adjust_labels or {}).get(adjust_level, adjust_level) }}</b>
+      {% endif %}
     </div>
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
 
@@ -132,6 +135,17 @@
     <div class="foot">
       Коригувати — у боті вільним текстом, напр.
       <b>/plan додай легкий біг сьогодні</b> або <b>/plan перенеси суботнє на неділю</b>.
+      <div>
+        <form class="inline" method="post" action="/plan/adjust-level">
+          <label for="adjust_level">Рівень адаптації:</label>
+          <select id="adjust_level" name="adjust_level">
+            {% for slug, lbl in (adjust_labels or {}).items() %}
+            <option value="{{ slug }}" {{ 'selected' if slug == adjust_level else '' }}>{{ lbl }}</option>
+            {% endfor %}
+          </select>
+          <button class="arch" type="submit">Зберегти</button>
+        </form>
+      </div>
       <div>
         <form class="inline" method="post" action="/plan/archive"
               onsubmit="return confirm('Архівувати поточну програму і почати нову?');">

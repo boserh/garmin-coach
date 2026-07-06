@@ -937,6 +937,64 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
 ADAPT_WINDOW_DAYS_DEFAULT = 14
 ADAPT_COMPLIANCE_WEEKS = 3
 
+# ST-07 adjust level: per-plan bounds on how boldly adaptation may change workouts.
+# Stored in TrainingPlan.intake["adjust_level"]; plans predating the field fall back
+# to a goal-derived default (a race plan is conservative, a health plan flexible).
+ADJUST_LEVELS = ("off", "conservative", "flexible")
+ADAPT_TAPER_DAYS = 14              # ≤ this many days to target_date → taper rules
+ADAPT_CONS_MOVE_MAX_DAYS = 2       # conservative: move at most this many days
+ADAPT_CONS_DIST_MIN_FRAC = 0.7     # conservative: a modify may cut volume ≤30%
+ADAPT_TAPER_DIST_MIN_FRAC = 0.85   # taper: only minimal easing (≤15%)
+
+
+def plan_adjust_level(plan) -> str:
+    """The plan's adaptation level, defaulting by goal when unset: a plan with a
+    ``target_date`` (race prep) is *conservative*, an open-ended one *flexible*."""
+    lvl = ((plan.intake or {}).get("adjust_level") or "").lower()
+    if lvl in ADJUST_LEVELS:
+        return lvl
+    return "conservative" if plan.target_date else "flexible"
+
+
+def _days_to_target(target_date, today: dt.date):
+    try:
+        return (dt.date.fromisoformat(target_date) - today).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_ops_to_level(ops: list, level: str, dist_by_date: dict, days_to_target) -> list:
+    """Drop operations that exceed the plan's adjust level — the guard behind the
+    prompt (the model may overstep; ops outside the bounds must never reach the
+    confirm buttons, same idea as ``_filter_ops_to_window``).
+
+    conservative: only ``modify`` (volume cut ≤30% of the planned distance) and
+    ``move`` by ≤2 days; within the taper (≤``ADAPT_TAPER_DAYS`` to target) moves are
+    dropped too and a cut may be ≤15%. flexible: anything goes (window filter only).
+    """
+    if level == "flexible":
+        return ops
+    if level != "conservative":       # "off" never reaches the model; fail closed
+        return []
+    taper = days_to_target is not None and 0 <= days_to_target <= ADAPT_TAPER_DAYS
+    min_frac = ADAPT_TAPER_DIST_MIN_FRAC if taper else ADAPT_CONS_DIST_MIN_FRAC
+    kept = []
+    for op in ops:
+        if op.action == "move" and not taper:
+            try:
+                delta = abs((dt.date.fromisoformat(op.to_date)
+                             - dt.date.fromisoformat(op.date)).days)
+            except (TypeError, ValueError):
+                continue
+            if delta <= ADAPT_CONS_MOVE_MAX_DAYS:
+                kept.append(op)
+        elif op.action == "modify":
+            orig = dist_by_date.get(op.date)
+            if op.dist_km is not None and orig and op.dist_km < orig * min_frac:
+                continue
+            kept.append(op)
+    return kept
+
 
 def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS) -> dict:
     """Slice a ``weekly_compliance`` dict down to the most recent ``weeks`` ISO weeks
@@ -992,12 +1050,16 @@ async def run_plan_adaptation(
     signals; propose a correction (empty ``operations`` if the plan is fine). Does NOT
     apply the change — the caller confirms via bot buttons, same as :func:`run_plan_edit`.
 
-    Returns ``(plan, PlanEdit)``, or ``(None, None)`` when there's no active plan. Logs
-    ``ReportLog(kind="adapt")`` on every call (even a no-op) so adaptation cost is
-    tracked. ``trigger`` picks the prompt framing ("weekly" review of the next
-    ``window_days`` vs a "morning" one-off nudge, called with ``window_days=0`` so only
-    today's session is in scope); ``window_days`` also bounds which operation dates are
-    kept — anything the model proposes outside ``today..today+window_days`` is dropped.
+    Returns ``(plan, PlanEdit)``, ``(None, None)`` when there's no active plan, or
+    ``(plan, None)`` when the plan's adjust level is "off" (no Claude call, no log —
+    adaptation is disabled for this plan). Logs ``ReportLog(kind="adapt")`` on every
+    real call (even a no-op) so adaptation cost is tracked. ``trigger`` picks the
+    prompt framing ("weekly" review of the next ``window_days`` vs a "morning" one-off
+    nudge, called with ``window_days=0`` so only today's session is in scope);
+    ``window_days`` also bounds which operation dates are kept — anything the model
+    proposes outside ``today..today+window_days`` is dropped. The plan's adjust level
+    (ST-07) further bounds *what* the kept operations may do — see
+    :func:`_filter_ops_to_level`.
     """
     from fastapi.concurrency import run_in_threadpool
 
@@ -1006,6 +1068,10 @@ async def run_plan_adaptation(
     plan = await repository.get_active_plan(session, user_id)
     if plan is None:
         return None, None
+    level = plan_adjust_level(plan)
+    if level == "off":
+        logger.debug(f"ADAPT skip user={user_id}: adjust_level=off")
+        return plan, None
 
     today = dt.date.today()
     window_end = (today + dt.timedelta(days=window_days)).isoformat()
@@ -1014,10 +1080,14 @@ async def run_plan_adaptation(
     compliance = _recent_compliance(await repository.weekly_compliance(session, plan.id))
     ex = await repository.get_recent_extra(session, user_id)
     fitness = _build_fitness_snapshot(ex)
+    days_to_target = _days_to_target(plan.target_date, today)
     context = {
         "today": today.isoformat(),
         "trigger": trigger,
         "window_days": window_days,
+        "adjust_level": level,
+        "target_date": plan.target_date,
+        "days_to_target": days_to_target,
         "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
                       "description": w.description} for w in ws],
         "compliance": compliance or None,
@@ -1031,9 +1101,14 @@ async def run_plan_adaptation(
             question=f"adapt:{trigger}", error=str(e)[:512],
         )
         raise
-    edit.operations = _filter_ops_to_window(edit.operations, today, window_days)
+    dist_by_date = {w.date: w.dist_km for w in ws}
+    edit.operations = _filter_ops_to_level(
+        _filter_ops_to_window(edit.operations, today, window_days),
+        level, dist_by_date, days_to_target)
     if edit.alt_operations:
-        edit.alt_operations = _filter_ops_to_window(edit.alt_operations, today, window_days)
+        edit.alt_operations = _filter_ops_to_level(
+            _filter_ops_to_window(edit.alt_operations, today, window_days),
+            level, dist_by_date, days_to_target)
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
