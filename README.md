@@ -37,6 +37,17 @@ See `CLAUDE.md` for the full module map and design notes.
   effort); the writeup is saved and shown on the activity's web detail page
 * Training plans: pick a goal on the web (`/plan`) and get a generated dated program;
   adjust it in plain language in the bot (`/plan додай легкий біг сьогодні`) with a confirm step
+* Garmin Calendar sync: the plan's upcoming workouts are pushed to Garmin Connect as
+  structured workouts (rolling window, like Runna) — kept in sync automatically by a
+  daily job and on plan edits/archive/regeneration; per-user on/off toggle
+* Strength sessions in the plan: pick a saved Garmin workout per weekday on the setup
+  form, or have one generated from a free-text description; swap exercises in chat
+* Adaptive plan: a weekly review job proposes plan adjustments from the last week's
+  data, and a morning nudge offers to ease today's hard session when readiness is low
+* Offline backfill from a Garmin GDPR export (daily metrics, activities, pace/HR
+  series from FIT files) — no API calls, no rate limits
+* Plan-generation model toggle (Opus by default, Fable as the pricier alternative),
+  with prices shown on the form
 * Aggressive data aggregation to minimize token usage and API cost
 * Response caching to avoid duplicate Claude API calls
 * Web API (FastAPI) for reports, status, and history trends
@@ -47,17 +58,23 @@ See `CLAUDE.md` for the full module map and design notes.
 
 ```text
 app/                 shared core + web layer
-  core/              config (pydantic-settings), logging, web auth
-  db/                async SQLAlchemy engine, ORM models, session
-  garmin/            providers, low-level client, service (aggregation), repository, schemas
-  analysis/          Claude analysis (service) + SYSTEM prompt
-  routers/           /health, /status, /report.json, /deep, /history
+  core/              config (pydantic-settings), logging, crypto, session auth
+  db/                async SQLAlchemy engine, ORM models, session, user queries
+  garmin/            providers, low-level client, service (aggregation), repository,
+                     schemas, mfa (web MFA flow), plan_sync (calendar sync),
+                     workout_export (plan → Garmin workout DTOs), exercises (catalog),
+                     export_import (GDPR-export backfill)
+  analysis/          Claude analysis (service) + system prompts
+  routers/           auth (/login), health, reports, history, plan, settings, me, admin (/ui)
+  weather.py         Open-Meteo geocode + forecast for the morning report
+  cli.py             admin CLI (create-user, backfills, push-plan, …)
   main.py            FastAPI app factory (create_app)
 bot/                 Telegram front-end
-  handlers.py        /report, /ask, /deep, /activities, /activity, /plan, /test_on, /test_off
-  jobs.py            morning_job
+  handlers.py        /report, /ask, /deep, /activities, /activity, /plan, /test_*
+  jobs.py            morning_job, plan_sync_job, plan_adapt_job
   main.py            entrypoint (python -m bot.main)
 alembic/             database migrations
+deploy/              systemd units (garmin-bot.service, garmin-web.service)
 tests/               pytest suite
 ```
 
@@ -78,19 +95,10 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-Install dependencies:
+Install the project (editable, with dev extras — dependencies come from `pyproject.toml`):
 
 ```bash
-pip install -r requirements.txt
-```
-
-Required packages include:
-
-```text
-anthropic
-garth
-python-telegram-bot[job-queue]
-python-dotenv
+./venv/bin/python -m pip install -e ".[dev]"
 ```
 
 ## Configuration
@@ -118,36 +126,38 @@ master key with:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-The application reads configuration from environment variables.
-
-Example:
-
-```python
-os.environ["ANTHROPIC_API_KEY"]
-```
+Configuration is read from the environment and `.env` by
+`app.core.config.Settings` (pydantic-settings) — the single typed source for all
+variables below.
 
 ### Optional environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
-| `GARTH_TOKEN_DIR` | `~/.garth` | Garmin token storage |
+| `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
-| `WEB_TOKEN` | `` (empty) | Shared secret for data/cost endpoints; empty disables auth |
+| `DB_ECHO` | `false` | Log every SQL statement (verbose) |
+| `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by the login session |
+| `TELEGRAM_BOT_USERNAME` | `garmim_coach_bot` | Bot's @username, rendered as a t.me/ link in onboarding |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root log level (`DEBUG` shows skip-reason logs) |
 | `CLAUDE_CACHE_FILE` | `claude_cache.json` | Claude response cache |
 | `GARMIN_CACHE_FILE` | `garmin_cache.json` | Disk cache for immutable Garmin assets |
+| `PLAN_ADAPT_HOUR` | `20` | Hour (Europe/Warsaw) the weekly plan review runs |
+| `PLAN_ADAPT_WEEKLY_DOW` | `0` (Sunday) | Day of week for the weekly plan review |
+| `PLAN_ADAPT_READINESS_MIN` | `50` | Readiness below this triggers the morning ease-today nudge |
 
 The morning-report status is no longer a file — it lives in the `bot_state` table.
 
 ## Garmin Authentication
 
-On the first run, Garmin authentication may require MFA verification.
-
-Tokens are stored by garth and reused automatically.
-
-Subsequent runs typically do not require manual login.
+Each user connects Garmin at `/settings` (email + password, stored encrypted). If
+Garmin asks for MFA, the page shows a code-entry form — the whole flow is remote,
+no terminal needed. The resulting garth token is stored per user in the DB and
+reused automatically, so subsequent logins are silent. If a stored token expires
+and MFA is needed again, the bot and the JSON endpoints reply with a friendly
+"finish the login in /settings" instead of a generic error.
 
 ## Running
 
@@ -176,6 +186,23 @@ Then log in at `/login`; manage credentials at `/settings`, users at `/admin/use
 The web app also creates its tables on startup, so it runs zero-config before the
 first `alembic upgrade head`.
 
+### Admin CLI
+
+`./venv/bin/python -m app.cli <command> --email …`:
+
+* `create-user [--admin] [--seed-env]` — create a web-login user; `--seed-env`
+  encrypts the `.env` creds into it and claims pre-existing data
+* `import-garth-token` — seed a user's Garmin session from `~/.garth`
+* `import-export --path [--since] [--overwrite]` — backfill daily metrics +
+  activities from a Garmin GDPR export folder (offline, no API)
+* `import-fit-series --path [--since]` — fill runs' pace/HR series from the
+  export's FIT files
+* `backfill-series` / `backfill-auto-activities` — re-fetch series / auto-detected
+  activities for already-stored data (idempotent)
+* `push-plan [--days 14] [--dry-run] [--date]` / `unpush-plan [--date]` — manually
+  push/remove the active plan's workouts on the Garmin calendar
+* `list-workouts` — print the user's saved Garmin workout ids/names
+
 ### Web endpoints
 
 * `GET /login` · `GET /logout` · `GET /register` — cookie-session auth + self-signup
@@ -185,7 +212,9 @@ first `alembic upgrade head`.
 * `GET /report.json` — daily report (Sonnet), login required
 * `GET /deep?q=...` — deep analysis (Opus), login required
 * `GET /history?days=N` — HRV/sleep/stress trend from the DB, login required
-* `GET/POST /plan` — training-plan setup form / generated plan view, login required
+* `GET/POST /plan` — training-plan setup form / generated plan view, login required;
+  `POST /plan/archive` (archive the active plan), `GET /plan/archive` (list archived),
+  `GET /plan/{id}` (read-only view of a past plan)
 * `GET /settings` — manage your own Garmin/Claude/Telegram credentials + password
 * `GET /me` — browse your own metrics / activities / reports (per-user, with charts)
 * `GET /admin/users` — list/create/approve/activate/delete users (admin only)
@@ -317,7 +346,9 @@ Potential future improvements:
 
 ## Caching and Persistence
 
-Three small JSON files persist state across restarts. All use atomic writes, prune expired entries on save, and tolerate an empty/corrupt file (they just start fresh).
+Two small JSON files persist the caches across restarts (all other state lives in the
+database). Both use atomic writes, prune expired entries on save, and tolerate an
+empty/corrupt file (they just start fresh).
 
 ### Claude dedup cache (`claude_cache.json`)
 
@@ -355,20 +386,13 @@ Cache paths can be overridden via `CLAUDE_CACHE_FILE` and `GARMIN_CACHE_FILE`.
 
 ## Time Zones
 
-Telegram JobQueue uses UTC by default.
-
-To avoid scheduling offsets, configure:
-
-```python
-Defaults(
-    tzinfo=ZoneInfo("Europe/Warsaw")
-)
-```
-
-Otherwise scheduled reports may be shifted by two hours depending on daylight saving time.
+Telegram JobQueue uses UTC by default, so the bot sets
+`Defaults(tzinfo=ZoneInfo("Europe/Warsaw"))` in `bot/main.py` — all scheduled jobs
+(morning report window, plan sync, weekly review) run in Warsaw time, DST included.
 
 ## Security
 
-The bot responds only to the configured Telegram chat ID.
-
+Web access requires a login (signed cookie session); credentials are per user and
+encrypted at rest with the `APP_SECRET_KEY` Fernet key. The bot maps an incoming
+chat to a user by its stored `telegram_chat_id` and ignores unknown chats.
 Garmin credentials remain on the host machine and are never sent to Claude.
