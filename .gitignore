@@ -7,6 +7,7 @@ state.json
 state.json.tmp
 garmin_cache.json
 garmin_cache.json.tmp
+.ops01_tokens/
 
 # SQLite database files
 *.db

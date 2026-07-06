@@ -183,6 +183,10 @@ Optional, with defaults:
   prints the payloads without writing; `--date YYYY-MM-DD` targets one session;
   `unpush-plan --email [--date]` removes pushed workouts (by stored id; tolerant of a
   workout already deleted in the UI — never touches manual/Runna workouts).
+  `token-expiry` (OPS-01) decodes every user's stored garth token — OAuth1 issue date
+  (= the OAuth2 JWT `iat`, since we persist only right after a fresh login) and the
+  ≈+1y death date, i.e. each user's auth deadline (`app/garmin/token_info.py`;
+  read-only raw SQL so it works even on a half-migrated DB).
 - **Live calendar sync** (`app.garmin.plan_sync.sync_plan_to_garmin`): the automated
   rolling-window keeper (the CLI's manual cousin). Two passes — **forward** (push the
   active plan's upcoming in-window unpushed runs) and **cleanup** (remove anything we
@@ -396,6 +400,14 @@ legacy and no longer used by these routes.
 `~/.garth`, first run needs interactive MFA). A `gconn` provider over `garminconnect`
 exists behind `GARMIN_PROVIDER=gconn` but is **untested against the live API** — do
 not rely on it. Endpoint URLs and the m/s→min/km pace conversion are unchanged.
+**Auth plan B (OPS-01)**: garth is deprecated upstream (Cloudflare TLS-fingerprinting;
+the 0.4.47 pin still works — don't touch it), so auth failures are monitored via
+grep-stable markers — `GARMIN AUTH FAIL` (ERROR, fresh login failed — the migration
+trigger; logged in `mfa.start_login`, the single chokepoint for all fresh logins) and
+`GARMIN AUTH: stored token resume failed` (WARNING, `_UserGarthProvider`). The
+migration plan + a standalone recon script (`scripts/ops01_recon_gconn.py`, run in a
+throwaway venv with the latest `python-garminconnect`) live in
+`docs/backlog/OPS-01-garmin-auth-plan-b.md`.
 
 **HRV is the primary recovery signal** — `hrv_status = BALANCED` means recovered; a drop is
 the main stress indicator. (The dedicated resting-HR endpoint 403s via garth, but RHR comes

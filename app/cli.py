@@ -311,6 +311,38 @@ async def _list_workouts(email: str) -> int:
     return 0
 
 
+async def _token_expiry() -> int:
+    """OPS-01: read-only decode of every user's stored garth token — when does each
+    user's OAuth1 token (≈1 year from issue) die, i.e. the plan-B migration deadline.
+    Raw SQL on purpose: a diagnostic tool must work even on a half-migrated DB."""
+    from app.core.crypto import decrypt
+    from app.garmin.token_info import decode_token_info
+
+    def fmt(ts):
+        return ts.strftime("%Y-%m-%d") if ts else "—"
+
+    async with async_session_maker() as session:
+        rows = await session.execute(
+            text("SELECT id, email, garth_token_enc FROM users ORDER BY id")
+        )
+        for uid, email, token_enc in rows:
+            if not token_enc:
+                print(f"  {uid}  {email}: no stored garth token")
+                continue
+            try:
+                info = decode_token_info(decrypt(token_enc))
+            except Exception as e:
+                print(f"  {uid}  {email}: undecodable token ({e})")
+                continue
+            print(
+                f"  {uid}  {email}: oauth1 issued {fmt(info['oauth1_issued'])}"
+                f" → dies ≈ {fmt(info['oauth1_expiry_est'])}"
+                f"  (oauth2 exp {fmt(info['oauth2_expires_at'])},"
+                f" refresh exp {fmt(info['oauth2_refresh_expires_at'])})"
+            )
+    return 0
+
+
 async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
     await init_db()  # zero-config safety; Alembic remains the source of truth
     async with async_session_maker() as session:
@@ -405,6 +437,11 @@ def main(argv=None) -> int:
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
+    sub.add_parser(
+        "token-expiry",
+        help="Decode all users' stored garth tokens: OAuth1 issue/expiry dates (read-only)",
+    )
+
     args = parser.parse_args(argv)
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
@@ -427,6 +464,8 @@ def main(argv=None) -> int:
         return asyncio.run(_unpush_plan(args.email, args.date))
     if args.cmd == "list-workouts":
         return asyncio.run(_list_workouts(args.email))
+    if args.cmd == "token-expiry":
+        return asyncio.run(_token_expiry())
     return 0
 
 

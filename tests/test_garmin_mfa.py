@@ -44,6 +44,22 @@ def _clear_pending():
     mfa._pending.clear()
 
 
+class FakeFailingClient:
+    """A login that Garmin rejects outright (e.g. Cloudflare block, bad creds)."""
+
+    def login(self, email, password, prompt_mfa=None):
+        raise RuntimeError("403 Forbidden (cloudflare)")
+
+
+def test_failed_login_logs_garmin_auth_fail_marker(caplog):
+    # OPS-01 monitoring: the grep-stable ERROR marker is the migration trigger.
+    client = FakeFailingClient()
+    with caplog.at_level("ERROR", logger="garmin"):
+        with pytest.raises(RuntimeError, match="403 Forbidden"):
+            mfa.start_login(7, client, "e@x.com", "pw")
+    assert any("GARMIN AUTH FAIL" in r.message for r in caplog.records)
+
+
 def test_start_login_no_mfa_returns_immediately():
     client = FakeNoMfaClient()
     mfa.start_login(1, client, "e@x.com", "pw")
