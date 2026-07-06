@@ -24,12 +24,44 @@
 | [EP-04](EP-04-web-dashboard.md) | Веб-дашборд | L | EP-01 (бейджі план/факт — опційно) |
 | [EP-05](EP-05-race-pack.md) | Race pack — підготовка до перегонів | L | — |
 | [EP-06](EP-06-saas-quotas.md) | SaaS-режим: квоти вартості | XL | рішення про продукт |
+| [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | L | EP-01 ✅ |
+| [EP-08](EP-08-health-alerts.md) | Проактивні health-алерти (аномалії відновлення) | L | — |
+| [EP-09](EP-09-ask-full-history.md) | `/ask` над усією історією (tool-use агент над БД) | L–XL | — |
+| [EP-10](EP-10-multisport.md) | Мультиспорт: вело/плавання у планах і аналізі | XL | — |
+| [EP-11](EP-11-web-coach-chat.md) | Веб-чат з тренером | L | EP-09 бажано |
+
+## Перфоманс при зростанні кількості юзерів
+
+| ID | Назва | Оцінка | Залежності |
+| --- | --- | --- | --- |
+| [PERF-01](PERF-01-parallel-user-jobs.md) | Паралелізація per-user джоб бота | M | CODE-04 перед; PERF-03 для ліміту >2 |
+| [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | M | — |
+| [PERF-03](PERF-03-postgres-and-indexes.md) | Postgres перед мультиюзером + індекси | M | — |
+| [PERF-04](PERF-04-event-loop-and-threadpool.md) | Event loop і threadpool під навантаженням | S–M | — |
+| [PERF-05](PERF-05-per-user-fetch-lock-and-garmin-rate-limit.md) | Per-user fetch-lock і rate limit до Garmin | M | разом з PERF-01 |
+
+## Оптимізації коду (рефакторинги)
+
+| ID | Назва | Оцінка | Залежності |
+| --- | --- | --- | --- |
+| [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` (1043 рядки) на пакет | M | до/разом з PERF-02, PERF-04 |
+| [CODE-02](CODE-02-cli-push-plan-reuse-plan-sync.md) | CLI `push-plan` поверх `plan_sync` (дубль вікна) | S | — |
+| [CODE-03](CODE-03-remove-legacy-paths.md) | Прибрати legacy: `WEB_TOKEN`, `gconn`, `GARTH_TOKEN_DIR` | S | рішення по `gconn` |
+| [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | S | перед PERF-01 |
+| [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | S–M | разом зі ST-03 |
 
 ## Рекомендований порядок
 
 ST-01 → ST-02 → ST-04 → **EP-01 → EP-02** (ядро цінності) → ST-06 (перед деплоєм
 на Raspberry Pi) → EP-04 → EP-05. ST-03 і ST-05 — філери між епіками. EP-03 —
 коли силові стануть регулярними. EP-06 — тільки якщо буде рішення продавати.
+
+Нова черга (2026-07): **PERF-02** (крос-процесний кеш-баг — уже сьогодні, не «при
+рості») → **EP-07** (дешевий, сильний ефект) → CODE-04 → PERF-01 + PERF-05 →
+PERF-03 (перед відкриттям `/register` чужим) → EP-08 → EP-09 → EP-11.
+CODE-01 — разом з першим PR, що серйозно чіпає `analysis/service.py`;
+CODE-02/03/05 — філери. PERF-04 — разом з PERF-01 або EP-11 (streaming).
+EP-10 — за запитом (не-біговий сезон / triathlon-ціль).
 
 ## Наскрізна пастка
 
