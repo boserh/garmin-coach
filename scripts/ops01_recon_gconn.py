@@ -102,13 +102,45 @@ def do_login(email, password, token_dir):
         record("login: fresh email+password", "FAIL", f"{type(e).__name__}: {e}")
         raise
 
-    try:
-        os.makedirs(token_dir, exist_ok=True)
-        api.garth.dump(token_dir)
-        record("login: token save", "PASS", token_dir)
-    except Exception as e:
-        record("login: token save", "FAIL", f"{type(e).__name__}: {e}")
+    save_tokens(api, token_dir)
     return api
+
+
+def save_tokens(api, token_dir):
+    """Persist the session. The save API moved between versions (0.2.x had an
+    internal `api.garth`; 0.3.6 is fully native) — try the known spellings and,
+    failing that, report the candidates so the run itself documents the API."""
+    os.makedirs(token_dir, exist_ok=True)
+    for chain in ("garth.dump", "client.dump", "dump_tokens", "save_tokens", "dump", "save"):
+        obj = api
+        try:
+            for part in chain.split("."):
+                obj = getattr(obj, part)
+        except AttributeError:
+            continue
+        try:
+            obj(token_dir)
+            record("login: token save", "PASS", f"{token_dir} via api.{chain}")
+            return
+        except Exception as e:
+            record("login: token save", "FAIL", f"api.{chain}: {type(e).__name__}: {e}")
+            return
+    cands = sorted(
+        a for a in dir(api) if not a.startswith("_")
+        and any(k in a.lower() for k in ("token", "dump", "save", "session", "auth"))
+    )
+    record("login: token save", "FAIL", f"no known save API; candidates: {cands}")
+
+
+def get_identity(api):
+    """(userName, displayName, how). Old versions expose them on `api.garth.profile`;
+    on native versions ask Garmin itself — which also proves connectapi works."""
+    garth_client = getattr(api, "garth", None)
+    if garth_client is not None:
+        prof = garth_client.profile
+        return prof["userName"], prof["displayName"], "api.garth.profile"
+    prof = api.connectapi("/userprofile-service/socialProfile")
+    return prof["userName"], prof["displayName"], "socialProfile endpoint"
 
 
 def check(api, name, path, params=None):
@@ -152,9 +184,8 @@ def main():
 
     # Profile identifiers — the sleep/summary endpoints are keyed by them.
     try:
-        username = api.garth.profile["userName"]
-        display_name = api.garth.profile["displayName"]
-        record("profile: userName/displayName", "PASS", display_name)
+        username, display_name, how = get_identity(api)
+        record("profile: userName/displayName", "PASS", f"{display_name} (via {how})")
     except Exception as e:
         record("profile: userName/displayName", "FAIL", f"{type(e).__name__}: {e}")
         summary()
