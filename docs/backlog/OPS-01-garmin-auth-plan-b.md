@@ -24,8 +24,10 @@ Cloudflare. Тому формат тікета: план Б готовий «у 
       (curl_cffi TLS-імперсонація) проти власного акаунта — логін, MFA, всі наші
       endpoint-и (`trainingreadiness`, `hrvService`, `/details`-серії,
       calendar/workouts). Результат зафіксувати в цьому тікеті (що працює/що ні).
-      **Скрипт готовий** (`scripts/ops01_recon_gconn.py`, інструкція нижче);
-      живий прогін — вручну, бо потребує MFA-коду і свіжого venv.
+      **Прогін 2 на Pi (2026-07-07): 19 перевірок, 0 FAIL** — логін+MFA і всі
+      endpoint-и працюють (таблиця нижче). Лишилось закрити одним
+      resume-прогоном: `/details`-серія (не було бігу у вікні) і
+      write-раундтріп (`--write-test`).
 - [x] Задокументований план міграції: `_UserGarthProvider` → новий провайдер
       (endpoint-и connectapi ті самі; `client.py` писався провайдер-агностично,
       майже не чіпається); адаптація MFA-моста (`app/garmin/mfa.py`) до нового
@@ -129,7 +131,44 @@ workout-а (`--write-test`: create → schedule → delete). Токени — в
   збережених у БД garth-блобів може не бути тривіальною.
 - Endpoint-и ще не перевірені (скрипт обірвався на profile) — прогін 2.
 
-_(таблицю прогону 2 — сюди)_
+**Прогін 2 — Pi, 2026-07-07 08:49, python 3.13.5, garminconnect 0.3.6** —
+**19 перевірок, 0 FAIL**:
+
+| перевірка | статус | нотатка |
+| --- | --- | --- |
+| login: fresh email+password | PASS | MFA prompted |
+| login: token save | PASS | ./.ops01_tokens via **api.client.dump** |
+| profile: userName/displayName | PASS | via socialProfile endpoint |
+| sleep | PASS | dict[24] |
+| hrv (hrvService) | PASS | dict[11] |
+| stress | PASS | dict[14] |
+| body battery | PASS | list[1] |
+| training readiness | PASS | list[3] |
+| user summary | PASS | dict[94] |
+| vo2max (maxmet) | EMPTY | немає даних за день — endpoint живий |
+| race predictions | PASS | dict[8] |
+| endurance score | PASS | dict[16] |
+| daily events | PASS | list[2] |
+| activities list | PASS | list[10] |
+| activity details/series | SKIP | серед останніх 10 активностей не було бігу |
+| exerciseSets | PASS | dict[2] |
+| calendar month | PASS | dict[6] |
+| workouts list | PASS | list[10] |
+| workout full | PASS | dict[33] |
+
+Висновки прогону 2:
+
+- **План Б підтверджено практично повністю**: логін+MFA, всі щоденні
+  endpoint-и, activities, exerciseSets, calendar, workouts — працюють через
+  нативний движок з IP проду.
+- **Токен-store garth-сумісний**: нативний клієнт 0.3.6 живе на `api.client`
+  з `dump`/`load` у стилі garth — міст для MFA і конвертація збережених у БД
+  блобів виглядають простіше, ніж закладалось (звірити формат каталогу
+  `.ops01_tokens` з garth-дампом при міграції).
+- Залишились дві неперевірені гілки (закрити одним resume-прогоном —
+  збережений токен тепер ресюмиться без MFA): **`/details`-серія** (у вікні
+  прогону не було бігу; ліміт пошуку в скрипті піднято до 50) і
+  **write-раундтріп** (`--write-test`: create → schedule → delete workout).
 
 ## План міграції (виконувати ПІСЛЯ фактичної поломки garth, не зараз)
 

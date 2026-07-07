@@ -213,7 +213,7 @@ def main():
     print("\n== activities ==")
     acts = check(api, "activities list",
                  "/activitylist-service/activities/search/activities",
-                 {"start": 0, "limit": 10}) or []
+                 {"start": 0, "limit": 50}) or []
     run = next((a for a in acts
                 if "running" in str(a.get("activityType", {}).get("typeKey", ""))), None)
     if run:
@@ -221,7 +221,7 @@ def main():
         check(api, f"activity details/series (id {aid})",
               f"/activity-service/activity/{aid}/details", {"maxChartSize": 500})
     else:
-        record("activity details/series", "SKIP", "no recent run in the last 10 activities")
+        record("activity details/series", "SKIP", "no recent run in the last 50 activities")
     strength = next((a for a in acts
                      if "strength" in str(a.get("activityType", {}).get("typeKey", ""))), None)
     if strength:

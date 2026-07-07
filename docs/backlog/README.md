@@ -10,7 +10,7 @@
 
 | ID | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- |
-| [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: підготувати і перевірити «план Б» (python-garminconnect) · 🔧 підготовку зроблено 2026-07 (моніторинг-маркери, `token-expiry`, recon-скрипт, план міграції) — лишився живий прогін recon-скрипта | M–L | зливається з PERF-05; поглинає адаптацію ST-06 |
+| [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: підготувати і перевірити «план Б» (python-garminconnect) · 🔧 2026-07: моніторинг-маркери, `token-expiry`, план міграції; **recon на Pi: 0 FAIL** (логін+MFA+всі endpoint-и через garminconnect 0.3.6) — лишились `/details`-серія і write-тест одним resume-прогоном | M–L | зливається з PERF-05; поглинає адаптацію ST-06 |
 
 ## Сторі покращення (S/M)
 
