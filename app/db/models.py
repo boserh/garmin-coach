@@ -155,6 +155,22 @@ class ReportLog(Base):
     report_text: Mapped[Optional[str]] = mapped_column(Text)  # the delivered report
 
 
+class LlmCache(Base):
+    """Cross-process Claude dedup cache (PERF-02). Replaces ``claude_cache.json``:
+    a module-level dict per process meant the bot and the web app each paid for the
+    same Claude call, and whole-file rewrites silently dropped the other process's
+    entries. ``key`` is the sha256 hex from ``analysis.service._cache_key`` (and
+    siblings) — key semantics unchanged; ``expires_at`` is epoch seconds, purged
+    lazily on write (see ``app.db.llm_cache``)."""
+
+    __tablename__ = "llm_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[float] = mapped_column(Float, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class BotState(Base):
     """Generic key/value bot state (e.g. last morning-report date). Replaces the
     old in-memory ``_sent_today`` + ``state.json``.

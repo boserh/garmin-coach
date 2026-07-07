@@ -50,7 +50,6 @@
 | ID | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- |
 | [PERF-01](PERF-01-parallel-user-jobs.md) | Паралелізація per-user джоб бота · ❄️ **frozen**: за 1–2 юзерів болю немає, тригер >5 юзерів | M | CODE-04 перед; PERF-03 для >2 |
-| [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | M | — |
 | [PERF-03](PERF-03-postgres-and-indexes.md) | Postgres перед мультиюзером + індекси · ❄️ **frozen**: прив'язаний до `/register` — той самий garth-ризик, що EP-06 (аудит індексів можна окремо) | M | — |
 | [PERF-04a](PERF-04a-bcrypt-off-event-loop.md) | bcrypt поза event loop | S | — (фікс на годину, мимохідь) |
 | [PERF-04b](PERF-04b-async-anthropic-threadpool.md) | AsyncAnthropic + розвантаження threadpool | M | разом з PERF-02/CODE-01 |
@@ -73,7 +72,9 @@
 1. **OPS-01** ✅ — розвідка python-garminconnect + задокументований план міграції +
    моніторинг падіння логіну зроблені (2026-07); rate limit/backoff — лишився
    в PERF-05 (той самий шар клієнта).
-2. **PERF-02** — крос-процесний кеш-баг платить зайві гроші вже сьогодні.
+2. **PERF-02** ✅ — Claude-дедуп у таблиці `llm_cache` (спільній для бота й веба),
+   Garmin-кеш у per-key файлах; старий `garmin_cache.json` seed'иться один раз
+   (2026-07).
 3. **PERF-04a** — bcrypt → to_thread, фікс на годину, мимохідь.
 
 **Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 → **EP-07** (недільний
@@ -109,6 +110,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [EP-02](EP-02-adaptive-plan.md) | Адаптивний план (замикання петлі) | `plan_adapt_job`/`_adapt_morning_check` у `bot/jobs.py`, `User.plan_adapt_enabled`, `tests/test_plan_adapt*.py` |
 | [ST-07](ST-07-plan-adjust-level.md) | Adjust level — межі автоадаптації плану | `intake["adjust_level"]` + `plan_adjust_level`/`_filter_ops_to_level` (`app/analysis/service.py`), правила рівнів у `SYSTEM_PLAN_ADAPT`, вибір на setup-формі + зміна на `/plan` без перегенерації |
 | [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: «план Б» готовий у шухляді (сама міграція — за фактом поломки garth) | Маркери `GARMIN AUTH FAIL` (`app/garmin/mfa.py`, `providers.py`), `app.cli token-expiry` + `app/garmin/token_info.py`, `scripts/ops01_recon_gconn.py` (recon на Pi: 0 FAIL, garminconnect 0.3.6), план міграції в тікеті. Rate limit — далі в PERF-05 |
+| [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | Таблиця `llm_cache` + `app/db/llm_cache.py` (get/put у `run_analysis`/`run_ask`/`run_activity_analysis`; ключі `_cache_key` недоторкані); Garmin-кеш — per-key файли в `GARMIN_CACHE_DIR` з одноразовим seed'ом зі старого `garmin_cache.json` (`client._seed_legacy_cache`); `tests/test_llm_cache.py` + `tests/test_garmin_disk_cache.py` |
 
 ## Наскрізна пастка
 

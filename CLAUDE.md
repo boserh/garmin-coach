@@ -82,8 +82,11 @@ Optional, with defaults:
 | `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by login (kept for compatibility) |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root level (`DEBUG` shows skip-reason logs) |
-| `CLAUDE_CACHE_FILE` | `claude_cache.json` | Claude dedup cache |
-| `GARMIN_CACHE_FILE` | `garmin_cache.json` | Disk cache for immutable Garmin assets |
+| `GARMIN_CACHE_DIR` | `garmin_cache` | Per-key disk cache for immutable Garmin assets (PERF-02) |
+| `GARMIN_CACHE_FILE` | `garmin_cache.json` | Legacy single-file cache — seeded into `GARMIN_CACHE_DIR` once, then renamed `.migrated` |
+
+`CLAUDE_CACHE_FILE` is gone — the Claude dedup cache lives in the `llm_cache` table
+(PERF-02), shared by the bot and web processes.
 
 `STATE_FILE` is gone — the morning-sent date lives in the `bot_state` table, per user.
 
@@ -300,8 +303,9 @@ app/
   db/
     base.py            async engine + sessionmaker + declarative Base; init_db/dispose_db
     session.py         get_session() request dependency
-    models.py          ORM: User, DailyMetric, ActivityRecord, ReportLog, BotState (user-scoped)
+    models.py          ORM: User, DailyMetric, ActivityRecord, ReportLog, LlmCache, BotState (user-scoped)
     users.py           user queries: get_by_email / get_by_chat_id / create_user
+    llm_cache.py       async get/put over llm_cache — the cross-process Claude dedup cache
   garmin/
     providers.py       legacy global + _UserGarthProvider + provider ContextVar
     credentials.py     load_credentials(user) → decrypted UserCredentials
@@ -557,16 +561,24 @@ choice avoids SDK tool-use, matching the rest of the `messages.create` usage.
 
 ## Caching layers
 
-- **Claude dedup** (`claude_cache.json`): `analyze()` keys on a hash of the meaningful
+- **Claude dedup** (`llm_cache` table, PERF-02): keys on a hash of the meaningful
   payload (`daily`, `recent_activities`, `planned_runs`) + date + question + model +
   `previous_report`. The volatile `generated` timestamp is deliberately excluded —
   otherwise the key changes every minute and never hits (the main gotcha if you touch the
   key logic). `/ask` keys instead on the recent reports + `recent_qa` thread + question +
-  model. 1-week TTL. Hit logs `CLAUDE CACHE HIT`.
-- **Garmin disk cache** (`garmin_cache.json`): immutable ID-keyed assets only —
-  `exercise:v2:<id>` (365d), `workout:v2:<id>` (7d; name + coach description + steps),
-  and `series:v1:<id>` (365d; a run's per-point pace/HR from `/details`, downsampled).
-Day-level caching moved to the DB.
+  model. 1-week TTL; expired rows purged lazily on write. Hit logs `CLAUDE CACHE HIT`.
+  The get/put lives in the async `run_*` wrappers (`app.db.llm_cache` — they hold the
+  session; the sync `*_with_stats` functions run in a threadpool and stay cache-free),
+  so the bot and web processes share hits — the old per-process `claude_cache.json`
+  paid twice for the same call and its whole-file rewrites lost the other process's
+  entries. Cache failures are best-effort: a failed read is a miss, never an error.
+- **Garmin disk cache** (per-key files in `GARMIN_CACHE_DIR`, PERF-02): immutable
+  ID-keyed assets only — `exercise:v2:<id>` (365d), `workout:v2:<id>` (7d; name + coach
+  description + steps), and `series:v1:<id>` (365d; a run's per-point pace/HR from
+  `/details`, downsampled). One JSON file per key (atomic replace, cross-process safe)
+  fronted by an in-process memo; the legacy single `garmin_cache.json` is split into
+  per-key files once at import, then renamed `.migrated`. Day-level caching moved to
+  the DB.
 - **DB day-level cache** (`DailyMetric`): past days served from the DB; today refetched.
 
 ## Logging

@@ -57,8 +57,11 @@ class Settings(BaseSettings):
     LOG_FILE: str = "bot.log"
     LOG_LEVEL: str = "INFO"
 
-    # --- Disk caches (immutable-asset fetches; day-level cache lives in the DB) ---
-    CLAUDE_CACHE_FILE: str = "claude_cache.json"
+    # --- Disk cache (immutable Garmin assets; day-level cache lives in the DB,
+    # the Claude dedup cache in the llm_cache table) ---
+    # Per-key files under this directory (PERF-02 — cross-process safe).
+    GARMIN_CACHE_DIR: str = "garmin_cache"
+    # The legacy single-file cache: seeded into GARMIN_CACHE_DIR once, then renamed.
     GARMIN_CACHE_FILE: str = "garmin_cache.json"
 
     # --- Adaptive plan (EP-02) ---
