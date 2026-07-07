@@ -12,11 +12,14 @@ trigger from the bot (a different process than the web) can't be completed there
 the bot just points the user at the web `/settings` page, which starts its own fresh
 login attempt in its own process. See ST-06 in the backlog.
 """
+import logging
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
+
+logger = logging.getLogger("garmin")
 
 MFA_CODE_TIMEOUT_S = 600  # how long a paused login waits for the code (~10 min)
 _START_WAIT_S = 25  # how long start_login blocks for a fast result or the MFA gate
@@ -88,6 +91,13 @@ def start_login(user_id: int, client, email: str, password: str) -> None:
                     state.ok, state.token = True, client.dumps()
                 except Exception as exc:  # surfaced to whoever is waiting
                     state.error = exc
+                    # OPS-01 monitoring: a fresh-login failure is the trigger for
+                    # the garth → python-garminconnect migration. Keep the marker
+                    # grep-stable: `grep "GARMIN AUTH FAIL" bot.log`.
+                    logger.error(
+                        "GARMIN AUTH FAIL: fresh login failed for user %s: %r",
+                        user_id, exc,
+                    )
                 finally:
                     state.done.set()
 

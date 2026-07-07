@@ -12,6 +12,7 @@ Two providers, selected by ``GARMIN_PROVIDER``:
 Both expose ``login()``, ``connectapi(path, **kwargs)`` and a ``username``
 property (the ``userName`` used to build the sleep endpoint URL).
 """
+import logging
 import os
 import warnings
 from contextvars import ContextVar
@@ -21,6 +22,8 @@ from typing import Optional
 from app.core.config import settings
 
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
+
+logger = logging.getLogger("garmin")
 
 
 class _GarthProvider:
@@ -120,8 +123,15 @@ class _UserGarthProvider:
                 _ = self._client.username  # touch profile to validate the session
                 self._logged_in = True
                 return
-            except Exception:
-                pass  # stale/invalid token — fall back to a fresh login
+            except Exception as exc:
+                # Stale/invalid token — fall back to a fresh login. OPS-01
+                # monitoring: if these start appearing for tokens that aren't
+                # ~1 year old, Garmin likely broke the OAuth2 exchange — check
+                # for GARMIN AUTH FAIL right after (the migration trigger).
+                logger.warning(
+                    "GARMIN AUTH: stored token resume failed for user %s (%r) — "
+                    "falling back to fresh login", self._creds.user_id, exc,
+                )
         email, password = self._creds.garmin_email, self._creds.garmin_password
         if not email or not password:
             raise RuntimeError("No Garmin credentials configured for this user.")
