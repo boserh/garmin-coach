@@ -1,17 +1,21 @@
 """Claude analysis: turn the compact payload into a Ukrainian report.
 
 Moved from the old flat ``claude_analyst``. Keeps the model split (Sonnet for
-daily, Opus for deep), the on-disk dedup cache (identical data+question+model →
-reuse the answer, volatile ``generated`` excluded from the key), per-call cost
-logging, and the user-facing ``AnalystError``. New: every call is also written to
-the ``ReportLog`` table for cost/metrics (via :func:`run_analysis`).
+daily, Opus for deep), the dedup cache (identical data+question+model → reuse the
+answer, volatile ``generated`` excluded from the key), per-call cost logging, and
+the user-facing ``AnalystError``. Every call is also written to the ``ReportLog``
+table for cost/metrics (via :func:`run_analysis`).
+
+The dedup cache lives in the DB (``llm_cache`` table, PERF-02) so the bot and the
+web process share hits. The sync ``*_with_stats`` functions run in a threadpool and
+can't touch the async DB, so the cache get/put lives in the async ``run_*``
+wrappers (which have the session); the key functions here are unchanged.
 """
 import datetime as dt
 import hashlib
 import json
 import logging
 import os
-import time as _time
 import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
@@ -64,7 +68,6 @@ _DEFAULT_DAILY_Q = (
     "Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра."
 )
 
-CACHE_FILE = settings.CLAUDE_CACHE_FILE
 CACHE_TTL_S = 7 * 24 * 3600  # one week
 
 _clients: dict = {}
@@ -85,35 +88,9 @@ def _get_client(api_key: Optional[str] = None):
     return client
 
 
-# ---------- DEDUP CACHE ----------
-
-def _load_cache() -> dict:
-    try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}  # missing or empty/corrupt — start fresh
-    except Exception as e:
-        logger.warning(f"CACHE load failed: {e}")
-        return {}
-    now = _time.time()
-    return {k: (v[0], v[1]) for k, v in raw.items() if v[1] > now}
-
-
-def _save_cache() -> None:
-    now = _time.time()
-    alive = {k: [v[0], v[1]] for k, v in _cache.items() if v[1] > now}
-    try:
-        tmp = CACHE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(alive, f, ensure_ascii=False)
-        os.replace(tmp, CACHE_FILE)
-    except Exception as e:
-        logger.warning(f"CACHE save failed: {e}")
-
-
-_cache = _load_cache()
-
+# ---------- DEDUP CACHE KEYS ----------
+# The cache itself is the llm_cache table (app.db.llm_cache) — get/put happens in
+# the async run_* wrappers below, which have the DB session.
 
 def _as_dict(payload: Union[Payload, dict]) -> dict:
     d = payload.model_dump() if isinstance(payload, Payload) else payload
@@ -220,17 +197,14 @@ def analyze_with_stats(
     ``weather`` (today's compact forecast, see ``app.weather.fetch_forecast``) lets the
     analyst tailor advice for a run today/tomorrow (heat, rain, wind, run timing). Part
     of the cache key so a forecast change yields a fresh report.
+
+    No dedup-cache check here — this runs sync in a threadpool with no DB access;
+    :func:`run_analysis` fronts it with the shared ``llm_cache`` get/put.
     """
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
     data = _as_dict(payload)
     effective_q = question or _DEFAULT_DAILY_Q
-
-    key = _cache_key(data, effective_q, model, previous_report, weather, plan_today, fitness)
-    cached = _cache.get(key)
-    if cached and cached[1] > _time.time():
-        logger.info(f"CLAUDE CACHE HIT  {model}")
-        return cached[0], CallStats(kind=kind, model=model, cached=True)  # no tokens
 
     user_content = {
         "today": dt.date.today().isoformat(),
@@ -272,8 +246,6 @@ def analyze_with_stats(
             logger.error(f"CLAUDE empty response  model={model} stop={msg.stop_reason} "
                          f"content_types={[b.type for b in msg.content]}")
             raise AnalystError("Порожня відповідь від Claude. Спробуй ще раз.")
-        _cache[key] = (text, _time.time() + CACHE_TTL_S)
-        _save_cache()
         return text, stats
 
     except APIStatusError as e:
@@ -299,7 +271,8 @@ def analyze_with_stats(
 
 
 def analyze(payload: Union[Payload, dict], question: str = "", deep: bool = False) -> str:
-    """Back-compatible wrapper returning just the report text."""
+    """Back-compatible wrapper returning just the report text. NB: bypasses the
+    dedup cache (that lives in :func:`run_analysis`, which needs a DB session)."""
     text, _ = analyze_with_stats(payload, question=question, deep=deep)
     return text
 
@@ -326,16 +299,10 @@ def ask_with_stats(
     """Free-form follow-up Q&A grounded in the recent daily reports (no Garmin
     payload). ``recent_asks`` ([{question, answer}, ...]) is the last few minutes'
     /ask thread so a follow-up can build on it. Returns (text, stats); raises
-    AnalystError on API failure. Shares the dedup cache and error handling with
-    :func:`analyze_with_stats`."""
+    AnalystError on API failure. Shares the error handling with
+    :func:`analyze_with_stats`; the dedup cache is checked in :func:`run_ask`."""
     model = MODEL_ASK
     recent_asks = recent_asks or []
-    key = _ask_cache_key(reports, question, model, recent_asks)
-    cached = _cache.get(key)
-    if cached and cached[1] > _time.time():
-        logger.info(f"CLAUDE CACHE HIT  {model} (ask)")
-        return cached[0], CallStats(kind="ask", model=model, cached=True)
-
     user_content = {
         "today": dt.date.today().isoformat(),
         "recent_reports": reports,
@@ -365,8 +332,6 @@ def ask_with_stats(
                 f"~${stats.cost_usd:.4f}"
             )
         text = "".join(b.text for b in msg.content if b.type == "text")
-        _cache[key] = (text, _time.time() + CACHE_TTL_S)
-        _save_cache()
         return text, stats
 
     except APIStatusError as e:
@@ -405,12 +370,24 @@ async def run_ask(
     the answer in."""
     from fastapi.concurrency import run_in_threadpool
 
+    from app.db import llm_cache
     from app.garmin import repository
 
     reports = await repository.get_recent_reports(session, user_id, n=n)
     if not reports:
         raise AnalystError("Поки немає жодного звіту для контексту. Спершу зроби /report.")
     recent_asks = await repository.get_recent_asks(session, user_id, minutes=ASK_CONTEXT_MIN)
+
+    key = _ask_cache_key(reports, question, MODEL_ASK, recent_asks)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_ASK} (ask)")
+        text, stats = cached, CallStats(kind="ask", model=MODEL_ASK, cached=True)
+        await repository.log_report(
+            session, user_id=user_id, kind=stats.kind, model=stats.model, ok=True,
+            cached=True, question=question, report_text=text,
+        )
+        return text
 
     try:
         text, stats = await run_in_threadpool(
@@ -422,6 +399,7 @@ async def run_ask(
             question=question, error=str(e)[:512]
         )
         raise
+    await llm_cache.put(session, key, text, CACHE_TTL_S)
     await repository.log_report(
         session,
         user_id=user_id,
@@ -488,14 +466,9 @@ def analyze_activity_with_stats(
     activity_data: dict, api_key: Optional[str] = None
 ) -> Tuple[str, CallStats]:
     """Analyze one activity. Returns (text, stats); raises AnalystError on API failure.
-    Shares the dedup cache (keyed on the activity payload + model)."""
+    The dedup cache (keyed on the activity payload + model) is checked in
+    :func:`run_activity_analysis`."""
     model = MODEL_ACTIVITY
-    key = _activity_cache_key(activity_data, model)
-    cached = _cache.get(key)
-    if cached and cached[1] > _time.time():
-        logger.info(f"CLAUDE CACHE HIT  {model} (activity)")
-        return cached[0], CallStats(kind="activity", model=model, cached=True)
-
     user_content = {"today": dt.date.today().isoformat(), "activity": activity_data}
     try:
         from anthropic import APIConnectionError, APIStatusError
@@ -517,8 +490,6 @@ def analyze_activity_with_stats(
                 f"out={usage.output_tokens} ~${stats.cost_usd:.4f}"
             )
         text = "".join(b.text for b in msg.content if b.type == "text")
-        _cache[key] = (text, _time.time() + CACHE_TTL_S)
-        _save_cache()
         return text, stats
     except APIStatusError as e:
         raise _status_error(e)
@@ -533,18 +504,26 @@ async def run_activity_analysis(
     page, log a ReportLog (kind="activity"), and return the text."""
     from fastapi.concurrency import run_in_threadpool
 
+    from app.db import llm_cache
     from app.garmin import repository
 
     data = activity_payload(activity)
     q = f"activity #{activity.id} ({activity.type})"
-    try:
-        text, stats = await run_in_threadpool(analyze_activity_with_stats, data, api_key)
-    except AnalystError as e:
-        await repository.log_report(
-            session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, ok=False,
-            question=q, error=str(e)[:512],
-        )
-        raise
+    key = _activity_cache_key(data, MODEL_ACTIVITY)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_ACTIVITY} (activity)")
+        text, stats = cached, CallStats(kind="activity", model=MODEL_ACTIVITY, cached=True)
+    else:
+        try:
+            text, stats = await run_in_threadpool(analyze_activity_with_stats, data, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, ok=False,
+                question=q, error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
     activity.analysis = text
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
@@ -573,6 +552,7 @@ async def run_analysis(
     """
     from fastapi.concurrency import run_in_threadpool
 
+    from app.db import llm_cache
     from app.garmin import repository
 
     model = MODEL_DEEP if deep else MODEL_DAILY
@@ -606,17 +586,27 @@ async def run_analysis(
             ex = await repository.get_recent_extra(session, user_id)
             fitness = _build_fitness_snapshot(ex)
 
-    try:
-        text, stats = await run_in_threadpool(
-            analyze_with_stats, payload, question, deep, kind, previous_report, api_key, weather,
-            plan_today, fitness
-        )
-    except AnalystError as e:
-        await repository.log_report(
-            session, user_id=user_id, kind=kind, model=model, ok=False,
-            question=question or None, error=str(e)[:512]
-        )
-        raise
+    # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
+    # (the README pitfall: every piece of Claude context must be part of the key).
+    cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
+                           previous_report, weather, plan_today, fitness)
+    cached = await llm_cache.get(session, cache_key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {model}")
+        text, stats = cached, CallStats(kind=kind, model=model, cached=True)
+    else:
+        try:
+            text, stats = await run_in_threadpool(
+                analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
+                weather, plan_today, fitness
+            )
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind=kind, model=model, ok=False,
+                question=question or None, error=str(e)[:512]
+            )
+            raise
+        await llm_cache.put(session, cache_key, text, CACHE_TTL_S)
     await repository.log_report(
         session,
         user_id=user_id,

@@ -49,47 +49,92 @@ def _api(path: str, **kwargs):
 
 
 # ---------- DISK CACHE (stable, ID-keyed, immutable assets) ----------
-# Exercise sets (never change) and workout details (rarely change) are keyed on
-# stable Garmin IDs, so we cache them on disk. Keyed by "<kind>:<id>"; values are
-# [data, expires_at].
-GARMIN_CACHE_FILE = settings.GARMIN_CACHE_FILE
+# Exercise sets (never change), run series (never change) and workout details
+# (rarely change) are keyed on stable Garmin IDs and cached as ONE FILE PER KEY
+# under GARMIN_CACHE_DIR (PERF-02): the old single garmin_cache.json rewrote the
+# whole cache on every put and each process held its own copy — cross-process
+# writes silently dropped each other's entries. Per-key files make writes atomic
+# and independent, and both processes read the same directory. Keys are
+# "<kind>:<id>"; file payloads are [data, expires_at]. An in-process memo fronts
+# the file reads (fine for these assets: immutable or slow-changing).
+GARMIN_CACHE_DIR = settings.GARMIN_CACHE_DIR
+GARMIN_CACHE_FILE = settings.GARMIN_CACHE_FILE  # legacy single-file cache (seed source)
 EXERCISE_TTL_S = 365 * 24 * 3600   # a completed activity's sets are immutable
 WORKOUT_TTL_S = 7 * 24 * 3600      # a planned workout can be edited; refresh weekly
 
+_memo: dict = {}
 
-def _cache_load() -> dict:
+
+def _key_path(key: str) -> str:
+    return os.path.join(GARMIN_CACHE_DIR, key.replace(":", "_") + ".json")
+
+
+def _write_entry(path: str, entry: list) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(entry, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _seed_legacy_cache() -> None:
+    """One-time migration: split the old single-file cache into per-key files (its
+    series/exercise entries carry year-long TTLs — re-fetching hundreds of them
+    from Garmin risks a 429), then rename it so this never runs again."""
     try:
         with open(GARMIN_CACHE_FILE, encoding="utf-8") as f:
             raw = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}  # missing or empty/corrupt — start fresh
+        return
     except Exception as e:
-        logger.warning(f"GCACHE load failed: {e}")
-        return {}
+        logger.warning(f"GCACHE seed read failed: {e}")
+        return
     now = _time.time()
-    return {k: v for k, v in raw.items() if v[1] > now}
+    n = 0
+    try:
+        os.makedirs(GARMIN_CACHE_DIR, exist_ok=True)
+        for k, v in raw.items():
+            path = _key_path(k)
+            if isinstance(v, list) and len(v) == 2 and v[1] > now \
+                    and not os.path.exists(path):
+                _write_entry(path, v)
+                n += 1
+        os.replace(GARMIN_CACHE_FILE, GARMIN_CACHE_FILE + ".migrated")
+        logger.info(f"GCACHE seeded {n} entries from {GARMIN_CACHE_FILE}")
+    except Exception as e:
+        logger.warning(f"GCACHE seed failed: {e}")
 
 
-_disk_cache = _cache_load()
+_seed_legacy_cache()
 
 
 def _cache_get(key: str):
-    hit = _disk_cache.get(key)
-    if hit and hit[1] > _time.time():
+    entry = _memo.get(key)
+    now = _time.time()
+    if not (entry and entry[1] > now):
+        # miss or expired in memory — another process may have written a fresher file
+        try:
+            with open(_key_path(key), encoding="utf-8") as f:
+                entry = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        except Exception as e:
+            logger.warning(f"GCACHE read failed: {e}")
+            return None
+        if not (isinstance(entry, list) and len(entry) == 2):
+            return None
+        _memo[key] = entry
+    if entry[1] > now:
         logger.info(f"GARMIN CACHE  {key}")
-        return hit[0]
+        return entry[0]
     return None
 
 
 def _cache_put(key: str, value, ttl_s: float) -> None:
-    _disk_cache[key] = [value, _time.time() + ttl_s]
-    now = _time.time()
-    alive = {k: v for k, v in _disk_cache.items() if v[1] > now}
+    entry = [value, _time.time() + ttl_s]
+    _memo[key] = entry
     try:
-        tmp = GARMIN_CACHE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(alive, f, ensure_ascii=False)
-        os.replace(tmp, GARMIN_CACHE_FILE)
+        os.makedirs(GARMIN_CACHE_DIR, exist_ok=True)
+        _write_entry(_key_path(key), entry)
     except Exception as e:
         logger.warning(f"GCACHE save failed: {e}")
 
