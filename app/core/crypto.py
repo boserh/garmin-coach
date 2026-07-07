@@ -11,7 +11,13 @@ lazily so importing this module never requires a key (tests, CLI tooling); calli
 
 Login passwords are hashed with bcrypt — never encrypted (they must not be
 recoverable). Encryption is for credentials we have to replay to upstream services.
+
+bcrypt is deliberately slow (~100–300 ms); calling it straight from an async route
+blocks the whole event loop, so async callers use the ``*_async`` variants that
+offload to a thread (PERF-04a). The sync versions remain for sync callers (CLI).
 """
+import asyncio
+
 import bcrypt
 from cryptography.fernet import Fernet
 
@@ -55,3 +61,13 @@ def verify_password(password: str, hashed: str) -> bool:
         return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("ascii"))
     except (ValueError, TypeError):
         return False
+
+
+async def hash_password_async(password: str) -> str:
+    """Async wrapper for :func:`hash_password` — runs bcrypt off the event loop."""
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, hashed: str) -> bool:
+    """Async wrapper for :func:`verify_password` — runs bcrypt off the event loop."""
+    return await asyncio.to_thread(verify_password, password, hashed)

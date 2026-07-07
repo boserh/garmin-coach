@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user, require_admin
 from app.core.config import settings
-from app.core.crypto import decrypt, encrypt, hash_password, verify_password
+from app.core.crypto import decrypt, encrypt, hash_password_async, verify_password_async
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
@@ -193,11 +193,11 @@ async def change_password(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    if not verify_password(current_password, user.password_hash):
+    if not await verify_password_async(current_password, user.password_hash):
         return RedirectResponse("/settings?pw=wrong", status_code=303)
     if len(new_password) < 6:
         return RedirectResponse("/settings?pw=short", status_code=303)
-    user.password_hash = hash_password(new_password)
+    user.password_hash = await hash_password_async(new_password)
     await session.commit()
     return RedirectResponse("/settings?pw=ok", status_code=303)
 
@@ -234,7 +234,7 @@ async def users_create(
             status_code=409,
         )
     await users.create_user(
-        session, email=email, password_hash=hash_password(password),
+        session, email=email, password_hash=await hash_password_async(password),
         is_admin=bool(is_admin), is_approved=True,  # admin-created → active immediately
     )
     return RedirectResponse("/admin/users", status_code=303)

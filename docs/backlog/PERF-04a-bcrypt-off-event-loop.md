@@ -14,6 +14,14 @@ morning-тік, якщо бот і веб колись з'їдуться в од
 
 ## Acceptance criteria
 
-- [ ] `verify_password`/`hash_password` у роутах — через `run_in_threadpool`
+- [x] `verify_password`/`hash_password` у роутах — через `run_in_threadpool`
       (або `asyncio.to_thread`).
-- [ ] Наявні auth-тести зелені; поведінка логіну не змінилась.
+- [x] Наявні auth-тести зелені; поведінка логіну не змінилась.
+
+## Реалізовано (2026-07)
+
+`app.core.crypto` отримав async-обгортки `hash_password_async`/`verify_password_async`
+(через `asyncio.to_thread`); синхронні версії лишились для sync-викликачів (CLI).
+Async-роути `app/routers/auth.py` (login, register) і `app/routers/settings.py`
+(зміна пароля, створення юзера) тепер `await`-ять async-варіанти, тож bcrypt більше
+не блокує event loop.

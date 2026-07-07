@@ -7,7 +7,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import login_session, logout_session
-from app.core.crypto import hash_password, verify_password
+from app.core.crypto import hash_password_async, verify_password_async
 from app.db import users
 from app.dependencies import get_session
 
@@ -38,7 +38,7 @@ async def login_submit(
     session: AsyncSession = Depends(get_session),
 ):
     user = await users.get_by_email(session, email)
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None or not await verify_password_async(password, user.password_hash):
         return _login_page(request, error="Невірний email або пароль.", status_code=401)
     if not user.is_approved:
         return _login_page(
@@ -86,7 +86,7 @@ async def register_submit(
             status_code=409,
         )
     await users.create_user(
-        session, email=email, password_hash=hash_password(password),
+        session, email=email, password_hash=await hash_password_async(password),
         is_admin=False, is_approved=False,
     )
     return _login_page(
