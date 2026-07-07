@@ -12,6 +12,7 @@
 | --- | --- | --- | --- |
 | [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | разом з CODE-05 |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — (філер, низький пріоритет) |
+| [ST-08](ST-08-validate-exercise-names.md) | Валідувати назви вправ (не лише категорії) перед пушем | S | — |
 
 ## Епіки (L/XL)
 
@@ -55,6 +56,13 @@
 | [PERF-04b](PERF-04b-async-anthropic-threadpool.md) | AsyncAnthropic + розвантаження threadpool | M | разом з PERF-02/CODE-01 |
 | [PERF-05](PERF-05-per-user-fetch-lock-and-garmin-rate-limit.md) | Rate limit/backoff до Garmin + per-user fetch-lock (виживання) | M | об'єднати з OPS-01 (той самий шар клієнта) |
 
+## Безпека й операції (аудит коду 2026-07)
+
+| ID | Назва | Оцінка | Залежності |
+| --- | --- | --- | --- |
+| [SEC-01](SEC-01-web-login-hardening.md) | Веб-логін: rate limit, секрет сесії, logout POST | S–M | — · блокер перед відкриттям `/register` |
+| [OPS-02](OPS-02-sqlite-backups.md) | Бекапи `garmin.db` (нічний VACUUM INTO + ротація + off-SD копія) | S | — (проби на Pi) |
+
 ## Оптимізації коду (рефакторинги)
 
 | ID | Назва | Оцінка | Залежності |
@@ -64,6 +72,8 @@
 | [CODE-03](CODE-03-remove-legacy-paths.md) | Прибрати legacy: `WEB_TOKEN`, `GARTH_TOKEN_DIR` (`gconn` НЕ видаляти — OPS-01) | S | — |
 | [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | S | перед EP-07 |
 | [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | S–M | разом зі ST-03 |
+| [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | S | разом з CODE-01 |
+| [CODE-07](CODE-07-import-fit-series-refactor-tests.md) | Розплутати `import_fit_series` + тести (cyclomatic 20, вкладеність 8, 0 тестів) | S–M | — (низький пріоритет) |
 
 ## Рекомендований порядок (2026-07, за ANALYSIS.md §4.1)
 
@@ -76,6 +86,9 @@
    Garmin-кеш у per-key файлах; старий `garmin_cache.json` seed'иться один раз
    (2026-07).
 3. **PERF-04a** — bcrypt → to_thread, фікс на годину, мимохідь.
+4. **OPS-02** — бекапи `garmin.db`: скрипт на вечір проти втрати річної історії
+   (SD-картка — найтиповіша відмова Pi); ST-08 і SEC-01 — короткі, за нагодою
+   (SEC-01 стає блокером лише перед відкриттям `/register`).
 
 **Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 → **EP-07** (недільний
 пайплайн одразу закласти під злиття з EP-02-пропозиціями і EP-13-погодою) →
