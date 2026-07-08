@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # today's plan session is tempo/intervals/long.
     PLAN_ADAPT_READINESS_MIN: int = 50
 
+    # --- Weekly digest (EP-07) ---
+    # Sunday-evening retrospective (volume/compliance vs last week, recovery/fitness
+    # trends, honest progress-to-goal). Same run_daily days convention as the adaptive
+    # job (0=Sunday); scheduled before the adaptation review so the recap lands first.
+    DIGEST_HOUR: int = 19
+    DIGEST_WEEKLY_DOW: int = 0  # Sunday
+
 
 @lru_cache
 def get_settings() -> Settings:
