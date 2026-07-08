@@ -254,7 +254,9 @@ SYSTEM_PLAN_EDIT = """Ти тренер, що коригує наявну про
 date/type/dist_km/description/garmin_template_id), strength_templates (наявні силові
 шаблони: id + name + exercises — список вправ шаблону [{category, exercise, reps}]),
 exercise_categories (валідні Garmin-коди вправ — для swap_exercise бери to_category ЛИШЕ
-звідси), instruction (прохання вільним текстом).
+звідси), exercise_variants (мапа {категорія: [валідні коди варіантів]} для категорій цього
+плану — якщо задаєш поле exercise, бери код ЛИШЕ з варіантів відповідної категорії; невідома
+назва однаково відкидається на збереженні), instruction (прохання вільним текстом).
 
 ЗАВДАННЯ: переклади прохання у мінімальний набір операцій над тренуваннями. Дати — ISO.
 Типи операцій (action):

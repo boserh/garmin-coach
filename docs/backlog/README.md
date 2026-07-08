@@ -12,7 +12,6 @@
 | --- | --- | --- | --- |
 | [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | разом з CODE-05 |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — (філер, низький пріоритет) |
-| [ST-08](ST-08-validate-exercise-names.md) | Валідувати назви вправ (не лише категорії) перед пушем | S | — |
 
 ## Епіки (L/XL)
 
@@ -123,6 +122,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [EP-01](EP-01-plan-vs-actual-matching.md) | План/факт: матчинг виконаних тренувань | `app/garmin/matching.py` + `tests/test_matching.py` |
 | [EP-02](EP-02-adaptive-plan.md) | Адаптивний план (замикання петлі) | `plan_adapt_job`/`_adapt_morning_check` у `bot/jobs.py`, `User.plan_adapt_enabled`, `tests/test_plan_adapt*.py` |
 | [ST-07](ST-07-plan-adjust-level.md) | Adjust level — межі автоадаптації плану | `intake["adjust_level"]` + `plan_adjust_level`/`_filter_ops_to_level` (`app/analysis/service.py`), правила рівнів у `SYSTEM_PLAN_ADAPT`, вибір на setup-формі + зміна на `/plan` без перегенерації |
+| [ST-08](ST-08-validate-exercise-names.md) | Валідувати назви вправ (не лише категорії) перед пушем | `exercises.check_exercise` (`app/garmin/exercises.py`, лог `EXERCISE invalid:`) у `_sanitize_strength` + swap-гілці `apply_plan_ops` (`app/garmin/repository.py`); `exercises_for` живить `exercise_variants` у `run_plan_edit`-контексті + `SYSTEM_PLAN_EDIT`; `tests/test_plan.py` |
 | [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: «план Б» готовий у шухляді (сама міграція — за фактом поломки garth) | Маркери `GARMIN AUTH FAIL` (`app/garmin/mfa.py`, `providers.py`), `app.cli token-expiry` + `app/garmin/token_info.py`, `scripts/ops01_recon_gconn.py` (recon на Pi: 0 FAIL, garminconnect 0.3.6), план міграції в тікеті. Rate limit — далі в PERF-05 |
 | [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | Таблиця `llm_cache` + `app/db/llm_cache.py` (get/put у `run_analysis`/`run_ask`/`run_activity_analysis`; ключі `_cache_key` недоторкані); Garmin-кеш — per-key файли в `GARMIN_CACHE_DIR` з одноразовим seed'ом зі старого `garmin_cache.json` (`client._seed_legacy_cache`); `tests/test_llm_cache.py` + `tests/test_garmin_disk_cache.py` |
 | [PERF-04a](PERF-04a-bcrypt-off-event-loop.md) | bcrypt поза event loop | `hash_password_async`/`verify_password_async` у `app/core/crypto.py` (`asyncio.to_thread`); async-роути `app/routers/auth.py` + `app/routers/settings.py` `await`-ять їх (sync-версії лишились для CLI) |

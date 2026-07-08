@@ -9,6 +9,7 @@ missing, everything degrades gracefully to "unknown" (no validation, no resoluti
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger("garmin")
 
@@ -88,6 +89,27 @@ def valid_exercise(category: str, exercise: str) -> bool:
 def exercises_for(category: str) -> list:
     """The valid exerciseName variants for a category (for pickers / prompt context)."""
     return sorted(_exercises(category))
+
+
+# Invalid exercise names already logged, to keep the log to one line per bad code.
+_invalid_seen: set = set()
+
+
+def check_exercise(category: str, exercise: Optional[str]) -> Optional[str]:
+    """Normalise an exercise name for storage: the uppercased code if it's a real variant
+    of ``category`` (or if the catalog is absent — can't validate), else ``None`` so the
+    step stays category-only (valid for Garmin). Empty ``exercise`` → ``None``. A rejected
+    name is logged once as ``EXERCISE invalid: <CAT>/<NAME>``."""
+    if not exercise:
+        return None
+    ex = exercise.upper()
+    if valid_exercise(category, ex):
+        return ex
+    key = f"{(category or '').upper()}/{ex}"
+    if key not in _invalid_seen:
+        _invalid_seen.add(key)
+        logger.info(f"EXERCISE invalid: {key}")
+    return None
 
 
 def prettify(code: str) -> str:

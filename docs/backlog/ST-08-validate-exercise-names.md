@@ -19,18 +19,22 @@
 
 ## Acceptance criteria
 
-- [ ] `_sanitize_strength`: якщо `exercise` задано і не проходить
+- [x] `_sanitize_strength`: якщо `exercise` задано і не проходить
       `valid_exercise(cat, ex)` — **скинути назву в `None`** (крок лишається
       категорійним — це валідно для Garmin), не викидати вправу цілком.
       Залогувати один раз: `EXERCISE invalid: <CAT>/<NAME>` (за зразком
-      `EXERCISE unmapped` в `exercise_names.py`).
-- [ ] Та сама перевірка для `op.exercise` у swap-гілці `apply_plan_ops`
-      (`swap_exercise` → `exercise_edits`).
-- [ ] Тести: валідна пара проходить; невалідна назва при валідній категорії →
+      `EXERCISE unmapped` в `exercise_names.py`). → `exercises.check_exercise`
+      (`app/garmin/exercises.py`), викликається з `_sanitize_strength`.
+- [x] Та сама перевірка для `op.exercise` у swap-гілці `apply_plan_ops`
+      (`swap_exercise` → `exercise_edits`) — валідується проти `to_category`.
+- [x] Тести: валідна пара проходить; невалідна назва при валідній категорії →
       `exercise=None`, категорія збережена; невалідна категорія → вправа
-      викинута (поточна поведінка не змінюється).
-- [ ] `exercises_for` або отримує використання (наприклад, підказка варіантів
-      у `SYSTEM_PLAN_EDIT`-контексті), або видаляється — не тримати мертвим.
+      викинута (поточна поведінка не змінюється). → `test_check_exercise`,
+      розширені `test_apply_plan_ops_swap_exercise` /
+      `test_apply_plan_ops_add_strength_from_scratch`.
+- [x] `exercises_for` отримує використання: живить `exercise_variants` (мапа
+      {категорія: [валідні коди]} для категорій плану) у `run_plan_edit`-контексті
+      + згадка в `SYSTEM_PLAN_EDIT`, щоб модель брала назви з валідного словника.
 
 ## Підводні камені
 

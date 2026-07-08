@@ -893,6 +893,13 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
         except Exception:
             logger.debug(f"template {tid} exercises unavailable", exc_info=True)
         strength_templates.append(entry)
+    # Valid exercise-name variants for the categories that appear in the plan's templates —
+    # so a swap/generation picks a real Garmin name (not a hallucination that gets dropped
+    # to a bare category on save). Bounded to the plan's categories, not the whole catalog.
+    variant_cats = {(e.get("category") or "").upper()
+                    for t in strength_templates for e in t.get("exercises", [])}
+    exercise_variants = {c: v for c in sorted(variant_cats)
+                         if c and (v := exercises.exercises_for(c))}
     context = {
         "today": dt.date.today().isoformat(),
         "instruction": instruction,
@@ -904,6 +911,9 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
         # from-scratch strength generation (always provided so "згенеруй силову" works even
         # when the plan has no strength day yet)
         "exercise_categories": exercises.CATEGORIES,
+        # valid exercise-name variants per category in the plan's templates (may be empty
+        # without the catalog); an invalid name is otherwise dropped to a bare category
+        "exercise_variants": exercise_variants,
     }
     try:
         edit, stats = await run_in_threadpool(plan_edit_with_stats, context, api_key)
