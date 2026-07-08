@@ -1,11 +1,20 @@
 """Morning-job gating: only fire once today's recovery data (HRV + sleep) is in.
-Also covers the activity-watch auto-analysis added for ST-04."""
+Also covers the activity-watch auto-analysis added for ST-04 and the shared per-user
+job scaffold (eligible_users / for_each_user) added for CODE-04."""
 import datetime as dt
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+from app.db.models import User
+from app.db.users import eligible_users
 from app.garmin.schemas import DailySummary, Payload
 from bot import jobs as jobs_module
-from bot.jobs import ACTIVITY_FRESH_DAYS, _activity_watch_for_user, _recovery_synced
+from bot.jobs import (
+    ACTIVITY_FRESH_DAYS,
+    _activity_watch_for_user,
+    _recovery_synced,
+    for_each_user,
+)
 
 TODAY = "2026-06-24"
 
@@ -131,3 +140,55 @@ async def test_activity_watch_continues_after_one_failure(monkeypatch):
 
     assert calls == [4, 5]
     assert len(ctx.bot.sent) == 1  # only act2 (id=5) produced a message
+
+
+# --- CODE-04: shared per-user job scaffold ---------------------------------
+
+async def _mk_user(session, **kw):
+    defaults = dict(
+        email=f"{kw.get('telegram_chat_id', 'x')}@e.com",
+        password_hash="h",
+        is_approved=True,
+    )
+    user = User(**{**defaults, **kw})
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def test_eligible_users_filters_active_and_approved(session):
+    ok = await _mk_user(session, telegram_chat_id=1)
+    await _mk_user(session, telegram_chat_id=2, is_active=False)
+    await _mk_user(session, telegram_chat_id=3, is_approved=False)
+    no_chat = await _mk_user(session, email="nochat@e.com")
+
+    both = await eligible_users(session)
+    assert {u.id for u in both} == {ok.id, no_chat.id}
+
+    with_chat = await eligible_users(session, with_chat=True)
+    assert {u.id for u in with_chat} == {ok.id}
+
+
+async def test_for_each_user_isolates_failures(session, monkeypatch):
+    u1 = await _mk_user(session, telegram_chat_id=1)
+    u2 = await _mk_user(session, telegram_chat_id=2)
+    u3 = await _mk_user(session, telegram_chat_id=3)
+
+    @asynccontextmanager
+    async def fake_maker():
+        yield session
+
+    monkeypatch.setattr(jobs_module, "async_session_maker", fake_maker)
+
+    seen = []
+
+    async def worker(_session, user):
+        seen.append(user.id)
+        if user.id == u2.id:
+            raise RuntimeError("boom")
+
+    await for_each_user(worker, with_chat=True, label="TEST")
+
+    # u2 blew up but u1 and u3 still ran — one user's error never aborts the rest.
+    assert seen == [u1.id, u2.id, u3.id]

@@ -68,7 +68,6 @@
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` (1043 рядки) на пакет | M | до/разом з PERF-02, PERF-04b |
 | [CODE-02](CODE-02-cli-push-plan-reuse-plan-sync.md) | CLI `push-plan` поверх `plan_sync` (залишок: відбір вікна) | S | — |
 | [CODE-03](CODE-03-remove-legacy-paths.md) | Прибрати legacy: `WEB_TOKEN`, `GARTH_TOKEN_DIR` (`gconn` НЕ видаляти — OPS-01) | S | — |
-| [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | S | перед EP-07 |
 | [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | S–M | разом зі ST-03 |
 | [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | S | разом з CODE-01 |
 | [CODE-07](CODE-07-import-fit-series-refactor-tests.md) | Розплутати `import_fit_series` + тести (cyclomatic 20, вкладеність 8, 0 тестів) | S–M | — (низький пріоритет) |
@@ -90,7 +89,7 @@
    (SD-картка — найтиповіша відмова Pi); ST-08 і SEC-01 — короткі, за нагодою
    (SEC-01 стає блокером лише перед відкриттям `/register`).
 
-**Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 → **EP-07** (недільний
+**Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 ✅ → **EP-07** (недільний
 пайплайн одразу закласти під злиття з EP-02-пропозиціями і EP-13-погодою) →
 **EP-12** (RPE/болі — годують усе наступне) → **EP-13** (сезонно актуальний прямо
 зараз: липнева спека) → EP-14 + ST-03/CODE-05 — філери.
@@ -126,6 +125,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: «план Б» готовий у шухляді (сама міграція — за фактом поломки garth) | Маркери `GARMIN AUTH FAIL` (`app/garmin/mfa.py`, `providers.py`), `app.cli token-expiry` + `app/garmin/token_info.py`, `scripts/ops01_recon_gconn.py` (recon на Pi: 0 FAIL, garminconnect 0.3.6), план міграції в тікеті. Rate limit — далі в PERF-05 |
 | [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | Таблиця `llm_cache` + `app/db/llm_cache.py` (get/put у `run_analysis`/`run_ask`/`run_activity_analysis`; ключі `_cache_key` недоторкані); Garmin-кеш — per-key файли в `GARMIN_CACHE_DIR` з одноразовим seed'ом зі старого `garmin_cache.json` (`client._seed_legacy_cache`); `tests/test_llm_cache.py` + `tests/test_garmin_disk_cache.py` |
 | [PERF-04a](PERF-04a-bcrypt-off-event-loop.md) | bcrypt поза event loop | `hash_password_async`/`verify_password_async` у `app/core/crypto.py` (`asyncio.to_thread`); async-роути `app/routers/auth.py` + `app/routers/settings.py` `await`-ять їх (sync-версії лишились для CLI) |
+| [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | `eligible_users` (`app/db/users.py`) + `for_each_user`/`user_garmin_runtime` (`bot/jobs.py`): три джоби (`morning_job`/`plan_sync_job`/`plan_adapt_job`) стали 1–5-рядковими, per-user try/except централізований (одна помилка не рве цикл — тепер і в adapt), guard «є Garmin-креди» спільний для `_tick_for_user`/`_sync_for_user`; логи скіпів/падінь незмінні; `tests/test_jobs.py` |
 
 ## Наскрізна пастка
 
