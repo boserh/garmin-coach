@@ -12,9 +12,10 @@ concerns from the same tick (no duplicate Garmin calls):
 import datetime as dt
 import json
 import logging
+from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
@@ -28,6 +29,7 @@ from app.analysis.service import (
 from app.core.config import settings
 from app.db.base import async_session_maker
 from app.db.models import User
+from app.db.users import eligible_users
 from app.garmin import matching, plan_sync, repository, service
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
@@ -61,6 +63,37 @@ ADAPT_GUARD_PREFIX = "adapt_suggested:"
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
+
+
+async def for_each_user(worker, *, with_chat: bool, label: str) -> None:
+    """Shared scaffold for the per-user scheduled jobs: open a session, select the
+    eligible (active + approved [+ chat id]) recipients, and run ``worker(session, user)``
+    for each — isolating failures per user so one user's error never aborts the rest.
+    The three jobs reduce to a single call; PERF-01 will parallelize only this loop."""
+    try:
+        async with async_session_maker() as session:
+            for user in await eligible_users(session, with_chat=with_chat):
+                try:
+                    await worker(session, user)
+                except Exception:
+                    logger.exception(f"{label} failed user={user.id}")
+    except Exception:
+        logger.exception(f"{label} job failed")
+
+
+@asynccontextmanager
+async def user_garmin_runtime(session, user: User, *, skip_label: Optional[str] = None):
+    """Bind the user's Garmin provider and yield decrypted creds only when they actually
+    have Garmin credentials; yields ``None`` otherwise (optionally logging a skip line).
+    The shared "has creds + runtime" guard for the per-user jobs — callers do
+    ``async with user_garmin_runtime(...) as creds: if creds is None: return``."""
+    async with user_runtime(session, user) as creds:
+        if not creds.has_garmin:
+            if skip_label:
+                logger.debug(f"{skip_label} skip user={user.id}: no Garmin credentials")
+            yield None
+        else:
+            yield creds
 
 
 def _recovery_synced(payload, today: str) -> bool:
@@ -159,9 +192,8 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
 
 async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
-        async with user_runtime(session, user) as creds:
-            if not creds.has_garmin:
-                logger.debug(f"TICK skip user={user.id}: no Garmin credentials")
+        async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
+            if creds is None:
                 return
 
             payload, new_activities = await service.build_payload_cached(
@@ -291,83 +323,45 @@ async def plan_adapt_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Weekly (Sunday evening by default) plan-adaptation review: propose a correction
     to the next window when compliance/recovery signals call for it. Silent when the
     plan is fine (no message sent) — see SYSTEM_PLAN_ADAPT."""
-    try:
-        async with async_session_maker() as session:
-            recipients = (
-                await session.execute(
-                    select(User).where(
-                        User.telegram_chat_id.is_not(None),
-                        User.is_active.is_(True),
-                        User.is_approved.is_(True),
-                    )
-                )
-            ).scalars().all()
-            for user in recipients:
-                await _adapt_weekly_for_user(ctx, session, user)
-    except Exception:
-        logger.exception("PLAN adapt job failed")
+    async def worker(session, user):
+        await _adapt_weekly_for_user(ctx, session, user)
+
+    await for_each_user(worker, with_chat=True, label="PLAN adapt")
 
 
 async def _sync_for_user(session, user: User) -> None:
     """Reconcile one user's Garmin calendar with their plan. Binds the user's provider;
     the cleanup pass runs even with no active plan (to remove a just-archived plan's
     pushed workouts). Skips users with sync disabled, nothing to do, or no creds."""
-    try:
-        if not user.garmin_sync_enabled:
+    if not user.garmin_sync_enabled:
+        return
+    plan = await repository.get_active_plan(session, user.id)
+    pushed = await repository.list_pushed_workouts(session, user.id)
+    if plan is None and not pushed:
+        return
+    async with user_garmin_runtime(session, user) as creds:
+        if creds is None:
             return
-        plan = await repository.get_active_plan(session, user.id)
-        pushed = await repository.list_pushed_workouts(session, user.id)
-        if plan is None and not pushed:
-            return
-        async with user_runtime(session, user) as creds:
-            if not creds.has_garmin:
-                return
-            await plan_sync.sync_plan_to_garmin(session, user.id)
-    except Exception:
-        logger.exception(f"PLAN sync failed user={user.id}")
+        await plan_sync.sync_plan_to_garmin(session, user.id)
 
 
 async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Once-a-day per-user Garmin calendar sync (separate from the morning report);
     scheduled by run_daily, so no further time guard is needed."""
-    try:
-        async with async_session_maker() as session:
-            recipients = (
-                await session.execute(
-                    select(User).where(
-                        User.is_active.is_(True), User.is_approved.is_(True)
-                    )
-                )
-            ).scalars().all()
-            for user in recipients:
-                await _sync_for_user(session, user)
-    except Exception:
-        logger.exception("PLAN sync job failed")
+    await for_each_user(_sync_for_user, with_chat=False, label="PLAN sync")
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Per-tick entry point: fetch once per user (07:00-23:00), run activity watch,
     and — within the narrower 07-12 window — the morning report. See module docstring."""
-    try:
-        now = dt.datetime.now(TZ)
-        today = now.date().isoformat()
+    now = dt.datetime.now(TZ)
+    today = now.date().isoformat()
 
-        if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
-            logger.debug(f"TICK skip: outside window (hour={now.hour})")
-            return
+    if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
+        logger.debug(f"TICK skip: outside window (hour={now.hour})")
+        return
 
-        async with async_session_maker() as session:
-            recipients = (
-                await session.execute(
-                    select(User).where(
-                        User.telegram_chat_id.is_not(None),
-                        User.is_active.is_(True),
-                        User.is_approved.is_(True),
-                    )
-                )
-            ).scalars().all()
-            for user in recipients:
-                await _tick_for_user(ctx, session, user, now, today)
+    async def worker(session, user):
+        await _tick_for_user(ctx, session, user, now, today)
 
-    except Exception:
-        logger.exception("MORNING job failed")
+    await for_each_user(worker, with_chat=True, label="MORNING")

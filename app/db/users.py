@@ -1,10 +1,21 @@
 """User-account queries, kept apart from the Garmin history repository."""
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User
+
+
+async def eligible_users(
+    session: AsyncSession, *, with_chat: bool = False
+) -> Sequence[User]:
+    """Active + approved users — the recipient set every scheduled per-user job loops
+    over. ``with_chat`` additionally requires a Telegram chat id (jobs that DM)."""
+    conds = [User.is_active.is_(True), User.is_approved.is_(True)]
+    if with_chat:
+        conds.append(User.telegram_chat_id.is_not(None))
+    return (await session.execute(select(User).where(*conds))).scalars().all()
 
 
 async def get_by_email(session: AsyncSession, email: str) -> Optional[User]:
