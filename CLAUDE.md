@@ -464,7 +464,24 @@ scheduled `morning_job` (with the time-window + once-a-day guard) and
 and `/test_on` (repeating) call the latter, so a test exercises the **exact** morning path
 incl. weather, without consuming the day's guard.
 
-**Models**: `/report` + morning + `/ask` + `/activity` use `claude-sonnet-5`; `/deep`
+**Weekly digest (EP-07)**: a Sunday-evening retrospective per user with a chat id —
+`bot.jobs.weekly_digest_job` (`run_daily` at `DIGEST_HOUR` Europe/Warsaw, `days=(DIGEST_WEEKLY_DOW,)`
+= Sunday; scheduled just before the adaptive review, a *different* message: dessert recap vs
+forward-looking correction). `analysis.service.run_digest` assembles the week's numbers **in
+Python** (`_week_volume_summary` — this-week vs last-week km/runs/longest from
+`weekly_run_volume`; `weekly_compliance` for plan/fact; `read_history` recovery trend;
+`_build_fitness_snapshot` for VO2max/race-predictions; goal + `days_to_target`) and Sonnet
+(`SYSTEM_DIGEST`, `MODEL_DIGEST`) only narrates + gives an honest progress-to-goal read
+(explicit "відстаєш" when compliance < ~70%). No active plan → a shortened version (volume +
+trends, no plan/fact). Returns `None` (nothing sent) for a user with no history and no plan.
+Dedup-cached on the ISO week + data slice (not `today`, so a repeat within the week is a hit —
+the README pitfall) and logged as `ReportLog(kind="digest")`. Guarded once/week via `bot_state`
+(key `digest:<iso-week>`, set only after a message goes out). The send path is
+`jobs._deliver_digest`, reused by the scheduled `_digest_for_user` (with the guard) and
+`force_digest_for_user` (no guard) — the hidden `/test_digest` command calls the latter, so a
+test exercises the exact path without consuming the week's guard.
+
+**Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
 (`MODEL_PLAN`) — small and mechanical. Plan generation also accepts a **Fable** engine via

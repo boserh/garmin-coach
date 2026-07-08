@@ -24,6 +24,7 @@ from app.analysis.service import (
     AnalystError,
     run_activity_analysis,
     run_analysis,
+    run_digest,
     run_plan_adaptation,
 )
 from app.core.config import settings
@@ -60,6 +61,9 @@ PLAN_SYNC_HOUR = 5
 # most once/day per user (guarded via bot_state, key below + today's date).
 ADAPT_HEAVY_TYPES = {"tempo", "intervals", "long"}
 ADAPT_GUARD_PREFIX = "adapt_suggested:"
+
+# EP-07 weekly digest: once-a-week guard keyed by ISO week (bot_state key digest:<iso-week>).
+DIGEST_GUARD_PREFIX = "digest:"
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
@@ -327,6 +331,59 @@ async def plan_adapt_job(ctx: ContextTypes.DEFAULT_TYPE):
         await _adapt_weekly_for_user(ctx, session, user)
 
     await for_each_user(worker, with_chat=True, label="PLAN adapt")
+
+
+async def _deliver_digest(ctx, session, user: User, creds, *, force: bool = False) -> bool:
+    """Build + send the weekly digest for one user. Returns True if a message was sent.
+    Reads only from the DB (no Garmin fetch). Does NOT touch the once-a-week guard —
+    the caller owns it (or bypasses it, for /test_digest)."""
+    try:
+        text = await run_digest(session, user_id=user.id, api_key=creds.anthropic_key)
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        text = str(e)
+    if not text:   # nothing to report (no history, no plan)
+        return False
+    prefix = "🧪 [тест] " if force else ""
+    await ctx.bot.send_message(user.telegram_chat_id, prefix + "🗓 Тижневий підсумок\n\n" + text)
+    return True
+
+
+async def _digest_for_user(ctx, session, user: User) -> None:
+    """Scheduled weekly digest for one user, guarded to once per ISO week via bot_state."""
+    if not user.telegram_chat_id:
+        return
+    guard_key = DIGEST_GUARD_PREFIX + dt.datetime.now(TZ).strftime("%G-W%V")
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        logger.debug(f"DIGEST skip user={user.id}: already sent this week")
+        return
+    async with user_runtime(session, user) as creds:
+        if not creds.anthropic_key:
+            return
+        if await _deliver_digest(ctx, session, user, creds):
+            await repository.set_state(session, user.id, guard_key, "1")
+            logger.info(f"DIGEST sent user={user.id} week={guard_key}")
+
+
+async def force_digest_for_user(ctx, session, user: User) -> None:
+    """Send the weekly digest on demand, bypassing the once-a-week guard (and leaving it
+    untouched, so the scheduled one still fires). For the hidden /test_digest command."""
+    async with user_runtime(session, user) as creds:
+        if not creds.anthropic_key:
+            await ctx.bot.send_message(user.telegram_chat_id, "🧪 Немає Anthropic-ключа.")
+            return
+        await _deliver_digest(ctx, session, user, creds, force=True)
+
+
+async def weekly_digest_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Weekly (Sunday evening) retrospective digest: this week's volume/compliance vs last
+    week, recovery/fitness trends, and an honest progress-to-goal read. One message per
+    user with a chat id; guarded once-a-week via bot_state (EP-07). Scheduled by run_daily,
+    so no time-window guard is needed."""
+    async def worker(session, user):
+        await _digest_for_user(ctx, session, user)
+
+    await for_each_user(worker, with_chat=True, label="DIGEST")
 
 
 async def _sync_for_user(session, user: User) -> None:

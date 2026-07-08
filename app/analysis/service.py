@@ -24,6 +24,7 @@ from app.analysis.prompts import (
     SYSTEM,
     SYSTEM_ACTIVITY,
     SYSTEM_ASK,
+    SYSTEM_DIGEST,
     SYSTEM_PLAN,
     SYSTEM_PLAN_ADAPT,
     SYSTEM_PLAN_EDIT,
@@ -48,6 +49,7 @@ MODEL_DAILY = "claude-sonnet-5"
 MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-5"   # follow-up Q&A: cheap, grounded in recent reports
 MODEL_ACTIVITY = "claude-sonnet-5"   # single-activity analysis (/activity)
+MODEL_DIGEST = "claude-sonnet-5"     # weekly digest (EP-07): compact payload, once/week
 MODEL_PLAN_GEN = MODEL_DEEP          # plan generation default: reasoning-heavy + rare → Opus
 MODEL_PLAN_GEN_ALT = "claude-fable-5"   # alternative plan-gen engine (form toggle)
 MODEL_PLAN = "claude-sonnet-5"       # plan edits (/plan <text>): small, mechanical → Sonnet
@@ -1116,3 +1118,133 @@ async def run_plan_adaptation(
         question=f"adapt:{trigger}", report_text=edit.summary,
     )
     return plan, edit
+
+
+# ---------- WEEKLY DIGEST (EP-07) ----------
+
+DIGEST_VOLUME_WEEKS = 4        # weekly_run_volume window fed as the volume trend
+DIGEST_COMPLIANCE_WEEKS = 2    # how many recent ISO weeks of compliance to include
+DIGEST_RECOVERY_DAYS = 14      # recovery trend window
+
+
+def _digest_cache_key(context: dict, model: str) -> str:
+    """Key the weekly digest on the ISO week + the computed data slice (not ``today``),
+    so a repeat within the same week/data is a cache hit — see the README pitfall: every
+    piece of Claude context must be in the key."""
+    material = {
+        "iso_week": context.get("iso_week"),
+        "week": context.get("week"),
+        "weekly_volume": context.get("weekly_volume"),
+        "compliance": context.get("compliance"),
+        "recovery": context.get("recovery"),
+        "fitness": context.get("fitness"),
+        "goal": context.get("goal"),
+        "model": model,
+        "digest": True,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def digest_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate the week's already-computed numbers into a Sunday digest (Sonnet).
+    Returns (text, stats); raises AnalystError on API failure. The dedup cache is
+    checked in :func:`run_digest`."""
+    return _complete(MODEL_DIGEST, SYSTEM_DIGEST, context, "digest", api_key, max_tokens=1200)
+
+
+def _week_volume_summary(weekly_volume: Optional[list], this_week: str, prev_week: str) -> dict:
+    """This-week vs last-week running numbers (computed here, not by the LLM), from the
+    per-ISO-week ``weekly_run_volume`` buckets. Missing weeks read as zero."""
+    by_week = {w["week"]: w for w in (weekly_volume or [])}
+    cur = by_week.get(this_week) or {}
+    prev = by_week.get(prev_week) or {}
+    cur_km, prev_km = cur.get("km", 0.0), prev.get("km", 0.0)
+    return {
+        "run_km": cur_km,
+        "run_km_prev": prev_km,
+        "delta_km": round(cur_km - prev_km, 1),
+        "runs": cur.get("runs", 0),
+        "runs_prev": prev.get("runs", 0),
+        "longest_km": cur.get("longest_km", 0.0),
+        "longest_km_prev": prev.get("longest_km", 0.0),
+    }
+
+
+async def run_digest(
+    session, *, user_id: int, api_key: Optional[str] = None
+) -> Optional[str]:
+    """Assemble the week's plan/fact + trends, narrate them via Sonnet, cache and log
+    (``ReportLog(kind="digest")``), and return the text. Returns ``None`` (nothing to
+    send) for a user with no history and no plan. Numbers are computed here; the LLM
+    only interprets them (EP-07)."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.db import llm_cache
+    from app.garmin import repository
+
+    today = dt.date.today()
+    this_week = today.strftime("%G-W%V")
+    prev_week = (today - dt.timedelta(days=7)).strftime("%G-W%V")
+
+    weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=DIGEST_VOLUME_WEEKS)
+    recovery = await repository.read_history(session, user_id, days=DIGEST_RECOVERY_DAYS)
+    ex = await repository.get_recent_extra(session, user_id)
+    fitness = _build_fitness_snapshot(ex)
+
+    plan = await repository.get_active_plan(session, user_id)
+    compliance = None
+    goal = None
+    if plan is not None:
+        compliance = _recent_compliance(
+            await repository.weekly_compliance(session, plan.id), weeks=DIGEST_COMPLIANCE_WEEKS
+        ) or None
+        goal = {k: v for k, v in {
+            "goal": plan.goal,
+            "goal_label": plan.goal_label,
+            "target_date": plan.target_date,
+            "days_to_target": _days_to_target(plan.target_date, today),
+            "summary": plan.summary,
+        }.items() if v is not None}
+
+    # Nothing worth saying for a brand-new user with no runs, no metrics and no plan.
+    if not weekly_volume and not fitness and plan is None:
+        logger.info(f"DIGEST skip user={user_id}: no history and no plan")
+        return None
+
+    context = {
+        "today": today.isoformat(),
+        "iso_week": this_week,
+        "week": _week_volume_summary(weekly_volume, this_week, prev_week),
+        "weekly_volume": weekly_volume or None,
+        "compliance": compliance,
+        "recovery": recovery or None,
+        "fitness": fitness or None,
+        "goal": goal,
+        "has_plan": plan is not None,
+    }
+
+    key = _digest_cache_key(context, MODEL_DIGEST)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_DIGEST} (digest)")
+        text, stats = cached, CallStats(kind="digest", model=MODEL_DIGEST, cached=True)
+    else:
+        try:
+            text, stats = await run_in_threadpool(digest_with_stats, context, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind="digest", model=MODEL_DIGEST, ok=False,
+                question=f"digest:{this_week}", error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"digest:{this_week}", report_text=text,
+    )
+    return text

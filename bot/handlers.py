@@ -408,6 +408,20 @@ async def test_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await force_morning_for_user(ctx, session, user)
 
 
+async def test_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Force the weekly digest now (no once-a-week guard), so a test exercises the exact
+    digest path without consuming the week's guard. Hidden debug command (EP-07)."""
+    from bot.jobs import force_digest_for_user
+
+    logger.info("CMD /test_digest")
+    await update.message.reply_text("🧪 Генерую тижневий підсумок…")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await force_digest_for_user(ctx, session, user)
+
+
 # ---------- ERROR HANDLER ----------
 
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):

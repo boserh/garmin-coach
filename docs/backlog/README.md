@@ -21,7 +21,7 @@
 | [EP-04](EP-04-web-dashboard.md) | Веб-дашборд | L | EP-01 ✅ (бейджі план/факт) |
 | [EP-05](EP-05-race-pack.md) | Race pack — підготовка до перегонів | L | фаза 0: типізувати `target_date`; GAP-модуль спільний з EP-15 |
 | [EP-06](EP-06-saas-quotas.md) | SaaS-режим: квоти вартості · ❄️ **frozen**: чужі юзери на неофіційному API, який Garmin закриває — після OPS-01 + 3 міс. стабільності | XL | рішення про продукт |
-| [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | L | EP-01 ✅; CODE-04 перед |
+| [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | L | ✅ **done** (2026-07) |
 | [EP-08](EP-08-health-alerts.md) | Проактивні health-алерти (аномалії відновлення) | L | синергія з NF-01 (пороги) |
 | [EP-09](EP-09-ask-full-history.md) | `/ask` над усією історією (tool-use агент над БД) | L–XL | — |
 | [EP-10](EP-10-multisport.md) | Мультиспорт: вело/плавання у планах і аналізі | XL | фаза 2 (навантаження) → NF-05 |
@@ -89,8 +89,9 @@
    (SD-картка — найтиповіша відмова Pi); ST-08 і SEC-01 — короткі, за нагодою
    (SEC-01 стає блокером лише перед відкриттям `/register`).
 
-**Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 ✅ → **EP-07** (недільний
-пайплайн одразу закласти під злиття з EP-02-пропозиціями і EP-13-погодою) →
+**Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 ✅ → EP-07 ✅ (недільний
+дайджест; недільний пайплайн ще закласти під злиття з EP-02-пропозиціями і
+EP-13-погодою — поки окрема джоба о 19:00) →
 **EP-12** (RPE/болі — годують усе наступне) → **EP-13** (сезонно актуальний прямо
 зараз: липнева спека) → EP-14 + ST-03/CODE-05 — філери.
 
@@ -125,6 +126,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: «план Б» готовий у шухляді (сама міграція — за фактом поломки garth) | Маркери `GARMIN AUTH FAIL` (`app/garmin/mfa.py`, `providers.py`), `app.cli token-expiry` + `app/garmin/token_info.py`, `scripts/ops01_recon_gconn.py` (recon на Pi: 0 FAIL, garminconnect 0.3.6), план міграції в тікеті. Rate limit — далі в PERF-05 |
 | [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | Таблиця `llm_cache` + `app/db/llm_cache.py` (get/put у `run_analysis`/`run_ask`/`run_activity_analysis`; ключі `_cache_key` недоторкані); Garmin-кеш — per-key файли в `GARMIN_CACHE_DIR` з одноразовим seed'ом зі старого `garmin_cache.json` (`client._seed_legacy_cache`); `tests/test_llm_cache.py` + `tests/test_garmin_disk_cache.py` |
 | [PERF-04a](PERF-04a-bcrypt-off-event-loop.md) | bcrypt поза event loop | `hash_password_async`/`verify_password_async` у `app/core/crypto.py` (`asyncio.to_thread`); async-роути `app/routers/auth.py` + `app/routers/settings.py` `await`-ять їх (sync-версії лишились для CLI) |
+| [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | `SYSTEM_DIGEST` + `run_digest`/`digest_with_stats`/`_digest_cache_key` (`app/analysis/service.py`, числа рахуємо ми у `_week_volume_summary`), `weekly_digest_job`/`_digest_for_user`/`force_digest_for_user` (`bot/jobs.py`, недільна `run_daily` о `DIGEST_HOUR`, once-a-week guard `bot_state` `digest:<iso-week>`), прихована `/test_digest`, `ReportLog(kind="digest")`; `tests/test_digest.py` |
 | [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | `eligible_users` (`app/db/users.py`) + `for_each_user`/`user_garmin_runtime` (`bot/jobs.py`): три джоби (`morning_job`/`plan_sync_job`/`plan_adapt_job`) стали 1–5-рядковими, per-user try/except централізований (одна помилка не рве цикл — тепер і в adapt), guard «є Garmin-креди» спільний для `_tick_for_user`/`_sync_for_user`; логи скіпів/падінь незмінні; `tests/test_jobs.py` |
 
 ## Наскрізна пастка

@@ -23,6 +23,7 @@ from bot.jobs import (
     morning_job,
     plan_adapt_job,
     plan_sync_job,
+    weekly_digest_job,
 )
 
 app_logging.setup()
@@ -65,6 +66,7 @@ def main() -> None:
     app.add_handler(CommandHandler("test_on", handlers.test_on))
     app.add_handler(CommandHandler("test_off", handlers.test_off))
     app.add_handler(CommandHandler("test_morning", handlers.test_morning))
+    app.add_handler(CommandHandler("test_digest", handlers.test_digest))
     app.add_error_handler(handlers.on_error)
 
     # First check runs shortly after startup, then every CHECK_INTERVAL_MIN.
@@ -86,6 +88,12 @@ def main() -> None:
         plan_adapt_job,
         time=time(hour=settings.PLAN_ADAPT_HOUR, tzinfo=handlers.TZ),
         days=(settings.PLAN_ADAPT_WEEKLY_DOW,),
+    )
+    # EP-07 weekly digest: Sunday-evening retrospective (before the adaptation review).
+    app.job_queue.run_daily(
+        weekly_digest_job,
+        time=time(hour=settings.DIGEST_HOUR, tzinfo=handlers.TZ),
+        days=(settings.DIGEST_WEEKLY_DOW,),
     )
 
     logger.info("Bot started")

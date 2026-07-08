@@ -143,7 +143,8 @@ class ReportLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    kind: Mapped[str] = mapped_column(String(16))          # report / deep / morning / ask
+    # report/deep/morning/ask/activity/plan*/adapt/digest
+    kind: Mapped[str] = mapped_column(String(16))
     model: Mapped[str] = mapped_column(String(64))
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
