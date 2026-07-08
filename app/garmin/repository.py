@@ -638,8 +638,8 @@ def _sanitize_strength(sp) -> Optional[dict]:
             cat = (e.get("category") or "").upper()
             if not exercises.valid_category(cat):
                 continue
-            ex = e.get("exercise")
-            exs.append({"category": cat, "exercise": ex.upper() if ex else None,
+            ex = exercises.check_exercise(cat, e.get("exercise"))
+            exs.append({"category": cat, "exercise": ex,
                         "reps": e.get("reps"), "weight_kg": e.get("weight_kg")})
         if exs:
             blocks_out.append({"reps": int(b.get("reps") or 1),
@@ -702,10 +702,10 @@ async def apply_plan_ops(
             # reject an unmapped/invalid target so a hallucinated code never reaches Garmin
             if not frm or not exercises.valid_category(to):
                 continue
-            ex = getattr(op, "exercise", None)
+            # validate the exercise name against the *target* category (it belongs to `to`)
             edit = {
                 "from": frm, "to": to,
-                "exercise": ex.upper() if ex else None,
+                "exercise": exercises.check_exercise(to, getattr(op, "exercise", None)),
                 "reps": getattr(op, "reps", None),
             }
             w.exercise_edits = list(w.exercise_edits or []) + [edit]

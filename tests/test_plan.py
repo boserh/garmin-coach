@@ -186,6 +186,14 @@ async def test_apply_plan_ops_swap_exercise(session):
         to_category="NOT_A_REAL_CATEGORY")])
     w2 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
     assert len(w2.exercise_edits) == 1  # unchanged
+    # a valid category but a hallucinated exercise name → swap still applies, but the name
+    # is dropped to None (a bare category is valid on the watch); category is kept
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="swap_exercise", date="2026-07-02", from_category="CURL",
+        to_category="SQUAT", exercise="NOT_A_REAL_EXERCISE")])
+    w3 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert w3.exercise_edits[-1] == {"from": "CURL", "to": "SQUAT",
+                                     "exercise": None, "reps": None}
 
 
 async def test_apply_plan_ops_add_strength_from_scratch(session):
@@ -212,6 +220,29 @@ async def test_apply_plan_ops_add_strength_from_scratch(session):
         strength={"blocks": [{"reps": 3, "exercises": [{"category": "BOGUS"}]}]})])
     w2 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-05"]
     assert w2.strength_plan is None
+    # a valid category with a hallucinated exercise name → exercise nulled, category kept
+    # (the step stays a valid bare-category step, not dropped)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-06", type="strength",
+        strength={"blocks": [{"reps": 3, "exercises": [
+            {"category": "squat", "exercise": "totally_made_up", "reps": 10}]}]})])
+    w3 = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-06"]
+    ex = w3.strength_plan["blocks"][0]["exercises"][0]
+    assert ex["category"] == "SQUAT" and ex["exercise"] is None
+
+
+def test_check_exercise():
+    from app.garmin import exercises
+    # valid variant → normalised to the upper code
+    assert exercises.check_exercise("squat", "goblet_squat") == "GOBLET_SQUAT"
+    # empty/absent name → None (a bare category is valid)
+    assert exercises.check_exercise("SQUAT", None) is None
+    assert exercises.check_exercise("SQUAT", "") is None
+    # hallucinated name under a real category → None (category-only step survives upstream)
+    assert exercises.check_exercise("SQUAT", "NOT_A_REAL_EXERCISE") is None
+    # catalog absent → can't validate the variant, so accept it (graceful degradation)
+    with patch.object(exercises, "CATALOG", {}):
+        assert exercises.check_exercise("SQUAT", "anything_goes") == "ANYTHING_GOES"
 
 
 async def _seed_plan(session):
