@@ -481,6 +481,27 @@ the README pitfall) and logged as `ReportLog(kind="digest")`. Guarded once/week 
 `force_digest_for_user` (no guard) — the hidden `/test_digest` command calls the latter, so a
 test exercises the exact path without consuming the week's guard.
 
+**Weather-aware planning (EP-13)**: a daily job (`bot.jobs.weather_plan_job`, `run_daily` at
+`WEATHER_PLAN_HOUR` Europe/Warsaw, before the morning window) that proposes moving/easing a
+**key session** (tempo/intervals/long — `ADAPT_HEAVY_TYPES`) that lands on an
+extreme-weather day. `weather.fetch_forecast_week` extends the Open-Meteo lookup to 7 daily
+rows (same compact shape as the today dict, no hourly); `weather.find_weather_conflicts` is a
+**pure, network-free** filter (heat `feels_max_c ≥ WEATHER_HEAT_FEELS_C`, rain
+`precip_prob_pct ≥ WEATHER_RAIN_PROB_PCT`, wind `wind_max_kmh ≥ WEATHER_WIND_KMH`, or icy
+WMO code / freezing max-temp) over sessions within the next `WEATHER_DECISION_DAYS` — **no
+conflict ⇒ zero Claude calls, total silence** (the AC). On a conflict, `run_weather_plan_check`
+(`SYSTEM_WEATHER_PLAN`, Sonnet `MODEL_PLAN`, `kind="weather"`) returns a `PlanEdit` filtered to
+**move/modify only, within `today..today+decision_days`** (`_filter_weather_ops` — never
+skip/add: weather doesn't cancel training, only reschedules), and the summary always says
+"прогноз на зараз" (no auto-apply — the forecast may shift). The proposal reuses the EP-02
+machinery: `_send_adapt_proposal` → `PENDING_ADAPT_KEY` → `adapt_callback` (`apply_plan_ops` +
+`resync_workouts`). Gated on a stored location + active plan + `plan_adapt_enabled` (the
+general auto-adjust switch; no location ⇒ feature just doesn't activate). The **"don't ping
+twice" pitfall** is enforced by `_has_pending_proposal`: all three automatic proposers (weekly
+adapt, morning nudge, weather) skip when an unanswered proposal is already pending — a single
+`✅/❌` at a time, never overwriting the last one's stored ops. Not dedup-cached (like adapt —
+`_complete` has no cache). No test/force command yet (chat-only concern is the plan itself).
+
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet

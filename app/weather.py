@@ -9,9 +9,15 @@ failure so the report still goes out without weather):
   feels-like, precipitation, wind, a short condition, and a few daytime hourly slots so
   the analyst can advise on *when* to run. Shaped small (like the Garmin payload) to keep
   token cost down.
+- :func:`fetch_forecast_week` — the same compact daily shape for the next 7 days (no
+  hourly), for the weather-aware weekly planning check (EP-13).
+- :func:`find_weather_conflicts` — a pure, network-free filter that flags key sessions
+  (tempo/intervals/long) landing on an extreme-weather day, so we only call the LLM when
+  there's an actual conflict.
 """
+import datetime as dt
 import logging
-from typing import Optional
+from typing import Iterable, Optional, Sequence, Tuple
 
 import requests
 
@@ -36,6 +42,16 @@ _WMO = {
 }
 
 _HOURS = (6, 9, 12, 15, 18, 21)  # daytime slots we surface for run-timing advice
+
+# WMO codes that mean ice on the ground / freezing precipitation — an EP-13 conflict
+# regardless of temperature (freezing drizzle/rain, all snow, ice pellets).
+_ICY_CODES = frozenset({56, 57, 66, 67, 71, 73, 75, 77, 85, 86})
+
+# The daily forecast fields we pull for both today and the week (kept identical so the
+# LLM sees a consistent shape).
+_DAILY_PARAMS = ("temperature_2m_max,temperature_2m_min,apparent_temperature_max,"
+                 "precipitation_sum,precipitation_probability_max,"
+                 "wind_speed_10m_max,weather_code")
 
 
 def geocode(name: str) -> Optional[tuple]:
@@ -90,9 +106,7 @@ def fetch_forecast(lat: float, lon: float) -> Optional[dict]:
             _FORECAST_URL,
             params={
                 "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1,
-                "daily": ("temperature_2m_max,temperature_2m_min,apparent_temperature_max,"
-                          "precipitation_sum,precipitation_probability_max,"
-                          "wind_speed_10m_max,weather_code"),
+                "daily": _DAILY_PARAMS,
                 "hourly": ("temperature_2m,apparent_temperature,"
                            "precipitation_probability,wind_speed_10m"),
             },
@@ -123,6 +137,104 @@ def fetch_forecast(lat: float, lon: float) -> Optional[dict]:
         "summary": _WMO.get(code, f"код {code}") if code is not None else None,
         "hourly": [_slot(hourly, h) for h in _HOURS],
     }
+    return out
+
+
+def _day_row(daily: dict, i: int) -> dict:
+    """One day's compact aggregate from the ``daily`` block at index ``i`` (same shape
+    as :func:`fetch_forecast` minus the hourly slots). Keeps ``code`` so the conflict
+    filter can spot freezing precipitation."""
+    def d(key):
+        vals = daily.get(key) or []
+        return vals[i] if 0 <= i < len(vals) else None
+
+    code = d("weather_code")
+    return {
+        "date": d("time"),
+        "t_min_c": _r(d("temperature_2m_min")),
+        "t_max_c": _r(d("temperature_2m_max")),
+        "feels_max_c": _r(d("apparent_temperature_max")),
+        "precip_mm": _r(d("precipitation_sum"), 1),
+        "precip_prob_pct": d("precipitation_probability_max"),
+        "wind_max_kmh": _r(d("wind_speed_10m_max")),
+        "code": code,
+        "summary": _WMO.get(code, f"код {code}") if code is not None else None,
+    }
+
+
+def fetch_forecast_week(lat: float, lon: float, days: int = 7) -> Optional[list]:
+    """The next ``days`` days' compact daily forecast for ``lat``/``lon`` (local
+    timezone), or ``None`` on error. One dict per day (see :func:`_day_row`); no hourly
+    slots — used by the weather-aware weekly planning check (EP-13)."""
+    try:
+        r = requests.get(
+            _FORECAST_URL,
+            params={
+                "latitude": lat, "longitude": lon, "timezone": "auto",
+                "forecast_days": days, "daily": _DAILY_PARAMS,
+            },
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json() or {}
+    except Exception as e:
+        logger.warning(f"FORECAST week failed for {lat},{lon}: {e}")
+        return None
+
+    daily = data.get("daily") or {}
+    n = len(daily.get("time") or [])
+    return [_day_row(daily, i) for i in range(n)]
+
+
+def find_weather_conflicts(
+    forecast: Iterable[dict],
+    sessions: Sequence[Tuple[str, Optional[str]]],
+    *,
+    today: dt.date,
+    decision_days: int,
+    heavy_types: Iterable[str],
+    heat_feels_c: float,
+    rain_prob_pct: float,
+    wind_kmh: float,
+) -> list:
+    """Pure, network-free filter (EP-13): flag key sessions (``heavy_types`` — tempo/
+    intervals/long) in the next ``decision_days`` that land on an extreme-weather day.
+
+    ``sessions`` is ``(date_iso, type)`` pairs. Returns a list of
+    ``{date, type, reasons}`` — one per conflicting session (``reasons`` is a short
+    Ukrainian list). Empty list ⇒ no conflict ⇒ the caller stays silent and never calls
+    the LLM. Only looks ``decision_days`` ahead because the forecast lies further out."""
+    by_date = {d.get("date"): d for d in forecast if d.get("date")}
+    window_end = today + dt.timedelta(days=decision_days)
+    heavy = {t.lower() for t in heavy_types}
+    out = []
+    for date_s, wtype in sessions:
+        if (wtype or "").lower() not in heavy:
+            continue
+        try:
+            d = dt.date.fromisoformat(date_s)
+        except (TypeError, ValueError):
+            continue
+        if not (today <= d <= window_end):
+            continue
+        day = by_date.get(date_s)
+        if not day:
+            continue
+        reasons = []
+        feels = day.get("feels_max_c")
+        if feels is not None and feels >= heat_feels_c:
+            reasons.append(f"спека ~{feels}°C (відчувається)")
+        prob = day.get("precip_prob_pct")
+        if prob is not None and prob >= rain_prob_pct:
+            reasons.append(f"дощ {prob}%")
+        wind = day.get("wind_max_kmh")
+        if wind is not None and wind >= wind_kmh:
+            reasons.append(f"вітер {wind} км/год")
+        t_max = day.get("t_max_c")
+        if day.get("code") in _ICY_CODES or (t_max is not None and t_max <= 0):
+            reasons.append("ожеледь/мороз")
+        if reasons:
+            out.append({"date": date_s, "type": wtype, "reasons": reasons})
     return out
 
 

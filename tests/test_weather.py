@@ -1,4 +1,6 @@
 """Weather helpers — parsing + error tolerance, with requests mocked (no network)."""
+from datetime import date
+
 from app import weather
 
 
@@ -73,3 +75,91 @@ def test_fetch_forecast_builds_compact_today(monkeypatch):
 def test_fetch_forecast_swallows_errors(monkeypatch):
     _patch_get(monkeypatch, exc=RuntimeError("api down"))
     assert weather.fetch_forecast(51.1, 17.03) is None
+
+
+# ---------- weekly forecast + conflict filter (EP-13) ----------
+
+def test_fetch_forecast_week_builds_daily_rows(monkeypatch):
+    _patch_get(monkeypatch, {"daily": {
+        "time": ["2026-07-09", "2026-07-10", "2026-07-11"],
+        "temperature_2m_min": [18.2, 19.0, 20.5],
+        "temperature_2m_max": [28.4, 34.1, 31.0],
+        "apparent_temperature_max": [30.0, 36.6, 33.2],
+        "precipitation_sum": [0.0, 0.0, 5.3],
+        "precipitation_probability_max": [10, 5, 80],
+        "wind_speed_10m_max": [12.0, 15.0, 45.0],
+        "weather_code": [1, 0, 82],
+    }})
+    week = weather.fetch_forecast_week(51.1, 17.03)
+    assert [d["date"] for d in week] == ["2026-07-09", "2026-07-10", "2026-07-11"]
+    assert week[1]["feels_max_c"] == 37 and week[1]["t_max_c"] == 34
+    assert week[2]["precip_prob_pct"] == 80 and week[2]["summary"] == "сильні зливи"
+    assert "hourly" not in week[0]   # week rows are daily-only
+
+
+def test_fetch_forecast_week_swallows_errors(monkeypatch):
+    _patch_get(monkeypatch, exc=RuntimeError("api down"))
+    assert weather.fetch_forecast_week(51.1, 17.03) is None
+
+
+_HEAVY = {"tempo", "intervals", "long"}
+
+
+def _week():
+    return [
+        {"date": "2026-07-09", "t_max_c": 26, "feels_max_c": 28,
+         "precip_prob_pct": 10, "wind_max_kmh": 12, "code": 1},
+        {"date": "2026-07-10", "t_max_c": 34, "feels_max_c": 36,   # heat
+         "precip_prob_pct": 5, "wind_max_kmh": 15, "code": 0},
+        {"date": "2026-07-11", "t_max_c": 20, "feels_max_c": 21,   # rain + wind
+         "precip_prob_pct": 85, "wind_max_kmh": 48, "code": 82},
+    ]
+
+
+def test_conflicts_flags_key_session_on_extreme_day():
+    today = date(2026, 7, 9)
+    conflicts = weather.find_weather_conflicts(
+        _week(), [("2026-07-10", "intervals")], today=today, decision_days=3,
+        heavy_types=_HEAVY, heat_feels_c=30, rain_prob_pct=70, wind_kmh=40)
+    assert len(conflicts) == 1
+    assert conflicts[0]["date"] == "2026-07-10"
+    assert any("спека" in r for r in conflicts[0]["reasons"])
+
+
+def test_conflicts_reports_multiple_reasons():
+    today = date(2026, 7, 9)
+    conflicts = weather.find_weather_conflicts(
+        _week(), [("2026-07-11", "long")], today=today, decision_days=3,
+        heavy_types=_HEAVY, heat_feels_c=30, rain_prob_pct=70, wind_kmh=40)
+    reasons = conflicts[0]["reasons"]
+    assert any("дощ" in r for r in reasons) and any("вітер" in r for r in reasons)
+
+
+def test_conflicts_ignores_easy_sessions_and_calm_days():
+    today = date(2026, 7, 9)
+    # easy session on the hot day → not a key session; key session on the calm day → fine
+    conflicts = weather.find_weather_conflicts(
+        _week(), [("2026-07-10", "easy"), ("2026-07-09", "tempo")], today=today,
+        decision_days=3, heavy_types=_HEAVY, heat_feels_c=30, rain_prob_pct=70, wind_kmh=40)
+    assert conflicts == []
+
+
+def test_conflicts_ignores_sessions_past_decision_window():
+    today = date(2026, 7, 9)
+    # the hot key session is 5 days out — beyond decision_days=3 → no conflict
+    conflicts = weather.find_weather_conflicts(
+        [{"date": "2026-07-14", "t_max_c": 35, "feels_max_c": 37,
+          "precip_prob_pct": 0, "wind_max_kmh": 10, "code": 0}],
+        [("2026-07-14", "intervals")], today=today, decision_days=3,
+        heavy_types=_HEAVY, heat_feels_c=30, rain_prob_pct=70, wind_kmh=40)
+    assert conflicts == []
+
+
+def test_conflicts_flags_freezing_precip_by_code():
+    today = date(2026, 1, 9)
+    week = [{"date": "2026-01-10", "t_max_c": 2, "feels_max_c": -3,
+             "precip_prob_pct": 20, "wind_max_kmh": 10, "code": 66}]  # freezing rain
+    conflicts = weather.find_weather_conflicts(
+        week, [("2026-01-10", "long")], today=today, decision_days=3,
+        heavy_types=_HEAVY, heat_feels_c=30, rain_prob_pct=70, wind_kmh=40)
+    assert any("ожеледь" in r for r in conflicts[0]["reasons"])

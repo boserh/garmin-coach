@@ -26,6 +26,7 @@ from app.analysis.service import (
     run_analysis,
     run_digest,
     run_plan_adaptation,
+    run_weather_plan_check,
 )
 from app.core.config import settings
 from app.db.base import async_session_maker
@@ -242,6 +243,15 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
         logger.exception(f"TICK failed for user={user.id}")
 
 
+async def _has_pending_proposal(session, user_id: int) -> bool:
+    """True when an unanswered plan proposal is already waiting for this user. Every
+    automatic proposer (weekly/morning adaptation, weather) checks this before querying
+    Claude so we never send a second set of ✅/❌ buttons that would overwrite the first's
+    pending ops in bot_state — the EP-13 "don't ping twice" pitfall, enforced across all
+    hooks (they share PENDING_ADAPT_KEY + adapt_callback)."""
+    return bool(await repository.get_state(session, user_id, PENDING_ADAPT_KEY))
+
+
 def _adapt_ops_dump(edit) -> str:
     return json.dumps(
         {"ops": [op.model_dump() for op in edit.operations],
@@ -281,6 +291,8 @@ async def _adapt_morning_check(ctx, session, user: User, creds, today: str) -> N
     something, so a re-tick with the same low readiness doesn't re-query Claude)."""
     if not user.plan_adapt_enabled or not user.telegram_chat_id:
         return
+    if await _has_pending_proposal(session, user.id):
+        return
     guard_key = ADAPT_GUARD_PREFIX + today
     if await repository.get_state(session, user.id, guard_key) == "1":
         return
@@ -312,6 +324,8 @@ async def _adapt_weekly_for_user(ctx, session, user: User) -> None:
     plan = await repository.get_active_plan(session, user.id)
     if plan is None:
         return
+    if await _has_pending_proposal(session, user.id):
+        return
     try:
         async with user_runtime(session, user) as creds:
             if not creds.anthropic_key:
@@ -335,6 +349,66 @@ async def plan_adapt_job(ctx: ContextTypes.DEFAULT_TYPE):
         await _adapt_weekly_for_user(ctx, session, user)
 
     await for_each_user(worker, with_chat=True, label="PLAN adapt")
+
+
+async def _weather_plan_for_user(ctx, session, user: User) -> None:
+    """EP-13 daily check: if a key session (tempo/intervals/long) in the next
+    WEATHER_DECISION_DAYS lands on an extreme-weather day, ask Claude to propose a
+    move/modify with the same ✅/❌ buttons as EP-02. Fully silent (and zero Claude calls)
+    when there's no conflict. Gated on a stored location + active plan + plan_adapt_enabled
+    (the general auto-adjust switch), and yields to any already-pending proposal so we
+    never ping the user twice."""
+    if not user.plan_adapt_enabled or not user.telegram_chat_id:
+        return
+    if user.latitude is None or user.longitude is None:
+        return   # no location → feature just doesn't activate (EP-13 AC)
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None:
+        return
+    if await _has_pending_proposal(session, user.id):
+        logger.debug(f"WEATHER skip user={user.id}: proposal already pending")
+        return
+
+    decision_days = settings.WEATHER_DECISION_DAYS
+    forecast = await run_in_threadpool(
+        weather.fetch_forecast_week, user.latitude, user.longitude
+    )
+    if not forecast:
+        return
+    ws = await repository.upcoming_plan_workouts(session, user.id, days=decision_days + 1)
+    conflicts = weather.find_weather_conflicts(
+        forecast, [(w.date, w.type) for w in ws],
+        today=dt.date.today(), decision_days=decision_days, heavy_types=ADAPT_HEAVY_TYPES,
+        heat_feels_c=settings.WEATHER_HEAT_FEELS_C, rain_prob_pct=settings.WEATHER_RAIN_PROB_PCT,
+        wind_kmh=settings.WEATHER_WIND_KMH,
+    )
+    if not conflicts:
+        return   # no conflict → silence, no Claude call (EP-13 AC)
+    logger.info(f"WEATHER user={user.id}: {len(conflicts)} conflict(s) "
+                f"{[c['date'] for c in conflicts]}")
+    try:
+        async with user_runtime(session, user) as creds:
+            if not creds.anthropic_key:
+                return
+            _plan, edit = await run_weather_plan_check(
+                session, user_id=user.id, forecast=forecast, conflicts=conflicts,
+                decision_days=decision_days, api_key=creds.anthropic_key,
+            )
+    except AnalystError:
+        logger.exception(f"WEATHER check failed user={user.id}")
+        return
+    if edit is None or not edit.operations:
+        return
+    await _send_adapt_proposal(ctx, session, user, edit)
+
+
+async def weather_plan_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Daily weather-aware planning check (EP-13): propose moving a key session off an
+    extreme-weather day. Silent when there's no conflict. Scheduled by run_daily."""
+    async def worker(session, user):
+        await _weather_plan_for_user(ctx, session, user)
+
+    await for_each_user(worker, with_chat=True, label="WEATHER")
 
 
 async def _deliver_digest(ctx, session, user: User, creds, *, force: bool = False) -> bool:

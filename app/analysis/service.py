@@ -29,6 +29,7 @@ from app.analysis.prompts import (
     SYSTEM_PLAN_ADAPT,
     SYSTEM_PLAN_EDIT,
     SYSTEM_STRENGTH_GEN,
+    SYSTEM_WEATHER_PLAN,
 )
 from app.core.config import settings
 from app.garmin import exercises
@@ -1120,6 +1121,96 @@ async def run_plan_adaptation(
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"adapt:{trigger}", report_text=edit.summary,
+    )
+    return plan, edit
+
+
+# ---------- WEATHER-AWARE PLANNING (EP-13) ----------
+
+WEATHER_CONTEXT_DAYS = 7          # how far ahead the forecast context reaches
+_WEATHER_ALLOWED_ACTIONS = {"move", "modify"}   # never skip/add for weather
+
+
+def _filter_weather_ops(ops: list, today: dt.date, decision_days: int) -> list:
+    """Keep only move/modify operations dated within the decision window — the guard
+    behind the prompt (EP-02/EP-13 pitfall: the model may overstep). Weather is never a
+    reason to cancel (skip) or invent (add) a session."""
+    return [op for op in _filter_ops_to_window(ops, today, decision_days)
+            if op.action in _WEATHER_ALLOWED_ACTIONS]
+
+
+def weather_plan_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Propose a weather-driven plan correction (or none) — same JSON schema as the plan
+    edit/adapt calls (``PlanEdit``). One retry on a parse miss."""
+    model = MODEL_PLAN
+    text, stats = _complete(
+        model, SYSTEM_WEATHER_PLAN, context, "weather", api_key, max_tokens=1500)
+    try:
+        return _coerce_edit(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(
+            model, SYSTEM_WEATHER_PLAN, retry, "weather", api_key, max_tokens=1500
+        )
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_edit(text), stats
+        except Exception as e:
+            logger.error(f"WEATHER parse failed: {e}")
+            raise AnalystError("Не вдалось сформувати погодну пропозицію.")
+
+
+async def run_weather_plan_check(
+    session, *, user_id: int, forecast: list, conflicts: list,
+    decision_days: int, api_key: Optional[str] = None,
+):
+    """Given a pre-computed weather ``conflicts`` list (a key session on an extreme day),
+    ask Claude to propose a minimal move/modify. Callers must only invoke this when
+    ``conflicts`` is non-empty (so the no-conflict path stays silent + free — EP-13 AC).
+
+    Returns ``(plan, PlanEdit)``, or ``(None, None)`` when there's no active plan. Ops are
+    filtered to move/modify within ``today..today+decision_days`` (never skip/add — weather
+    doesn't cancel training). Logs ``ReportLog(kind="weather")``. Does NOT apply the change
+    — the caller confirms via the same bot buttons as EP-02 adaptation."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        return None, None
+
+    today = dt.date.today()
+    window_end = (today + dt.timedelta(days=WEATHER_CONTEXT_DAYS)).isoformat()
+    ws = [w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
+          if w.date <= window_end]
+    context = {
+        "today": today.isoformat(),
+        "decision_days": decision_days,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description} for w in ws],
+        "forecast": forecast,
+        "conflicts": conflicts,
+    }
+    try:
+        edit, stats = await run_in_threadpool(weather_plan_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="weather", model=MODEL_PLAN, ok=False,
+            question="weather", error=str(e)[:512],
+        )
+        raise
+    edit.operations = _filter_weather_ops(edit.operations, today, decision_days)
+    edit.alt_operations = None   # weather proposals are already the safe option
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question="weather", report_text=edit.summary,
     )
     return plan, edit
 

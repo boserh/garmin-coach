@@ -80,6 +80,16 @@ class Settings(BaseSettings):
     DIGEST_HOUR: int = 19
     DIGEST_WEEKLY_DOW: int = 0  # Sunday
 
+    # --- Weather-aware planning (EP-13) ---
+    # A daily check (Europe/Warsaw hour) that proposes moving a key session off an
+    # extreme-weather day. Gated on a stored location + active plan + plan_adapt_enabled;
+    # silent (zero Claude calls) when no key session hits an extreme day.
+    WEATHER_PLAN_HOUR: int = 6
+    WEATHER_DECISION_DAYS: int = 3       # only propose for sessions within N days ahead
+    WEATHER_HEAT_FEELS_C: float = 30     # feels-like max °C at/above → heat conflict
+    WEATHER_RAIN_PROB_PCT: float = 70    # precip probability % at/above → rain conflict
+    WEATHER_WIND_KMH: float = 40         # max wind km/h at/above → wind conflict
+
 
 @lru_cache
 def get_settings() -> Settings:
