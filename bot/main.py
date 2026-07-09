@@ -23,6 +23,7 @@ from bot.jobs import (
     morning_job,
     plan_adapt_job,
     plan_sync_job,
+    weather_plan_job,
     weekly_digest_job,
 )
 
@@ -97,6 +98,13 @@ def main() -> None:
         weekly_digest_job,
         time=time(hour=settings.DIGEST_HOUR, tzinfo=handlers.TZ),
         days=(settings.DIGEST_WEEKLY_DOW,),
+    )
+    # EP-13 weather-aware planning: daily check that proposes moving a key session off an
+    # extreme-weather day. Runs every morning (silent when there's no conflict), before
+    # the morning report window.
+    app.job_queue.run_daily(
+        weather_plan_job,
+        time=time(hour=settings.WEATHER_PLAN_HOUR, tzinfo=handlers.TZ),
     )
 
     logger.info("Bot started")
