@@ -68,7 +68,6 @@
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` (1043 рядки) на пакет | M | до/разом з PERF-02, PERF-04b |
 | [CODE-02](CODE-02-cli-push-plan-reuse-plan-sync.md) | CLI `push-plan` поверх `plan_sync` (залишок: відбір вікна) | S | — |
 | [CODE-03](CODE-03-remove-legacy-paths.md) | Прибрати legacy: `WEB_TOKEN`, `GARTH_TOKEN_DIR` (`gconn` НЕ видаляти — OPS-01) | S | — |
-| [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | S–M | разом зі ST-03 |
 | [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | S | разом з CODE-01 |
 | [CODE-07](CODE-07-import-fit-series-refactor-tests.md) | Розплутати `import_fit_series` + тести (cyclomatic 20, вкладеність 8, 0 тестів) | S–M | — (низький пріоритет) |
 
@@ -94,7 +93,7 @@
 EP-13-погодою — поки окрема джоба о 19:00) →
 **EP-12** ✅ MVP (RPE/болі — годують усе наступне; лишились фази-споживачі) →
 **EP-13** ✅ (погодна корекція плану — щоденна легка джоба; липнева спека) →
-EP-14 + ST-03/CODE-05 — філери.
+**CODE-05** ✅ (спільний report-флоу бот/веб/morning) → EP-14 + ST-03 — філери.
 
 **Стратегічні ставки (місяць+ кожна, це і є моат):** **NF-01** (підсилює звіти,
 EP-08-пороги і NF-06) → **EP-09** (движок для EP-11 і NF-08) → **NF-05**
@@ -131,6 +130,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [EP-13](EP-13-weather-aware-week.md) | Погодо-свідоме планування тижня | `weather.fetch_forecast_week` + `find_weather_conflicts` (чистий фільтр: ключова сесія на екстрем-день — спека/злива/вітер/ожеледь у межах `WEATHER_DECISION_DAYS`; без конфлікту — нуль Claude-викликів), `SYSTEM_WEATHER_PLAN` + `run_weather_plan_check`/`weather_plan_with_stats` (`app/analysis/service.py`, лише move/modify у вікні, ніколи skip/add; `ReportLog(kind="weather")`), `weather_plan_job`/`_weather_plan_for_user` (`bot/jobs.py`, щоденна `run_daily` о `WEATHER_PLAN_HOUR`, гейт: локація + активний план + `plan_adapt_enabled`), перевикористовує `_send_adapt_proposal`/`adapt_callback`; `_has_pending_proposal` — спільний гейт «одна пропозиція за раз» у всіх трьох хуках (пастка «не смикати двічі»); `tests/test_weather.py` + `tests/test_weather_plan_jobs.py` |
 | [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | `SYSTEM_DIGEST` + `run_digest`/`digest_with_stats`/`_digest_cache_key` (`app/analysis/service.py`, числа рахуємо ми у `_week_volume_summary`), `weekly_digest_job`/`_digest_for_user`/`force_digest_for_user` (`bot/jobs.py`, недільна `run_daily` о `DIGEST_HOUR`, once-a-week guard `bot_state` `digest:<iso-week>`), прихована `/test_digest`, `ReportLog(kind="digest")`; `tests/test_digest.py` |
 | [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | `eligible_users` (`app/db/users.py`) + `for_each_user`/`user_garmin_runtime` (`bot/jobs.py`): три джоби (`morning_job`/`plan_sync_job`/`plan_adapt_job`) стали 1–5-рядковими, per-user try/except централізований (одна помилка не рве цикл — тепер і в adapt), guard «є Garmin-креди» спільний для `_tick_for_user`/`_sync_for_user`; логи скіпів/падінь незмінні; `tests/test_jobs.py` |
+| [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | `app/analysis/delivery.py::build_report` (payload → run_analysis → text + sync-прапори) + `ReportResult`/`STALE_NOTE`; три виклики зведені: `bot/handlers.py::report`, `app/routers/reports.py::report_json`, `bot/jobs.py::_deliver_morning`. Канал сам формує stale-примітку (Telegram-префікс vs JSON-`note`) й ловить `AnalystError`; morning лишає свій `_MORNING_STALE` («звіт» не «аналіз» — свідома відмінність, бо stale рахує строгіший `_recovery_synced`, не `synced_today`) + guard/вікно/MFA. Дедуп-кеш незмінний (хелпер лише збирає наявний виклик). `tests/test_delivery.py` + `test_routers.py::test_report_json_uses_shared_helper_and_stale_note` |
 
 ## Наскрізна пастка
 

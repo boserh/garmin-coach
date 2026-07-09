@@ -832,3 +832,43 @@ def test_plan_post_invalid_days_does_not_spawn(auth_client):
         )
     assert r.status_code == 303 and r.headers["location"] == "/plan?error=days"
     assert spawn.call_count == 0
+
+
+def test_report_json_uses_shared_helper_and_stale_note(auth_client):
+    """CODE-05: /report.json funnels through delivery.build_report, forwards the report
+    question, and sources its stale note from delivery.STALE_NOTE. Patch the helper +
+    payload build so no Garmin/Claude call happens."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.analysis import delivery
+    from app.routers import reports as reports_router
+
+    payload = SimpleNamespace(synced_today=False, last_data_date="2026-07-08")
+    captured = {}
+
+    async def fake_build_report(session, user, pl, *, question, kind, api_key=None, weather=None):
+        captured.update(question=question, kind=kind, payload=pl)
+        return delivery.ReportResult(
+            text="звіт тут", synced_today=pl.synced_today, last_data_date=pl.last_data_date,
+        )
+
+    @asynccontextmanager
+    async def fake_runtime(session, user):
+        yield SimpleNamespace(anthropic_key="k")  # skip decrypt (creds pollution across tests)
+
+    with patch.object(reports_router, "user_runtime", fake_runtime), \
+         patch.object(reports_router.service, "build_payload_cached",
+                      AsyncMock(return_value=(payload, []))), \
+         patch.object(reports_router.delivery, "build_report", new=fake_build_report):
+        r = auth_client.get("/report.json")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["report"] == "звіт тут"
+    assert body["synced_today"] is False
+    assert body["last_data_date"] == "2026-07-08"
+    assert body["note"] == delivery.STALE_NOTE          # stale wording sourced from the helper
+    assert captured["question"] == reports_router._REPORT_Q  # question forwarded through
+    assert captured["payload"] is payload
