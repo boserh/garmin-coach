@@ -6,6 +6,7 @@ context (their Garmin provider + Claude key)."""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analysis import delivery
 from app.analysis.service import AnalystError, run_analysis
 from app.core.auth import current_user
 from app.db.models import User
@@ -17,7 +18,6 @@ router = APIRouter(tags=["reports"])
 
 _REPORT_Q = "Оціни відновлення і дай пораду до наступної запланованої пробіжки."
 _DEEP_Q = "Глибокий розбір сну, HRV і навантаження за два тижні."
-_STALE_NOTE = "⚠️ Дані за сьогодні ще не синканулись, аналіз за останній доступний день."
 
 
 @router.get("/report.json")
@@ -30,17 +30,17 @@ async def report_json(
             session, user.id, days=7, activity_limit=20
         )
         try:
-            text = await run_analysis(
-                session, payload, user_id=user.id, question=_REPORT_Q,
+            result = await delivery.build_report(
+                session, user, payload, question=_REPORT_Q,
                 kind="report", api_key=creds.anthropic_key,
             )
         except AnalystError as e:
             raise HTTPException(status_code=502, detail=str(e))
     return {
-        "synced_today": payload.synced_today,
-        "last_data_date": payload.last_data_date,
-        "note": None if payload.synced_today else _STALE_NOTE,
-        "report": text,
+        "synced_today": result.synced_today,
+        "last_data_date": result.last_data_date,
+        "note": None if result.synced_today else delivery.STALE_NOTE,
+        "report": result.text,
     }
 
 

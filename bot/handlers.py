@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
+from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
     run_activity_analysis,
@@ -38,7 +39,6 @@ PENDING_ADAPT_KEY = "pending_adapt"
 
 _REPORT_Q = "Оціни відновлення і дай пораду до наступної запланованої пробіжки."
 _DEEP_Q = "Глибокий розбір сну, HRV і навантаження за два тижні."
-_REPORT_STALE = "⚠️ Дані за сьогодні ще не синканулись, аналіз за останній доступний день.\n\n"
 _NOT_REGISTERED = (
     "Тебе не зареєстровано. Додай цей chat_id у налаштуваннях веб-кабінету, "
     "щоб бот працював з твоїми даними."
@@ -74,15 +74,16 @@ async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             payload, _ = await service.build_payload_cached(
                 session, user.id, days=7, activity_limit=20
             )
-            note = "" if payload.synced_today else _REPORT_STALE
             try:
-                text = await run_analysis(
-                    session, payload, user_id=user.id, question=_REPORT_Q,
+                result = await delivery.build_report(
+                    session, user, payload, question=_REPORT_Q,
                     kind="report", api_key=creds.anthropic_key,
                 )
+                note = "" if result.synced_today else delivery.STALE_NOTE + "\n\n"
+                text = result.text
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")
-                text = str(e)
+                note, text = "", str(e)
     await update.message.reply_text(note + text)
 
 

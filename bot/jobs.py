@@ -20,10 +20,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from app import weather
+from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
     run_activity_analysis,
-    run_analysis,
     run_digest,
     run_plan_adaptation,
     run_weather_plan_check,
@@ -67,6 +67,9 @@ ADAPT_GUARD_PREFIX = "adapt_suggested:"
 DIGEST_GUARD_PREFIX = "digest:"
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
+# Morning keeps its own stale wording ("звіт" not "аналіз", cf. delivery.STALE_NOTE) — a
+# deliberate difference: morning decides stale via the stricter _recovery_synced check
+# below, not payload.synced_today, so it can't reuse the on-demand note verbatim.
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
 
 
@@ -140,10 +143,11 @@ async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.dat
 
     wx = await _fetch_user_weather(user)
     try:
-        text = await run_analysis(
-            session, payload, user_id=user.id, question=_MORNING_Q,
+        result = await delivery.build_report(
+            session, user, payload, question=_MORNING_Q,
             kind="morning", api_key=creds.anthropic_key, weather=wx,
         )
+        text = result.text
     except AnalystError as e:
         logger.error(f"ANALYST {e}")
         text = str(e)
