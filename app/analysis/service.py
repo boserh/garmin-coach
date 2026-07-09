@@ -455,6 +455,10 @@ def activity_payload(activity) -> dict:
         data["segments"] = _segments(activity.series)
         if activity.dist_km and activity.dur_min:
             data["avg_pace"] = round(activity.dur_min / activity.dist_km, 2)
+    # EP-12: the runner's subjective check-in (RPE + niggle). Part of the payload, so it
+    # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
+    if getattr(activity, "subjective", None):
+        data["subjective"] = activity.subjective
     return data
 
 

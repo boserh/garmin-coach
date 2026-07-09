@@ -26,7 +26,7 @@
 | [EP-09](EP-09-ask-full-history.md) | `/ask` над усією історією (tool-use агент над БД) | L–XL | — |
 | [EP-10](EP-10-multisport.md) | Мультиспорт: вело/плавання у планах і аналізі | XL | фаза 2 (навантаження) → NF-05 |
 | [EP-11](EP-11-web-coach-chat.md) | Веб-чат з тренером | L | EP-09 бажано |
-| [EP-12](EP-12-post-run-checkin.md) | Пост-тренувальний check-in (RPE + самопочуття) | M–L | ST-04 ✅ |
+| [EP-12](EP-12-post-run-checkin.md) | Пост-тренувальний check-in (RPE + самопочуття) | M–L | ✅ **MVP done** (2026-07); фази 2–3 (RPE-тренд в адаптацію, статус план/факт) — далі |
 | [EP-13](EP-13-weather-aware-week.md) | Погодо-свідоме планування тижня | M–L | — (сезонно — зараз) |
 | [EP-14](EP-14-personal-records.md) | Особисті рекорди й віхи | M | — |
 | [EP-15](EP-15-elevation-gap.md) | Рельєф і grade-adjusted pace (GAP) | M–L | GAP-модуль реюзабельний (його чекає EP-05 фаза 2) |
@@ -92,7 +92,8 @@
 **Quick wins (1–2 тижні кожен, високий ефект):** CODE-04 ✅ → EP-07 ✅ (недільний
 дайджест; недільний пайплайн ще закласти під злиття з EP-02-пропозиціями і
 EP-13-погодою — поки окрема джоба о 19:00) →
-**EP-12** (RPE/болі — годують усе наступне) → **EP-13** (сезонно актуальний прямо
+**EP-12** ✅ MVP (RPE/болі — годують усе наступне; лишились фази-споживачі) →
+**EP-13** (сезонно актуальний прямо
 зараз: липнева спека) → EP-14 + ST-03/CODE-05 — філери.
 
 **Стратегічні ставки (місяць+ кожна, це і є моат):** **NF-01** (підсилює звіти,
@@ -126,6 +127,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [OPS-01](OPS-01-garmin-auth-plan-b.md) | Garmin auth: «план Б» готовий у шухляді (сама міграція — за фактом поломки garth) | Маркери `GARMIN AUTH FAIL` (`app/garmin/mfa.py`, `providers.py`), `app.cli token-expiry` + `app/garmin/token_info.py`, `scripts/ops01_recon_gconn.py` (recon на Pi: 0 FAIL, garminconnect 0.3.6), план міграції в тікеті. Rate limit — далі в PERF-05 |
 | [PERF-02](PERF-02-dedup-cache-to-db.md) | Дедуп-кеші з JSON-файлів у БД (крос-процесний баг) | Таблиця `llm_cache` + `app/db/llm_cache.py` (get/put у `run_analysis`/`run_ask`/`run_activity_analysis`; ключі `_cache_key` недоторкані); Garmin-кеш — per-key файли в `GARMIN_CACHE_DIR` з одноразовим seed'ом зі старого `garmin_cache.json` (`client._seed_legacy_cache`); `tests/test_llm_cache.py` + `tests/test_garmin_disk_cache.py` |
 | [PERF-04a](PERF-04a-bcrypt-off-event-loop.md) | bcrypt поза event loop | `hash_password_async`/`verify_password_async` у `app/core/crypto.py` (`asyncio.to_thread`); async-роути `app/routers/auth.py` + `app/routers/settings.py` `await`-ять їх (sync-версії лишились для CLI) |
+| [EP-12](EP-12-post-run-checkin.md) | Пост-тренувальний check-in — MVP (RPE + біль) | `ActivityRecord.subjective` (JSON `{rpe, pain?, note?}`) + `repository.set_subjective`/`get_last_activity`; бот `checkin_keyboard`/`checkin_callback` (RPE 1–10 + біль-кнопки, stateless по `ci:` callback data) чіпляється до автоаналізу (`bot/jobs.py`) і `/activity`; ручна `/checkin`; споживач-фаза 1 — `activity_payload` віддає `subjective` у `SYSTEM_ACTIVITY` (і в cache key); `/me` показує RPE/біль; `tests/test_checkin.py`. **Фази 2–3 далі**: RPE-тренд в EP-02-адаптацію, статус план/факт для дайджесту, повтор болю в ранковий звіт |
 | [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | `SYSTEM_DIGEST` + `run_digest`/`digest_with_stats`/`_digest_cache_key` (`app/analysis/service.py`, числа рахуємо ми у `_week_volume_summary`), `weekly_digest_job`/`_digest_for_user`/`force_digest_for_user` (`bot/jobs.py`, недільна `run_daily` о `DIGEST_HOUR`, once-a-week guard `bot_state` `digest:<iso-week>`), прихована `/test_digest`, `ReportLog(kind="digest")`; `tests/test_digest.py` |
 | [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | `eligible_users` (`app/db/users.py`) + `for_each_user`/`user_garmin_runtime` (`bot/jobs.py`): три джоби (`morning_job`/`plan_sync_job`/`plan_adapt_job`) стали 1–5-рядковими, per-user try/except централізований (одна помилка не рве цикл — тепер і в adapt), guard «є Garmin-креди» спільний для `_tick_for_user`/`_sync_for_user`; логи скіпів/падінь незмінні; `tests/test_jobs.py` |
 

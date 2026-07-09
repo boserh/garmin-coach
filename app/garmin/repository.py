@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db.models import (
     ActivityRecord,
@@ -86,6 +87,47 @@ async def get_activity(session: AsyncSession, user_id: int, row_id: int):
             )
         )
     ).scalar_one_or_none()
+
+
+async def get_last_activity(session: AsyncSession, user_id: int):
+    """This user's most recent activity (newest first), or None. Used by /checkin to
+    target the run the runner most likely wants to rate."""
+    return (
+        await session.execute(
+            select(ActivityRecord)
+            .where(ActivityRecord.user_id == user_id)
+            .order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def set_subjective(
+    session: AsyncSession, user_id: int, row_id: int,
+    *, rpe: Optional[int] = None, pain: Optional[bool] = None,
+    note: Optional[str] = None,
+):
+    """Merge a post-run check-in (EP-12) into ``ActivityRecord.subjective``, scoped to the
+    user. Only the passed fields are written, so a later tap (RPE, then a pain note) adds
+    to the same record; a repeated field overwrites. Returns the row, or None if not found
+    / not theirs. Does not commit."""
+    act = await get_activity(session, user_id, row_id)
+    if act is None:
+        return None
+    data = dict(act.subjective or {})
+    if rpe is not None:
+        data["rpe"] = rpe
+    if pain is not None:
+        data["pain"] = pain
+        if not pain:  # "все ок" clears any earlier niggle note
+            data.pop("note", None)
+    if note is not None:
+        data["pain"] = True
+        data["note"] = note
+    act.subjective = data
+    # JSON column reassignment needs an explicit flag for SQLAlchemy to persist it.
+    flag_modified(act, "subjective")
+    return act
 
 
 async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) -> dict:

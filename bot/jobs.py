@@ -34,7 +34,7 @@ from app.db.users import eligible_users
 from app.garmin import matching, plan_sync, repository, service
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
-from bot.handlers import MFA_REQUIRED_MSG, PENDING_ADAPT_KEY, TZ
+from bot.handlers import MFA_REQUIRED_MSG, PENDING_ADAPT_KEY, TZ, checkin_keyboard
 
 logger = logging.getLogger("bot")
 
@@ -188,7 +188,11 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
             text = await run_activity_analysis(
                 session, act, user_id=user.id, api_key=creds.anthropic_key
             )
-            await ctx.bot.send_message(user.telegram_chat_id, f"{_activity_head(act)}\n\n{text}")
+            # Attach the EP-12 post-run check-in (RPE + pain) — one tap, silence is fine.
+            await ctx.bot.send_message(
+                user.telegram_chat_id, f"{_activity_head(act)}\n\n{text}",
+                reply_markup=checkin_keyboard(act.id),
+            )
             logger.info(f"ACTIVITY_WATCH sent user={user.id} activity={act.id}")
         except Exception:
             logger.exception(f"ACTIVITY_WATCH failed user={user.id} activity={act.id}")

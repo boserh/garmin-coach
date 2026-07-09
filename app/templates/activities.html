@@ -92,6 +92,8 @@
             {% if a.dur_min %}<span class="m"><b>{{ a.dur_min|int }}</b><span>хв</span></span>{% endif %}
             {% if a.avg_hr %}<span class="m"><b>{{ a.avg_hr }}</b><span>уд</span></span>{% endif %}
             {% if a.load %}<span class="m"><b>{{ a.load|int }}</b><span>load</span></span>{% endif %}
+            {% if a.rpe %}<span class="m"><b>{{ a.rpe }}</b><span>RPE</span></span>{% endif %}
+            {% if a.pain %}<span class="m" title="{{ a.pain if a.pain is string else 'біль' }}">🩹{% if a.pain is string %} <span>{{ a.pain }}</span>{% endif %}</span>{% endif %}
           </div>
         </div>
         {% if a.spark %}

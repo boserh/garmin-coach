@@ -254,6 +254,8 @@ async def _activity_cards(session, user_id, limit, offset,
             "spark": _spark(r.series) if runwalk else None,
             "strain_ring": strain_ring,
             "has_analysis": bool(r.analysis),
+            "rpe": (r.subjective or {}).get("rpe"),
+            "pain": (r.subjective or {}).get("note") or (r.subjective or {}).get("pain"),
         })
     return cards
 
@@ -673,6 +675,8 @@ async def me_row(
             "avg_hr": obj.avg_hr, "max_hr": obj.max_hr, "load": obj.load,
             "pace": _pace_str(obj.dist_km, obj.dur_min) if runwalk else None,
             "exercises": obj.exercises,
+            "rpe": (obj.subjective or {}).get("rpe"),
+            "pain": (obj.subjective or {}).get("note") or (obj.subjective or {}).get("pain"),
         }
         strain = None
         if obj.load:
