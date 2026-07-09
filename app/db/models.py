@@ -131,6 +131,10 @@ class ActivityRecord(Base):
     series: Mapped[Optional[list]] = mapped_column(JSON)
     # Claude's on-demand analysis of this activity (/activity); null until requested.
     analysis: Mapped[Optional[str]] = mapped_column(Text)
+    # Post-run subjective check-in (EP-12): {rpe: 1-10, pain?: bool, note?: str} — the
+    # runner's felt effort + any niggle, captured via inline buttons after auto-analysis
+    # (re-tap overwrites). Null until answered; silence is a valid non-answer.
+    subjective: Mapped[Optional[dict]] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

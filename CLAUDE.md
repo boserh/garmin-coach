@@ -535,6 +535,20 @@ collapsed to ~6 pace/HR segments so the LLM sees pacing and HR drift), calls Son
 web detail page) and logs a `ReportLog` (kind="activity"). Shares the dedup cache
 (`_activity_cache_key`). Works for any type; runs additionally get the segment detail.
 
+**Post-run check-in (EP-12)**: after the auto-analysis DM (and on `/activity`) the bot
+attaches an inline keyboard — RPE 1–10 (one tap) + «🩹 щось боліло» → body-part buttons
+(коліно/гомілка/…). It's **stateless**: the DB activity id is baked into the callback data
+(`ci:rpe:<aid>:<n>` / `ci:pain:<aid>` / `ci:part:<aid>:<slug>` / `ci:ok:<aid>`), so no
+`context.user_data` is needed (the ticket's pitfall — niggles are buttons, not free text).
+`repository.set_subjective` merges `{rpe, pain?, note?}` into `ActivityRecord.subjective`
+(re-tap overwrites; «без болю» clears any note); the buttons quietly `edit_message` away
+after the answer. `/checkin [rpe] [note]` is the manual fallback for the last activity.
+Silence is valid — nothing nags, analysis works without it. **Consumer phase 1**:
+`activity_payload` includes `subjective`, so `SYSTEM_ACTIVITY` sees felt effort/pain (and
+it enters `_activity_cache_key` automatically — the README pitfall). `/me` shows RPE + pain
+on the activity card and detail. Later phases (not yet): RPE trend into the EP-02 adaptive
+job, a plan/actual status for the digest, and surfacing a pain that recurs ≥2× in 14 days.
+
 **Training plans**: a user picks a goal + intake on the **web form** (`/plan`); we *prescribe*
 a dated program (distinct from the Garmin-Calendar `planned_runs` we merely read). This is
 the one place we need **structured LLM output**: `SYSTEM_PLAN` returns JSON validated by

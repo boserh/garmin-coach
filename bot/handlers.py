@@ -183,8 +183,136 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")
-                text = str(e)
-    await update.message.reply_text(text)
+                await update.message.reply_text(str(e))
+                return
+    # Offer the post-run check-in (EP-12) unless it's already been answered.
+    kb = None if act.subjective else checkin_keyboard(act.id)
+    await update.message.reply_text(text, reply_markup=kb)
+
+
+# ---------- POST-RUN CHECK-IN (EP-12) ----------
+
+# The check-in status footer is appended below the activity analysis; we split it off
+# the current message text on each edit so re-taps rewrite (never stack) the footer.
+_CI_SEP = "\n— — —\n"
+# Common running niggles → (callback slug, Ukrainian label). Kept to buttons (not free
+# text) so the state stays entirely in callback_data — see the EP-12 pitfall.
+_PAIN_PARTS = [
+    ("knee", "коліно"), ("shin", "гомілка"), ("foot", "стопа"),
+    ("thigh", "стегно"), ("calf", "литка"), ("back", "спина"), ("other", "інше"),
+]
+_PART_LABELS = dict(_PAIN_PARTS)
+
+
+def checkin_keyboard(aid: int) -> InlineKeyboardMarkup:
+    """RPE 1–10 (one tap) + a «щось боліло» opener. ``aid`` is the DB activity id, so the
+    callback is fully stateless."""
+    rpe = [InlineKeyboardButton(str(n), callback_data=f"ci:rpe:{aid}:{n}") for n in range(1, 11)]
+    return InlineKeyboardMarkup([
+        rpe[:5], rpe[5:],
+        [InlineKeyboardButton("🩹 Щось боліло", callback_data=f"ci:pain:{aid}")],
+    ])
+
+
+def _pain_keyboard(aid: int) -> InlineKeyboardMarkup:
+    """Body-part buttons + a «без болю» dismiss — the second (optional) tap."""
+    parts = [InlineKeyboardButton(lbl, callback_data=f"ci:part:{aid}:{slug}")
+             for slug, lbl in _PAIN_PARTS]
+    return InlineKeyboardMarkup([
+        parts[:4], parts[4:],
+        [InlineKeyboardButton("🆗 Без болю", callback_data=f"ci:ok:{aid}")],
+    ])
+
+
+def _ci_render(current_text: str, status: str) -> str:
+    """Rebuild the message: the original analysis (everything before the footer marker)
+    plus the fresh check-in status line."""
+    base = current_text.split(_CI_SEP)[0].rstrip()
+    return f"{base}{_CI_SEP}{status}"
+
+
+async def checkin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle the RPE / pain buttons. Callback data carries the activity id, so no chat
+    state is kept. Re-tapping overwrites the stored value (repository.set_subjective)."""
+    q = update.callback_query
+    await q.answer()
+    # ci:rpe:<aid>:<n> | ci:pain:<aid> | ci:part:<aid>:<slug> | ci:ok:<aid>
+    parts = q.data.split(":")
+    action, aid = parts[1], int(parts[2])
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+
+        if action == "pain":
+            # Open the body-part picker without touching stored data yet.
+            await q.edit_message_text(
+                _ci_render(q.message.text, "🩹 Що саме боліло?"),
+                reply_markup=_pain_keyboard(aid),
+            )
+            return
+
+        if action == "rpe":
+            act = await repository.set_subjective(session, user.id, aid, rpe=int(parts[3]))
+            status, kb = (f"✅ RPE {parts[3]}/10. Щось боліло?", _pain_keyboard(aid))
+        elif action == "part":
+            note = _PART_LABELS.get(parts[3], parts[3])
+            act = await repository.set_subjective(session, user.id, aid, note=note)
+            status, kb = (f"✅ Записав: 🩹 {note}.", None)
+        else:  # ok — no pain
+            act = await repository.set_subjective(session, user.id, aid, pain=False)
+            status, kb = ("✅ Записав: болю немає.", None)
+
+        if act is None:
+            await q.edit_message_text("Активність не знайдено.")
+            return
+        await session.commit()
+    await q.edit_message_text(_ci_render(q.message.text, status), reply_markup=kb)
+
+
+async def checkin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Manual post-run check-in for the last activity (if the buttons were ignored).
+    ``/checkin`` → show the RPE keyboard; ``/checkin 7`` → set RPE; ``/checkin 7 коліно``
+    or ``/checkin коліно`` → also record a niggle note."""
+    logger.info("CMD /checkin")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        act = await repository.get_last_activity(session, user.id)
+        if act is None:
+            await update.message.reply_text(
+                "Немає активностей для оцінки. Зроби /report, щоб синканути дані."
+            )
+            return
+
+        args = ctx.args or []
+        rpe, note = None, None
+        if args and args[0].isdigit() and 1 <= int(args[0]) <= 10:
+            rpe = int(args[0])
+            note = " ".join(args[1:]).strip() or None
+        elif args:
+            note = " ".join(args).strip()
+
+        if rpe is None and note is None:   # no args → offer the buttons
+            head = f"{act.type or 'активність'}"
+            if act.dist_km:
+                head += f" · {act.dist_km:.1f} км"
+            await update.message.reply_text(
+                f"Як пройшло? {head} ({act.date})",
+                reply_markup=checkin_keyboard(act.id),
+            )
+            return
+
+        await repository.set_subjective(session, user.id, act.id, rpe=rpe, note=note)
+        await session.commit()
+    bits = []
+    if rpe is not None:
+        bits.append(f"RPE {rpe}/10")
+    if note:
+        bits.append(f"🩹 {note}")
+    await update.message.reply_text("✅ Записав: " + ", ".join(bits) + ".")
 
 
 async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

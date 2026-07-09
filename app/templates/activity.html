@@ -57,6 +57,8 @@
       {% if a.avg_hr %}<div class="bigstat"><div class="v">{{ a.avg_hr }}</div><div class="k">сер. пульс</div></div>{% endif %}
       {% if a.max_hr %}<div class="bigstat"><div class="v">{{ a.max_hr }}</div><div class="k">макс пульс</div></div>{% endif %}
       {% if a.load %}<div class="bigstat"><div class="v">{{ a.load|int }}</div><div class="k">load</div></div>{% endif %}
+      {% if a.rpe %}<div class="bigstat"><div class="v">{{ a.rpe }}/10</div><div class="k">RPE</div></div>{% endif %}
+      {% if a.pain %}<div class="bigstat"><div class="v">🩹</div><div class="k">{{ a.pain if a.pain is string else 'біль' }}</div></div>{% endif %}
     </div>
 
     {% if analysis %}
