@@ -260,6 +260,33 @@ async def weekly_run_volume(
     return out
 
 
+async def weekly_activity_load(
+    session: AsyncSession, user_id: int, weeks: int = 8
+) -> List[dict]:
+    """Multisport training-load per ISO week over the last ``weeks`` weeks (oldest first),
+    across **all** activity types (NF-05) — the cross-sport budget that the running-only
+    :func:`weekly_run_volume` misses. The load math (a uniform HR/duration TRIMP proxy) lives
+    in the pure ``app.multisport`` module; here we only fetch the rows."""
+    from app import multisport
+
+    cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+    rows = (
+        await session.execute(
+            select(
+                ActivityRecord.date, ActivityRecord.type,
+                ActivityRecord.dur_min, ActivityRecord.avg_hr,
+            ).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+            )
+        )
+    ).all()
+    acts = [{"date": d, "type": t, "dur_min": dm, "avg_hr": hr}
+            for d, t, dm, hr in rows]
+    return multisport.weekly_load(acts)
+
+
 # ---------- WRITE ----------
 
 def _dump_steps(steps) -> Optional[list]:
