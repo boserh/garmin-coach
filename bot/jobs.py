@@ -24,6 +24,7 @@ from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
     run_activity_analysis,
+    run_compare,
     run_digest,
     run_plan_adaptation,
     run_weather_plan_check,
@@ -65,6 +66,11 @@ ADAPT_GUARD_PREFIX = "adapt_suggested:"
 
 # EP-07 weekly digest: once-a-week guard keyed by ISO week (bot_state key digest:<iso-week>).
 DIGEST_GUARD_PREFIX = "digest:"
+
+# NF-06 compare-past-self: a monthly "you vs a year ago" block appended once per calendar
+# month, on the first weekly digest of that month (bot_state key compare:<YYYY-MM>).
+COMPARE_GUARD_PREFIX = "compare:"
+COMPARE_WEEKS = 4   # last 4 weeks vs the same 4 weeks a year ago (matches /compare default)
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 # Morning keeps its own stale wording ("звіт" not "аналіз", cf. delivery.STALE_NOTE) — a
@@ -444,6 +450,36 @@ async def _deliver_digest(ctx, session, user: User, creds, *, force: bool = Fals
     return True
 
 
+async def _monthly_compare_for_user(ctx, session, user: User, creds) -> None:
+    """Once a calendar month (on the first weekly digest of the month), append a NF-06
+    "you vs a year ago" block. Best-effort: guarded via bot_state so it fires at most once
+    a month, and any failure/empty result is silent — it never breaks the digest send. The
+    guard is set only after a message actually goes out, so a no-history month retries next
+    week rather than burning the month."""
+    if not user.telegram_chat_id:
+        return
+    guard_key = COMPARE_GUARD_PREFIX + dt.datetime.now(TZ).strftime("%Y-%m")
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    try:
+        text = await run_compare(
+            session, user_id=user.id, weeks=COMPARE_WEEKS, api_key=creds.anthropic_key
+        )
+    except AnalystError:
+        logger.exception(f"COMPARE monthly failed user={user.id}")
+        return
+    if not text:
+        return   # not enough history a year back — retry next week, don't set the guard
+    from app import compare as compare_mod
+
+    cur_s, cur_e, past_s, past_e = compare_mod.window_pair(dt.date.today(), COMPARE_WEEKS)
+    header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_s, cur_e)}) проти себе рік тому "
+              f"({compare_mod.fmt_range(past_s, past_e)}):\n\n")
+    await ctx.bot.send_message(user.telegram_chat_id, header + text)
+    await repository.set_state(session, user.id, guard_key, "1")
+    logger.info(f"COMPARE monthly sent user={user.id} month={guard_key}")
+
+
 async def _digest_for_user(ctx, session, user: User) -> None:
     """Scheduled weekly digest for one user, guarded to once per ISO week via bot_state."""
     if not user.telegram_chat_id:
@@ -458,6 +494,8 @@ async def _digest_for_user(ctx, session, user: User) -> None:
         if await _deliver_digest(ctx, session, user, creds):
             await repository.set_state(session, user.id, guard_key, "1")
             logger.info(f"DIGEST sent user={user.id} week={guard_key}")
+            # Monthly NF-06 comparison block, riding on the first digest of the month.
+            await _monthly_compare_for_user(ctx, session, user, creds)
 
 
 async def force_digest_for_user(ctx, session, user: User) -> None:

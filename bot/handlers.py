@@ -5,6 +5,7 @@ handlers only orchestrate fetch → analyze → reply, each within a DB session 
 matched user's runtime context (their Garmin provider + Claude key). The bot is one
 global identity; a chat is authorised by mapping its chat_id to a registered user.
 """
+import datetime as dt
 import json
 import logging
 from zoneinfo import ZoneInfo
@@ -182,6 +183,42 @@ async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
     lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
+
+
+async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/compare [тижнів] — compare current fitness with the same span a year ago (NF-06).
+    Pure DB read + one Sonnet call; no Garmin fetch, so no MFA risk."""
+    from app import compare as compare_mod
+    from app.analysis.service import run_compare
+    from app.garmin.credentials import load_credentials
+
+    weeks = compare_mod.parse_period(ctx.args)
+    logger.info(f"CMD /compare {weeks}w")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await update.message.reply_text("Порівнюю тебе з тобою рік тому…")
+        creds = load_credentials(user)
+        try:
+            text = await run_compare(
+                session, user_id=user.id, weeks=weeks, api_key=creds.anthropic_key
+            )
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            await update.message.reply_text(str(e))
+            return
+    if not text:
+        await update.message.reply_text(
+            "Замало історії для порівняння — треба дані і за цей період, і за той самий "
+            "період рік тому. Повернись, коли назбирається історія "
+            "(або зроби бекфіл GDPR-експорту)."
+        )
+        return
+    cur_start, cur_end, past_start, past_end = compare_mod.window_pair(dt.date.today(), weeks)
+    header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_start, cur_end)}) "
+              f"проти себе рік тому ({compare_mod.fmt_range(past_start, past_end)}):\n\n")
+    await update.message.reply_text(header + text)
 
 
 async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

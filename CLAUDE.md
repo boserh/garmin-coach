@@ -610,6 +610,23 @@ run volume when `non_run_pct` is high. Not in the daily report (matches the tick
 digest scope). The seasonal-accent intake (kite-season ⇒ less run volume) is a documented future
 extension. `tests/test_multisport.py`.
 
+**Compare-past-self (NF-06)**: "am I fitter than a year ago?" — the deep GDPR-backfilled history
+made visible. `app/compare.py` is the **pure-Python** part: `window_pair(today, weeks, years_back)`
+picks the current `weeks`-long window and the **same calendar span** N years ago (Feb-29-safe),
+`parse_period` reads the `/compare [weeks]` arg (leading digits; default 4), `has_signal` bails when
+there isn't enough in **both** windows, `fmt_range` renders the header. `repository.window_stats`
+aggregates each window (one query pair): run km/count/longest, **median** typical pace, avg run HR,
+avg HRV/sleep/RHR, best VO2max, best race predictions. `service.run_compare` assembles both windows,
+narrates via **one Sonnet call** (`SYSTEM_COMPARE`, `MODEL_COMPARE`), dedup-caches on the two
+windows + framing (`_compare_cache_key`), logs `ReportLog(kind="compare")`, and returns `None` when
+`has_signal` fails (caller shows a friendly "not enough history" message). The prompt's core job is
+**honesty**: it must flag different seasons/conditions and thinner data rather than over-claim.
+Surfaced two ways: the **`/compare [тижнів]`** bot command (pure DB read + decrypt creds directly —
+no Garmin fetch, no MFA risk) and a **monthly auto-block** riding on the first weekly digest of each
+calendar month (`_monthly_compare_for_user` in `bot/jobs.py`, guarded via `bot_state`
+`compare:<YYYY-MM>` — the guard is set only after a message goes out, so a no-history month retries
+next week). `tests/test_compare.py`.
+
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
