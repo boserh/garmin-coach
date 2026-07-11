@@ -64,6 +64,7 @@ def main() -> None:
     app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("checkin", handlers.checkin))
     app.add_handler(CommandHandler("records", handlers.records_cmd))
+    app.add_handler(CommandHandler("compare", handlers.compare))
     app.add_handler(CommandHandler("plan", handlers.plan))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))

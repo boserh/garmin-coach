@@ -287,6 +287,106 @@ async def weekly_activity_load(
     return multisport.weekly_load(acts)
 
 
+def _avg(xs: List[float]) -> Optional[float]:
+    return round(sum(xs) / len(xs), 1) if xs else None
+
+
+def _median(xs: List[float]) -> Optional[float]:
+    if not xs:
+        return None
+    s = sorted(xs)
+    n = len(s)
+    mid = n // 2
+    return round(s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2, 2)
+
+
+async def window_stats(
+    session: AsyncSession, user_id: int, start: str, end: str
+) -> dict:
+    """Comparable-window aggregates (NF-06) for the inclusive ISO range ``[start, end]``:
+    running volume/pace + a recovery/fitness snapshot, all from stored data. Used by
+    ``run_compare`` to place "now" next to "the same span a year ago". Missing data → None/0
+    fields (an empty window is a valid, honestly-empty result). ``typical_pace`` is the
+    **median** run pace (robust to a stray race/interval day); race/vo2max take the best in
+    the window."""
+    run_rows = (
+        await session.execute(
+            select(
+                ActivityRecord.dist_km, ActivityRecord.dur_min, ActivityRecord.avg_hr,
+            ).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= start,
+                ActivityRecord.date <= end,
+            )
+        )
+    ).all()
+    total_km = 0.0
+    runs = 0
+    longest = 0.0
+    hr_vals: List[float] = []
+    paces: List[float] = []
+    for dist, dur, hr in run_rows:
+        km = dist or 0.0
+        if km <= 0:
+            continue
+        total_km += km
+        runs += 1
+        longest = max(longest, km)
+        if hr:
+            hr_vals.append(float(hr))
+        if dur and dur > 0:
+            pace = dur / km
+            if 2.5 <= pace <= 12.0:   # sanity floor/ceiling (same as records.py)
+                paces.append(pace)
+
+    day_rows = (
+        await session.execute(
+            select(
+                DailyMetric.hrv_avg, DailyMetric.sleep_score, DailyMetric.extra,
+            ).where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.date >= start,
+                DailyMetric.date <= end,
+            )
+        )
+    ).all()
+    hrv_vals: List[float] = []
+    sleep_vals: List[float] = []
+    rhr_vals: List[float] = []
+    vo2_vals: List[float] = []
+    race: Dict[str, List[float]] = {}
+    for hrv, sleep, ex in day_rows:
+        if hrv is not None:
+            hrv_vals.append(float(hrv))
+        if sleep is not None:
+            sleep_vals.append(float(sleep))
+        if isinstance(ex, dict):
+            if ex.get("vo2max"):
+                vo2_vals.append(float(ex["vo2max"]))
+            if ex.get("resting_hr"):
+                rhr_vals.append(float(ex["resting_hr"]))
+            for k in ("race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s"):
+                if ex.get(k):
+                    race.setdefault(k, []).append(float(ex[k]))
+
+    return {
+        "start": start,
+        "end": end,
+        "run_km": round(total_km, 1),
+        "runs": runs,
+        "longest_km": round(longest, 1),
+        "typical_pace": _median(paces),
+        "avg_run_hr": _avg(hr_vals),
+        "avg_hrv": _avg(hrv_vals),
+        "avg_sleep_score": _avg(sleep_vals),
+        "avg_resting_hr": _avg(rhr_vals),
+        "vo2max": max(vo2_vals) if vo2_vals else None,
+        "race": {k: round(min(v)) for k, v in race.items()} if race else None,
+    }
+
+
 # ---------- WRITE ----------
 
 def _dump_steps(steps) -> Optional[list]:

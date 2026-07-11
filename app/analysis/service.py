@@ -26,6 +26,7 @@ from app.analysis.prompts import (
     SYSTEM,
     SYSTEM_ACTIVITY,
     SYSTEM_ASK,
+    SYSTEM_COMPARE,
     SYSTEM_DIGEST,
     SYSTEM_PLAN,
     SYSTEM_PLAN_ADAPT,
@@ -53,6 +54,7 @@ MODEL_DEEP = "claude-opus-4-8"
 MODEL_ASK = "claude-sonnet-5"   # follow-up Q&A: cheap, grounded in recent reports
 MODEL_ACTIVITY = "claude-sonnet-5"   # single-activity analysis (/activity)
 MODEL_DIGEST = "claude-sonnet-5"     # weekly digest (EP-07): compact payload, once/week
+MODEL_COMPARE = "claude-sonnet-5"    # compare-past-self (NF-06): narrate two windows, on request
 MODEL_PLAN_GEN = MODEL_DEEP          # plan generation default: reasoning-heavy + rare → Opus
 MODEL_PLAN_GEN_ALT = "claude-fable-5"   # alternative plan-gen engine (form toggle)
 MODEL_PLAN = "claude-sonnet-5"       # plan edits (/plan <text>): small, mechanical → Sonnet
@@ -1459,5 +1461,77 @@ async def run_digest(
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"digest:{this_week}", report_text=text,
+    )
+    return text
+
+
+# ---------- COMPARE PAST SELF (NF-06) ----------
+
+def _compare_cache_key(context: dict, model: str) -> str:
+    """Key the comparison on the two assembled windows + framing (not ``today`` alone), so a
+    repeat within the same day/data is a cache hit — the README pitfall (all Claude context
+    must key the dedup cache). The window date-ranges are inside current/past, so they key it."""
+    material = {
+        "weeks": context.get("weeks"),
+        "years_back": context.get("years_back"),
+        "current": context.get("current"),
+        "past": context.get("past"),
+        "model": model,
+        "compare": True,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def compare_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate a two-window self-comparison (Sonnet). Returns (text, stats); raises
+    AnalystError on API failure. The dedup cache is checked in :func:`run_compare`."""
+    return _complete(MODEL_COMPARE, SYSTEM_COMPARE, context, "compare", api_key, max_tokens=900)
+
+
+async def run_compare(
+    session, *, user_id: int, weeks: int, years_back: int = 1,
+    api_key: Optional[str] = None,
+) -> Optional[str]:
+    """Compare the user's last ``weeks`` weeks with the same calendar span ``years_back`` years
+    ago (NF-06). Assembles both windows' numbers in Python, narrates via Sonnet, caches + logs
+    (``ReportLog(kind="compare")``), and returns the text. Returns ``None`` when there isn't
+    enough in BOTH windows to compare (a new user, or no history a year back) — the caller
+    turns that into a friendly "not enough history yet" message."""
+    from app import compare as compare_mod
+    from app.db import llm_cache
+    from app.garmin import repository
+
+    today = dt.date.today()
+    cur_start, cur_end, past_start, past_end = compare_mod.window_pair(today, weeks, years_back)
+    current = await repository.window_stats(session, user_id, cur_start, cur_end)
+    past = await repository.window_stats(session, user_id, past_start, past_end)
+    if not compare_mod.has_signal(current, past):
+        logger.info(f"COMPARE skip user={user_id}: not enough history in both windows")
+        return None
+
+    context = compare_mod.build_context(weeks, years_back, current, past)
+    key = _compare_cache_key(context, MODEL_COMPARE)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_COMPARE} (compare)")
+        text, stats = cached, CallStats(kind="compare", model=MODEL_COMPARE, cached=True)
+    else:
+        try:
+            text, stats = await _run_claude(compare_with_stats, context, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind="compare", model=MODEL_COMPARE, ok=False,
+                question=f"compare:{weeks}w/{years_back}y", error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"compare:{weeks}w/{years_back}y", report_text=text,
     )
     return text
