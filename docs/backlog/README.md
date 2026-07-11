@@ -67,7 +67,7 @@
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` (1043 рядки) на пакет | M | до/разом з PERF-02, PERF-04b |
 | [CODE-02](CODE-02-cli-push-plan-reuse-plan-sync.md) | CLI `push-plan` поверх `plan_sync` (залишок: відбір вікна) | S | — |
 | [CODE-03](CODE-03-remove-legacy-paths.md) | Прибрати legacy: `WEB_TOKEN`, `GARTH_TOKEN_DIR` (`gconn` НЕ видаляти — OPS-01) | S | — |
-| [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | S | разом з CODE-01 |
+| [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | S | ✅ **done** (2026-07) — `_plan_ops_with_stats` (`app/analysis/service.py`) |
 | [CODE-07](CODE-07-import-fit-series-refactor-tests.md) | Розплутати `import_fit_series` + тести (cyclomatic 20, вкладеність 8, 0 тестів) | S–M | — (низький пріоритет) |
 
 ## Рекомендований порядок (2026-07, за ANALYSIS.md §4.1)
