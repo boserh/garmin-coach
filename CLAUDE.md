@@ -525,6 +525,23 @@ command (current bests, empty-state message, honest "whole activities only" cave
 a fresh PB gets a line in the morning report / weekly digest. CLI `backfill-records --email` seeds the
 table silently from full history (run once after `import-export`).
 
+**Personal baselines (NF-01)**: a **pure-Python, zero-LLM** "today vs your norm" over the daily
+history already in the DB (`app/baselines.py`). A number like "RHR 52" only means something
+against *your own* history, not a generic scale, so `compute_baselines` turns
+`repository.read_history(days=WINDOW_DAYS)` (90 days, oldest-first) into rolling percentiles
+(p25/p50/p75) per recovery metric — `resting_hr`, `hrv_avg`, `sleep_score`, `sleep_h`,
+`stress_avg`, `bb_charged` — emitting a compact `norm` snapshot `{window_days, metrics:{<k>:{cur,
+p50, band:[p25,p75], n, pos}}}`. `cur` is the most-recent non-null value (today, or the last
+synced day); `pos` is a **neutral** low/normal/high vs the band (the SYSTEM prompt carries the
+per-metric **valence** — low RHR/stress is good, low HRV/sleep is bad). A metric with fewer than
+`MIN_SAMPLES` (14) days is skipped; no metric qualifying → `norm=None` (new user works without it).
+Percentiles are numpy-free and robust to the gaps a backfill leaves. Wired into `run_analysis`
+(report/morning, **not** `/deep`, in the same `user_id`-gated block as `fitness`/`records`) →
+`analyze_with_stats` (`user_content["norm"]`) **and into `_cache_key`** (the README naskrізна
+pitfall: all Claude context must key the dedup cache). The LLM computes nothing — it only narrates
+the ready deviations (SYSTEM section «ТВОЯ НОРМА»). Scope is a single 90-day window; the ticket's
+30/365 + seasonal windows are a documented future extension. `tests/test_baselines.py`.
+
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
