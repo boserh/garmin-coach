@@ -1,0 +1,11 @@
+# OPS-02 · run the nightly backup at 03:15 local time (Persistent = catch up if the
+# Pi was asleep at the scheduled time).
+[Unit]
+Description=Garmin bot: nightly SQLite backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

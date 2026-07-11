@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -114,7 +115,11 @@ class ActivityRecord(Base):
     breakdown (muscle groups / per-exercise counts) as JSON."""
 
     __tablename__ = "activities"
-    __table_args__ = (UniqueConstraint("user_id", "activity_id", name="uq_activity_user_aid"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "activity_id", name="uq_activity_user_aid"),
+        # PERF-03 index audit: reads filter user_id and order by date (see repository).
+        Index("ix_activities_user_date", "user_id", "date"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
@@ -143,6 +148,8 @@ class ReportLog(Base):
     """One row per Claude analysis call — for cost tracking and metrics."""
 
     __tablename__ = "report_logs"
+    # PERF-03 index audit: cost totals + /me history filter user_id, order by created_at.
+    __table_args__ = (Index("ix_report_logs_user_created", "user_id", "created_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
@@ -254,6 +261,8 @@ class PlannedWorkout(Base):
     prescription (what to do + target pace/effort); ``status`` tracks progress."""
 
     __tablename__ = "planned_workouts"
+    # PERF-03 index audit: sessions are read by plan_id ordered/filtered by date.
+    __table_args__ = (Index("ix_planned_workouts_plan_date", "plan_id", "date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     plan_id: Mapped[Optional[int]] = mapped_column(ForeignKey("training_plans.id"), index=True)

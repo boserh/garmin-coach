@@ -5,8 +5,10 @@
   .topnav a { color: #7a828f; text-decoration: none; letter-spacing: .01em; transition: color .12s; }
   .topnav a:hover { color: #e7e9ee; }
   .topnav a.active { color: #e7e9ee; font-weight: 600; }
-  .topnav .logout { margin-left: auto; color: #4b525d; }
-  .topnav .logout:hover { color: #f7768e; }
+  .topnav .logout-form { margin-left: auto; }
+  .topnav button.logout { background: none; border: 0; padding: 0; cursor: pointer;
+            font: inherit; color: #4b525d; letter-spacing: .01em; transition: color .12s; }
+  .topnav button.logout:hover { color: #f7768e; }
 </style>
 <nav class="topnav">
   <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
@@ -17,5 +19,7 @@
   <a href="/ui"{% if active == 'ui' %} class="active"{% endif %}>База даних</a>
   <a href="/admin/users"{% if active == 'users' %} class="active"{% endif %}>Користувачі</a>
   {% endif %}
-  <a href="/logout" class="logout">Вихід</a>
+  <form method="post" action="/logout" class="logout-form">
+    <button type="submit" class="logout">Вихід</button>
+  </form>
 </nav>

@@ -75,7 +75,9 @@ Optional, with defaults:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `APP_SECRET_KEY` | `` (empty) | Fernet master key: encrypts stored creds + signs cookie sessions |
+| `APP_SECRET_KEY` | `` (empty) | Fernet master key: encrypts stored creds + signs cookie sessions. **Empty → sessions signed with an ephemeral per-process key** (SEC-01): a loud `AUTH: APP_SECRET_KEY is not set` error + a `/login` banner; sessions don't survive a restart but can't be forged (a fixed fallback let anyone forge an admin cookie). Credential encryption still hard-requires it (`crypto` fails without it). |
+| `LOGIN_RATE_LIMIT` | `5` | SEC-01: max `POST /login`/`POST /register` attempts per window before a 429; `0` disables (tests set it to 0). In-memory + per-process (`app/core/ratelimit.py`) — a single Pi web process, by design. |
+| `LOGIN_RATE_WINDOW_S` | `300` | SEC-01: the rate-limit window in seconds. |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
 | `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
 | `GARMIN_RPS` | `3.0` | Process-wide Garmin request rate cap (req/s); `0` disables the limiter (PERF-05) |
@@ -102,6 +104,20 @@ Optional, with defaults:
 - **Secrets**: `app.core.crypto` — Fernet encrypt/decrypt for creds, bcrypt for
   passwords. `app.garmin.credentials.load_credentials` decrypts a user into a runtime
   `UserCredentials`.
+- **Web-login hardening (SEC-01)**: `POST /login` (keyed per-IP + per-email) and
+  `POST /register` (per-IP) are rate-limited by an in-memory sliding-window
+  `RateLimiter` (`app/core/ratelimit.py`) — per-process on purpose (single Pi web
+  process; a restart resets counters, a second process wouldn't share them; do NOT
+  "fix" that into global state). Over the limit → 429 with a human message.
+  `LOGIN_RATE_LIMIT`/`LOGIN_RATE_WINDOW_S` tune it (`0` disables — the test suite
+  sets it to 0 in `conftest`; dedicated rate-limit tests build their own limiter).
+  A missing `APP_SECRET_KEY` no longer falls back to a constant secret (that let
+  anyone forge an admin session) — `create_app` logs `AUTH: APP_SECRET_KEY is not set`
+  and signs sessions with an **ephemeral per-process** Fernet key (sessions die on
+  restart, but are unforgeable), plus a `/login` banner. `/logout` is **POST** (a
+  form-button in `_nav.html`) so a cross-site `<img src=/logout>` can't sign you out;
+  the old `GET /logout` is a stateless redirect to `/settings`. `same_site="lax"`
+  already blocks cross-site form POSTs, so no CSRF tokens at this stage.
 - **Per-user runtime**: `app.garmin.runtime.user_runtime(session, user)` binds that
   user's Garmin provider (a `garth.Client` resumed from the stored token, else
   email+password login — saving a fresh token) via a ContextVar, and yields
@@ -401,6 +417,23 @@ legacy and no longer used by these routes.
   persists what it fetches, so history accumulates.
 - **Migrations**: `./venv/bin/python -m alembic upgrade head`. To add a migration after
   changing models: `./venv/bin/python -m alembic revision --autogenerate -m "msg"`.
+  **On the Pi, back up first** — use `scripts/migrate.sh` (backs up, then upgrades) or
+  run `scripts/backup_db.py` by hand before a bare `alembic upgrade head`; a failed
+  migration on the live DB is the second most likely way to lose data.
+- **Backups (OPS-02)**: `scripts/backup_db.py` makes an online-consistent copy of the
+  SQLite DB (`VACUUM INTO`, not `cp` — the bot/web are still writing) to
+  `backups/garmin-YYYY-MM-DD.db`, rotating 7 daily + 4 weekly. The DB path comes from
+  `settings.DATABASE_URL` (Postgres would use `pg_dump` instead — out of scope).
+  `deploy/systemd/garmin-backup.{service,timer}` runs it nightly; `--rsync-dest` copies
+  the fresh backup **off the SD card** (an SD failure kills the DB and any backups
+  beside it). The Fernet-encrypted creds in the DB are worthless without
+  `APP_SECRET_KEY`, so the DB copy is safe to store anywhere — but a restore can't
+  decrypt creds unless `APP_SECRET_KEY`/`.env` is backed up **separately** (password
+  manager / encrypted file), which must be done once, out of band.
+- **Index audit (PERF-03 slice)**: hot user-scoped reads have composite indexes —
+  `activities(user_id, date)`, `report_logs(user_id, created_at)`,
+  `planned_workouts(plan_id, date)`; `daily_metrics(user_id, date)` is already covered
+  by its unique constraint. The Postgres switch itself stays frozen (tied to `/register`).
 
 ## Key design decisions
 

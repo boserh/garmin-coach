@@ -13,6 +13,7 @@
   <form class="authcard" method="post" action="/login">
     <h1 class="brand">Garmin → Claude</h1>
     <div class="sub">Увійди, щоб побачити звіти й програму тренувань.</div>
+    {% if insecure_secret %}<div class="err">⚠️ APP_SECRET_KEY не задано — сесії підписані тимчасовим ключем і не переживуть рестарт. Задай ключ у .env.</div>{% endif %}
     <label for="email">Email</label>
     <input id="email" name="email" type="email" autocomplete="username" required autofocus>
     <label for="password">Пароль</label>

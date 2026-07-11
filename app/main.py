@@ -12,6 +12,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,10 +41,22 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Garmin → Claude", version="1.0.0", lifespan=lifespan)
 
     # Signed cookie sessions for web login. APP_SECRET_KEY doubles as the signing
-    # key; fall back to a dev-only secret so the app still boots without it.
+    # key. If it's unset we must NOT fall back to a constant — a known secret lets
+    # anyone forge a session cookie with an admin user_id (SEC-01). Instead we log
+    # loudly and sign with an ephemeral per-process key: sessions won't survive a
+    # restart, but nobody can forge one. (Credential encryption still needs a real
+    # APP_SECRET_KEY — app.core.crypto fails without it, so that stays a hard error.)
+    session_secret = settings.APP_SECRET_KEY
+    if not session_secret:
+        logger.error(
+            "AUTH: APP_SECRET_KEY is not set — sessions are signed with an ephemeral "
+            "per-process key (they won't survive a restart). Set APP_SECRET_KEY in .env "
+            "for stable, non-forgeable sessions."
+        )
+        session_secret = Fernet.generate_key().decode()
     app.add_middleware(
         SessionMiddleware,
-        secret_key=settings.APP_SECRET_KEY or "dev-insecure-session-secret",
+        secret_key=session_secret,
         same_site="lax",
     )
 

@@ -7,6 +7,10 @@ import os
 # .env must NEVER leak the real garmin.db into the test run.
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_garmin.db"
 os.environ["WEB_TOKEN"] = ""
+# SEC-01: disable the login/register rate limiter globally — the router tests log in
+# many times in a row with the same email. Dedicated rate-limit tests build their own
+# limiter instead of relying on this default.
+os.environ["LOGIN_RATE_LIMIT"] = "0"
 
 # Start from a clean schema each run — init_db() only create_all's, it won't ALTER a
 # stale file left over from an older schema.

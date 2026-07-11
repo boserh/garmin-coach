@@ -1,0 +1,22 @@
+# OPS-02 · nightly online backup of garmin.db (SQLite VACUUM INTO + rotation).
+# Install alongside the bot/uvicorn units (see CLAUDE.md TODO). Triggered by the
+# matching .timer — a oneshot, not a long-running service.
+#
+#   sudo cp deploy/systemd/garmin-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now garmin-backup.timer
+#
+# Adjust WorkingDirectory / User / --rsync-dest for the Pi. The rsync destination is
+# the OFF-SD copy — without it a corrupt SD card takes the "backups" with it.
+[Unit]
+Description=Garmin bot: nightly SQLite backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/garmin_bot
+# Point at another host / USB mount so at least the latest copy survives SD death.
+ExecStart=/home/pi/garmin_bot/venv/bin/python -m scripts.backup_db --dir backups
+# Example off-SD copy (uncomment + set a real destination):
+# ExecStart=/home/pi/garmin_bot/venv/bin/python -m scripts.backup_db --dir backups --rsync-dest pi@nas:/backups/garmin/

@@ -94,6 +94,69 @@ def test_login_flow(client):
     assert ok.headers["location"] == "/ui"
 
 
+def test_login_rate_limited_after_n_attempts(client):
+    # The suite disables the limiter globally (conftest); swap in a low-limit one.
+    from app.core.ratelimit import RateLimiter
+    from app.routers import auth as auth_router
+
+    clock = {"t": 0.0}
+    limiter = RateLimiter(3, 300, now=lambda: clock["t"])
+    with patch.object(auth_router, "_login_limiter", limiter):
+        for _ in range(3):
+            r = client.post(
+                "/login", data={"email": "nobody@example.com", "password": "x"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 401  # wrong creds, but under the limit
+        blocked = client.post(
+            "/login", data={"email": "nobody@example.com", "password": "x"},
+            follow_redirects=False,
+        )
+        assert blocked.status_code == 429
+        # after the window slides, attempts are allowed again
+        clock["t"] = 301
+        again = client.post(
+            "/login", data={"email": "nobody@example.com", "password": "x"},
+            follow_redirects=False,
+        )
+        assert again.status_code == 401
+
+
+def test_register_rate_limited(client):
+    from app.core.ratelimit import RateLimiter
+    from app.routers import auth as auth_router
+
+    with patch.object(auth_router, "_register_limiter", RateLimiter(2, 300)):
+        for i in range(2):
+            r = client.post(
+                "/register", data={"email": f"u{i}@example.com", "password": "secret1"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 200
+        blocked = client.post(
+            "/register", data={"email": "u2@example.com", "password": "secret1"},
+            follow_redirects=False,
+        )
+        assert blocked.status_code == 429
+
+
+def test_logout_get_does_not_clear_session(auth_client):
+    # A stray GET /logout (e.g. cross-site <img>) must NOT sign the user out.
+    r = auth_client.get("/logout", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings"
+    # still authenticated afterwards
+    assert auth_client.get("/status").status_code == 200
+
+
+def test_logout_post_clears_session(auth_client):
+    r = auth_client.post("/logout", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login"
+    # session gone → protected endpoint bounces to /login
+    assert auth_client.get("/status", follow_redirects=False).status_code == 303
+
+
 def test_ui_browse(auth_client):
     assert auth_client.get("/ui").status_code == 200
     r = auth_client.get("/ui/daily_metrics")
@@ -176,7 +239,7 @@ def test_activity_analysis_shown_on_detail(auth_client):
 
 def test_logout_clears_session(auth_client):
     assert auth_client.get("/ui", follow_redirects=False).status_code == 200
-    auth_client.get("/logout")
+    auth_client.post("/logout")
     assert auth_client.get("/ui", follow_redirects=False).status_code == 303
 
 
@@ -574,7 +637,7 @@ def test_change_own_password(client):
     assert ok.headers["location"] == "/settings?pw=ok"
 
     # old password stops working, new one logs in
-    client.get("/logout")
+    client.post("/logout")
     assert client.post(
         "/login", data={"email": "pw1@example.com", "password": "origpass"},
         follow_redirects=False,
