@@ -592,6 +592,24 @@ pitfall: all Claude context must key the dedup cache). The LLM computes nothing 
 the ready deviations (SYSTEM section «ТВОЯ НОРМА»). Scope is a single 90-day window; the ticket's
 30/365 + seasonal windows are a documented future extension. `tests/test_baselines.py`.
 
+**Multisport weekly load budget (NF-05)**: a **pure-Python, zero-LLM** cross-sport training-load
+budget (`app/multisport.py`). Our `weekly_run_volume` only sees runs, so a 3h kite session or an
+evening of tennis before intervals is invisible — the plan stacks a hard run on hidden fatigue.
+`multisport.weekly_load(activities)` turns **all** activity types into a TRIMP-like load per ISO
+week, broken down by sport (`run`/`bike`/`swim`/`strength`/`other`) with a `non_run_pct` share.
+Design choice: **one uniform load metric** (HR-based Edwards zone weight `dur_min × 1–5`, with a
+per-sport duration fallback when HR is missing/unreliable — kite/tennis under a wetsuit/racket arm)
+rather than Garmin's per-activity `load`, which is only populated for some sports and would
+systematically inflate runs — defeating a fair run-vs-not comparison. `repository.weekly_activity_load`
+fetches the rows (any type); `service._build_multisport` shapes `{weeks, this_week}` (this-week vs
+last headline via `budget_summary`) or `None` when there's no load. Fed into **plan generation**,
+**plan adaptation** (EP-02) and the **weekly digest** (EP-07) contexts — and into the digest
+`_digest_cache_key` (the naskrізна pitfall). Prompts (`SYSTEM_PLAN`/`SYSTEM_PLAN_ADAPT`/
+`SYSTEM_DIGEST`) read `multisport` to avoid a hard run next to heavy cross-training and to temper
+run volume when `non_run_pct` is high. Not in the daily report (matches the ticket's adaptation +
+digest scope). The seasonal-accent intake (kite-season ⇒ less run volume) is a documented future
+extension. `tests/test_multisport.py`.
+
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
 cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet

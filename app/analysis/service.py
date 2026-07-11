@@ -150,6 +150,29 @@ def _build_fitness_snapshot(ex: dict) -> Optional[dict]:
     return snap or None
 
 
+MULTISPORT_WEEKS = 6   # how many ISO weeks of cross-sport load to feed as context (NF-05)
+
+
+async def _build_multisport(session, user_id: int) -> Optional[dict]:
+    """Cross-sport weekly training-load budget (NF-05) for the plan/adaptation/digest
+    context: recent weekly load buckets (all sports) + a this-week-vs-last headline. Returns
+    ``None`` when there's no non-run/other load to speak of. Pure math lives in
+    ``app.multisport``; here we just fetch + shape."""
+    from app import multisport
+    from app.garmin import repository
+
+    weekly = await repository.weekly_activity_load(session, user_id, weeks=MULTISPORT_WEEKS)
+    if not weekly:
+        return None
+    today = dt.date.today()
+    this_week = today.strftime("%G-W%V")
+    prev_week = (today - dt.timedelta(days=7)).strftime("%G-W%V")
+    return {
+        "weeks": weekly,
+        "this_week": multisport.budget_summary(weekly, this_week, prev_week),
+    }
+
+
 def _cache_key(data: dict, question: str, model: str, previous_report: Optional[dict] = None,
                weather: Optional[dict] = None,
                plan_today: Optional[list] = None,
@@ -790,6 +813,7 @@ async def run_plan_generation(
     weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
     ex = await repository.get_recent_extra(session, user_id, days=21)
     fitness = _build_fitness_snapshot(ex)
+    multisport = await _build_multisport(session, user_id)
     context = {
         "today": dt.date.today().isoformat(),
         "goal": goal, "start_date": start_date, "target_date": target_date,
@@ -798,6 +822,7 @@ async def run_plan_generation(
         "recent_runs": recent_runs, "recovery": recovery[-14:],
         "weekly_volume": weekly_volume or None,
         "fitness": fitness or None,
+        "multisport": multisport,
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
@@ -1171,6 +1196,7 @@ async def run_plan_adaptation(
     compliance = _recent_compliance(await repository.weekly_compliance(session, plan.id))
     ex = await repository.get_recent_extra(session, user_id)
     fitness = _build_fitness_snapshot(ex)
+    multisport = await _build_multisport(session, user_id)
     days_to_target = _days_to_target(plan.target_date, today)
     context = {
         "today": today.isoformat(),
@@ -1183,6 +1209,7 @@ async def run_plan_adaptation(
                       "description": w.description} for w in ws],
         "compliance": compliance or None,
         "fitness": fitness or None,
+        "multisport": multisport,
     }
     try:
         edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)
@@ -1316,6 +1343,7 @@ def _digest_cache_key(context: dict, model: str) -> str:
         "compliance": context.get("compliance"),
         "recovery": context.get("recovery"),
         "fitness": context.get("fitness"),
+        "multisport": context.get("multisport"),
         "goal": context.get("goal"),
         "records": context.get("records"),
         "model": model,
@@ -1372,6 +1400,7 @@ async def run_digest(
     recovery = await repository.read_history(session, user_id, days=DIGEST_RECOVERY_DAYS)
     ex = await repository.get_recent_extra(session, user_id)
     fitness = _build_fitness_snapshot(ex)
+    multisport = await _build_multisport(session, user_id)
     month_records = records_mod.to_context(
         await repository.recent_records(session, user_id, days=DIGEST_RECORDS_DAYS)
     ) or None
@@ -1404,6 +1433,7 @@ async def run_digest(
         "compliance": compliance,
         "recovery": recovery or None,
         "fitness": fitness or None,
+        "multisport": multisport,
         "goal": goal,
         "records": month_records,
         "has_plan": plan is not None,
