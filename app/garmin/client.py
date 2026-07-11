@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import logging
 import os
+import threading
 import time as _time
 from collections import Counter
 
@@ -44,8 +45,71 @@ def _g(obj, *keys, default=None):
     return cur if cur is not None else default
 
 
+# ---------- RATE LIMIT + 429 BACKOFF (PERF-05) ----------
+# Every Garmin fetch and write goes through _api, so one process-wide pacer here
+# throttles the lot. Post-Cloudflare (2026) an aggressive request pattern risks an
+# account ban, not just a 429 — a polite, predictable rate is survival, not tuning.
+
+class _RateLimiter:
+    """Process-wide request pacer: a leaky-bucket spacer that reserves the next
+    slot under a short lock, then sleeps (outside the lock) until it's due, so the
+    many anyio threadpool workers issue Garmin calls at a steady ~``rps`` instead
+    of bursting. Synchronous by design — the client runs in the threadpool, so
+    asyncio primitives don't apply. It never wraps the MFA login gate (that's a
+    ~25s human wait handled in ``app.garmin.mfa``, not a request)."""
+
+    def __init__(self, rps: float) -> None:
+        self._interval = 1.0 / rps if rps and rps > 0 else 0.0
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def acquire(self) -> None:
+        if self._interval <= 0:
+            return
+        with self._lock:
+            now = _time.monotonic()
+            start = max(self._next, now)
+            self._next = start + self._interval
+            wait = start - now
+        if wait > 0:
+            _time.sleep(wait)
+
+
+_limiter = _RateLimiter(settings.GARMIN_RPS)
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """True if ``exc`` is a Garmin 429. garth raises ``GarthHTTPError`` wrapping a
+    requests error (``.error.response``), so check the nested status and fall back
+    to the string form."""
+    for obj in (exc, getattr(exc, "error", None)):
+        resp = getattr(obj, "response", None)
+        if getattr(resp, "status_code", None) == 429:
+            return True
+    text = str(exc).lower()
+    return "429" in text or "too many requests" in text
+
+
 def _api(path: str, **kwargs):
-    return get_provider().connectapi(path, **kwargs)
+    """Throttled connectapi call with exponential backoff on 429 (PERF-05). After
+    ``GARMIN_RETRIES`` are exhausted the original exception propagates, so callers
+    keep their current behaviour (``_safe`` logs + returns ``{"_error": ...}``;
+    write calls surface the error)."""
+    attempts = max(0, settings.GARMIN_RETRIES)
+    for attempt in range(attempts + 1):
+        _limiter.acquire()
+        try:
+            return get_provider().connectapi(path, **kwargs)
+        except Exception as exc:
+            if attempt < attempts and _is_rate_limited(exc):
+                backoff = 2.0 ** attempt
+                logger.warning(
+                    f"GARMIN 429 {path} — backoff {backoff:.0f}s "
+                    f"(retry {attempt + 1}/{attempts})"
+                )
+                _time.sleep(backoff)
+                continue
+            raise
 
 
 # ---------- DISK CACHE (stable, ID-keyed, immutable assets) ----------

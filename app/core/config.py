@@ -23,9 +23,18 @@ class Settings(BaseSettings):
     # Which backend talks to Garmin Connect: "garth" (working) or "gconn" (untested).
     GARMIN_PROVIDER: str = "garth"
     GARTH_TOKEN_DIR: str = "~/.garth"
+    # PERF-05: a process-wide, polite request pattern to Garmin's unofficial API
+    # (post-Cloudflare an aggressive pattern risks an account ban, not just a 429).
+    # GARMIN_RPS caps requests/sec across all threads (0 disables the limiter);
+    # GARMIN_RETRIES is how many times a 429 is retried with exponential backoff.
+    GARMIN_RPS: float = 3.0
+    GARMIN_RETRIES: int = 2
 
     # --- Claude ---
     ANTHROPIC_API_KEY: Optional[str] = None
+    # PERF-04b: Claude calls run on their own small thread pool (kept off anyio's
+    # shared pool, which Garmin fetches/logins use) so LLM latency can't starve it.
+    CLAUDE_MAX_WORKERS: int = 4
 
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
