@@ -112,17 +112,6 @@ def _recovery_synced(payload, today: str) -> bool:
     return bool(row and row.hrv_avg is not None and row.sleep_score is not None)
 
 
-async def _fetch_user_weather(user: User):
-    """Today's forecast for the user's stored location, or None if unset/on error."""
-    if user.latitude is None or user.longitude is None:
-        return None
-    wx = await run_in_threadpool(weather.fetch_forecast, user.latitude, user.longitude)
-    if wx:
-        logger.info(f"MORNING user={user.id}: weather {wx.get('summary')} "
-                    f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C")
-    return wx
-
-
 async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.datetime,
                            today: str, *, force: bool = False) -> bool:
     """Run the morning analysis on an already-fetched ``payload`` and send it. Returns
@@ -141,7 +130,7 @@ async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.dat
         logger.info(f"MORNING user={user.id}: today synced — sending")
         note = ""
 
-    wx = await _fetch_user_weather(user)
+    wx = await weather.forecast_for_user(user)
     try:
         result = await delivery.build_report(
             session, user, payload, question=_MORNING_Q,

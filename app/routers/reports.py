@@ -6,6 +6,7 @@ context (their Garmin provider + Claude key)."""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import weather
 from app.analysis import delivery
 from app.analysis.service import AnalystError, run_analysis
 from app.core.auth import current_user
@@ -33,6 +34,7 @@ async def report_json(
             result = await delivery.build_report(
                 session, user, payload, question=_REPORT_Q,
                 kind="report", api_key=creds.anthropic_key,
+                weather=await weather.forecast_for_user(user),
             )
         except AnalystError as e:
             raise HTTPException(status_code=502, detail=str(e))
