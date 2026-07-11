@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # Empty disables encryption/login plumbing (so existing single-user .env still runs).
     APP_SECRET_KEY: str = ""
 
+    # --- Web login hardening (SEC-01) ---
+    # In-memory, per-process sliding-window rate limit on POST /login (keyed per-IP
+    # AND per-email) and POST /register (per-IP). 0 disables it (the tests set it to
+    # 0 so a fixture can log in repeatedly). See app.core.ratelimit for the trade-offs.
+    LOGIN_RATE_LIMIT: int = 5          # max attempts per window before a 429
+    LOGIN_RATE_WINDOW_S: int = 300     # window length in seconds (default 5 min)
+
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by
     # setting DATABASE_URL=postgresql+asyncpg://... — no code changes needed.
