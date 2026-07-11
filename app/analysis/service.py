@@ -866,28 +866,42 @@ def _coerce_edit(text: str) -> PlanEdit:
     return PlanEdit(**json.loads(s))
 
 
-def plan_edit_with_stats(
-    context: dict, api_key: Optional[str] = None
+def _plan_ops_with_stats(
+    context: dict, api_key: Optional[str], *,
+    system: str, kind: str, log_label: str, error_msg: str,
 ) -> Tuple[PlanEdit, CallStats]:
-    """Turn a free-text instruction + current workouts into a structured PlanEdit
-    (proposed only — not applied). One retry on a parse miss, else AnalystError."""
+    """Shared engine for the AST-identical plan_edit / plan_adapt calls (CODE-06):
+    build the message, call Claude, parse into a ``PlanEdit`` with one retry, else
+    ``AnalystError``. Callers differ only in system prompt, ReportLog ``kind``, the
+    ``claude`` log label and the user-facing error. Deliberately un-cached (adaptation
+    must not be dedup-cached — see CODE-06)."""
     model = MODEL_PLAN
-    text, stats = _complete(model, SYSTEM_PLAN_EDIT, context, "plan_edit", api_key, max_tokens=1500)
+    text, stats = _complete(model, system, context, kind, api_key, max_tokens=1500)
     try:
         return _coerce_edit(text), stats
     except Exception:
         retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
-        text, stats2 = _complete(
-            model, SYSTEM_PLAN_EDIT, retry, "plan_edit", api_key, max_tokens=1500
-        )
+        text, stats2 = _complete(model, system, retry, kind, api_key, max_tokens=1500)
         stats.input_tokens += stats2.input_tokens
         stats.output_tokens += stats2.output_tokens
         stats.cost_usd += stats2.cost_usd
         try:
             return _coerce_edit(text), stats
         except Exception as e:
-            logger.error(f"PLAN_EDIT parse failed: {e}")
-            raise AnalystError("Не вдалось зрозуміти зміну. Спробуй переформулювати.")
+            logger.error(f"{log_label} parse failed: {e}")
+            raise AnalystError(error_msg)
+
+
+def plan_edit_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Turn a free-text instruction + current workouts into a structured PlanEdit
+    (proposed only — not applied). One retry on a parse miss, else AnalystError."""
+    return _plan_ops_with_stats(
+        context, api_key,
+        system=SYSTEM_PLAN_EDIT, kind="plan_edit", log_label="PLAN_EDIT",
+        error_msg="Не вдалось зрозуміти зміну. Спробуй переформулювати.",
+    )
 
 
 async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Optional[str] = None):
@@ -1051,23 +1065,11 @@ def plan_adapt_with_stats(
 ) -> Tuple[PlanEdit, CallStats]:
     """Propose a plan correction (or none) from recovery/compliance signals — same JSON
     schema as ``plan_edit_with_stats`` (``PlanEdit``). One retry on a parse miss."""
-    model = MODEL_PLAN
-    text, stats = _complete(model, SYSTEM_PLAN_ADAPT, context, "adapt", api_key, max_tokens=1500)
-    try:
-        return _coerce_edit(text), stats
-    except Exception:
-        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
-        text, stats2 = _complete(
-            model, SYSTEM_PLAN_ADAPT, retry, "adapt", api_key, max_tokens=1500
-        )
-        stats.input_tokens += stats2.input_tokens
-        stats.output_tokens += stats2.output_tokens
-        stats.cost_usd += stats2.cost_usd
-        try:
-            return _coerce_edit(text), stats
-        except Exception as e:
-            logger.error(f"PLAN_ADAPT parse failed: {e}")
-            raise AnalystError("Не вдалось сформувати пропозицію адаптації плану.")
+    return _plan_ops_with_stats(
+        context, api_key,
+        system=SYSTEM_PLAN_ADAPT, kind="adapt", log_label="PLAN_ADAPT",
+        error_msg="Не вдалось сформувати пропозицію адаптації плану.",
+    )
 
 
 async def run_plan_adaptation(
