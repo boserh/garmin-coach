@@ -46,8 +46,6 @@
 | --- | --- | --- | --- |
 | [PERF-01](PERF-01-parallel-user-jobs.md) | Паралелізація per-user джоб бота · ❄️ **frozen**: за 1–2 юзерів болю немає, тригер >5 юзерів | M | CODE-04 перед; PERF-03 для >2 |
 | [PERF-03](PERF-03-postgres-and-indexes.md) | Postgres перед мультиюзером + індекси · ❄️ **frozen**: прив'язаний до `/register` — той самий garth-ризик, що EP-06 (аудит індексів можна окремо) | M | — |
-| [PERF-04b](PERF-04b-async-anthropic-threadpool.md) | AsyncAnthropic + розвантаження threadpool | M | разом з PERF-02/CODE-01 |
-| [PERF-05](PERF-05-per-user-fetch-lock-and-garmin-rate-limit.md) | Rate limit/backoff до Garmin + per-user fetch-lock (виживання) | M | об'єднати з OPS-01 (той самий шар клієнта) |
 
 ## Безпека й операції (аудит коду 2026-07)
 
@@ -70,8 +68,8 @@
 **Негайно (виживання):**
 
 1. **OPS-01** ✅ — розвідка python-garminconnect + задокументований план міграції +
-   моніторинг падіння логіну зроблені (2026-07); rate limit/backoff — лишився
-   в PERF-05 (той самий шар клієнта).
+   моніторинг падіння логіну зроблені (2026-07); rate limit/backoff зроблено в
+   **PERF-05** ✅ (`client._api` — той самий шар клієнта, куди сяде й міграція).
 2. **PERF-02** ✅ — Claude-дедуп у таблиці `llm_cache` (спільній для бота й веба),
    Garmin-кеш у per-key файлах; старий `garmin_cache.json` seed'иться один раз
    (2026-07).
@@ -130,6 +128,8 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | `eligible_users` (`app/db/users.py`) + `for_each_user`/`user_garmin_runtime` (`bot/jobs.py`): три джоби (`morning_job`/`plan_sync_job`/`plan_adapt_job`) стали 1–5-рядковими, per-user try/except централізований (одна помилка не рве цикл — тепер і в adapt), guard «є Garmin-креди» спільний для `_tick_for_user`/`_sync_for_user`; логи скіпів/падінь незмінні; `tests/test_jobs.py` |
 | [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | `app/analysis/delivery.py::build_report` (payload → run_analysis → text + sync-прапори) + `ReportResult`/`STALE_NOTE`; три виклики зведені: `bot/handlers.py::report`, `app/routers/reports.py::report_json`, `bot/jobs.py::_deliver_morning`. Канал сам формує stale-примітку (Telegram-префікс vs JSON-`note`) й ловить `AnalystError`; morning лишає свій `_MORNING_STALE` («звіт» не «аналіз» — свідома відмінність, бо stale рахує строгіший `_recovery_synced`, не `synced_today`) + guard/вікно/MFA. Дедуп-кеш незмінний (хелпер лише збирає наявний виклик). `tests/test_delivery.py` + `test_routers.py::test_report_json_uses_shared_helper_and_stale_note` |
 | [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | Спільний рушій `_plan_ops_with_stats(context, api_key, *, system, kind, log_label, error_msg)` (`app/analysis/service.py`); обидві публічні функції — тонкі обгортки (сигнатури незмінні — тести їх monkeypatch'ать). Нуль поведінкових змін: `kind`/лог-формат/ретрай/свідомо-не-кешований шлях збережені. CODE-01 ще не зроблено → хелпер поки в `service.py`. PR #119 |
+| [PERF-04b](PERF-04b-async-anthropic-threadpool.md) | Claude-виклики з-під спільного threadpool + груповий фетч днів | Виділений `ThreadPoolExecutor` (`CLAUDE_MAX_WORKERS`=4, `thread_name_prefix="claude"`) + хелпер `_run_claude` (`app/analysis/service.py`) — усі `*_with_stats`-виклики пішли з anyio-пулу, щоб LLM-латентність не морозила Garmin-фетчі (обрано executor, а не AsyncAnthropic — сигнатури `*_with_stats` незмінні, тести їх monkeypatch'ать, нуль змін у retry/`AnalystError`/`ReportLog`). `build_payload_cached` тягне всі пропущені дні (+сьогодні) одним `run_in_threadpool`-заходом через `_fetch_days` замість hop-на-день; `tests/test_perf.py` |
+| [PERF-05](PERF-05-per-user-fetch-lock-and-garmin-rate-limit.md) | Rate limit/backoff до Garmin + per-user fetch-lock | Процесний `_RateLimiter` (leaky-bucket spacer, `GARMIN_RPS`=3, синхронний `threading.Lock`+sleep) у `client._api` — усі connectapi йдуть через нього; 429-розпізнавання (`_is_rate_limited`, nested `.error.response`) + експо-backoff `GARMIN_RETRIES`=2 ретраї, далі виняток пропагує (поточна поведінка: `_safe` лог+skip). MFA-гейт не чіпається (окремий шлях). Per-user `asyncio.Lock` (`WeakValueDictionary`) навколо фетч-фази `build_payload_cached` + 30-с memo `_recent_payload`: другий конкурентний виклик того самого юзера чекає й переюзає свіжий payload (`new_activities=[]` — без подвійного автоаналізу); `tests/test_perf.py` |
 
 ## Наскрізна пастка
 

@@ -11,12 +11,14 @@ web process share hits. The sync ``*_with_stats`` functions run in a threadpool 
 can't touch the async DB, so the cache get/put lives in the async ``run_*``
 wrappers (which have the session); the key functions here are unchanged.
 """
+import asyncio
 import datetime as dt
 import hashlib
 import json
 import logging
 import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
@@ -90,6 +92,28 @@ def _get_client(api_key: Optional[str] = None):
 
         client = _clients[key] = Anthropic(api_key=key)
     return client
+
+
+# Claude calls run on their OWN small thread pool (PERF-04b), kept separate from
+# the shared anyio threadpool that Garmin logins/fetches and DB work use. An LLM
+# call holds its thread for seconds; if it shared the ~40-thread anyio pool, a
+# burst of reports could starve the pool that fast Garmin fetches need, so quick
+# operations would queue behind slow ones. A handful of workers is plenty for a
+# personal deployment (concurrency here is also bounded by Anthropic rate limits).
+_claude_executor = ThreadPoolExecutor(
+    max_workers=max(1, settings.CLAUDE_MAX_WORKERS), thread_name_prefix="claude"
+)
+
+
+async def _run_claude(fn, *args):
+    """Run a blocking ``*_with_stats`` Claude call on the dedicated pool.
+
+    Drop-in for ``run_in_threadpool`` on the LLM path so it no longer competes
+    with Garmin work for anyio's threads. The Claude functions take positional
+    args only (no ContextVar dependency — unlike the Garmin provider path), so a
+    bare ``run_in_executor`` is enough."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_claude_executor, fn, *args)
 
 
 # ---------- DEDUP CACHE KEYS ----------
@@ -382,8 +406,6 @@ async def run_ask(
     ``question`` against them, persist a ReportLog row (kind="ask", with the
     question), return the text. Raises AnalystError if there are no reports to ground
     the answer in."""
-    from fastapi.concurrency import run_in_threadpool
-
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -404,7 +426,7 @@ async def run_ask(
         return text
 
     try:
-        text, stats = await run_in_threadpool(
+        text, stats = await _run_claude(
             ask_with_stats, reports, question, api_key, recent_asks
         )
     except AnalystError as e:
@@ -520,8 +542,6 @@ async def run_activity_analysis(
 ) -> str:
     """Analyze one activity, store the text on the row (``analysis``) for the web detail
     page, log a ReportLog (kind="activity"), and return the text."""
-    from fastapi.concurrency import run_in_threadpool
-
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -534,7 +554,7 @@ async def run_activity_analysis(
         text, stats = cached, CallStats(kind="activity", model=MODEL_ACTIVITY, cached=True)
     else:
         try:
-            text, stats = await run_in_threadpool(analyze_activity_with_stats, data, api_key)
+            text, stats = await _run_claude(analyze_activity_with_stats, data, api_key)
         except AnalystError as e:
             await repository.log_report(
                 session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, ok=False,
@@ -568,8 +588,6 @@ async def run_analysis(
     Blocking API work runs in a threadpool; the failed-call log is best-effort.
     ``weather`` (optional) is today's forecast passed through to the analyst.
     """
-    from fastapi.concurrency import run_in_threadpool
-
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -624,7 +642,7 @@ async def run_analysis(
         text, stats = cached, CallStats(kind=kind, model=model, cached=True)
     else:
         try:
-            text, stats = await run_in_threadpool(
+            text, stats = await _run_claude(
                 analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
                 weather, plan_today, fitness, records, norm
             )
@@ -783,7 +801,7 @@ async def run_plan_generation(
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
-        plan_out, stats = await run_in_threadpool(
+        plan_out, stats = await _run_claude(
             generate_plan_with_stats, context, api_key, gen_model)
     except AnalystError as e:
         await repository.log_report(
@@ -832,7 +850,7 @@ async def run_plan_generation(
                     continue
                 if key not in gen_cache:
                     try:
-                        sess, _ = await run_in_threadpool(
+                        sess, _ = await _run_claude(
                             generate_strength_with_stats,
                             {"description": desc, "fitness": fitness or None,
                              "exercise_categories": exercises.CATEGORIES},
@@ -958,7 +976,7 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
         "exercise_variants": exercise_variants,
     }
     try:
-        edit, stats = await run_in_threadpool(plan_edit_with_stats, context, api_key)
+        edit, stats = await _run_claude(plan_edit_with_stats, context, api_key)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan_edit", model=MODEL_PLAN, ok=False,
@@ -1091,8 +1109,6 @@ async def run_plan_adaptation(
     (ST-07) further bounds *what* the kept operations may do — see
     :func:`_filter_ops_to_level`.
     """
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import repository
 
     plan = await repository.get_active_plan(session, user_id)
@@ -1124,7 +1140,7 @@ async def run_plan_adaptation(
         "fitness": fitness or None,
     }
     try:
-        edit, stats = await run_in_threadpool(plan_adapt_with_stats, context, api_key)
+        edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="adapt", model=MODEL_PLAN, ok=False,
@@ -1199,8 +1215,6 @@ async def run_weather_plan_check(
     filtered to move/modify within ``today..today+decision_days`` (never skip/add — weather
     doesn't cancel training). Logs ``ReportLog(kind="weather")``. Does NOT apply the change
     — the caller confirms via the same bot buttons as EP-02 adaptation."""
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import repository
 
     plan = await repository.get_active_plan(session, user_id)
@@ -1220,7 +1234,7 @@ async def run_weather_plan_check(
         "conflicts": conflicts,
     }
     try:
-        edit, stats = await run_in_threadpool(weather_plan_with_stats, context, api_key)
+        edit, stats = await _run_claude(weather_plan_with_stats, context, api_key)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="weather", model=MODEL_PLAN, ok=False,
@@ -1300,8 +1314,6 @@ async def run_digest(
     (``ReportLog(kind="digest")``), and return the text. Returns ``None`` (nothing to
     send) for a user with no history and no plan. Numbers are computed here; the LLM
     only interprets them (EP-07)."""
-    from fastapi.concurrency import run_in_threadpool
-
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -1359,7 +1371,7 @@ async def run_digest(
         text, stats = cached, CallStats(kind="digest", model=MODEL_DIGEST, cached=True)
     else:
         try:
-            text, stats = await run_in_threadpool(digest_with_stats, context, api_key)
+            text, stats = await _run_claude(digest_with_stats, context, api_key)
         except AnalystError as e:
             await repository.log_report(
                 session, user_id=user_id, kind="digest", model=MODEL_DIGEST, ok=False,

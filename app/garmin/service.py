@@ -10,10 +10,12 @@ Two entry points:
 * ``build_payload_cached`` — async; serves immutable past days from the DB and
   persists what it fetches, so history accumulates and Garmin calls drop.
 """
+import asyncio
 import datetime as dt
 import logging
 import time
 from typing import List, Optional, Tuple
+from weakref import WeakValueDictionary
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -23,6 +25,44 @@ from app.garmin.providers import get_provider
 from app.garmin.schemas import Activity, DailySummary, Payload, PlannedRun
 
 logger = logging.getLogger("garmin")
+
+
+# PERF-05: one asyncio.Lock per user around the Garmin fetch phase of
+# ``build_payload_cached``. A morning tick and a concurrent ``/report`` for the
+# same user would otherwise both hammer Garmin for the same days — wasted calls,
+# extra 429 risk, and interleaved upserts of the same rows. A WeakValueDictionary
+# lets locks for idle users get GC'd (a coroutine awaiting one keeps it alive).
+_user_fetch_locks: "WeakValueDictionary[int, asyncio.Lock]" = WeakValueDictionary()
+
+# A freshly-built payload is memoised briefly: a second caller that was blocked on
+# the lock reuses it instead of re-fetching today (~a dozen Garmin calls). The
+# reuser gets ``new_activities=[]`` — the first caller already owns them, so
+# auto-analysis never double-fires. Keyed by (user_id, days, activity_limit) so a
+# narrow-window tick (days=3) never serves a wider request (e.g. /deep's days=14).
+_recent_payload: dict = {}  # (user_id, days, activity_limit) -> (monotonic_ts, Payload)
+_PAYLOAD_REUSE_S = 30.0
+
+
+def _user_fetch_lock(user_id: int) -> asyncio.Lock:
+    lock = _user_fetch_locks.get(user_id)
+    if lock is None:
+        lock = _user_fetch_locks[user_id] = asyncio.Lock()
+    return lock
+
+
+def _remember_payload(key: tuple, payload: Payload) -> None:
+    now = time.monotonic()
+    _recent_payload[key] = (now, payload)
+    # Drop stale entries so the dict doesn't grow with every (user, window) seen.
+    for k in [k for k, (ts, _) in _recent_payload.items()
+              if k != key and now - ts > _PAYLOAD_REUSE_S]:
+        _recent_payload.pop(k, None)
+
+
+def _fetch_days(dates_to_fetch: List[dt.date]) -> dict:
+    """Fetch several day summaries in ONE threadpool hop (PERF-04b): login is
+    already done, so batching avoids a round trip through anyio's pool per day."""
+    return {d.isoformat(): daily_summary(d) for d in dates_to_fetch}
 
 
 # ---------- AUTH ----------
@@ -297,42 +337,60 @@ async def build_payload_cached(
     used by the bot to trigger auto-analysis of freshly synced activities."""
     from app.garmin import repository  # local import to avoid an import cycle
 
-    await run_in_threadpool(login)
-    today = dt.date.today()
-    today_iso = today.isoformat()
-    dates = _date_range(days)
-    past_iso = [d.isoformat() for d in dates if d < today]
+    # Serialize concurrent fetches for the same user (PERF-05): the whole
+    # fetch+persist runs under the per-user lock. build_payload_cached always
+    # fetches (today is never cached), so there's no pure-DB fast path here to
+    # starve — other endpoints read the DB directly, not through this function.
+    reuse_key = (user_id, days, activity_limit)
+    async with _user_fetch_lock(user_id):
+        hit = _recent_payload.get(reuse_key)
+        if hit and (time.monotonic() - hit[0]) < _PAYLOAD_REUSE_S:
+            # A concurrent caller just built this exact payload while we waited on
+            # the lock — reuse it and don't re-trigger its new activities.
+            logger.info(f"PAYLOAD reuse user={user_id} (fetched <{_PAYLOAD_REUSE_S:.0f}s ago)")
+            return hit[1], []
 
-    cached = await repository.read_daily_metrics(session, user_id, past_iso)
+        await run_in_threadpool(login)
+        today = dt.date.today()
+        today_iso = today.isoformat()
+        dates = _date_range(days)
+        past_iso = [d.isoformat() for d in dates if d < today]
 
-    daily: List[DailySummary] = []
-    for d in dates:
-        iso = d.isoformat()
-        if d < today and iso in cached:
-            daily.append(cached[iso])
-        else:
-            row = await run_in_threadpool(daily_summary, d)
-            daily.append(DailySummary(**row))
+        cached = await repository.read_daily_metrics(session, user_id, past_iso)
 
-    act_pairs = await run_in_threadpool(_activity_rows, activity_limit)
-    activities = [Activity(**row) for _id, row in act_pairs]
-    planned_raw = await run_in_threadpool(fetch_planned, 14)
-    planned = [PlannedRun(**p) for p in planned_raw]
+        # Missing past days + today are fetched together in ONE threadpool hop
+        # (PERF-04b), not a round trip per day.
+        to_fetch = [d for d in dates if not (d < today and d.isoformat() in cached)]
+        fetched = await run_in_threadpool(_fetch_days, to_fetch) if to_fetch else {}
 
-    today_row = next((d for d in daily if d.date == today_iso), None)
-    synced_today = bool(today_row and today_row.has_data)
-    last_with_data = next((d.date for d in daily if d.has_data), None)
+        daily: List[DailySummary] = []
+        for d in dates:
+            iso = d.isoformat()
+            if d < today and iso in cached:
+                daily.append(cached[iso])
+            else:
+                daily.append(DailySummary(**fetched[iso]))
 
-    payload = Payload(
-        generated=dt.datetime.now().isoformat(timespec="minutes"),
-        window_days=days,
-        synced_today=synced_today,
-        last_data_date=last_with_data,
-        daily=daily,
-        recent_activities=activities,
-        planned_runs=planned,
-    )
+        act_pairs = await run_in_threadpool(_activity_rows, activity_limit)
+        activities = [Activity(**row) for _id, row in act_pairs]
+        planned_raw = await run_in_threadpool(fetch_planned, 14)
+        planned = [PlannedRun(**p) for p in planned_raw]
 
-    new_activities = await repository.persist_payload(session, user_id, payload, act_pairs)
-    await session.commit()
-    return payload, new_activities
+        today_row = next((d for d in daily if d.date == today_iso), None)
+        synced_today = bool(today_row and today_row.has_data)
+        last_with_data = next((d.date for d in daily if d.has_data), None)
+
+        payload = Payload(
+            generated=dt.datetime.now().isoformat(timespec="minutes"),
+            window_days=days,
+            synced_today=synced_today,
+            last_data_date=last_with_data,
+            daily=daily,
+            recent_activities=activities,
+            planned_runs=planned,
+        )
+
+        new_activities = await repository.persist_payload(session, user_id, payload, act_pairs)
+        await session.commit()
+        _remember_payload(reuse_key, payload)
+        return payload, new_activities

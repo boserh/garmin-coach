@@ -78,6 +78,9 @@ Optional, with defaults:
 | `APP_SECRET_KEY` | `` (empty) | Fernet master key: encrypts stored creds + signs cookie sessions |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
 | `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
+| `GARMIN_RPS` | `3.0` | Process-wide Garmin request rate cap (req/s); `0` disables the limiter (PERF-05) |
+| `GARMIN_RETRIES` | `2` | 429 retries with exponential backoff inside `client._api` (PERF-05) |
+| `CLAUDE_MAX_WORKERS` | `4` | Size of the dedicated Claude thread pool, off the shared anyio pool (PERF-04b) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
 | `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by login (kept for compatibility) |
 | `LOG_FILE` | `bot.log` | Log file path |
@@ -672,6 +675,38 @@ choice avoids SDK tool-use, matching the rest of the `messages.create` usage.
   per-key files once at import, then renamed `.migrated`. Day-level caching moved to
   the DB.
 - **DB day-level cache** (`DailyMetric`): past days served from the DB; today refetched.
+
+## Concurrency & rate limiting (PERF-04b / PERF-05)
+
+- **Dedicated Claude thread pool** (PERF-04b): every `*_with_stats` Claude call runs on
+  a small `ThreadPoolExecutor` (`CLAUDE_MAX_WORKERS`, `thread_name_prefix="claude"`) via
+  `analysis.service._run_claude`, **not** the shared anyio threadpool that Garmin
+  logins/fetches use — so a burst of multi-second LLM calls can't starve the pool fast
+  Garmin/DB work needs. The sync functions keep their signatures (tests monkeypatch them;
+  retry/`AnalystError`/`ReportLog` behaviour unchanged) — the executor was chosen over
+  `AsyncAnthropic` for exactly that minimal blast radius. The `_get_client` per-key client
+  cache is unchanged. Garmin fetches inside the `run_*` wrappers (`client.fetch_workouts`,
+  `client.fetch_workout_full`) deliberately stay on `run_in_threadpool`.
+- **Grouped day-fetch** (PERF-04b): `build_payload_cached` fetches all missing past days
+  **plus today** in ONE `run_in_threadpool` hop (`service._fetch_days` loops inside) instead
+  of a round trip per day.
+- **Garmin rate limiter + 429 backoff** (PERF-05): a process-wide `client._RateLimiter`
+  (leaky-bucket spacer — reserve the next slot under a `threading.Lock`, sleep outside it;
+  synchronous because the client runs in the threadpool) throttles **every** connectapi
+  call (`client._api`) to `GARMIN_RPS`. Post-Cloudflare a polite, predictable request
+  pattern is survival, not tuning. A 429 (`_is_rate_limited` — nested `.error.response`
+  status or string fallback) is retried `GARMIN_RETRIES` times with exponential backoff;
+  after exhaustion the exception propagates so callers keep prior behaviour (`_safe` logs +
+  returns `{"_error": ...}`; write calls surface it). The MFA login gate (a ~25s human
+  wait in `app.garmin.mfa`) is a **separate path** — never throttled or retried.
+- **Per-user fetch lock** (PERF-05): `build_payload_cached` wraps its fetch+persist phase
+  in a per-user `asyncio.Lock` (`service._user_fetch_locks`, a `WeakValueDictionary` so idle
+  users' locks are GC'd). A morning tick and a concurrent `/report` for the same user no
+  longer both hammer Garmin for the same days. A 30s memo (`_recent_payload`, keyed by
+  `(user_id, days, activity_limit)` so a narrow tick never serves a wider `/deep` request)
+  lets the second (blocked) caller **reuse** the just-built payload instead of re-fetching
+  today (~a dozen calls); the reuser gets `new_activities=[]` so auto-analysis never
+  double-fires. Different users take different locks — no cross-user blocking.
 
 ## Logging
 
