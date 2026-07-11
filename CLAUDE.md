@@ -246,7 +246,21 @@ Optional, with defaults:
   `generate_strength_with_stats` (`SYSTEM_STRENGTH_GEN`, deduped, sanitised by
   `_sanitize_strength`) and lays it as a from-scratch `strength_plan` day (built natively on
   push — the same path as chat "додай силову"; renders in the `/plan` accordion with no
-  snapshot needed). `repository.add_strength_workouts(plan, assignments, snapshots, custom)`
+  snapshot needed).
+  **Preview (ST-05)**: each "🆕 інше…" description has a **"Прев'ю"** button that POSTs to
+  `/plan/strength/preview` (`plan.py::strength_preview` → `service.run_strength_preview`) —
+  the **same context/model** as generation, so the previewed session matches what generation
+  would produce. It logs a `ReportLog(kind="strength")` (cost visible) and returns the
+  `_strength_preview.html` fragment (same accordion look), carrying the sanitised session +
+  a `_desc_hash(description)` in `data-session`/`data-hash`. On submit those ride back as
+  hidden inputs `strength_preview_<slug>`/`strength_prehash_<slug>`; `_confirmed_previews`
+  keeps only sessions whose hash still matches the submitted text (an **edited description
+  invalidates** its stale preview) and **re-sanitises** every one server-side (never trust
+  the client JSON) into `intake["strength"]["custom_generated"][slug]`. `run_plan_generation`
+  reuses a confirmed session verbatim (skips the second, paid Claude call) — falling back to
+  `generate_strength_with_stats` only for descriptions with no confirmed preview. The button
+  is progressive enhancement: without JS the form works exactly as before (preview is optional).
+  `repository.add_strength_workouts(plan, assignments, snapshots, custom)`
   lays `PlannedWorkout(type="strength", garmin_template_id=<saved id>)` on
   each chosen weekday **every week** — a **fixed** day→workout pairing (no rotation, so Day 1
   always falls on the same weekday). On push, a session with a `garmin_template_id`

@@ -1,0 +1,18 @@
+{% if error %}
+<div class="sd-pv-err">{{ error }}</div>
+{% else %}
+<div class="strength-preview" data-session="{{ session_json }}" data-hash="{{ phash }}">
+  {% if session.name %}<div class="sd-pv-name">{{ session.name }}</div>{% endif %}
+  {% for b in session.blocks %}
+  <div class="sblock">
+    {% if b.reps %}<div class="sbhead">{{ b.reps }}× підходи{% if b.rest_s %} · відпочинок {{ b.rest_s }}с{% endif %}</div>{% endif %}
+    {% for ex in b.exercises %}
+    <div class="sex">
+      <span class="sxname">{{ ex.category|exlabel(ex.exercise) }}</span>
+      <span class="sxval">{% if ex.reps %}{{ ex.reps }} повт.{% endif %}{% if ex.weight_kg %} · {{ '%g'|format(ex.weight_kg) }} кг{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

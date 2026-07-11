@@ -397,6 +397,28 @@ def test_plan_setup_then_view(auth_client):
     assert "Перші 5 км" in view and "тестовий підхід" in view and "легкий біг" in view
 
 
+def test_strength_preview_route_renders_fragment(auth_client):
+    from unittest.mock import AsyncMock
+
+    from app.routers import plan as plan_router
+
+    sp = {"name": "Ноги", "warmup_s": 300, "blocks": [
+        {"reps": 3, "rest_s": 90, "exercises": [
+            {"category": "SQUAT", "exercise": "GOBLET_SQUAT", "reps": 12, "weight_kg": 20}]}]}
+    with patch.object(plan_router, "run_strength_preview", AsyncMock(return_value=sp)):
+        r = auth_client.post("/plan/strength/preview",
+                             data={"description": "силова на ноги", "plan_model": "opus"})
+    assert r.status_code == 200
+    body = r.text
+    assert "strength-preview" in body and "data-hash=" in body
+    assert "Ноги" in body   # session name rendered
+
+
+def test_strength_preview_route_empty_description_400(auth_client):
+    r = auth_client.post("/plan/strength/preview", data={"description": "  "})
+    assert r.status_code == 400
+
+
 def test_plan_rejects_fewer_than_two_run_days(auth_client):
     r = auth_client.post(
         "/plan",
