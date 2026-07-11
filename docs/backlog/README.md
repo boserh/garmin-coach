@@ -20,14 +20,11 @@
 | [EP-04](EP-04-web-dashboard.md) | Веб-дашборд | L | EP-01 ✅ (бейджі план/факт) |
 | [EP-05](EP-05-race-pack.md) | Race pack — підготовка до перегонів | L | фаза 0: типізувати `target_date`; GAP-модуль спільний з EP-15 |
 | [EP-06](EP-06-saas-quotas.md) | SaaS-режим: квоти вартості · ❄️ **frozen**: чужі юзери на неофіційному API, який Garmin закриває — після OPS-01 + 3 міс. стабільності | XL | рішення про продукт |
-| [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | L | ✅ **done** (2026-07) |
 | [EP-08](EP-08-health-alerts.md) | Проактивні health-алерти (аномалії відновлення) | L | синергія з NF-01 (пороги) |
 | [EP-09](EP-09-ask-full-history.md) | `/ask` над усією історією (tool-use агент над БД) | L–XL | — |
 | [EP-10](EP-10-multisport.md) | Мультиспорт: вело/плавання у планах і аналізі | XL | фаза 2 (навантаження) → NF-05 |
 | [EP-11](EP-11-web-coach-chat.md) | Веб-чат з тренером | L | EP-09 бажано |
-| [EP-12](EP-12-post-run-checkin.md) | Пост-тренувальний check-in (RPE + самопочуття) | M–L | ✅ **MVP done** (2026-07); фази 2–3 (RPE-тренд в адаптацію, статус план/факт) — далі |
-| [EP-13](EP-13-weather-aware-week.md) | Погодо-свідоме планування тижня | M–L | ✅ **done** (2026-07) |
-| [EP-14](EP-14-personal-records.md) | Особисті рекорди й віхи | M | ✅ **done** (2026-07) |
+| [EP-12](EP-12-post-run-checkin.md) | Пост-тренувальний check-in (RPE + самопочуття) — MVP ✅, лишились фази 2–3 (RPE-тренд в адаптацію, статус план/факт) | M–L | — |
 | [EP-15](EP-15-elevation-gap.md) | Рельєф і grade-adjusted pace (GAP) | M–L | GAP-модуль реюзабельний (його чекає EP-05 фаза 2) |
 | [EP-16](EP-16-season-periodization.md) | Сезонна періодизація (кілька стартів) | XL | EP-02 ✅, EP-05; intake спільний з NF-05 |
 
@@ -35,7 +32,6 @@
 
 | ID | Назва | Оцінка | RICE | Залежності |
 | --- | --- | --- | --- | --- |
-| [NF-01](NF-01-personal-baselines.md) | «Сьогодні vs твоя норма» — довгострокові базлайни | M | 6.3 | ✅ **done** (2026-07) |
 | [NF-05](NF-05-multisport-weekly-budget.md) | Мультиспорт-бюджет тижня (кайт/теніс/вело як навантаження) | M | 3.0 | — (= EP-10 фаза 2) |
 | [NF-06](NF-06-compare-past-self.md) | «Я-минулорічний» — порівняння з минулим собою | M | 2.0 | — |
 | [NF-04](NF-04-injury-risk-radar.md) | Травматичний радар (injury-risk сигнали) | M | 0.9 | EP-08, EP-12 |
@@ -67,7 +63,6 @@
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` (1043 рядки) на пакет | M | до/разом з PERF-02, PERF-04b |
 | [CODE-02](CODE-02-cli-push-plan-reuse-plan-sync.md) | CLI `push-plan` поверх `plan_sync` (залишок: відбір вікна) | S | — |
 | [CODE-03](CODE-03-remove-legacy-paths.md) | Прибрати legacy: `WEB_TOKEN`, `GARTH_TOKEN_DIR` (`gconn` НЕ видаляти — OPS-01) | S | — |
-| [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | S | разом з CODE-01 |
 | [CODE-07](CODE-07-import-fit-series-refactor-tests.md) | Розплутати `import_fit_series` + тести (cyclomatic 20, вкладеність 8, 0 тестів) | S–M | — (низький пріоритет) |
 
 ## Рекомендований порядок (2026-07, за ANALYSIS.md §4.1)
@@ -134,6 +129,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | [EP-07](EP-07-weekly-digest.md) | Тижневий дайджест і прогрес до цілі | `SYSTEM_DIGEST` + `run_digest`/`digest_with_stats`/`_digest_cache_key` (`app/analysis/service.py`, числа рахуємо ми у `_week_volume_summary`), `weekly_digest_job`/`_digest_for_user`/`force_digest_for_user` (`bot/jobs.py`, недільна `run_daily` о `DIGEST_HOUR`, once-a-week guard `bot_state` `digest:<iso-week>`), прихована `/test_digest`, `ReportLog(kind="digest")`; `tests/test_digest.py` |
 | [CODE-04](CODE-04-jobs-boilerplate-helpers.md) | Спільні хелпери per-user джоб | `eligible_users` (`app/db/users.py`) + `for_each_user`/`user_garmin_runtime` (`bot/jobs.py`): три джоби (`morning_job`/`plan_sync_job`/`plan_adapt_job`) стали 1–5-рядковими, per-user try/except централізований (одна помилка не рве цикл — тепер і в adapt), guard «є Garmin-креди» спільний для `_tick_for_user`/`_sync_for_user`; логи скіпів/падінь незмінні; `tests/test_jobs.py` |
 | [CODE-05](CODE-05-shared-report-delivery.md) | Спільний report-флоу (бот/веб/morning) | `app/analysis/delivery.py::build_report` (payload → run_analysis → text + sync-прапори) + `ReportResult`/`STALE_NOTE`; три виклики зведені: `bot/handlers.py::report`, `app/routers/reports.py::report_json`, `bot/jobs.py::_deliver_morning`. Канал сам формує stale-примітку (Telegram-префікс vs JSON-`note`) й ловить `AnalystError`; morning лишає свій `_MORNING_STALE` («звіт» не «аналіз» — свідома відмінність, бо stale рахує строгіший `_recovery_synced`, не `synced_today`) + guard/вікно/MFA. Дедуп-кеш незмінний (хелпер лише збирає наявний виклик). `tests/test_delivery.py` + `test_routers.py::test_report_json_uses_shared_helper_and_stale_note` |
+| [CODE-06](CODE-06-dedup-plan-edit-adapt-stats.md) | Злити `plan_edit_with_stats`/`plan_adapt_with_stats` (AST-ідентичні) | Спільний рушій `_plan_ops_with_stats(context, api_key, *, system, kind, log_label, error_msg)` (`app/analysis/service.py`); обидві публічні функції — тонкі обгортки (сигнатури незмінні — тести їх monkeypatch'ать). Нуль поведінкових змін: `kind`/лог-формат/ретрай/свідомо-не-кешований шлях збережені. CODE-01 ще не зроблено → хелпер поки в `service.py`. PR #119 |
 
 ## Наскрізна пастка
 
