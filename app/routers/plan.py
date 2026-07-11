@@ -6,6 +6,8 @@ store it. Day-to-day adjustments happen in the bot (free text). One active plan 
 """
 import asyncio
 import datetime as dt
+import hashlib
+import json
 import logging
 import time
 from pathlib import Path
@@ -21,6 +23,7 @@ from app.analysis.service import (
     plan_adjust_level,
     resolve_plan_model,
     run_plan_generation,
+    run_strength_preview,
 )
 from app.core.auth import current_user
 from app.db.base import async_session_maker
@@ -28,7 +31,36 @@ from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import exercises as _exercises
 from app.garmin import plan_sync, repository
+from app.garmin.credentials import load_credentials
 from app.garmin.runtime import user_runtime
+
+
+def _desc_hash(desc: str) -> str:
+    """Stable short hash of a normalised strength description — ties a previewed session
+    to the exact text it was generated from, so an edited description invalidates it (ST-05)."""
+    return hashlib.sha256((desc or "").strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+async def _confirmed_previews(request: Request, custom: dict) -> dict:
+    """ST-05: pull the previewed strength sessions (hidden inputs) whose description hash
+    still matches the submitted text — an edited description no longer matches, so its stale
+    preview is dropped and the session regenerates. Every session is re-sanitised here: the
+    JSON came back from the browser and is never trusted. Returns {weekday_slug: plan_dict}."""
+    form = await request.form()
+    out: dict = {}
+    for slug, desc in custom.items():
+        pv = form.get(f"strength_preview_{slug}")
+        ph = form.get(f"strength_prehash_{slug}")
+        if not (pv and ph) or ph != _desc_hash(desc):
+            continue
+        try:
+            parsed = json.loads(pv)
+        except (ValueError, TypeError):
+            continue
+        san = repository._sanitize_strength(parsed)
+        if san:
+            out[slug] = san
+    return out
 
 # Per-user BotState key tracking an in-flight (Opus, slow) plan generation: "pending"
 # while running, "err:<msg>" on failure, cleared once the new plan is active. Generation
@@ -394,8 +426,44 @@ async def plan_view(
     )
 
 
+@router.post("/plan/strength/preview", response_class=HTMLResponse)
+async def strength_preview(
+    request: Request,
+    description: str = Form(""),
+    plan_model: str = Form("opus"),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-05: generate ONE strength session from the free-text description and render it as
+    an HTML fragment (same look as the /plan accordion) WITHOUT submitting the whole form.
+    The fragment carries the sanitised session + its description hash so the form can hand a
+    confirmed preview back to generation and skip a second (paid) Claude call."""
+    desc = description.strip()
+    if not desc:
+        raise HTTPException(status_code=400, detail="empty description")
+    creds = load_credentials(user)
+    try:
+        sp = await run_strength_preview(
+            session, user_id=user.id, description=desc,
+            api_key=creds.anthropic_key, model=resolve_plan_model(plan_model),
+        )
+    except AnalystError as e:
+        return templates.TemplateResponse(request, "_strength_preview.html", {"error": str(e)})
+    if not sp:
+        return templates.TemplateResponse(
+            request, "_strength_preview.html",
+            {"error": "Не вдалось скласти силову з опису. Спробуй інакше."},
+        )
+    return templates.TemplateResponse(
+        request, "_strength_preview.html",
+        {"session": sp, "session_json": json.dumps(sp, ensure_ascii=False),
+         "phash": _desc_hash(desc)},
+    )
+
+
 @router.post("/plan")
 async def plan_create(
+    request: Request,
     goal: str = Form(...),
     target_date: str = Form(""),
     run_days: list[str] = Form(default=[]),
@@ -460,6 +528,10 @@ async def plan_create(
                 intake["strength"]["assignments"] = assignments
             if custom:
                 intake["strength"]["custom"] = custom
+                # ST-05: carry any confirmed previews so generation reuses them (skip regen).
+                gen = await _confirmed_previews(request, custom)
+                if gen:
+                    intake["strength"]["custom_generated"] = gen
     # Ignore a duplicate submit while one is already running (and not stale).
     cur = await repository.get_state(session, user.id, PLAN_GEN_KEY) or ""
     if cur.startswith("pending") and not _pending_stale(cur):

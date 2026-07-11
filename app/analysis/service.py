@@ -821,6 +821,10 @@ async def run_plan_generation(
     strength = (intake or {}).get("strength") or {}
     assignments = strength.get("assignments") or {}
     custom = strength.get("custom") or {}
+    # Sessions the user already previewed + confirmed in the setup form (ST-05): reuse
+    # them verbatim instead of paying to regenerate (still re-sanitised below — never
+    # trust a client-supplied session). Keyed by weekday slug.
+    custom_generated = strength.get("custom_generated") or {}
     if strength.get("enabled") and (assignments or custom):
         try:
             from app.garmin import client, workout_export
@@ -848,6 +852,12 @@ async def run_plan_generation(
                 key = (desc or "").strip().lower()
                 if not key:
                     continue
+                # A confirmed preview for this weekday → reuse it, skip the Claude call.
+                pre = repository._sanitize_strength(custom_generated.get(slug)) \
+                    if custom_generated.get(slug) else None
+                if pre:
+                    custom_plans[slug] = pre
+                    continue
                 if key not in gen_cache:
                     try:
                         sess, _ = await _run_claude(
@@ -874,6 +884,41 @@ async def run_plan_generation(
         question=f"plan: {goal}", report_text=plan_out.summary,
     )
     return plan
+
+
+async def run_strength_preview(
+    session, *, user_id: int, description: str, api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Optional[dict]:
+    """Generate + sanitise ONE from-scratch strength session for the setup form's
+    "Прев'ю" button (ST-05) — the same context/model as plan generation, so a confirmed
+    preview matches what generation would have produced. Logs a ReportLog(kind="strength")
+    so the (paid) call is visible in cost tracking. Returns the stored ``strength_plan``
+    dict ({name, warmup_s, blocks}) or None if nothing valid remained after sanitising.
+    Not dedup-cached (like the other plan-gen calls)."""
+    gen_model = model or MODEL_PLAN_GEN
+    from app.garmin import repository
+
+    ex = await repository.get_recent_extra(session, user_id, days=21)
+    fitness = _build_fitness_snapshot(ex)
+    context = {"description": description, "fitness": fitness or None,
+               "exercise_categories": exercises.CATEGORIES}
+    try:
+        sess, stats = await _run_claude(
+            generate_strength_with_stats, context, api_key, gen_model)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="strength", model=gen_model, ok=False,
+            question=f"strength: {description[:120]}", error=str(e)[:512],
+        )
+        raise
+    await repository.log_report(
+        session, user_id=user_id, kind="strength", model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"strength: {description[:120]}",
+    )
+    return repository._sanitize_strength(sess)
 
 
 def _coerce_edit(text: str) -> PlanEdit:

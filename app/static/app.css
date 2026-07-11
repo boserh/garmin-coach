@@ -220,6 +220,14 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 .strength-row .sd-label{width:2.2rem;color:var(--faint);font-size:.86rem;font-weight:500}
 .strength-row select{flex:1;margin:0}
 .strength-row .sd-desc{flex-basis:100%;margin:.35rem 0 0 2.9rem;width:auto}
+.strength-row .sd-preview{flex-basis:100%;align-self:flex-start;width:auto;
+  margin:.3rem 0 0 2.9rem;font-size:.78rem;padding:.32rem .8rem;border-radius:8px;
+  border:1px solid var(--border);background:var(--surface-2);color:var(--ink);cursor:pointer}
+.strength-row .sd-preview:hover{border-color:var(--accent)}
+.strength-row .sd-preview:disabled{opacity:.6;cursor:default}
+.strength-row .sd-pv{flex-basis:100%;margin:.3rem 0 0 2.9rem;empty-cells:hide}
+.sd-pv-name{font-weight:600;font-size:.85rem;margin-bottom:.35rem}
+.sd-pv-err{color:#c0563a;font-size:.82rem}
 .modeltoggle{display:flex;gap:.6rem;margin-top:.5rem;max-width:22rem}
 .modeltoggle .mt{flex:1;display:flex;align-items:center;gap:.5rem;margin:0;padding:.6rem .7rem;
   border:1px solid var(--border);border-radius:10px;cursor:pointer;background:var(--surface)}

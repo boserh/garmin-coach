@@ -116,6 +116,10 @@
             </select>
             <input class="sd-desc" name="strength_desc_{{ slug }}" style="display:none"
                    placeholder="напр. силова на ноги, або як Day 1 але легша">
+            <button type="button" class="sd-preview" style="display:none">Прев'ю</button>
+            <div class="sd-pv"></div>
+            <input type="hidden" name="strength_preview_{{ slug }}">
+            <input type="hidden" name="strength_prehash_{{ slug }}">
           </div>
           {% endfor %}
         </div>
@@ -186,11 +190,51 @@
       });
     }
 
-    // Reveal a weekday's free-text box only when "інше…" is picked.
-    f.querySelectorAll('.strength-row select').forEach(function (sel) {
-      var desc = sel.parentNode.querySelector('.sd-desc');
-      function toggle() { if (desc) desc.style.display = sel.value === 'custom' ? 'block' : 'none'; }
+    // Reveal a weekday's free-text box + "Прев'ю" button only when "інше…" is picked, and
+    // wire the preview (ST-05): generate one session on demand, show it, and stash the
+    // sanitised JSON + description hash in hidden inputs so submit reuses it (no re-gen).
+    f.querySelectorAll('.strength-row').forEach(function (row) {
+      var sel = row.querySelector('select');
+      var desc = row.querySelector('.sd-desc');
+      var btn = row.querySelector('.sd-preview');
+      var out = row.querySelector('.sd-pv');
+      var pvJson = row.querySelector('input[name^="strength_preview_"]');
+      var pvHash = row.querySelector('input[name^="strength_prehash_"]');
+
+      function clearPreview() { out.innerHTML = ''; pvJson.value = ''; pvHash.value = ''; }
+      function toggle() {
+        var on = sel.value === 'custom';
+        desc.style.display = on ? 'block' : 'none';
+        btn.style.display = on ? 'inline-block' : 'none';
+        if (!on) clearPreview();
+      }
       sel.addEventListener('change', toggle);
+      // Editing the description invalidates a stale preview (the server also checks the hash).
+      desc.addEventListener('input', clearPreview);
+
+      btn.addEventListener('click', function () {
+        var text = desc.value.trim();
+        if (!text) return;
+        var m = f.querySelector('input[name=plan_model]:checked');
+        var oldTxt = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Генерую…';
+        fetch('/plan/strength/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ description: text, plan_model: m ? m.value : 'opus' }).toString()
+        }).then(function (r) { return r.text(); }).then(function (html) {
+          out.innerHTML = html;
+          var pv = out.querySelector('.strength-preview');
+          pvJson.value = pv ? (pv.getAttribute('data-session') || '') : '';
+          pvHash.value = pv ? (pv.getAttribute('data-hash') || '') : '';
+        }).catch(function () {
+          pvJson.value = ''; pvHash.value = '';
+          out.innerHTML = '<div class="sd-pv-err">Не вдалось отримати прев\'ю.</div>';
+        }).finally(function () {
+          btn.disabled = false; btn.textContent = oldTxt;
+        });
+      });
+
       toggle();
     });
 
