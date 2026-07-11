@@ -89,6 +89,9 @@ Optional, with defaults:
 | `LOG_LEVEL` | `INFO` | Root level (`DEBUG` shows skip-reason logs) |
 | `GARMIN_CACHE_DIR` | `garmin_cache` | Per-key disk cache for immutable Garmin assets (PERF-02) |
 | `GARMIN_CACHE_FILE` | `garmin_cache.json` | Legacy single-file cache — seeded into `GARMIN_CACHE_DIR` once, then renamed `.migrated` |
+| `INJURY_RADAR` | `True` | NF-04: master on/off for the injury-risk advisory in the morning tick |
+| `INJURY_MIN_HISTORY_DAYS` | `14` | NF-04: quiet calibration — no warnings until this much daily history |
+| `INJURY_GUARD_DAYS` | `5` | NF-04: at most one injury advisory per this many days |
 
 `CLAUDE_CACHE_FILE` is gone — the Claude dedup cache lives in the `llm_cache` table
 (PERF-02), shared by the bot and web processes.
@@ -591,6 +594,27 @@ Percentiles are numpy-free and robust to the gaps a backfill leaves. Wired into 
 pitfall: all Claude context must key the dedup cache). The LLM computes nothing — it only narrates
 the ready deviations (SYSTEM section «ТВОЯ НОРМА»). Scope is a single 90-day window; the ticket's
 30/365 + seasonal windows are a documented future extension. `tests/test_baselines.py`.
+
+**Injury-risk radar (NF-04)**: a **pure-Python, zero-LLM** detector (`app/injury.py`) that fuses
+four early-warning signals already in the DB into one severity score — the load-side detector the
+backlog imagined next to EP-08. Signals: **repeated pain** (same body part flagged ≥2× in 14 days,
+from EP-12 `subjective` — weighs heaviest, the strongest predictor), **sustained high ACWR**
+(`extra.acwr_pct` ≥140 on ≥3 recent days), **RPE rising at a stable pace** (harder for the same
+speed → early fatigue/illness), and **recovery drift** (HRV below its baseline band several days +
+resting-HR drift up). `injury.assess(daily, runs, history_days=...)` → an `Assessment`
+(`level` calibrating/none/elevated/high, `score`, `signals`). **Calibration gate** (the EP-08
+false-positive rule): `level="calibrating"` and no warning until `INJURY_MIN_HISTORY_DAYS` (14) of
+history. Repository readers `read_load_history` / `recent_subjective_runs` / `count_daily_metrics`
+feed `service.build_injury_assessment` (pure, zero-LLM — used by both `/risk` and the job).
+`service.run_injury_check` narrates an actionable assessment via Sonnet (`SYSTEM_INJURY` — cautious,
+non-medical) but **falls back to the deterministic `injury.summary`** if the LLM fails (the warning
+never depends on the LLM); logs `ReportLog(kind="injury")`. Surfaced two ways: the **`/risk`** bot
+command (instant DB read — shows calibrating/clear/signals) and a **morning-tick hook**
+(`_injury_check_for_user` in `bot/jobs.py`, after the records check) that DMs one advisory when
+actionable, guarded to at most once per `INJURY_GUARD_DAYS` (5) via `bot_state` `injury_warned`
+(guard set before the send so a hiccup can't loop). Process-level `INJURY_RADAR` on/off (personal
+app; no per-user column). Deeper EP-02 auto-deload integration is left as a future step (the ticket
+sits "on top of EP-08+12"). `tests/test_injury.py`.
 
 **Multisport weekly load budget (NF-05)**: a **pure-Python, zero-LLM** cross-sport training-load
 budget (`app/multisport.py`). Our `weekly_run_volume` only sees runs, so a 3h kite session or an

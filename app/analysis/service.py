@@ -28,6 +28,7 @@ from app.analysis.prompts import (
     SYSTEM_ASK,
     SYSTEM_COMPARE,
     SYSTEM_DIGEST,
+    SYSTEM_INJURY,
     SYSTEM_PLAN,
     SYSTEM_PLAN_ADAPT,
     SYSTEM_PLAN_EDIT,
@@ -49,15 +50,21 @@ PRICES = {
     "claude-opus-4-8":   (5.0, 25.0),   # 4.8 dropped to $5/$25 (was $15/$75 on Opus 4.1)
     "claude-fable-5":    (10.0, 50.0),  # newer flagship — 2× Opus 4.8
 }
-MODEL_DAILY = "claude-sonnet-5"
-MODEL_DEEP = "claude-opus-4-8"
-MODEL_ASK = "claude-sonnet-5"   # follow-up Q&A: cheap, grounded in recent reports
-MODEL_ACTIVITY = "claude-sonnet-5"   # single-activity analysis (/activity)
-MODEL_DIGEST = "claude-sonnet-5"     # weekly digest (EP-07): compact payload, once/week
-MODEL_COMPARE = "claude-sonnet-5"    # compare-past-self (NF-06): narrate two windows, on request
-MODEL_PLAN_GEN = MODEL_DEEP          # plan generation default: reasoning-heavy + rare → Opus
-MODEL_PLAN_GEN_ALT = "claude-fable-5"   # alternative plan-gen engine (form toggle)
-MODEL_PLAN = "claude-sonnet-5"       # plan edits (/plan <text>): small, mechanical → Sonnet
+SONNET_4_6 = "claude-sonnet-4-6"
+SONNET_5 = "claude-sonnet-5"
+OPUS_4_8 = "claude-opus-4-8"
+FABLE_5 = "claude-fable-5"
+
+MODEL_DAILY = SONNET_5       # daily report: small, mechanical → Sonnet
+MODEL_DEEP = OPUS_4_8        # deep-dive analysis: reasoning-heavy + rare → Opus
+MODEL_ASK = SONNET_5         # follow-up Q&A: cheap, grounded in recent reports
+MODEL_ACTIVITY = SONNET_5    # single-activity analysis (/activity)
+MODEL_DIGEST = SONNET_5      # weekly digest (EP-07): compact payload, once/week
+MODEL_COMPARE = SONNET_5     # compare-past-self (NF-06): narrate two windows, on request
+MODEL_INJURY = SONNET_5      # injury-radar advisory (NF-04): narrate signals, rare
+MODEL_PLAN_GEN = OPUS_4_8    # plan generation default: reasoning-heavy + rare → Opus
+MODEL_PLAN_GEN_ALT = FABLE_5 # alternative plan-gen engine (form toggle)
+MODEL_PLAN = SONNET_5        # plan edits (/plan <text>): small, mechanical → Sonnet
 
 # Which models the plan-setup form may pick from, keyed by the form's short slug.
 PLAN_GEN_MODELS = {"opus": MODEL_PLAN_GEN, "fable": MODEL_PLAN_GEN_ALT}
@@ -1533,5 +1540,62 @@ async def run_compare(
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"compare:{weeks}w/{years_back}y", report_text=text,
+    )
+    return text
+
+
+# ---------- INJURY-RISK RADAR (NF-04) ----------
+
+async def build_injury_assessment(session, *, user_id: int):
+    """Fetch the injury radar's windowed inputs and run the pure detector (``app.injury``).
+    Returns an ``injury.Assessment`` — ``level="calibrating"`` until the user has enough
+    history (the EP-08 anti-false-positive gate). No LLM, no network; used by both the
+    ``/risk`` command (display only) and the morning warning hook (which then narrates an
+    actionable result)."""
+    from app import injury
+    from app.garmin import repository
+
+    daily = await repository.read_load_history(session, user_id, days=injury.WINDOW_DAYS)
+    runs = await repository.recent_subjective_runs(session, user_id, days=injury.WINDOW_DAYS)
+    history_days = await repository.count_daily_metrics(session, user_id)
+    return injury.assess(
+        daily, runs, history_days=history_days,
+        min_history_days=settings.INJURY_MIN_HISTORY_DAYS,
+    )
+
+
+def injury_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate an actionable injury assessment into a short advisory (Sonnet)."""
+    return _complete(MODEL_INJURY, SYSTEM_INJURY, context, "injury", api_key, max_tokens=600)
+
+
+async def run_injury_check(
+    session, *, user_id: int, assessment, api_key: Optional[str] = None,
+) -> str:
+    """Turn an actionable ``injury.Assessment`` into a user-facing advisory. Narrates via
+    Sonnet (``SYSTEM_INJURY``) but falls back to the deterministic ``injury.summary`` if the
+    LLM call fails — the warning must never depend on the LLM. Logs ``ReportLog(kind="injury")``
+    on success. Not dedup-cached (rare, and the caller guards frequency). Callers must only
+    invoke this for an actionable assessment (``assessment.actionable``)."""
+    from app import injury
+    from app.garmin import repository
+
+    context = injury.to_context(assessment)
+    try:
+        text, stats = await _run_claude(injury_with_stats, context, api_key)
+    except AnalystError as e:
+        logger.warning(f"INJURY narration failed user={user_id}, using fallback: {e}")
+        await repository.log_report(
+            session, user_id=user_id, kind="injury", model=MODEL_INJURY, ok=False,
+            question=f"injury:{assessment.level}", error=str(e)[:512],
+        )
+        return injury.summary(assessment)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"injury:{assessment.level}", report_text=text,
     )
     return text

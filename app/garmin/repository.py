@@ -223,6 +223,81 @@ async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> L
     ]
 
 
+async def count_daily_metrics(session: AsyncSession, user_id: int) -> int:
+    """Total number of stored daily rows for this user — the calibration gate for the
+    injury radar (NF-04): no warnings until there's enough history to trust the signals."""
+    from sqlalchemy import func
+
+    return int(
+        (await session.execute(
+            select(func.count()).select_from(DailyMetric).where(
+                DailyMetric.user_id == user_id
+            )
+        )).scalar_one()
+    )
+
+
+async def read_load_history(
+    session: AsyncSession, user_id: int, days: int = 14
+) -> List[dict]:
+    """The injury radar's daily inputs (NF-04) over the last ``days`` days, oldest first:
+    ``{date, hrv_avg, resting_hr, acwr_pct, hrv_baseline_low}``. ``hrv_avg`` is a column; the
+    rest live in ``extra``."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    rows = (
+        await session.execute(
+            select(DailyMetric)
+            .where(DailyMetric.user_id == user_id, DailyMetric.date >= cutoff)
+            .order_by(DailyMetric.date)
+        )
+    ).scalars().all()
+    out = []
+    for m in rows:
+        ex = m.extra or {}
+        out.append({
+            "date": m.date,
+            "hrv_avg": m.hrv_avg,
+            "resting_hr": ex.get("resting_hr"),
+            "acwr_pct": ex.get("acwr_pct"),
+            "hrv_baseline_low": ex.get("hrv_baseline_low"),
+        })
+    return out
+
+
+async def recent_subjective_runs(
+    session: AsyncSession, user_id: int, days: int = 14
+) -> List[dict]:
+    """Runs with a post-run check-in (EP-12) in the last ``days`` days, oldest first, for the
+    injury radar (NF-04): ``{date, pace, rpe, pain, note}`` — ``pace`` = min/km (or None). Only
+    rows carrying ``subjective`` are returned (silence isn't a signal)."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord)
+            .where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.subjective.is_not(None),
+            )
+            .order_by(ActivityRecord.date)
+        )
+    ).scalars().all()
+    out = []
+    for a in rows:
+        subj = a.subjective or {}
+        pace = (a.dur_min / a.dist_km) if (a.dur_min and a.dist_km) else None
+        out.append({
+            "date": a.date,
+            "pace": pace,
+            "rpe": subj.get("rpe"),
+            "pain": subj.get("pain"),
+            "note": subj.get("note"),
+        })
+    return out
+
+
 async def weekly_run_volume(
     session: AsyncSession, user_id: int, weeks: int = 8
 ) -> List[dict]:

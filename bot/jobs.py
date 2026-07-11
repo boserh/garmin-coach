@@ -23,9 +23,11 @@ from app import records, weather
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
+    build_injury_assessment,
     run_activity_analysis,
     run_compare,
     run_digest,
+    run_injury_check,
     run_plan_adaptation,
     run_weather_plan_check,
 )
@@ -71,6 +73,10 @@ DIGEST_GUARD_PREFIX = "digest:"
 # month, on the first weekly digest of that month (bot_state key compare:<YYYY-MM>).
 COMPARE_GUARD_PREFIX = "compare:"
 COMPARE_WEEKS = 4   # last 4 weeks vs the same 4 weeks a year ago (matches /compare default)
+
+# NF-04 injury radar: bot_state key holding the last date an advisory was sent, so we warn at
+# most once per settings.INJURY_GUARD_DAYS (the same signals persist for days — don't nag).
+INJURY_WARNED_KEY = "injury_warned"
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 # Morning keeps its own stale wording ("звіт" not "аналіз", cf. delivery.STALE_NOTE) — a
@@ -219,6 +225,43 @@ async def _records_check_for_user(ctx, session, user: User) -> None:
         logger.exception(f"RECORDS failed user={user.id}")
 
 
+def _within_guard(last: Optional[str], today: str, days: int) -> bool:
+    """True when ``last`` (a stored ISO date) is within ``days`` of ``today`` — i.e. we already
+    warned recently and should stay quiet."""
+    if not last:
+        return False
+    try:
+        return (dt.date.fromisoformat(today) - dt.date.fromisoformat(last)).days < days
+    except ValueError:
+        return False
+
+
+async def _injury_check_for_user(ctx, session, user: User, creds, today: str) -> None:
+    """Injury-risk radar (NF-04): run the pure detector; if it's an actionable warning and we
+    haven't warned in the last INJURY_GUARD_DAYS, narrate + DM one advisory. Best-effort and
+    LLM-optional (the detector is zero-LLM; run_injury_check falls back to a deterministic
+    text). Silent during calibration or when there's nothing to flag — no false-positive spam."""
+    if not settings.INJURY_RADAR or not user.telegram_chat_id or not creds.anthropic_key:
+        return
+    last = await repository.get_state(session, user.id, INJURY_WARNED_KEY)
+    if _within_guard(last, today, settings.INJURY_GUARD_DAYS):
+        return
+    try:
+        assessment = await build_injury_assessment(session, user_id=user.id)
+        if not assessment.actionable:
+            return
+        text = await run_injury_check(
+            session, user_id=user.id, assessment=assessment, api_key=creds.anthropic_key
+        )
+        # Set the guard before sending so a send hiccup can't loop into re-warning next tick.
+        await repository.set_state(session, user.id, INJURY_WARNED_KEY, today)
+        await ctx.bot.send_message(user.telegram_chat_id, text)
+        logger.info(f"INJURY user={user.id}: {assessment.level} "
+                    f"{[s.kind for s in assessment.signals]}")
+    except Exception:
+        logger.exception(f"INJURY check failed user={user.id}")
+
+
 async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
@@ -241,6 +284,9 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
 
             # Celebrate any new personal record (EP-14) — after the activity recap.
             await _records_check_for_user(ctx, session, user)
+
+            # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack up.
+            await _injury_check_for_user(ctx, session, user, creds, today)
 
             if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
                 return
