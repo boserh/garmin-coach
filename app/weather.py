@@ -20,6 +20,7 @@ import logging
 from typing import Iterable, Optional, Sequence, Tuple
 
 import requests
+from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger("weather")
 
@@ -138,6 +139,20 @@ def fetch_forecast(lat: float, lon: float) -> Optional[dict]:
         "hourly": [_slot(hourly, h) for h in _HOURS],
     }
     return out
+
+
+async def forecast_for_user(user) -> Optional[dict]:
+    """Today's forecast for a user's stored location, or ``None`` if no location is set
+    or Open-Meteo errors. Async wrapper over :func:`fetch_forecast` (offloaded to a
+    threadpool) shared by every daily-report channel — the morning job, bot ``/report``
+    and web ``/report.json`` (ST-03) — so the lookup lives in one place."""
+    if user.latitude is None or user.longitude is None:
+        return None
+    wx = await run_in_threadpool(fetch_forecast, user.latitude, user.longitude)
+    if wx:
+        logger.info(f"WEATHER user={user.id}: {wx.get('summary')} "
+                    f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C")
+    return wx
 
 
 def _day_row(daily: dict, i: int) -> dict:

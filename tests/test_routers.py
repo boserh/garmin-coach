@@ -872,3 +872,39 @@ def test_report_json_uses_shared_helper_and_stale_note(auth_client):
     assert body["note"] == delivery.STALE_NOTE          # stale wording sourced from the helper
     assert captured["question"] == reports_router._REPORT_Q  # question forwarded through
     assert captured["payload"] is payload
+
+
+def test_report_json_forwards_weather(auth_client):
+    """ST-03: /report.json passes the user's forecast (via weather.forecast_for_user)
+    through to the shared helper, so on-demand reports are weather-aware too."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.analysis import delivery
+    from app.routers import reports as reports_router
+
+    payload = SimpleNamespace(synced_today=True, last_data_date="2026-07-11")
+    wx = {"summary": "ясно", "t_min_c": 14, "t_max_c": 27}
+    captured = {}
+
+    async def fake_build_report(session, user, pl, *, question, kind, api_key=None, weather=None):
+        captured.update(weather=weather)
+        return delivery.ReportResult(
+            text="звіт", synced_today=pl.synced_today, last_data_date=pl.last_data_date,
+        )
+
+    @asynccontextmanager
+    async def fake_runtime(session, user):
+        yield SimpleNamespace(anthropic_key="k")
+
+    with patch.object(reports_router, "user_runtime", fake_runtime), \
+         patch.object(reports_router.service, "build_payload_cached",
+                      AsyncMock(return_value=(payload, []))), \
+         patch.object(reports_router.weather, "forecast_for_user",
+                      AsyncMock(return_value=wx)), \
+         patch.object(reports_router.delivery, "build_report", new=fake_build_report):
+        r = auth_client.get("/report.json")
+
+    assert r.status_code == 200
+    assert captured["weather"] == wx  # forecast forwarded to the analysis

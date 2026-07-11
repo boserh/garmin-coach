@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
+from app import weather
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
@@ -78,6 +79,7 @@ async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 result = await delivery.build_report(
                     session, user, payload, question=_REPORT_Q,
                     kind="report", api_key=creds.anthropic_key,
+                    weather=await weather.forecast_for_user(user),
                 )
                 note = "" if result.synced_today else delivery.STALE_NOTE + "\n\n"
                 text = result.text

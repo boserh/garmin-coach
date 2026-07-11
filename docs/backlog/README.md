@@ -10,7 +10,6 @@
 
 | ID | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- |
-| [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | S | разом з CODE-05 |
 | [ST-05](ST-05-strength-preview-in-form.md) | Прев'ю згенерованої силової в setup-формі | M | — (філер, низький пріоритет) |
 
 ## Епіки (L/XL)
@@ -93,7 +92,8 @@
 EP-13-погодою — поки окрема джоба о 19:00) →
 **EP-12** ✅ MVP (RPE/болі — годують усе наступне; лишились фази-споживачі) →
 **EP-13** ✅ (погодна корекція плану — щоденна легка джоба; липнева спека) →
-**CODE-05** ✅ (спільний report-флоу бот/веб/morning) → EP-14 + ST-03 — філери.
+**CODE-05** ✅ (спільний report-флоу бот/веб/morning) → **ST-03** ✅ (погода в
+on-demand `/report`) → EP-14 — філери.
 
 **Стратегічні ставки (місяць+ кожна, це і є моат):** **NF-01** (підсилює звіти,
 EP-08-пороги і NF-06) → **EP-09** (движок для EP-11 і NF-08) → **NF-05**
@@ -117,6 +117,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 | --- | --- | --- |
 | [ST-01](ST-01-morning-report-plan-context.md) | Ранковий звіт бачить сьогоднішнє тренування з плану | `plan_today` наскрізь у `app/analysis/service.py` (`analyze_with_stats` + cache key) |
 | [ST-02](ST-02-extra-metrics-in-reports.md) | `extra`-метрики (readiness, ACWR, RHR) у щоденних звітах | `fitness`-знімок у `run_analysis`/`analyze_with_stats` (`app/analysis/service.py`) |
+| [ST-03](ST-03-weather-in-ondemand-report.md) | Погода в on-demand `/report` і `/report.json` | `weather.forecast_for_user(user)` (спільний async-хелпер, `app/weather.py`) — прокидається у `delivery.build_report` з `bot/handlers.py::report`, `app/routers/reports.py::report_json` і `bot/jobs.py::_deliver_morning` (замінив локальний `_fetch_user_weather`); `weather` уже в dedup-cache key; `tests/test_routers.py::test_report_json_forwards_weather` |
 | [ST-04](ST-04-auto-activity-analysis.md) | Автоаналіз нової пробіжки після синку | `_activity_watch_for_user` у `bot/jobs.py` (вбудований у morning-тік) |
 | [ST-06](ST-06-remote-mfa-relogin.md) | Remote MFA re-login | `app/garmin/mfa.py` + `/settings`-флоу (⚠️ спирається на garth-логін — подальша доля в OPS-01) |
 | [EP-01](EP-01-plan-vs-actual-matching.md) | План/факт: матчинг виконаних тренувань | `app/garmin/matching.py` + `tests/test_matching.py` |
