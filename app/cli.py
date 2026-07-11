@@ -180,6 +180,35 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
     return 0
 
 
+async def _backfill_records(email: str) -> int:
+    """Seed the personal_records table from the user's full stored history (EP-14).
+    Idempotent and SILENT: it runs the same detector the bot uses, but sends no
+    celebrations — records are dated in the past, so nothing is 'fresh'. Run once after
+    importing years of history; the daily tick keeps it current afterwards."""
+    from app import records
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        before = len(await records.current_records(session, user.id))
+        new = await records.detect_records(session, user.id)
+        await session.commit()
+        if not new:
+            print(f"No new records (already have {before}).")
+            return 0
+        print(f"Recorded {len(new)} personal best(s) for {email}:")
+        for r in sorted(new, key=lambda x: records.DISPLAY_ORDER.index(x.kind)
+                        if x.kind in records.DISPLAY_ORDER else 99):
+            prev = (f" (was {records.format_value(r.kind, r.previous_value)})"
+                    if r.previous_value is not None else "")
+            print(f"  {records.LABELS.get(r.kind, r.kind)}: "
+                  f"{records.format_value(r.kind, r.value)}{prev}  [{r.date}]")
+    return 0
+
+
 async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> int:
     """Push the user's active-plan workouts in the next ``days`` to the Garmin calendar.
 
@@ -437,6 +466,10 @@ def main(argv=None) -> int:
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
+    br = sub.add_parser(
+        "backfill-records", help="Seed personal records from stored history (silent, EP-14)")
+    br.add_argument("--email", required=True)
+
     sub.add_parser(
         "token-expiry",
         help="Decode all users' stored garth tokens: OAuth1 issue/expiry dates (read-only)",
@@ -464,6 +497,8 @@ def main(argv=None) -> int:
         return asyncio.run(_unpush_plan(args.email, args.date))
     if args.cmd == "list-workouts":
         return asyncio.run(_list_workouts(args.email))
+    if args.cmd == "backfill-records":
+        return asyncio.run(_backfill_records(args.email))
     if args.cmd == "token-expiry":
         return asyncio.run(_token_expiry())
     return 0

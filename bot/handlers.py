@@ -13,7 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
-from app import weather
+from app import records, weather
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
@@ -159,6 +159,28 @@ async def activities(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parts.append(f"♥{a['avg_hr']}")
         lines.append(f"#{a['id']}  {a['date']}  {' · '.join(parts)}")
     lines.append("\nРозбір: /activity <id>")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/records — the user's current personal bests (EP-14). Pure DB read, no LLM/Garmin."""
+    logger.info("CMD /records")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        rows = await repository.current_records(session, user.id)
+    if not rows:
+        await update.message.reply_text(
+            "Поки без рекордів 🏅 Вони зʼявляться, коли назбирається історія пробіжок — "
+            "найшвидші 5/10 км, найдовший біг, найоб'ємніший тиждень, новий VO2max."
+        )
+        return
+    order = {k: i for i, k in enumerate(records.DISPLAY_ORDER)}
+    rows.sort(key=lambda r: order.get(r.kind, 99))
+    lines = ["🏅 Твої особисті рекорди:"]
+    lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
+    lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
 
 

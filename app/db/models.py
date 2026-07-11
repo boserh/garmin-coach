@@ -160,6 +160,31 @@ class ReportLog(Base):
     report_text: Mapped[Optional[str]] = mapped_column(Text)  # the delivered report
 
 
+class PersonalRecord(Base):
+    """One personal-best milestone (EP-14). We keep the *history* of records, not just
+    the current best — each time a category is beaten a new row is inserted, carrying the
+    ``previous_value`` it dethroned. ``value`` semantics depend on ``kind``: pace records
+    (``fastest_5k`` …) and race predictions (``race_5k`` …) are *lower is better*, the rest
+    higher. ``date`` is when the record was achieved (an activity date, the daily-fetch date
+    for VO2max/race predictions, or the last-run date of a record week) — the announce gate
+    keys off it, so a backfill of old bests dates them in the past and stays silent."""
+
+    __tablename__ = "personal_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    value: Mapped[float] = mapped_column(Float)
+    previous_value: Mapped[Optional[float]] = mapped_column(Float)
+    # The activity that set the record (DB id), when the record derives from one. Null for
+    # week/VO2max/race-prediction records that aren't tied to a single activity.
+    activity_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("activities.id"), nullable=True
+    )
+    date: Mapped[str] = mapped_column(String(10), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class LlmCache(Base):
     """Cross-process Claude dedup cache (PERF-02). Replaces ``claude_cache.json``:
     a module-level dict per process meant the bot and the web app each paid for the

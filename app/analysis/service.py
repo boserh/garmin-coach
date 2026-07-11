@@ -65,6 +65,7 @@ def resolve_plan_model(slug: Optional[str]) -> str:
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
+RECORDS_CONTEXT_DAYS = 3  # mention a personal record set within the last N days (EP-14)
 
 _DEFAULT_DAILY_Q = (
     "Дай щоденний статус відновлення. "
@@ -128,7 +129,8 @@ def _build_fitness_snapshot(ex: dict) -> Optional[dict]:
 def _cache_key(data: dict, question: str, model: str, previous_report: Optional[dict] = None,
                weather: Optional[dict] = None,
                plan_today: Optional[list] = None,
-               fitness: Optional[dict] = None) -> str:
+               fitness: Optional[dict] = None,
+               records: Optional[list] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -140,6 +142,7 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "weather": weather,
         "plan_today": plan_today,
         "fitness": fitness,
+        "records": records,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -190,6 +193,7 @@ def analyze_with_stats(
     weather: Optional[dict] = None,
     plan_today: Optional[list] = None,
     fitness: Optional[dict] = None,
+    records: Optional[list] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -222,6 +226,8 @@ def analyze_with_stats(
         user_content["plan_today"] = plan_today
     if fitness:
         user_content["fitness"] = fitness
+    if records:
+        user_content["records"] = records
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -571,6 +577,7 @@ async def run_analysis(
     previous_report = None
     plan_today = None
     fitness = None
+    records = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -592,11 +599,15 @@ async def run_analysis(
                 ]
             ex = await repository.get_recent_extra(session, user_id)
             fitness = _build_fitness_snapshot(ex)
+            # Fresh personal records (EP-14) — mention a just-set PB in the report.
+            from app import records as records_mod
+            recent_pr = await repository.recent_records(session, user_id, days=RECORDS_CONTEXT_DAYS)
+            records = records_mod.to_context(recent_pr) or None
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
-                           previous_report, weather, plan_today, fitness)
+                           previous_report, weather, plan_today, fitness, records)
     cached = await llm_cache.get(session, cache_key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -605,7 +616,7 @@ async def run_analysis(
         try:
             text, stats = await run_in_threadpool(
                 analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
-                weather, plan_today, fitness
+                weather, plan_today, fitness, records
             )
         except AnalystError as e:
             await repository.log_report(
@@ -1220,6 +1231,7 @@ async def run_weather_plan_check(
 DIGEST_VOLUME_WEEKS = 4        # weekly_run_volume window fed as the volume trend
 DIGEST_COMPLIANCE_WEEKS = 2    # how many recent ISO weeks of compliance to include
 DIGEST_RECOVERY_DAYS = 14      # recovery trend window
+DIGEST_RECORDS_DAYS = 30       # personal records set in the last month (EP-14)
 
 
 def _digest_cache_key(context: dict, model: str) -> str:
@@ -1234,6 +1246,7 @@ def _digest_cache_key(context: dict, model: str) -> str:
         "recovery": context.get("recovery"),
         "fitness": context.get("fitness"),
         "goal": context.get("goal"),
+        "records": context.get("records"),
         "model": model,
         "digest": True,
     }
@@ -1284,10 +1297,15 @@ async def run_digest(
     this_week = today.strftime("%G-W%V")
     prev_week = (today - dt.timedelta(days=7)).strftime("%G-W%V")
 
+    from app import records as records_mod
+
     weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=DIGEST_VOLUME_WEEKS)
     recovery = await repository.read_history(session, user_id, days=DIGEST_RECOVERY_DAYS)
     ex = await repository.get_recent_extra(session, user_id)
     fitness = _build_fitness_snapshot(ex)
+    month_records = records_mod.to_context(
+        await repository.recent_records(session, user_id, days=DIGEST_RECORDS_DAYS)
+    ) or None
 
     plan = await repository.get_active_plan(session, user_id)
     compliance = None
@@ -1318,6 +1336,7 @@ async def run_digest(
         "recovery": recovery or None,
         "fitness": fitness or None,
         "goal": goal,
+        "records": month_records,
         "has_plan": plan is not None,
     }
 

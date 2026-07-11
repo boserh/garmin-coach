@@ -16,6 +16,7 @@ from app.db.models import (
     ActivityRecord,
     BotState,
     DailyMetric,
+    PersonalRecord,
     PlannedWorkout,
     ReportLog,
     TrainingPlan,
@@ -128,6 +129,42 @@ async def set_subjective(
     # JSON column reassignment needs an explicit flag for SQLAlchemy to persist it.
     flag_modified(act, "subjective")
     return act
+
+
+async def current_records(session: AsyncSession, user_id: int) -> List[PersonalRecord]:
+    """The user's current best per category — the latest ``PersonalRecord`` row of each kind.
+    For the ``/records`` command. Empty list when the user has no records yet."""
+    rows = (
+        await session.execute(
+            select(PersonalRecord)
+            .where(PersonalRecord.user_id == user_id)
+            .order_by(PersonalRecord.id)
+        )
+    ).scalars().all()
+    latest: Dict[str, PersonalRecord] = {}
+    for r in rows:
+        latest[r.kind] = r   # ordered by id asc → last (newest) wins
+    return list(latest.values())
+
+
+async def recent_records(
+    session: AsyncSession, user_id: int, days: int = 7
+) -> List[PersonalRecord]:
+    """Records achieved in the last ``days`` days (newest first) — fed into the morning
+    report / weekly digest so a fresh PR gets a mention (EP-14)."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    return list(
+        (
+            await session.execute(
+                select(PersonalRecord)
+                .where(
+                    PersonalRecord.user_id == user_id,
+                    PersonalRecord.date >= cutoff,
+                )
+                .order_by(PersonalRecord.date.desc(), PersonalRecord.id.desc())
+            )
+        ).scalars().all()
+    )
 
 
 async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) -> dict:
