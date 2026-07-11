@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from app import weather
+from app import records, weather
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
@@ -192,6 +192,27 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
             logger.exception(f"ACTIVITY_WATCH failed user={user.id} activity={act.id}")
 
 
+async def _records_check_for_user(ctx, session, user: User) -> None:
+    """Recompute personal records (EP-14) and DM a 🎉 for any freshly set one. Pure DB work,
+    no LLM/network; best-effort so a Telegram hiccup never breaks the tick. Runs after the
+    activity watch so the record lands right below the run recap. Commits its own inserts."""
+    if not user.telegram_chat_id:
+        return
+    try:
+        new = await records.detect_records(session, user.id)
+        if not new:
+            return
+        fresh = records.announce_worthy(new)
+        # Persist first (even the silent backfill rows) so a record never re-announces, then
+        # send — a send failure must not re-open the already-recorded PB.
+        await session.commit()
+        if fresh:
+            await ctx.bot.send_message(user.telegram_chat_id, records.celebrate(fresh))
+            logger.info(f"RECORDS user={user.id}: {[r.kind for r in fresh]}")
+    except Exception:
+        logger.exception(f"RECORDS failed user={user.id}")
+
+
 async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
@@ -211,6 +232,9 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
                     logger.info(f"MATCH user={user.id}: {result}")
             except Exception:
                 logger.exception(f"MATCH failed user={user.id}")
+
+            # Celebrate any new personal record (EP-14) — after the activity recap.
+            await _records_check_for_user(ctx, session, user)
 
             if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
                 return

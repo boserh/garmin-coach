@@ -330,7 +330,7 @@ app/
   dependencies.py      shared deps (get_session, verify_token)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /plan (+edit), /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /plan (+edit), /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -391,7 +391,8 @@ legacy and no longer used by these routes.
   `BotState` (key/value), `TrainingPlan` (goal/params/intake/summary, one active per
   user) + `PlannedWorkout` (dated session: type/dist/description/status + `steps` JSON —
   structured warmup/run/recovery/cooldown/repeat breakdown with pace ranges, for richer
-  detail and a future Garmin-Connect workout export).
+  detail and a future Garmin-Connect workout export), `PersonalRecord` (EP-14: one row per
+  beaten best — `kind`/`value`/`previous_value`/`activity_id?`/`date`, history not just current).
 - **DB as cache**: past days already stored are served from the DB instead of
   re-hitting Garmin; today is always refetched (still syncing). `build_payload_cached`
   persists what it fetches, so history accumulates.
@@ -501,6 +502,28 @@ twice" pitfall** is enforced by `_has_pending_proposal`: all three automatic pro
 adapt, morning nudge, weather) skip when an unanswered proposal is already pending — a single
 `✅/❌` at a time, never overwriting the last one's stored ops. Not dedup-cached (like adapt —
 `_complete` has no cache). No test/force command yet (chat-only concern is the plan itself).
+
+**Personal records (EP-14)**: a **pure-Python, zero-LLM** detector (`app/records.py`) over data
+already in the DB — no network, no Claude, cheap enough to run on every morning tick. Categories:
+fastest ~5K/~10K/~half (min avg pace among whole runs within ±5% of the distance; pace floored at
+2:30/km to reject GPS junk), longest distance + longest duration, biggest ISO-week km, all-time
+VO2max, and best race prediction per distance (5K/10K/half/marathon, from `daily_metrics.extra`).
+`PersonalRecord` (`kind`/`value`/`previous_value`/`activity_id?`/`date`) keeps the **history** of
+records, not just the current best — each beat inserts a new row carrying the value it dethroned.
+`records.detect_records` recomputes every category and inserts only genuine improvements (idempotent;
+pace/longest lower-or-higher-better per `_HIGHER_BETTER`; race predictions need a ≥10s margin to
+beat the daily jitter). The **backfill-vs-fresh** distinction (AC: no celebrations during import) is
+a **date gate**, not a flag: every record carries the real date it was achieved (the activity date,
+the last-run date of a record week, or the daily-fetch date for VO2max/race), so a first run over
+years of history dates its bests in the past and `announce_worthy` (within `FRESH_DAYS`) filters them
+all out — only a record set in the last few days earns a 🎉. Wired in three places: the morning tick
+(`_records_check_for_user` in `bot/jobs.py`, right after the activity auto-analysis — commits then
+DMs `records.celebrate`, so a Telegram failure never re-opens an already-recorded PB), the `/records`
+command (current bests, empty-state message, honest "whole activities only" caveat — v1 doesn't scan
+`series` for a fast 5K *inside* a longer run), and the report/digest context: `run_analysis` +
+`run_digest` feed recent records to Claude (**and into the dedup-cache key** — the README pitfall) so
+a fresh PB gets a line in the morning report / weekly digest. CLI `backfill-records --email` seeds the
+table silently from full history (run once after `import-export`).
 
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
