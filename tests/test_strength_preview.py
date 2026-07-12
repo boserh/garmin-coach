@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from sqlalchemy import select
 
-from app.analysis import service
+from app.analysis import plans
 from app.analysis.service import CallStats, run_plan_generation, run_strength_preview
 from app.db.models import ReportLog
 from app.garmin import repository
@@ -27,7 +27,7 @@ def _gen():
 
 
 async def test_run_strength_preview_returns_sanitised_and_logs(session):
-    with patch.object(service, "generate_strength_with_stats",
+    with patch.object(plans, "generate_strength_with_stats",
                       return_value=(_sess(), CallStats(kind="plan", model="m"))):
         sp = await run_strength_preview(
             session, user_id=U1, description="силова на ноги", api_key=None)
@@ -47,9 +47,9 @@ async def test_generation_reuses_confirmed_preview(session):
     intake = {"strength": {"enabled": True, "custom": {"tue": "ноги"},
                            "custom_generated": {"tue": confirmed}}}
     strength_mock = MagicMock()
-    with patch.object(service, "generate_plan_with_stats",
+    with patch.object(plans, "generate_plan_with_stats",
                       return_value=(_gen(), CallStats(kind="plan", model="m"))), \
-            patch.object(service, "generate_strength_with_stats", strength_mock):
+            patch.object(plans, "generate_strength_with_stats", strength_mock):
         plan = await run_plan_generation(
             session, user_id=U1, goal="first_5k", goal_label="Перші 5 км",
             target_date="2026-07-20", start_date="2026-06-30", days_per_week=3,
@@ -64,9 +64,9 @@ async def test_generation_reuses_confirmed_preview(session):
 async def test_generation_regenerates_without_preview(session):
     """No confirmed preview → generation falls back to the Claude call."""
     intake = {"strength": {"enabled": True, "custom": {"tue": "ноги"}}}
-    with patch.object(service, "generate_plan_with_stats",
+    with patch.object(plans, "generate_plan_with_stats",
                       return_value=(_gen(), CallStats(kind="plan", model="m"))), \
-            patch.object(service, "generate_strength_with_stats",
+            patch.object(plans, "generate_strength_with_stats",
                          return_value=(_sess(), CallStats(kind="plan", model="m"))) as m:
         plan = await run_plan_generation(
             session, user_id=U1, goal="first_5k", goal_label="Перші 5 км",

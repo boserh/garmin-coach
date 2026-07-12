@@ -14,9 +14,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=pi
-WorkingDirectory=/home/pi/garmin_bot
-# Point at another host / USB mount so at least the latest copy survives SD death.
-ExecStart=/home/pi/garmin_bot/venv/bin/python -m scripts.backup_db --dir backups
-# Example off-SD copy (uncomment + set a real destination):
-# ExecStart=/home/pi/garmin_bot/venv/bin/python -m scripts.backup_db --dir backups --rsync-dest pi@nas:/backups/garmin/
+User=sergiwez
+WorkingDirectory=/home/sergiwez/projects/garmin-coach
+# --dir backups: rotated copies on the SD card. --rsync-dest: the OFF-SD copy on a
+# USB stick mounted at /mnt/backup (see /etc/fstab, UUID FA41-C949) — without it a
+# corrupt SD card takes the "backups" with it.
+ExecStart=/home/sergiwez/projects/garmin-coach/venv/bin/python -m scripts.backup_db --dir backups --rsync-dest /mnt/backup/garmin/

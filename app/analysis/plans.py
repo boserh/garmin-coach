@@ -1,0 +1,635 @@
+"""Training-plan LLM operations: generation, free-text edits, recovery/weather adaptation
+and from-scratch strength sessions.
+
+Everything that produces a structured plan artefact (``GeneratedPlan``/``PlanEdit``/
+``StrengthSession``) via Claude, plus the deterministic guards that bound what the model
+may do (window + adjust-level + weather-action filters). Split out of the old flat
+``analysis.service`` (CODE-01). ``reports`` reuses two small helpers from here
+(``_days_to_target``, ``_recent_compliance``) for the weekly digest.
+"""
+import datetime as dt
+import json
+import logging
+from typing import Optional, Tuple
+
+from app.analysis.cache import _build_fitness_snapshot, _build_multisport
+from app.analysis.client import (
+    MODEL_PLAN,
+    MODEL_PLAN_GEN,
+    AnalystError,
+    CallStats,
+    _complete,
+    _run_claude,
+)
+from app.analysis.prompts import (
+    SYSTEM_PLAN,
+    SYSTEM_PLAN_ADAPT,
+    SYSTEM_PLAN_EDIT,
+    SYSTEM_STRENGTH_GEN,
+    SYSTEM_WEATHER_PLAN,
+)
+from app.garmin import exercises
+from app.garmin.schemas import GeneratedPlan, PlanEdit, StrengthSession
+
+logger = logging.getLogger("claude")
+
+
+# ---------- TRAINING PLAN GENERATION ----------
+
+def _coerce_plan(text: str) -> GeneratedPlan:
+    """Parse Claude's reply into a GeneratedPlan, tolerating ``` fences / surrounding
+    prose by slicing to the outermost {...}."""
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    return GeneratedPlan(**json.loads(s))
+
+
+def generate_plan_with_stats(
+    context: dict, api_key: Optional[str] = None, model: Optional[str] = None
+) -> Tuple[GeneratedPlan, CallStats]:
+    """Generate a structured training plan. Returns (GeneratedPlan, stats); one retry
+    with a stricter JSON nudge before giving up. Raises AnalystError on API/parse failure.
+    Not dedup-cached — dates are relative to today, so every generation is fresh.
+    ``model`` picks the engine (Opus default, Fable via the form toggle)."""
+    model = model or MODEL_PLAN_GEN
+    text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=16000)
+    try:
+        return _coerce_plan(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(model, SYSTEM_PLAN, retry, "plan", api_key, max_tokens=16000)
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_plan(text), stats
+        except Exception as e:
+            logger.error(f"PLAN parse failed: {e}")
+            raise AnalystError(
+                "Не вдалось згенерувати план (некоректна відповідь). Спробуй ще раз."
+            )
+
+
+def generate_strength_with_stats(
+    context: dict, api_key: Optional[str] = None, model: Optional[str] = None
+) -> Tuple[StrengthSession, CallStats]:
+    """Generate ONE from-scratch strength session from a free-text description (the setup
+    form's "інше…" option). Returns (StrengthSession, stats); one retry on a parse miss.
+    Raises AnalystError on failure. Categories are validated later by _sanitize_strength."""
+    model = model or MODEL_PLAN_GEN
+
+    def _parse(t: str) -> StrengthSession:
+        s = t.strip()
+        i, j = s.find("{"), s.rfind("}")
+        if i != -1 and j != -1:
+            s = s[i:j + 1]
+        return StrengthSession(**json.loads(s))
+
+    text, stats = _complete(model, SYSTEM_STRENGTH_GEN, context, "plan", api_key, max_tokens=1500)
+    try:
+        return _parse(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON сесії за схемою.")
+        text, st2 = _complete(model, SYSTEM_STRENGTH_GEN, retry, "plan", api_key, max_tokens=1500)
+        stats.input_tokens += st2.input_tokens
+        stats.output_tokens += st2.output_tokens
+        stats.cost_usd += st2.cost_usd
+        try:
+            return _parse(text), stats
+        except Exception as e:
+            logger.error(f"STRENGTH gen parse failed: {e}")
+            raise AnalystError("Не вдалось згенерувати силову з опису. Спробуй інакше.")
+
+
+async def run_plan_generation(
+    session, *, user_id: int, goal: str, goal_label: Optional[str],
+    target_date: Optional[str], start_date: Optional[str], days_per_week: Optional[int],
+    intensity: Optional[str], intake: Optional[dict], api_key: Optional[str] = None,
+    run_days: Optional[list] = None, long_run_day: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    """Build context, generate the plan, persist it (archiving any active plan), log a
+    ReportLog(kind="plan"), and return the new TrainingPlan. ``model`` selects the
+    generation engine (Opus default; Fable via the setup-form toggle)."""
+    gen_model = model or MODEL_PLAN_GEN
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
+                   if "run" in (a.get("type") or "")]
+    recovery = await repository.read_history(session, user_id, days=30)
+    weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
+    ex = await repository.get_recent_extra(session, user_id, days=21)
+    fitness = _build_fitness_snapshot(ex)
+    multisport = await _build_multisport(session, user_id)
+    context = {
+        "today": dt.date.today().isoformat(),
+        "goal": goal, "start_date": start_date, "target_date": target_date,
+        "days_per_week": days_per_week, "intensity": intensity,
+        "run_days": run_days, "long_run_day": long_run_day, "intake": intake,
+        "recent_runs": recent_runs, "recovery": recovery[-14:],
+        "weekly_volume": weekly_volume or None,
+        "fitness": fitness or None,
+        "multisport": multisport,
+    }
+    logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
+    try:
+        plan_out, stats = await _run_claude(
+            generate_plan_with_stats, context, api_key, gen_model)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="plan", model=gen_model, ok=False,
+            question=goal, error=str(e)[:512],
+        )
+        raise
+    logger.info(f"PLAN parsed user={user_id}: {len(plan_out.workouts)} workouts")
+    plan = await repository.create_plan(
+        session, user_id, goal=goal, goal_label=goal_label, target_date=target_date,
+        start_date=start_date, days_per_week=days_per_week, intensity=intensity,
+        intake=intake, summary=plan_out.summary, workouts=plan_out.workouts,
+    )
+    # Optional strength on the chosen weekdays. Two sources, both best-effort (never fail
+    # plan creation): saved Day 1/Day 2 workouts the user picked (cloned to our own copies
+    # on push), and free-text "інше…" descriptions we generate from scratch here.
+    strength = (intake or {}).get("strength") or {}
+    assignments = strength.get("assignments") or {}
+    custom = strength.get("custom") or {}
+    # Sessions the user already previewed + confirmed in the setup form (ST-05): reuse
+    # them verbatim instead of paying to regenerate (still re-sanitised below — never
+    # trust a client-supplied session). Keyed by weekday slug.
+    custom_generated = strength.get("custom_generated") or {}
+    if strength.get("enabled") and (assignments or custom):
+        try:
+            from app.garmin import client, workout_export
+            amap: dict = {}
+            snapshots: dict = {}
+            if assignments:
+                saved = {w["id"]: workout_export.clean_workout_name(w["name"])
+                         for w in await run_in_threadpool(client.fetch_workouts)}
+                amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
+                        for slug, wid in assignments.items()}
+                # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
+                # so /plan renders the accordion from the DB instead of re-fetching per load.
+                for tid in set(assignments.values()):
+                    raw = await run_in_threadpool(client.fetch_workout_full, tid)
+                    if raw:
+                        snapshots[tid] = {
+                            "name": (raw.get("workoutName") or "").strip() or None,
+                            "exercises": workout_export.read_exercises(raw),
+                        }
+            # Generate each distinct free-text session once, sanitise categories, and lay it
+            # on its weekday as a from-scratch strength_plan (built natively on push).
+            custom_plans: dict = {}
+            gen_cache: dict = {}
+            for slug, desc in custom.items():
+                key = (desc or "").strip().lower()
+                if not key:
+                    continue
+                # A confirmed preview for this weekday → reuse it, skip the Claude call.
+                pre = repository._sanitize_strength(custom_generated.get(slug)) \
+                    if custom_generated.get(slug) else None
+                if pre:
+                    custom_plans[slug] = pre
+                    continue
+                if key not in gen_cache:
+                    try:
+                        sess, _ = await _run_claude(
+                            generate_strength_with_stats,
+                            {"description": desc, "fitness": fitness or None,
+                             "exercise_categories": exercises.CATEGORIES},
+                            api_key, gen_model)
+                        gen_cache[key] = repository._sanitize_strength(sess)
+                    except Exception:
+                        logger.exception(f"PLAN strength gen failed user={user_id}")
+                        gen_cache[key] = None
+                if gen_cache[key]:
+                    custom_plans[slug] = gen_cache[key]
+            n = await repository.add_strength_workouts(
+                session, plan, amap, snapshots, custom_plans)
+            logger.info(f"PLAN strength user={user_id}: +{n} sessions "
+                        f"({len(amap)} saved, {len(custom_plans)} custom)")
+        except Exception:
+            logger.exception(f"PLAN strength add failed user={user_id}")
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"plan: {goal}", report_text=plan_out.summary,
+    )
+    return plan
+
+
+async def run_strength_preview(
+    session, *, user_id: int, description: str, api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Optional[dict]:
+    """Generate + sanitise ONE from-scratch strength session for the setup form's
+    "Прев'ю" button (ST-05) — the same context/model as plan generation, so a confirmed
+    preview matches what generation would have produced. Logs a ReportLog(kind="strength")
+    so the (paid) call is visible in cost tracking. Returns the stored ``strength_plan``
+    dict ({name, warmup_s, blocks}) or None if nothing valid remained after sanitising.
+    Not dedup-cached (like the other plan-gen calls)."""
+    gen_model = model or MODEL_PLAN_GEN
+    from app.garmin import repository
+
+    ex = await repository.get_recent_extra(session, user_id, days=21)
+    fitness = _build_fitness_snapshot(ex)
+    context = {"description": description, "fitness": fitness or None,
+               "exercise_categories": exercises.CATEGORIES}
+    try:
+        sess, stats = await _run_claude(
+            generate_strength_with_stats, context, api_key, gen_model)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="strength", model=gen_model, ok=False,
+            question=f"strength: {description[:120]}", error=str(e)[:512],
+        )
+        raise
+    await repository.log_report(
+        session, user_id=user_id, kind="strength", model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"strength: {description[:120]}",
+    )
+    return repository._sanitize_strength(sess)
+
+
+def _coerce_edit(text: str) -> PlanEdit:
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    return PlanEdit(**json.loads(s))
+
+
+def _plan_ops_with_stats(
+    context: dict, api_key: Optional[str], *,
+    system: str, kind: str, log_label: str, error_msg: str,
+) -> Tuple[PlanEdit, CallStats]:
+    """Shared engine for the AST-identical plan_edit / plan_adapt calls (CODE-06):
+    build the message, call Claude, parse into a ``PlanEdit`` with one retry, else
+    ``AnalystError``. Callers differ only in system prompt, ReportLog ``kind``, the
+    ``claude`` log label and the user-facing error. Deliberately un-cached (adaptation
+    must not be dedup-cached — see CODE-06)."""
+    model = MODEL_PLAN
+    text, stats = _complete(model, system, context, kind, api_key, max_tokens=1500)
+    try:
+        return _coerce_edit(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(model, system, retry, kind, api_key, max_tokens=1500)
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_edit(text), stats
+        except Exception as e:
+            logger.error(f"{log_label} parse failed: {e}")
+            raise AnalystError(error_msg)
+
+
+def plan_edit_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Turn a free-text instruction + current workouts into a structured PlanEdit
+    (proposed only — not applied). One retry on a parse miss, else AnalystError."""
+    return _plan_ops_with_stats(
+        context, api_key,
+        system=SYSTEM_PLAN_EDIT, kind="plan_edit", log_label="PLAN_EDIT",
+        error_msg="Не вдалось зрозуміти зміну. Спробуй переформулювати.",
+    )
+
+
+async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Optional[str] = None):
+    """Propose changes to the active plan from a free-text instruction (does NOT apply —
+    the caller confirms first). Returns (plan, PlanEdit). Logs ReportLog(kind="plan_edit")."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        raise AnalystError("Немає активної програми. Створи її на сторінці /plan у вебі.")
+    ws = await repository.list_workouts(session, plan.id, upcoming_only=True)
+    # Distinct strength templates already in the plan (Day 1/Day 2) — so the model can add
+    # a strength day referencing the right saved workout to clone.
+    templates: dict = {}
+    for w in await repository.list_workouts(session, plan.id):
+        if w.type == "strength" and w.garmin_template_id:
+            templates.setdefault(w.garmin_template_id, w.description or "Силова")
+    # For each template, pull its exercise list (best-effort — a bound provider; a Garmin
+    # outage just omits it) so the model can generate a session "similar to Day 1/2 for
+    # <focus>" by adapting the real exercises via swap_exercise ops.
+    strength_templates = []
+    for tid, nm in templates.items():
+        entry = {"id": tid, "name": nm}
+        try:
+            from app.garmin import client, workout_export
+            raw = await run_in_threadpool(client.fetch_workout_full, tid)
+            if raw:
+                entry["exercises"] = workout_export.read_exercises(raw)
+        except Exception:
+            logger.debug(f"template {tid} exercises unavailable", exc_info=True)
+        strength_templates.append(entry)
+    # Valid exercise-name variants for the categories that appear in the plan's templates —
+    # so a swap/generation picks a real Garmin name (not a hallucination that gets dropped
+    # to a bare category on save). Bounded to the plan's categories, not the whole catalog.
+    variant_cats = {(e.get("category") or "").upper()
+                    for t in strength_templates for e in t.get("exercises", [])}
+    exercise_variants = {c: v for c in sorted(variant_cats)
+                         if c and (v := exercises.exercises_for(c))}
+    context = {
+        "today": dt.date.today().isoformat(),
+        "instruction": instruction,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description,
+                      "garmin_template_id": w.garmin_template_id} for w in ws],
+        "strength_templates": strength_templates,
+        # valid Garmin exercise category codes — the vocabulary for both swap_exercise and
+        # from-scratch strength generation (always provided so "згенеруй силову" works even
+        # when the plan has no strength day yet)
+        "exercise_categories": exercises.CATEGORIES,
+        # valid exercise-name variants per category in the plan's templates (may be empty
+        # without the catalog); an invalid name is otherwise dropped to a bare category
+        "exercise_variants": exercise_variants,
+    }
+    try:
+        edit, stats = await _run_claude(plan_edit_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="plan_edit", model=MODEL_PLAN, ok=False,
+            question=instruction[:200], error=str(e)[:512],
+        )
+        raise
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=instruction[:200], report_text=edit.summary,
+    )
+    return plan, edit
+
+
+# ---------- ADAPTIVE PLAN (EP-02) ----------
+
+ADAPT_WINDOW_DAYS_DEFAULT = 14
+ADAPT_COMPLIANCE_WEEKS = 3
+
+# ST-07 adjust level: per-plan bounds on how boldly adaptation may change workouts.
+# Stored in TrainingPlan.intake["adjust_level"]; plans predating the field fall back
+# to a goal-derived default (a race plan is conservative, a health plan flexible).
+ADJUST_LEVELS = ("off", "conservative", "flexible")
+ADAPT_TAPER_DAYS = 14              # ≤ this many days to target_date → taper rules
+ADAPT_CONS_MOVE_MAX_DAYS = 2       # conservative: move at most this many days
+ADAPT_CONS_DIST_MIN_FRAC = 0.7     # conservative: a modify may cut volume ≤30%
+ADAPT_TAPER_DIST_MIN_FRAC = 0.85   # taper: only minimal easing (≤15%)
+
+
+def plan_adjust_level(plan) -> str:
+    """The plan's adaptation level, defaulting by goal when unset: a plan with a
+    ``target_date`` (race prep) is *conservative*, an open-ended one *flexible*."""
+    lvl = ((plan.intake or {}).get("adjust_level") or "").lower()
+    if lvl in ADJUST_LEVELS:
+        return lvl
+    return "conservative" if plan.target_date else "flexible"
+
+
+def _days_to_target(target_date, today: dt.date):
+    try:
+        return (dt.date.fromisoformat(target_date) - today).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_ops_to_level(ops: list, level: str, dist_by_date: dict, days_to_target) -> list:
+    """Drop operations that exceed the plan's adjust level — the guard behind the
+    prompt (the model may overstep; ops outside the bounds must never reach the
+    confirm buttons, same idea as ``_filter_ops_to_window``).
+
+    conservative: only ``modify`` (volume cut ≤30% of the planned distance) and
+    ``move`` by ≤2 days; within the taper (≤``ADAPT_TAPER_DAYS`` to target) moves are
+    dropped too and a cut may be ≤15%. flexible: anything goes (window filter only).
+    """
+    if level == "flexible":
+        return ops
+    if level != "conservative":       # "off" never reaches the model; fail closed
+        return []
+    taper = days_to_target is not None and 0 <= days_to_target <= ADAPT_TAPER_DAYS
+    min_frac = ADAPT_TAPER_DIST_MIN_FRAC if taper else ADAPT_CONS_DIST_MIN_FRAC
+    kept = []
+    for op in ops:
+        if op.action == "move" and not taper:
+            try:
+                delta = abs((dt.date.fromisoformat(op.to_date)
+                             - dt.date.fromisoformat(op.date)).days)
+            except (TypeError, ValueError):
+                continue
+            if delta <= ADAPT_CONS_MOVE_MAX_DAYS:
+                kept.append(op)
+        elif op.action == "modify":
+            orig = dist_by_date.get(op.date)
+            if op.dist_km is not None and orig and op.dist_km < orig * min_frac:
+                continue
+            kept.append(op)
+    return kept
+
+
+def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS) -> dict:
+    """Slice a ``weekly_compliance`` dict down to the most recent ``weeks`` ISO weeks
+    (week strings sort lexically in date order)."""
+    if not compliance:
+        return {}
+    return dict(sorted(compliance.items())[-weeks:])
+
+
+def _in_adapt_window(date_s, today: dt.date, window_days: int) -> bool:
+    try:
+        d = dt.date.fromisoformat(date_s)
+    except (TypeError, ValueError):
+        return False
+    return today <= d <= today + dt.timedelta(days=window_days)
+
+
+def _filter_ops_to_window(ops: list, today: dt.date, window_days: int) -> list:
+    """Drop operations whose target date falls outside the adaptation window — a
+    guardrail so the model can't rewrite the whole plan (see EP-02 pitfalls)."""
+    return [op for op in ops if _in_adapt_window(op.date, today, window_days)]
+
+
+def plan_adapt_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Propose a plan correction (or none) from recovery/compliance signals — same JSON
+    schema as ``plan_edit_with_stats`` (``PlanEdit``). One retry on a parse miss."""
+    return _plan_ops_with_stats(
+        context, api_key,
+        system=SYSTEM_PLAN_ADAPT, kind="adapt", log_label="PLAN_ADAPT",
+        error_msg="Не вдалось сформувати пропозицію адаптації плану.",
+    )
+
+
+async def run_plan_adaptation(
+    session, *, user_id: int, api_key: Optional[str] = None,
+    trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
+):
+    """Look at the active plan's upcoming window, compliance (EP-01) and recovery/load
+    signals; propose a correction (empty ``operations`` if the plan is fine). Does NOT
+    apply the change — the caller confirms via bot buttons, same as :func:`run_plan_edit`.
+
+    Returns ``(plan, PlanEdit)``, ``(None, None)`` when there's no active plan, or
+    ``(plan, None)`` when the plan's adjust level is "off" (no Claude call, no log —
+    adaptation is disabled for this plan). Logs ``ReportLog(kind="adapt")`` on every
+    real call (even a no-op) so adaptation cost is tracked. ``trigger`` picks the
+    prompt framing ("weekly" review of the next ``window_days`` vs a "morning" one-off
+    nudge, called with ``window_days=0`` so only today's session is in scope);
+    ``window_days`` also bounds which operation dates are kept — anything the model
+    proposes outside ``today..today+window_days`` is dropped. The plan's adjust level
+    (ST-07) further bounds *what* the kept operations may do — see
+    :func:`_filter_ops_to_level`.
+    """
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        return None, None
+    level = plan_adjust_level(plan)
+    if level == "off":
+        logger.debug(f"ADAPT skip user={user_id}: adjust_level=off")
+        return plan, None
+
+    today = dt.date.today()
+    window_end = (today + dt.timedelta(days=window_days)).isoformat()
+    ws = [w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
+          if w.date <= window_end]
+    compliance = _recent_compliance(await repository.weekly_compliance(session, plan.id))
+    ex = await repository.get_recent_extra(session, user_id)
+    fitness = _build_fitness_snapshot(ex)
+    multisport = await _build_multisport(session, user_id)
+    days_to_target = _days_to_target(plan.target_date, today)
+    context = {
+        "today": today.isoformat(),
+        "trigger": trigger,
+        "window_days": window_days,
+        "adjust_level": level,
+        "target_date": plan.target_date,
+        "days_to_target": days_to_target,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description} for w in ws],
+        "compliance": compliance or None,
+        "fitness": fitness or None,
+        "multisport": multisport,
+    }
+    try:
+        edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="adapt", model=MODEL_PLAN, ok=False,
+            question=f"adapt:{trigger}", error=str(e)[:512],
+        )
+        raise
+    dist_by_date = {w.date: w.dist_km for w in ws}
+    edit.operations = _filter_ops_to_level(
+        _filter_ops_to_window(edit.operations, today, window_days),
+        level, dist_by_date, days_to_target)
+    if edit.alt_operations:
+        edit.alt_operations = _filter_ops_to_level(
+            _filter_ops_to_window(edit.alt_operations, today, window_days),
+            level, dist_by_date, days_to_target)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"adapt:{trigger}", report_text=edit.summary,
+    )
+    return plan, edit
+
+
+# ---------- WEATHER-AWARE PLANNING (EP-13) ----------
+
+WEATHER_CONTEXT_DAYS = 7          # how far ahead the forecast context reaches
+_WEATHER_ALLOWED_ACTIONS = {"move", "modify"}   # never skip/add for weather
+
+
+def _filter_weather_ops(ops: list, today: dt.date, decision_days: int) -> list:
+    """Keep only move/modify operations dated within the decision window — the guard
+    behind the prompt (EP-02/EP-13 pitfall: the model may overstep). Weather is never a
+    reason to cancel (skip) or invent (add) a session."""
+    return [op for op in _filter_ops_to_window(ops, today, decision_days)
+            if op.action in _WEATHER_ALLOWED_ACTIONS]
+
+
+def weather_plan_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Propose a weather-driven plan correction (or none) — same JSON schema as the plan
+    edit/adapt calls (``PlanEdit``). One retry on a parse miss."""
+    model = MODEL_PLAN
+    text, stats = _complete(
+        model, SYSTEM_WEATHER_PLAN, context, "weather", api_key, max_tokens=1500)
+    try:
+        return _coerce_edit(text), stats
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text, stats2 = _complete(
+            model, SYSTEM_WEATHER_PLAN, retry, "weather", api_key, max_tokens=1500
+        )
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            return _coerce_edit(text), stats
+        except Exception as e:
+            logger.error(f"WEATHER parse failed: {e}")
+            raise AnalystError("Не вдалось сформувати погодну пропозицію.")
+
+
+async def run_weather_plan_check(
+    session, *, user_id: int, forecast: list, conflicts: list,
+    decision_days: int, api_key: Optional[str] = None,
+):
+    """Given a pre-computed weather ``conflicts`` list (a key session on an extreme day),
+    ask Claude to propose a minimal move/modify. Callers must only invoke this when
+    ``conflicts`` is non-empty (so the no-conflict path stays silent + free — EP-13 AC).
+
+    Returns ``(plan, PlanEdit)``, or ``(None, None)`` when there's no active plan. Ops are
+    filtered to move/modify within ``today..today+decision_days`` (never skip/add — weather
+    doesn't cancel training). Logs ``ReportLog(kind="weather")``. Does NOT apply the change
+    — the caller confirms via the same bot buttons as EP-02 adaptation."""
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        return None, None
+
+    today = dt.date.today()
+    window_end = (today + dt.timedelta(days=WEATHER_CONTEXT_DAYS)).isoformat()
+    ws = [w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
+          if w.date <= window_end]
+    context = {
+        "today": today.isoformat(),
+        "decision_days": decision_days,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description} for w in ws],
+        "forecast": forecast,
+        "conflicts": conflicts,
+    }
+    try:
+        edit, stats = await _run_claude(weather_plan_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="weather", model=MODEL_PLAN, ok=False,
+            question="weather", error=str(e)[:512],
+        )
+        raise
+    edit.operations = _filter_weather_ops(edit.operations, today, decision_days)
+    edit.alt_operations = None   # weather proposals are already the safe option
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question="weather", report_text=edit.summary,
+    )
+    return plan, edit

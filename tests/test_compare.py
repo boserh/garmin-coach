@@ -7,7 +7,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from app import compare
-from app.analysis import service
+from app.analysis import reports, service
 from app.analysis.service import CallStats, _compare_cache_key, run_compare
 from app.db.models import ActivityRecord, DailyMetric, ReportLog
 from app.garmin import repository
@@ -126,7 +126,7 @@ async def test_run_compare_narrates_and_logs(session):
 
     stats = CallStats(kind="compare", model=service.MODEL_COMPARE,
                       input_tokens=40, output_tokens=15, cost_usd=0.001)
-    with patch.object(service, "compare_with_stats",
+    with patch.object(reports, "compare_with_stats",
                       return_value=("ти зараз швидший", stats)) as m:
         text = await run_compare(session, user_id=U1, weeks=4, api_key="k")
 
@@ -148,7 +148,7 @@ async def test_run_compare_cache_hit_on_repeat(session):
     await session.commit()
 
     stats = CallStats(kind="compare", model=service.MODEL_COMPARE)
-    with patch.object(service, "compare_with_stats", return_value=("з кешу", stats)) as m:
+    with patch.object(reports, "compare_with_stats", return_value=("з кешу", stats)) as m:
         first = await run_compare(session, user_id=U1, weeks=4)
         second = await run_compare(session, user_id=U1, weeks=4)
 

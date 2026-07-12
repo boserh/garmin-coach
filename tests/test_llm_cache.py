@@ -70,7 +70,7 @@ _PAYLOAD = {"daily": [], "recent_activities": [], "planned_runs": [],
 @pytest.fixture
 def fake_analyze(monkeypatch):
     """Stub the paid Claude call and count invocations."""
-    from app.analysis import service
+    from app.analysis import reports, service
 
     calls = []
 
@@ -81,7 +81,9 @@ def fake_analyze(monkeypatch):
         return "свіжий звіт", service.CallStats(kind=kind or "report", model="m",
                                                 input_tokens=10, output_tokens=5)
 
-    monkeypatch.setattr(service, "analyze_with_stats", fake)
+    # run_analysis lives in app.analysis.reports and calls analyze_with_stats as a
+    # module-local name, so the patch must target the defining submodule (CODE-01).
+    monkeypatch.setattr(reports, "analyze_with_stats", fake)
     return calls
 
 
@@ -124,7 +126,8 @@ async def test_run_ask_second_call_is_cache_hit(session, monkeypatch):
         calls.append(question)
         return "відповідь", service.CallStats(kind="ask", model="m")
 
-    monkeypatch.setattr(service, "ask_with_stats", fake_ask)
+    from app.analysis import reports
+    monkeypatch.setattr(reports, "ask_with_stats", fake_ask)
     a1 = await service.run_ask(session, "чи бігти?")
     a2 = await service.run_ask(session, "чи бігти?")
     assert a1 == a2 == "відповідь"
@@ -132,9 +135,10 @@ async def test_run_ask_second_call_is_cache_hit(session, monkeypatch):
 
 
 async def test_expiry_makes_run_analysis_refetch(session, fake_analyze, monkeypatch):
-    from app.analysis import service
+    from app.analysis import reports, service
 
-    monkeypatch.setattr(service, "CACHE_TTL_S", -1)  # everything written already stale
+    # CACHE_TTL_S is read by run_analysis in the reports submodule (CODE-01).
+    monkeypatch.setattr(reports, "CACHE_TTL_S", -1)  # everything written already stale
     await service.run_analysis(session, _PAYLOAD, question="q")
     await service.run_analysis(session, _PAYLOAD, question="q")
     assert len(fake_analyze) == 2

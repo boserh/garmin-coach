@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 
-from app.analysis import service
+from app.analysis import reports, service
 from app.analysis.service import CallStats, _week_volume_summary, run_digest
 from app.db.models import ActivityRecord, ReportLog, User
 from app.garmin import repository
@@ -67,7 +67,7 @@ async def test_digest_narrates_and_logs(session):
 
     stats = CallStats(kind="digest", model=service.MODEL_DIGEST,
                       input_tokens=50, output_tokens=20, cost_usd=0.001)
-    with patch.object(service, "digest_with_stats", return_value=("тижневий підсумок", stats)) as m:
+    with patch.object(reports, "digest_with_stats", return_value=("тижневий підсумок", stats)) as m:
         text = await run_digest(session, user_id=U1, api_key="k")
 
     assert text == "тижневий підсумок"
@@ -81,7 +81,7 @@ async def test_digest_cache_hit_on_repeat(session):
     await _seed_run(session, U1, today, 6.0, activity_id=2001)
 
     stats = CallStats(kind="digest", model=service.MODEL_DIGEST)
-    with patch.object(service, "digest_with_stats", return_value=("з кешу", stats)) as m:
+    with patch.object(reports, "digest_with_stats", return_value=("з кешу", stats)) as m:
         first = await run_digest(session, user_id=U1)
         second = await run_digest(session, user_id=U1)
 
@@ -99,7 +99,7 @@ async def test_digest_shortened_without_plan_still_sends(session):
     await session.commit()
 
     stats = CallStats(kind="digest", model=service.MODEL_DIGEST)
-    with patch.object(service, "digest_with_stats", return_value=("коротка версія", stats)) as m:
+    with patch.object(reports, "digest_with_stats", return_value=("коротка версія", stats)) as m:
         text = await run_digest(session, user_id=U1)
 
     assert text == "коротка версія"
