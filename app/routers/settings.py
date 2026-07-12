@@ -65,6 +65,7 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "weather_location": user.weather_location or "",
             "garmin_sync_enabled": user.garmin_sync_enabled,
             "plan_adapt_enabled": user.plan_adapt_enabled,
+            "alerts_enabled": user.alerts_enabled,
             "saved": request.query_params.get("saved") == "1",
             "geo": request.query_params.get("geo"),
             "pw": request.query_params.get("pw"),
@@ -127,6 +128,7 @@ async def settings_save(
     weather_location: str = Form(""),
     garmin_sync: str = Form(""),   # checkbox: "on" when ticked, absent otherwise
     plan_adapt: str = Form(""),    # checkbox: "on" when ticked, absent otherwise
+    alerts: str = Form(""),        # checkbox: "on" when ticked, absent otherwise (EP-08)
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -168,6 +170,10 @@ async def settings_save(
     # Adaptive-plan toggle (EP-02) — no side effect needed, the weekly/morning hooks
     # just check this flag on their next run.
     user.plan_adapt_enabled = bool(plan_adapt)
+
+    # Health-alerts toggle (EP-08) — likewise no side effect; the morning health check
+    # reads this flag on its next run. Off → the user gets no recovery-anomaly pushes.
+    user.alerts_enabled = bool(alerts)
 
     await session.commit()
 

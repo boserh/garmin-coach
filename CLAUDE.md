@@ -92,6 +92,9 @@ Optional, with defaults:
 | `INJURY_RADAR` | `True` | NF-04: master on/off for the injury-risk advisory in the morning tick |
 | `INJURY_MIN_HISTORY_DAYS` | `14` | NF-04: quiet calibration — no warnings until this much daily history |
 | `INJURY_GUARD_DAYS` | `5` | NF-04: at most one injury advisory per this many days |
+| `HEALTH_ALERTS` | `True` | EP-08: master on/off for proactive recovery-anomaly alerts in the morning tick |
+| `HEALTH_MIN_HISTORY_DAYS` | `7` | EP-08: cold-start gate — no alert until this much daily history |
+| `HEALTH_ALERT_COOLDOWN_DAYS` | `3` | EP-08: same alert kind at most once per this many days (per-rule cooldown) |
 
 `CLAUDE_CACHE_FILE` is gone — the Claude dedup cache lives in the `llm_cache` table
 (PERF-02), shared by the bot and web processes.
@@ -101,9 +104,11 @@ Optional, with defaults:
 ## Authentication & multi-user
 
 - **Users**: `users` table (login email + bcrypt hash, `is_admin`, encrypted
-  Garmin/Claude creds + garth token, plaintext indexed `telegram_chat_id`, and a
-  `weather_location`/`latitude`/`longitude` for the morning weather lookup). Web login
-  is a signed cookie session (`SessionMiddleware`, signed by `APP_SECRET_KEY`).
+  Garmin/Claude creds + garth token, plaintext indexed `telegram_chat_id`, a
+  `weather_location`/`latitude`/`longitude` for the morning weather lookup, and the
+  per-user feature toggles `garmin_sync_enabled`/`plan_adapt_enabled`/`alerts_enabled`
+  — the last governs EP-08 health alerts). Web login is a signed cookie session
+  (`SessionMiddleware`, signed by `APP_SECRET_KEY`).
 - **Secrets**: `app.core.crypto` — Fernet encrypt/decrypt for creds, bcrypt for
   passwords. `app.garmin.credentials.load_credentials` decrypts a user into a runtime
   `UserCredentials`.
@@ -366,7 +371,7 @@ app/
   dependencies.py      shared deps (get_session, verify_token)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /plan (+edit), /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /risk, /health, /plan (+edit), /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -615,6 +620,34 @@ actionable, guarded to at most once per `INJURY_GUARD_DAYS` (5) via `bot_state` 
 (guard set before the send so a hiccup can't loop). Process-level `INJURY_RADAR` on/off (personal
 app; no per-user column). Deeper EP-02 auto-deload integration is left as a future step (the ticket
 sits "on top of EP-08+12"). `tests/test_injury.py`.
+
+**Proactive health alerts (EP-08)**: a **pure-Python, zero-LLM** recovery-anomaly detector
+(`app/health.py`) — the *recovery/illness* sibling of the injury radar (same "risk signal" chassis,
+different rules: NF-04 fuses **load** signals into injury risk, EP-08 watches **recovery** metrics
+drifting the wrong way). The key idea (ticket: "базлайни NF-01 дають кращі пороги, ніж хардкод"):
+reuse NF-01's **personal percentile bands** (`baselines.compute_baselines` over ~90 days) as the
+thresholds, and flag a metric that has sat **outside your band** in the unhealthy direction for
+**several recent days** — `hrv_low` (HRV below your p25 ≥3 of 7 days), `rhr_up` (resting HR above
+p75 ≥3 days), `sleep_debt` (sleep below band ≥4 of 7 days), `stress_high` (stress above p75 ≥3
+days). Each → a typed `Alert(kind, severity, detail, advice)`; `health.detect(history)` →
+`HealthReport(level calibrating/none/alert, alerts)`. **False-positive guards** (the EP-08 pitfall):
+personal thresholds (not generic cutoffs), sustained-not-a-blip, a **cold-start gate**
+(`HEALTH_MIN_HISTORY_DAYS`=7 → quiet `calibrating`; a metric also needs NF-01's 14 samples before
+its band exists, so early history is naturally silent), and **non-medical** advice
+(`health.summary` — the deterministic LLM-free fallback). `service.build_health_alerts` (pure,
+zero-LLM, shared by `/health` and the job) reuses the same 90-day slice; `service.run_health_alert`
+narrates an actionable report via Sonnet (`SYSTEM_HEALTH`, cautious/non-diagnostic) with the
+deterministic fallback; logs `ReportLog(kind="health")`. Surfaced two ways: the **`/health`** bot
+command (instant DB read — calibrating/clear/alerts) and a **morning-tick hook**
+(`_health_check_for_user` in `bot/jobs.py`, after the injury check) that DMs one advisory for any
+**newly** actionable alert kind, guarded **per-rule** via `bot_state` `alert:<kind>` (cooldown
+`HEALTH_ALERT_COOLDOWN_DAYS`=3, so a persistent drift isn't re-flagged daily but a fresh anomaly
+still fires; guard set before the send). To avoid stacking two risk pings, the tick **skips the
+health push when an injury advisory already went out today** (at most one risk DM/day). Process-level
+`HEALTH_ALERTS` on/off + a **per-user** `User.alerts_enabled` toggle (settings form; default on;
+deactivated/disabled → silence). Not fed into the daily report context — the report already gets
+recovery context from NF-01 `norm`; that synergy is a documented future extension.
+`tests/test_health.py`.
 
 **Multisport weekly load budget (NF-05)**: a **pure-Python, zero-LLM** cross-sport training-load
 budget (`app/multisport.py`). Our `weekly_run_volume` only sees runs, so a 3h kite session or an

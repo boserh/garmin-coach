@@ -74,6 +74,10 @@ class User(Base):
     # Off → plan_adapt_job and the morning readiness check skip this user entirely.
     plan_adapt_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Master switch for proactive health alerts (EP-08 — sustained recovery anomalies vs
+    # the user's personal baseline). Off → the morning tick's health check skips this user.
+    alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
