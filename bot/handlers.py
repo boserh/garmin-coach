@@ -249,6 +249,33 @@ async def risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(injury.summary(a))
 
 
+async def health(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/health — proactive recovery alerts right now (EP-08). Pure DB read, no LLM/Garmin:
+    the detector is zero-LLM (personal-baseline anomalies), so this is instant and free."""
+    from app import health as health_mod
+    from app.analysis.service import build_health_alerts
+
+    logger.info("CMD /health")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        report = await build_health_alerts(session, user_id=user.id)
+    if report.level == "calibrating":
+        await update.message.reply_text(
+            f"🩺 Алерти відновлення ще калібруються — треба ≥{settings.HEALTH_MIN_HISTORY_DAYS} "
+            f"днів історії (зараз {report.history_days}). Збираю базлайн, попереджу, якщо метрики "
+            f"поповзуть у поганий бік."
+        )
+        return
+    if not report.actionable:
+        await update.message.reply_text(
+            "🟢 Відновлення в нормі — HRV, пульс спокою, сон і стрес у межах твого коридору."
+        )
+        return
+    await update.message.reply_text(health_mod.summary(report))
+
+
 async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args or not ctx.args[0].isdigit():
         await update.message.reply_text(

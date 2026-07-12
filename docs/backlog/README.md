@@ -7,10 +7,10 @@
 [ANALYSIS.md](ANALYSIS.md).
 
 **Пріоритет (2026-07, після NF-04/05/06):** колонка «Пріор.» у таблицях нижче —
-🔴 highest / 🟠 high / 🟡 medium / 🟢 low / ⚪ lowest. EP-12 (RPE-тренд/болі в
-адаптацію+дайджест+звіт) — ✅ зроблено; CODE-01 (борг перед розгоном) — ✅ зроблено
-(див. Done). Наступний логічний тікет — **EP-08** (проактивні health-алерти,
-реюз каркасу `injury.py`). Frozen-тікети — ⚪.
+🔴 highest / 🟠 high / 🟡 medium / 🟢 low / ⚪ lowest. Усі highest/high закрито:
+EP-12 (RPE-тренд/болі в адаптацію+дайджест+звіт), EP-08 (проактивні health-алерти) і
+CODE-01 (розбити analysis-сервіс) — ✅ зроблено (див. Done). Далі — 🟡 medium: **EP-09**
+(`/ask` над усією історією, движок для EP-11/NF-08) чи EP-04/EP-05. Frozen-тікети — ⚪.
 
 ## Сторі покращення (S/M)
 
@@ -20,7 +20,6 @@ _Порожньо — усі зроблено (див. Done)._
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [EP-08](EP-08-health-alerts.md) | 🟠 high | Проактивні health-алерти (аномалії відновлення) — реюз каркасу `injury.py`, автоматичний risk-шар | L | синергія з NF-01 (пороги) |
 | [EP-09](EP-09-ask-full-history.md) | 🟡 medium | `/ask` над усією історією (tool-use агент над БД) — движок для EP-11/NF-08 | L–XL | — |
 | [EP-04](EP-04-web-dashboard.md) | 🟡 medium | Веб-дашборд — продуктове відчуття без LLM-витрат | L | EP-01 ✅ (бейджі план/факт) |
 | [EP-05](EP-05-race-pack.md) | 🟡 medium | Race pack — підготовка до перегонів | L | фаза 0: типізувати `target_date`; GAP-модуль спільний з EP-15 |
@@ -108,6 +107,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 
 | ID | Назва | Де реалізовано |
 | --- | --- | --- |
+| [EP-08](EP-08-health-alerts.md) | Проактивні health-алерти (аномалії відновлення) | `app/health.py` — чистий (нуль LLM) детектор recovery-аномалій: реюзає особисті персентиль-коридори NF-01 (`baselines.compute_baselines`) як пороги й ловить метрику, що кілька днів поза коридором у поганий бік — `hrv_low`/`rhr_up`/`sleep_debt`/`stress_high` → `Alert`/`HealthReport` (calibrating/none/alert), cold-start gate `HEALTH_MIN_HISTORY_DAYS`. `service.build_health_alerts`/`run_health_alert` (Sonnet `SYSTEM_HEALTH` + детермінований fallback `health.summary`, `ReportLog(kind="health")`), хук `_health_check_for_user` у morning-тіку (per-rule cooldown `alert:<kind>`, скіп якщо injury вже пінганув сьогодні — 1 risk-DM/день), команда `/health`, тумблери `HEALTH_ALERTS` + per-user `User.alerts_enabled` (форма `/settings`, міграція `b1c2d3e4f5a6`); `tests/test_health.py` |
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` на пакет | `app/analysis/` пакет: `client.py` (пул клієнтів, `PRICES`, `_complete`, `CallStats`, `AnalystError`), `cache.py` (дедуп-ключі + білдери контексту), `reports.py` (analyze/ask/activity/digest/compare/injury), `plans.py` (генерація/едити/адаптація/погода/силові); `service.py` — тонкий фасад із реекспортами (зовнішні імпорти незмінні), `prompts.py` не чіпано. Нуль поведінкових змін (тест-сьют зелений). PR #127 |
 | [ST-01](ST-01-morning-report-plan-context.md) | Ранковий звіт бачить сьогоднішнє тренування з плану | `plan_today` наскрізь у `app/analysis/service.py` (`analyze_with_stats` + cache key) |
 | [ST-02](ST-02-extra-metrics-in-reports.md) | `extra`-метрики (readiness, ACWR, RHR) у щоденних звітах | `fitness`-знімок у `run_analysis`/`analyze_with_stats` (`app/analysis/service.py`) |

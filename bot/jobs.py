@@ -23,10 +23,12 @@ from app import records, weather
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
+    build_health_alerts,
     build_injury_assessment,
     run_activity_analysis,
     run_compare,
     run_digest,
+    run_health_alert,
     run_injury_check,
     run_plan_adaptation,
     run_weather_plan_check,
@@ -77,6 +79,11 @@ COMPARE_WEEKS = 4   # last 4 weeks vs the same 4 weeks a year ago (matches /comp
 # NF-04 injury radar: bot_state key holding the last date an advisory was sent, so we warn at
 # most once per settings.INJURY_GUARD_DAYS (the same signals persist for days — don't nag).
 INJURY_WARNED_KEY = "injury_warned"
+
+# EP-08 health alerts: per-rule cooldown in bot_state (key alert:<kind> → last-sent date), so
+# the same drifting metric isn't re-flagged daily. Kept per-kind (not one global guard) so a
+# new anomaly (e.g. sleep debt) can still fire while an older one (hrv_low) is still cooling.
+HEALTH_ALERT_PREFIX = "alert:"
 
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 # Morning keeps its own stale wording ("звіт" not "аналіз", cf. delivery.STALE_NOTE) — a
@@ -262,6 +269,42 @@ async def _injury_check_for_user(ctx, session, user: User, creds, today: str) ->
         logger.exception(f"INJURY check failed user={user.id}")
 
 
+async def _health_check_for_user(ctx, session, user: User, creds, today: str) -> bool:
+    """Proactive health alerts (EP-08): run the pure recovery-anomaly detector; DM one advisory
+    for any *newly* actionable alert kind we haven't sent in the last HEALTH_ALERT_COOLDOWN_DAYS.
+    Per-rule cooldown (key ``alert:<kind>``) so a persistent drift isn't re-flagged daily, but a
+    fresh anomaly still fires. Best-effort and LLM-optional (deterministic ``health.summary``
+    fallback). Silent during calibration / when nothing is out of the personal band. Returns True
+    if an advisory was sent. Callers pass this only when no injury advisory went out this tick —
+    at most one risk DM per morning (the shared 'don't stack risk pings' rule)."""
+    if (not settings.HEALTH_ALERTS or not user.alerts_enabled
+            or not user.telegram_chat_id or not creds.anthropic_key):
+        return False
+    try:
+        report = await build_health_alerts(session, user_id=user.id)
+        if not report.actionable:
+            return False
+        # Fire only for alert kinds not on cooldown; if every kind is still cooling, stay silent.
+        fresh = [a for a in report.alerts
+                 if not _within_guard(
+                     await repository.get_state(session, user.id, HEALTH_ALERT_PREFIX + a.kind),
+                     today, settings.HEALTH_ALERT_COOLDOWN_DAYS)]
+        if not fresh:
+            return False
+        text = await run_health_alert(
+            session, user_id=user.id, report=report, api_key=creds.anthropic_key
+        )
+        # Set each fired kind's guard BEFORE sending so a hiccup can't loop into re-warning.
+        for a in fresh:
+            await repository.set_state(session, user.id, HEALTH_ALERT_PREFIX + a.kind, today)
+        await ctx.bot.send_message(user.telegram_chat_id, text)
+        logger.info(f"HEALTH user={user.id}: {[a.kind for a in fresh]}")
+        return True
+    except Exception:
+        logger.exception(f"HEALTH check failed user={user.id}")
+        return False
+
+
 async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
@@ -287,6 +330,14 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
 
             # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack up.
             await _injury_check_for_user(ctx, session, user, creds, today)
+
+            # Proactive health alerts (EP-08) — recovery anomalies vs the personal baseline.
+            # Skip when an injury advisory already went out today: at most one risk DM per day
+            # (the two detectors share the "don't stack risk pings" rule).
+            injury_sent = (
+                await repository.get_state(session, user.id, INJURY_WARNED_KEY) == today)
+            if not injury_sent:
+                await _health_check_for_user(ctx, session, user, creds, today)
 
             if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
                 return

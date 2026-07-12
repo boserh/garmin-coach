@@ -30,6 +30,7 @@ from app.analysis.client import (
     MODEL_DAILY,
     MODEL_DEEP,
     MODEL_DIGEST,
+    MODEL_HEALTH,
     MODEL_INJURY,
     PRICES,
     AnalystError,
@@ -46,6 +47,7 @@ from app.analysis.prompts import (
     SYSTEM_ASK,
     SYSTEM_COMPARE,
     SYSTEM_DIGEST,
+    SYSTEM_HEALTH,
     SYSTEM_INJURY,
 )
 from app.core.config import settings
@@ -742,5 +744,60 @@ async def run_injury_check(
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"injury:{assessment.level}", report_text=text,
+    )
+    return text
+
+
+# ---------- PROACTIVE HEALTH ALERTS (EP-08) ----------
+
+async def build_health_alerts(session, *, user_id: int):
+    """Fetch the recovery history and run the pure health detector (``app.health``). Returns
+    a ``health.HealthReport`` — ``level="calibrating"`` until the user has enough history (the
+    anti-false-positive cold-start gate). No LLM, no network; used by both the ``/health``
+    command (display only) and the morning alert hook (which then narrates an actionable
+    result). Thresholds are the user's own NF-01 percentile bands, computed inside the
+    detector from the same 90-day slice."""
+    from app import baselines, health
+    from app.garmin import repository
+
+    history = await repository.read_history(session, user_id, days=baselines.WINDOW_DAYS)
+    return health.detect(
+        history, min_history_days=settings.HEALTH_MIN_HISTORY_DAYS
+    )
+
+
+def health_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate an actionable health report into a short advisory (Sonnet)."""
+    return _complete(MODEL_HEALTH, SYSTEM_HEALTH, context, "health", api_key, max_tokens=600)
+
+
+async def run_health_alert(
+    session, *, user_id: int, report, api_key: Optional[str] = None,
+) -> str:
+    """Turn an actionable ``health.HealthReport`` into a user-facing advisory. Narrates via
+    Sonnet (``SYSTEM_HEALTH``) but falls back to the deterministic ``health.summary`` if the
+    LLM call fails — the warning must never depend on the LLM (same contract as the injury
+    radar). Logs ``ReportLog(kind="health")`` on success. Not dedup-cached (rare, and the
+    caller guards frequency per-rule). Callers must only invoke this for an actionable report."""
+    from app import health
+    from app.garmin import repository
+
+    context = health.to_context(report)
+    try:
+        text, stats = await _run_claude(health_with_stats, context, api_key)
+    except AnalystError as e:
+        logger.warning(f"HEALTH narration failed user={user_id}, using fallback: {e}")
+        await repository.log_report(
+            session, user_id=user_id, kind="health", model=MODEL_HEALTH, ok=False,
+            question=f"health:{report.level}", error=str(e)[:512],
+        )
+        return health.summary(report)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"health:{report.level}", report_text=text,
     )
     return text

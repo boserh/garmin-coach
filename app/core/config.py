@@ -114,6 +114,15 @@ class Settings(BaseSettings):
     INJURY_MIN_HISTORY_DAYS: int = 14    # quiet calibration: no warnings until this much history
     INJURY_GUARD_DAYS: int = 5           # at most one injury advisory per this many days
 
+    # --- Proactive health alerts (EP-08) ---
+    # A pure-Python detector flags sustained recovery anomalies (HRV/RHR/sleep/stress drifting
+    # outside the user's PERSONAL baseline band for several days) and the morning tick pushes
+    # one advisory, guarded per-rule. Thresholds are personal (NF-01 percentile bands), so the
+    # cold-start is naturally quiet. Process-level on/off; per-user opt-out is User.alerts_enabled.
+    HEALTH_ALERTS: bool = True
+    HEALTH_MIN_HISTORY_DAYS: int = 7      # no alert until at least a week of history (cold-start)
+    HEALTH_ALERT_COOLDOWN_DAYS: int = 3   # same alert kind at most once per this many days
+
 
 @lru_cache
 def get_settings() -> Settings:

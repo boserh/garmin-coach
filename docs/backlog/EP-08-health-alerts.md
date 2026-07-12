@@ -37,12 +37,36 @@ readiness, acwr_pct — історія в БД, `repository.read_daily_metrics` 
 
 ## Acceptance criteria
 
-- [ ] Правила задокументовані в коді поряд із порогами; пороги в константах.
-- [ ] Жодного алерта на юзера з <7 днями історії (холодний старт).
-- [ ] Cooldown працює; деактивований юзер/вимкнені алерти — тиша.
-- [ ] Тести детектора на синтетичних рядах (це чиста функція — легко).
-- [ ] Не медичні діагнози: формулювання «схоже на недовідновлення» + порада
-      звернутись до лікаря при тривожних патернах.
+- [x] Правила задокументовані в коді поряд із порогами; пороги в константах
+      (`app/health.py` — `SUSTAIN_DAYS`/`SLEEP_DAYS`/`RECENT_WINDOW`/… + порогом служить
+      особистий базлайн-коридор NF-01, не хардкод).
+- [x] Жодного алерта на юзера з <7 днями історії (`HEALTH_MIN_HISTORY_DAYS` cold-start
+      gate → `level="calibrating"`; метриці ще й треба 14 днів на band, тож старт тихий).
+- [x] Cooldown працює (per-rule `bot_state` `alert:<kind>`, `HEALTH_ALERT_COOLDOWN_DAYS`);
+      деактивований юзер / вимкнені алерти (`User.alerts_enabled` + `HEALTH_ALERTS`) — тиша.
+- [x] Тести детектора на синтетичних рядах (`tests/test_health.py`).
+- [x] Не медичні діагнози (`SYSTEM_HEALTH` + `health.summary` — «схоже на недовідновлення»
+      + порада до лікаря при тривожних патернах, жодних діагнозів).
+
+## Статус — ✅ зроблено (2026-07)
+
+- **Детектор** `app/health.py` (чистий, нуль LLM): реюзає особисті персентиль-коридори
+  NF-01 (`baselines.compute_baselines`) як пороги й ловить метрику, що кілька днів тримається
+  ПОЗА коридором у поганий бік — `hrv_low`, `rhr_up`, `sleep_debt`, `stress_high`. Кожне →
+  `Alert(kind, severity, detail, advice)`; `detect(history)` →
+  `HealthReport(level calibrating/none/alert)`.
+- **Сервіс:** `service.build_health_alerts` (спільний для `/health` і джоби),
+  `service.run_health_alert` (наратив через Sonnet `SYSTEM_HEALTH` з детермінованим
+  fallback `health.summary`), `ReportLog(kind="health")`, `MODEL_HEALTH`.
+- **Хук** `_health_check_for_user` у morning-тіку (після injury): DM на КОЖЕН свіжий вид
+  алерту, per-rule cooldown `alert:<kind>`; **скіп, якщо injury-адвайзорі вже пішов сьогодні**
+  (максимум один risk-DM/день). Команда **`/health`** — миттєвий DB-рід.
+- **Тумблери:** процесний `HEALTH_ALERTS` + per-user `User.alerts_enabled` (форма
+  `/settings`, дефолт on; міграція `b1c2d3e4f5a6`).
+- **НЕ зроблено (свідомо):** активний алерт як контекст у ранковому звіті —
+  звіт уже отримує стан відновлення через NF-01 `norm`; ця синергія лишена future
+  extension. Ідея «тихого запуску» (лог замість повідомлення N тижнів) досяжна через
+  `HEALTH_ALERTS=false`.
 
 ## Підводні камені
 
