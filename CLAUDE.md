@@ -716,8 +716,22 @@ after the answer. `/checkin [rpe] [note]` is the manual fallback for the last ac
 Silence is valid — nothing nags, analysis works without it. **Consumer phase 1**:
 `activity_payload` includes `subjective`, so `SYSTEM_ACTIVITY` sees felt effort/pain (and
 it enters `_activity_cache_key` automatically — the README pitfall). `/me` shows RPE + pain
-on the activity card and detail. Later phases (not yet): RPE trend into the EP-02 adaptive
-job, a plan/actual status for the digest, and surfacing a pain that recurs ≥2× in 14 days.
+on the activity card and detail. **Consumer phases 2–3** (`app/subjective.py` — a pure,
+zero-LLM aggregator over `repository.recent_subjective_runs`, sibling to `injury.py` but
+just *shaping* the felt-effort signal rather than scoring it): `subjective.summarize(runs)`
+→ a compact `{n, avg_rpe, rpe_rising, recurring_pain?, recent}` snapshot fed to three
+narration prompts — (a) the **daily/morning report** (`run_analysis` → `analyze_with_stats`
+`user_content["subjective"]` **and `_cache_key`** — the наскрізна pitfall; `SYSTEM` section
+«САМОПОЧУТТЯ / ЧЕК-ІНИ» flags a recurring niggle / rising effort at the same pace), (b) the
+**EP-02 plan adaptation** (`run_plan_adaptation` context + `SYSTEM_PLAN_ADAPT` rule — ease
+when effort trends up / pain recurs even when objective load looks fine; not cached), and
+(c) the **weekly digest** via a plan/fact **`overreached`** count in
+`repository.weekly_compliance` (an *easy-intent* session — easy/recovery/base/long — done but
+whose check-in RPE was ≥`subjective.HARD_RPE`=8: "did it, but it felt much harder than the
+session called for"; rides inside `compliance`, already in `_digest_cache_key`;
+`SYSTEM_DIGEST` reads it as an under-recovery signal). `rpe_rising` reuses the same
+pace-stable/RPE-up test as `injury._rpe_signal`; `recurring_pain` the same ≥2×/14d rule.
+`tests/test_subjective.py`.
 
 **Training plans**: a user picks a goal + intake on the **web form** (`/plan`); we *prescribe*
 a dated program (distinct from the Garmin-Calendar `planned_runs` we merely read). This is

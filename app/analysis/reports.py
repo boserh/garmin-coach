@@ -75,6 +75,7 @@ def analyze_with_stats(
     fitness: Optional[dict] = None,
     records: Optional[list] = None,
     norm: Optional[dict] = None,
+    subjective: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -111,6 +112,8 @@ def analyze_with_stats(
         user_content["records"] = records
     if norm:
         user_content["norm"] = norm
+    if subjective:
+        user_content["subjective"] = subjective
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -199,6 +202,7 @@ async def run_analysis(
     fitness = None
     records = None
     norm = None
+    subjective = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -228,11 +232,18 @@ async def run_analysis(
             from app import baselines
             history = await repository.read_history(session, user_id, days=baselines.WINDOW_DAYS)
             norm = baselines.compute_baselines(history)
+            # Subjective check-ins (EP-12 phase 3): surface a recurring niggle / rising effort
+            # so the daily report acknowledges felt state, not only the objective numbers.
+            from app import subjective as subjective_mod
+            subj_runs = await repository.recent_subjective_runs(
+                session, user_id, days=subjective_mod.WINDOW_DAYS)
+            subjective = subjective_mod.summarize(subj_runs)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
-                           previous_report, weather, plan_today, fitness, records, norm)
+                           previous_report, weather, plan_today, fitness, records, norm,
+                           subjective)
     cached = await llm_cache.get(session, cache_key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -241,7 +252,7 @@ async def run_analysis(
         try:
             text, stats = await _run_claude(
                 analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
-                weather, plan_today, fitness, records, norm
+                weather, plan_today, fitness, records, norm, subjective
             )
         except AnalystError as e:
             await repository.log_report(

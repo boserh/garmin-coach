@@ -735,17 +735,38 @@ async def weekly_compliance(
 ) -> dict:
     """Per-week compliance summary for a plan, keyed by ISO week string ('YYYY-Www').
 
-    Each entry: ``{total, done, pace_deltas: [float, ...]}``.
+    Each entry: ``{total, done, pace_deltas: [float, ...], overreached}``.
     * ``total`` — run-type workouts (not rest/cross/strength) in that week.
     * ``done`` — workouts with status done or partial.
     * ``pace_deltas`` — list of (actual − plan) pace values in min/km for matched workouts
       where both sides are known (positive = slower, negative = faster).
+    * ``overreached`` — count of *easy-intent* sessions (easy/recovery/base/long) done but
+      whose post-run check-in RPE was hard (≥ ``subjective.HARD_RPE``): "did it, but it felt
+      much harder than the session called for" (EP-12 phase 3 plan/fact status). Zero when
+      there are no check-ins.
     """
+    from app import subjective as subjective_mod
+
     workouts = (
         await session.execute(
             select(PlannedWorkout).where(PlannedWorkout.plan_id == plan_id)
         )
     ).scalars().all()
+
+    # RPE per matched activity, for the overreached flag (one query for all done workouts).
+    done_ids = [w.completed_activity_id for w in workouts if w.completed_activity_id]
+    rpe_by_id: dict = {}
+    if done_ids:
+        arows = (
+            await session.execute(
+                select(ActivityRecord.id, ActivityRecord.subjective).where(
+                    ActivityRecord.id.in_(done_ids)
+                )
+            )
+        ).all()
+        for aid, subj in arows:
+            if isinstance(subj, dict) and isinstance(subj.get("rpe"), (int, float)):
+                rpe_by_id[aid] = subj["rpe"]
 
     _SKIP = {"rest", "cross", "strength"}
     buckets: dict = {}
@@ -756,7 +777,8 @@ async def weekly_compliance(
             week = dt.date.fromisoformat(w.date).strftime("%G-W%V")
         except (ValueError, TypeError):
             continue
-        b = buckets.setdefault(week, {"total": 0, "done": 0, "pace_deltas": []})
+        b = buckets.setdefault(
+            week, {"total": 0, "done": 0, "pace_deltas": [], "overreached": 0})
         b["total"] += 1
         if w.status in ("done", "partial"):
             b["done"] += 1
@@ -765,6 +787,10 @@ async def weekly_compliance(
                 pp = w.match_info.get("plan_pace_minkm")
                 if ap is not None and pp is not None:
                     b["pace_deltas"].append(round(ap - pp, 2))
+            rpe = rpe_by_id.get(w.completed_activity_id)
+            if (rpe is not None and rpe >= subjective_mod.HARD_RPE
+                    and (w.type or "").lower() in subjective_mod.EASY_TYPES):
+                b["overreached"] += 1
     return buckets
 
 

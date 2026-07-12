@@ -1,6 +1,7 @@
 .env
 venv/
 bot.log
+bot.log.*
 claude_cache.json
 claude_cache.json.tmp
 state.json
