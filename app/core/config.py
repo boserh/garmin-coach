@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     WEATHER_RAIN_PROB_PCT: float = 70    # precip probability % at/above → rain conflict
     WEATHER_WIND_KMH: float = 40         # max wind km/h at/above → wind conflict
 
+    # --- Injury-risk radar (NF-04) ---
+    # A pure-Python detector combines load-side signals (ACWR trend, repeated pain, RPE/pace
+    # divergence, HRV/RHR drift) into a severity score; on a high score the morning tick sends
+    # one advisory. Process-level on/off (personal app, single owner — no per-user column).
+    INJURY_RADAR: bool = True
+    INJURY_MIN_HISTORY_DAYS: int = 14    # quiet calibration: no warnings until this much history
+    INJURY_GUARD_DAYS: int = 5           # at most one injury advisory per this many days
+
 
 @lru_cache
 def get_settings() -> Settings:

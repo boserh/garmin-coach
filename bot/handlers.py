@@ -23,6 +23,7 @@ from app.analysis.service import (
     run_ask,
     run_plan_edit,
 )
+from app.core.config import settings
 from app.db import users
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -219,6 +220,33 @@ async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_start, cur_end)}) "
               f"проти себе рік тому ({compare_mod.fmt_range(past_start, past_end)}):\n\n")
     await update.message.reply_text(header + text)
+
+
+async def risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/risk — the injury-radar signals right now (NF-04). Pure DB read, no LLM/Garmin: the
+    detector is zero-LLM, so this is instant and free."""
+    from app import injury
+    from app.analysis.service import build_injury_assessment
+
+    logger.info("CMD /risk")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        a = await build_injury_assessment(session, user_id=user.id)
+    if a.level == "calibrating":
+        await update.message.reply_text(
+            f"🩺 Травматичний радар ще калібрується — треба ≥{settings.INJURY_MIN_HISTORY_DAYS} "
+            f"днів історії (зараз {a.history_days}). Збираю дані, попереджу, якщо щось насторожить."
+        )
+        return
+    if not a.actionable:
+        await update.message.reply_text(
+            "🟢 Тривожних сигналів немає. Навантаження, відновлення й самопочуття в нормі — "
+            "тримай так."
+        )
+        return
+    await update.message.reply_text(injury.summary(a))
 
 
 async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
