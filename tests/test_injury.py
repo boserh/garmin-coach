@@ -7,7 +7,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from app import injury
-from app.analysis import service
+from app.analysis import reports, service
 from app.analysis.service import CallStats, build_injury_assessment, run_injury_check
 from app.db.models import ActivityRecord, DailyMetric, ReportLog
 from app.garmin import repository
@@ -176,7 +176,7 @@ async def test_run_injury_check_narrates_and_logs(session):
     a = injury.assess(daily, [], history_days=60)
     stats = CallStats(kind="injury", model=service.MODEL_INJURY,
                       input_tokens=30, output_tokens=20, cost_usd=0.001)
-    with patch.object(service, "injury_with_stats", return_value=("бережи себе", stats)) as m:
+    with patch.object(reports, "injury_with_stats", return_value=("бережи себе", stats)) as m:
         text = await run_injury_check(session, user_id=U1, assessment=a, api_key="k")
     assert text == "бережи себе"
     m.assert_called_once()
@@ -187,7 +187,7 @@ async def test_run_injury_check_narrates_and_logs(session):
 async def test_run_injury_check_falls_back_on_llm_error(session):
     daily = _daily(14, acwr=[150] * 14)
     a = injury.assess(daily, [], history_days=60)
-    with patch.object(service, "injury_with_stats",
+    with patch.object(reports, "injury_with_stats",
                       side_effect=service.AnalystError("боом")):
         text = await run_injury_check(session, user_id=U1, assessment=a, api_key="k")
     # falls back to the deterministic pure-Python summary

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
-from app.analysis import service
+from app.analysis import plans
 from app.analysis.service import CallStats, run_plan_adaptation
 from app.db.models import PlannedWorkout, ReportLog, TrainingPlan
 from app.garmin.schemas import PlanEdit, PlanOp
@@ -46,7 +46,7 @@ async def test_no_active_plan_returns_none(session):
 async def test_empty_operations_is_a_noop_but_still_logged(session):
     fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
     await _seed_plan(session, workouts=[dict(date=fut, type="easy", status="planned")])
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit([]), CallStats(kind="adapt", model="m"))):
         plan, edit = await run_plan_adaptation(session, user_id=U1)
     assert plan is not None
@@ -63,7 +63,7 @@ async def test_ops_outside_window_are_dropped(session):
         PlanOp(action="modify", date=near, dist_km=4.0),
         PlanOp(action="modify", date=far, dist_km=8.0),
     ]
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops), CallStats(kind="adapt", model="m"))):
         plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
     assert [op.date for op in edit.operations] == [near]
@@ -77,7 +77,7 @@ async def test_morning_trigger_keeps_only_today(session):
         PlanOp(action="modify", date=today, dist_km=4.0),
         PlanOp(action="modify", date=tomorrow, dist_km=4.0),  # model overstepped
     ]
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops), CallStats(kind="adapt", model="m"))):
         plan, edit = await run_plan_adaptation(
             session, user_id=U1, trigger="morning", window_days=0,
@@ -99,7 +99,7 @@ async def test_adjust_level_off_skips_the_claude_call(session):
     fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
     await _seed_plan(session, workouts=[dict(date=fut, type="long", status="planned")],
                      intake={"adjust_level": "off"})
-    with patch.object(service, "plan_adapt_with_stats") as m:
+    with patch.object(plans, "plan_adapt_with_stats") as m:
         plan, edit = await run_plan_adaptation(session, user_id=U1)
     m.assert_not_called()
     assert plan is not None and edit is None
@@ -110,7 +110,7 @@ async def test_default_level_conservative_with_target_date(session):
     fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
     await _seed_plan(session, workouts=[dict(date=fut, type="easy", status="planned")])
     seen: dict = {}
-    with patch.object(service, "plan_adapt_with_stats", side_effect=_capture(seen)):
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
         await run_plan_adaptation(session, user_id=U1)
     assert seen["adjust_level"] == "conservative"
     assert seen["target_date"] == "2026-09-01"
@@ -122,7 +122,7 @@ async def test_default_level_flexible_without_target_date(session):
     await _seed_plan(session, workouts=[dict(date=fut, type="easy", status="planned")],
                      target_date=None)
     seen: dict = {}
-    with patch.object(service, "plan_adapt_with_stats", side_effect=_capture(seen)):
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
         await run_plan_adaptation(session, user_id=U1)
     assert seen["adjust_level"] == "flexible"
     assert seen["days_to_target"] is None
@@ -147,7 +147,7 @@ async def test_conservative_bounds_a_broken_morning_long(session):
         PlanOp(action="move", date=d0, to_date=plus1),        # 1 day — allowed
         PlanOp(action="move", date=d0, to_date=plus5),        # 5 days — too far
     ]
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops), CallStats(kind="adapt", model="m"))):
         _plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
     assert [(op.action, op.dist_km or op.to_date) for op in edit.operations] == [
@@ -163,7 +163,7 @@ async def test_flexible_allows_token_run_and_skip(session):
         PlanOp(action="modify", date=today, dist_km=2.0),
         PlanOp(action="skip", date=today),
     ]
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops), CallStats(kind="adapt", model="m"))):
         _plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
     assert [op.action for op in edit.operations] == ["modify", "skip"]
@@ -182,7 +182,7 @@ async def test_taper_allows_only_minimal_easing(session):
         PlanOp(action="modify", date=tomorrow, dist_km=11.0),  # −8% — minimal, allowed
         PlanOp(action="modify", date=tomorrow, dist_km=8.0),   # −33% — too much
     ]
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops), CallStats(kind="adapt", model="m"))):
         _plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
     assert [(op.action, op.dist_km) for op in edit.operations] == [("modify", 11.0)]
@@ -194,7 +194,7 @@ async def test_alt_operations_also_level_filtered(session):
         session, workouts=[dict(date=today, type="long", dist_km=10.0, status="planned")])
     ops = [PlanOp(action="modify", date=today, dist_km=8.0)]
     alt = [PlanOp(action="skip", date=today)]                 # in-window but over the level
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops, alt=alt, risky=True),
                                      CallStats(kind="adapt", model="m"))):
         _plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
@@ -211,7 +211,7 @@ async def test_alt_operations_also_filtered(session):
         PlanOp(action="modify", date=near, dist_km=5.0),
         PlanOp(action="skip", date=far),
     ]
-    with patch.object(service, "plan_adapt_with_stats",
+    with patch.object(plans, "plan_adapt_with_stats",
                        return_value=(_edit(ops, alt=alt, risky=True),
                                      CallStats(kind="adapt", model="m"))):
         plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)

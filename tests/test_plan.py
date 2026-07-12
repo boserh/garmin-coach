@@ -1,7 +1,7 @@
 """Training-plan generation: JSON coercion + persistence (Claude mocked)."""
 from unittest.mock import patch
 
-from app.analysis import service
+from app.analysis import plans
 from app.analysis.service import (
     CallStats,
     _coerce_edit,
@@ -42,7 +42,7 @@ def _gen(summary="підхід", workouts=None):
 
 
 async def test_run_plan_generation_persists_and_archives(session):
-    with patch.object(service, "generate_plan_with_stats",
+    with patch.object(plans, "generate_plan_with_stats",
                       return_value=(_gen(), CallStats(kind="plan", model="m"))):
         plan = await run_plan_generation(
             session, user_id=U1, goal="first_5k", goal_label="Перші 5 км",
@@ -53,7 +53,7 @@ async def test_run_plan_generation_persists_and_archives(session):
     assert len(ws) == 2 and ws[0].type == "easy"
 
     # a second generation archives the first → only the newest stays active
-    with patch.object(service, "generate_plan_with_stats",
+    with patch.object(plans, "generate_plan_with_stats",
                       return_value=(_gen(summary="новий", workouts=[]),
                                     CallStats(kind="plan", model="m"))):
         plan2 = await run_plan_generation(
@@ -83,7 +83,7 @@ async def test_run_plan_generation_persists_steps(session):
     gen = GeneratedPlan(summary="s", workouts=[PlanWorkout(
         date="2026-07-01", week=1, type="easy", dist_km=4.0, description="легко",
         steps=[PlanStep(kind="run", dist_m=4000, pace_min_km=[6.75, 7.0])])])
-    with patch.object(service, "generate_plan_with_stats",
+    with patch.object(plans, "generate_plan_with_stats",
                       return_value=(gen, CallStats(kind="plan", model="m"))):
         plan = await run_plan_generation(
             session, user_id=U1, goal="first_5k", goal_label="x", target_date=None,
@@ -246,7 +246,7 @@ def test_check_exercise():
 
 
 async def _seed_plan(session):
-    with patch.object(service, "generate_plan_with_stats",
+    with patch.object(plans, "generate_plan_with_stats",
                       return_value=(_gen(), CallStats(kind="plan", model="m"))):
         return await run_plan_generation(
             session, user_id=U1, goal="first_5k", goal_label="x", target_date=None,
@@ -385,7 +385,7 @@ async def test_run_plan_edit_proposes_without_applying(session):
     plan = await _seed_plan(session)
     edit = PlanEdit(summary="додаю біг", operations=[
         PlanOp(action="add", date="2026-07-02", type="easy", dist_km=5.0, description="легко")])
-    with patch.object(service, "plan_edit_with_stats",
+    with patch.object(plans, "plan_edit_with_stats",
                       return_value=(edit, CallStats(kind="plan_edit", model="m"))):
         _plan, out = await run_plan_edit(
             session, user_id=U1, instruction="додай біг 2 липня", api_key=None)
