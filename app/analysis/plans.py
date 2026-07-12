@@ -509,6 +509,12 @@ async def run_plan_adaptation(
     fitness = _build_fitness_snapshot(ex)
     multisport = await _build_multisport(session, user_id)
     days_to_target = _days_to_target(plan.target_date, today)
+    # Subjective check-ins (EP-12 phase 2): rising effort for the same pace / a recurring
+    # niggle is a reason to ease even when the objective load looks fine. Not cached (adapt
+    # is deliberately un-cached), so no cache-key wiring needed.
+    from app import subjective as subjective_mod
+    subj_runs = await repository.recent_subjective_runs(
+        session, user_id, days=subjective_mod.WINDOW_DAYS)
     context = {
         "today": today.isoformat(),
         "trigger": trigger,
@@ -521,6 +527,7 @@ async def run_plan_adaptation(
         "compliance": compliance or None,
         "fitness": fitness or None,
         "multisport": multisport,
+        "subjective": subjective_mod.summarize(subj_runs),
     }
     try:
         edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)

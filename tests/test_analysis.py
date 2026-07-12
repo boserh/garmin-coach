@@ -56,6 +56,13 @@ def test_cache_key_changes_when_plan_changes():
            _cache_key(_DATA, "q", "claude-sonnet-4-6", plan_today=plan_b)
 
 
+def test_cache_key_varies_with_subjective():
+    # EP-12: felt-effort context must key the cache (the README наскрізна pitfall).
+    base = _cache_key(_DATA, "q", "claude-sonnet-4-6")
+    subj = {"n": 2, "rpe_rising": True, "recurring_pain": {"part": "коліно", "count": 2}}
+    assert base != _cache_key(_DATA, "q", "claude-sonnet-4-6", subjective=subj)
+
+
 def test_ask_cache_key_varies_with_question_and_reports():
     base = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [])
     assert base != _ask_cache_key(_REPORTS, "інше питання", "claude-sonnet-4-6", [])
