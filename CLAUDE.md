@@ -2,6 +2,27 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ Cost safety — HARD RULE (do not skip)
+
+**Never run anything that makes a real Anthropic API call without explicit, per-time
+permission from the user.** Real calls cost real money — plan generation runs on **Opus
+with `max_tokens=16000`**, the single priciest path. This covers: running the bot
+(`python -m bot.main`), the web app (`uvicorn app.main:create_app`), API-calling CLI
+(`app.cli push-plan`, `backfill-*`), any `/test_morning`/`/test_digest` path, and **any
+ad-hoc script** that imports `app.analysis.service` / `build_payload_cached` with a real
+`ANTHROPIC_API_KEY`.
+
+- To exercise an LLM path, use the **mocked test suite** (`./venv/bin/python -m pytest`) —
+  every Claude call is patched (`generate_plan_with_stats`, `run_plan_generation`,
+  `analyze_with_stats`, …); the suite spends **$0**. A real call always logs
+  `CLAUDE OK … ~$…` and writes a `report_logs` row — that's the audit trail (absence of
+  that line = no real call happened).
+- If the bot/web must run locally, ask first and run with an **empty/dummy
+  `ANTHROPIC_API_KEY`** unless a real call is explicitly requested.
+- Beware: a shell-exported `ANTHROPIC_API_KEY` also makes **Claude Code itself** bill
+  per-token to that key (console usage) instead of the subscription — keep it out of the
+  environment when not needed.
+
 ## What this is
 
 A personal **Garmin → Claude** analyzer with a shared core reused by two front-ends:
