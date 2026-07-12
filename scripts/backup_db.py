@@ -21,8 +21,9 @@ Notes / pitfalls (see docs/backlog/OPS-02):
   so a relocated DB is still found. Only ``sqlite`` URLs are supported — a Postgres
   deployment (PERF-03) would use ``pg_dump`` instead.
 - **Off-SD copy matters**: a backup sitting on the same SD card dies with it. Pass
-  ``--rsync-dest`` (or copy ``backups/`` off-box by other means) so at least the
-  latest copy lives elsewhere.
+  ``--rsync-dest`` (or copy ``backups/`` off-box by other means) so the rotated set
+  lives elsewhere. The rsync mirrors the whole rotated dir with ``--delete``, so the
+  off-SD copy stays bounded (7 daily + 4 weekly) instead of growing forever.
 - The Fernet-encrypted credentials in the DB are useless without ``APP_SECRET_KEY``,
   so the DB copy is safe to store alongside untrusted hosts — but that also means a
   restored backup can't decrypt creds unless ``.env``/``APP_SECRET_KEY`` is backed up
@@ -116,8 +117,11 @@ def rotate(backup_dir: Path, *, daily: int = 7, weekly: int = 4) -> list[Path]:
     return removed
 
 
-def _rsync(latest: Path, dest: str) -> None:
-    subprocess.run(["rsync", "-a", str(latest), dest], check=True)
+def _rsync(backup_dir: Path, dest: str) -> None:
+    # Mirror the whole *rotated* backup dir (trailing slash → sync contents) with
+    # --delete, so the off-SD copy self-prunes in lockstep with rotation instead of
+    # growing forever — otherwise a nightly single-file copy fills the USB stick.
+    subprocess.run(["rsync", "-a", "--delete", f"{backup_dir}/", dest], check=True)
 
 
 def run(
@@ -137,7 +141,7 @@ def run(
     make_backup(src, dest)
     rotate(backup_dir, daily=daily, weekly=weekly)
     if rsync_dest:
-        _rsync(dest, rsync_dest)
+        _rsync(backup_dir, rsync_dest)  # mirror the rotated set, not just today's file
     return dest
 
 
