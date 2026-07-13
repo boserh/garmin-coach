@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     # The legacy single-file cache: seeded into GARMIN_CACHE_DIR once, then renamed.
     GARMIN_CACHE_FILE: str = "garmin_cache.json"
 
+    # --- Open-ended "keep improving" plan (rolling blocks) ---
+    # The `general` goal has no target race: generation lays a block of PLAN_BLOCK_WEEKS
+    # weeks and a daily top-up job auto-extends by another block once the plan's last
+    # workout falls within PLAN_EXTEND_LEAD_DAYS. The job runs at PLAN_EXTEND_HOUR
+    # (Europe/Warsaw) — before plan_sync (5) so freshly added weeks can be synced same day.
+    PLAN_BLOCK_WEEKS: int = 6
+    PLAN_EXTEND_LEAD_DAYS: int = 10
+    PLAN_EXTEND_HOUR: int = 4
+
     # --- Adaptive plan (EP-02) ---
     # Weekly review: hour (Europe/Warsaw) + day-of-week it runs on. python-telegram-bot's
     # JobQueue.run_daily ``days`` convention is 0=Sunday..6=Saturday.

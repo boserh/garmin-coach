@@ -31,7 +31,8 @@
     <p class="eyebrow">Програма</p>
     <h1 class="title">{{ plan.goal_label or plan.goal }}</h1>
     <div class="meta">
-      <b>{{ plan.start_date }}</b>{% if plan.target_date %} → <b>{{ plan.target_date }}</b>{% endif %}
+      <b>{{ plan.start_date }}</b>{% if plan.target_date %} → <b>{{ plan.target_date }}</b>
+      {% elif plan.goal == 'general' %}<span class="sep">·</span>🗓 безстроковий (тижні дотворюються автоматично){% endif %}
       <span class="sep">·</span><b>{{ plan.days_per_week }}</b> дні/тиждень
       <span class="sep">·</span>{{ plan.intensity }}
       {% if plan.intake and plan.intake.long_run_day %}

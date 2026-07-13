@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 
 from app import records, weather
 from app.analysis import delivery
+from app.analysis.plans import OPEN_ENDED_GOAL
 from app.analysis.service import (
     AnalystError,
     build_health_alerts,
@@ -31,6 +32,7 @@ from app.analysis.service import (
     run_health_alert,
     run_injury_check,
     run_plan_adaptation,
+    run_plan_extension,
     run_weather_plan_check,
 )
 from app.core.config import settings
@@ -636,6 +638,57 @@ async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Once-a-day per-user Garmin calendar sync (separate from the morning report);
     scheduled by run_daily, so no further time guard is needed."""
     await for_each_user(_sync_for_user, with_chat=False, label="PLAN sync")
+
+
+async def _extend_for_user(ctx, session, user: User) -> None:
+    """Auto-extend an open-ended (``general``) plan by another block once it's about to run
+    out (last workout within PLAN_EXTEND_LEAD_DAYS). Self-limiting: after a successful
+    extension the last date jumps ~a block ahead, so it won't re-fire until next time; a
+    failed generation simply retries next day. Best-effort — a per-user error never aborts
+    the job loop (for_each_user isolates it)."""
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None or plan.target_date or plan.goal != OPEN_ENDED_GOAL:
+        return   # only open-ended plans auto-extend
+    last = await repository.last_workout_date(session, plan.id)
+    if not last:
+        return
+    try:
+        days_left = (dt.date.fromisoformat(last) - dt.date.today()).days
+    except ValueError:
+        return
+    if days_left > settings.PLAN_EXTEND_LEAD_DAYS:
+        return   # still plenty of runway — nothing to do yet
+    logger.info(f"PLAN extend user={user.id} plan={plan.id}: {days_left}d left → topping up")
+    extended = None
+    async with user_runtime(session, user) as creds:
+        if not creds.anthropic_key:
+            return
+        extended = await run_plan_extension(
+            session, user_id=user.id, api_key=creds.anthropic_key)
+        # Push any freshly-added weeks now (best-effort); the daily sync also reconciles.
+        if extended is not None and user.garmin_sync_enabled:
+            try:
+                await plan_sync.sync_plan_to_garmin(session, user.id)
+            except Exception:
+                logger.exception(f"PLAN extend sync failed user={user.id}")
+    if extended is not None and user.telegram_chat_id:
+        try:
+            await ctx.bot.send_message(
+                user.telegram_chat_id,
+                "🗓 Додав наступні тижні до твого безстрокового плану бігу — "
+                "глянь /plan.")
+        except Exception:
+            logger.exception(f"PLAN extend notify failed user={user.id}")
+
+
+async def plan_extend_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Daily auto-extend for open-ended plans: top up the next block when a plan is about to
+    run out. Silent (no work, no Claude call) for everyone whose plan still has runway.
+    Scheduled by run_daily, so no further time guard is needed."""
+    async def worker(session, user):
+        await _extend_for_user(ctx, session, user)
+
+    await for_each_user(worker, with_chat=False, label="PLAN extend")
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
