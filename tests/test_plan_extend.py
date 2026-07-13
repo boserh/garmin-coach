@@ -125,10 +125,17 @@ async def test_extension_noop_for_race_plan(session):
     m.assert_not_called()   # no Claude call when there's nothing to extend
 
 
-# ---------- auto-extend job ----------
+# ---------- morning extend nudge (confirm-only) ----------
+
+from bot import handlers as handlers_module  # noqa: E402
+
+TODAY = dt.date.today().isoformat()
+
 
 async def _make_user(session, **kw):
     kw.setdefault("telegram_chat_id", 555)
+    kw.setdefault("is_active", True)
+    kw.setdefault("is_approved", True)
     kw.setdefault("garmin_sync_enabled", False)  # keep Garmin out of the test
     user = User(email=f"u{id(kw)}@x.com", password_hash="x", **kw)
     session.add(user)
@@ -142,8 +149,8 @@ class _FakeCtx:
         self.sent = []
         self.bot = SimpleNamespace(send_message=self._send)
 
-    async def _send(self, chat_id, text, **kw):
-        self.sent.append((chat_id, text))
+    async def _send(self, chat_id, text, reply_markup=None, **kw):
+        self.sent.append((chat_id, text, reply_markup))
 
 
 @asynccontextmanager
@@ -166,36 +173,107 @@ async def _seed_for_user(session, user_id, *, last_offset_days, goal="general", 
     return plan
 
 
-async def test_extend_job_skips_when_runway_remains(session):
+async def test_nudge_skips_when_runway_remains(session):
     user = await _make_user(session)
     await _seed_for_user(session, user.id, last_offset_days=30)  # far from the end
     ctx = _FakeCtx()
-    with patch.object(jobs_module, "run_plan_extension", new=AsyncMock()) as m, \
-            patch.object(jobs_module, "user_runtime", new=_fake_runtime):
-        await jobs_module._extend_for_user(ctx, session, user)
-    m.assert_not_called()
+    await jobs_module._extend_nudge_for_user(ctx, session, user, TODAY)
     assert ctx.sent == []
 
 
-async def test_extend_job_fires_when_near_end(session):
+async def test_nudge_fires_with_buttons_when_near_end(session):
     user = await _make_user(session)
     await _seed_for_user(session, user.id, last_offset_days=5)  # within lead window
     ctx = _FakeCtx()
-    sentinel = SimpleNamespace(id=1)
-    with patch.object(jobs_module, "run_plan_extension",
-                      new=AsyncMock(return_value=sentinel)) as m, \
-            patch.object(jobs_module, "user_runtime", new=_fake_runtime):
-        await jobs_module._extend_for_user(ctx, session, user)
-    m.assert_awaited_once()
-    assert len(ctx.sent) == 1 and ctx.sent[0][0] == 555   # user notified
+    await jobs_module._extend_nudge_for_user(ctx, session, user, TODAY)
+    assert len(ctx.sent) == 1 and ctx.sent[0][0] == 555
+    assert ctx.sent[0][2] is not None   # inline ✅/❌ keyboard
+    # once/day guard set → a re-tick doesn't re-ask
+    ctx2 = _FakeCtx()
+    await jobs_module._extend_nudge_for_user(ctx2, session, user, TODAY)
+    assert ctx2.sent == []
 
 
-async def test_extend_job_ignores_race_plan(session):
+async def test_nudge_respects_snooze(session):
+    user = await _make_user(session)
+    await _seed_for_user(session, user.id, last_offset_days=5)
+    tomorrow = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    await repository.set_state(session, user.id, handlers_module.PLAN_EXTEND_SNOOZE_KEY, tomorrow)
+    ctx = _FakeCtx()
+    await jobs_module._extend_nudge_for_user(ctx, session, user, TODAY)
+    assert ctx.sent == []
+
+
+async def test_nudge_ignores_race_plan(session):
     user = await _make_user(session)
     await _seed_for_user(session, user.id, last_offset_days=2,
                          goal="first_5k", target_date="2026-09-01")
     ctx = _FakeCtx()
-    with patch.object(jobs_module, "run_plan_extension", new=AsyncMock()) as m, \
-            patch.object(jobs_module, "user_runtime", new=_fake_runtime):
-        await jobs_module._extend_for_user(ctx, session, user)
+    await jobs_module._extend_nudge_for_user(ctx, session, user, TODAY)
+    assert ctx.sent == []
+
+
+# ---------- extend confirm callback (generation on ✅) ----------
+
+class _FakeQuery:
+    def __init__(self, data, chat_id):
+        self.data = data
+        self.message = SimpleNamespace(chat=SimpleNamespace(id=chat_id))
+        self.texts = []
+
+    async def answer(self):
+        pass
+
+    async def edit_message_text(self, text, **kw):
+        self.texts.append(text)
+
+
+def _update(data, chat_id=555):
+    return SimpleNamespace(callback_query=_FakeQuery(data, chat_id))
+
+
+def _use_session(session):
+    """Make the handler's ``async_session_maker()`` reuse the test's in-memory session
+    (the handler opens its own — otherwise it hits the empty file DB)."""
+    @asynccontextmanager
+    async def _cm():
+        yield session
+
+    return patch.object(handlers_module, "async_session_maker", _cm)
+
+
+async def test_callback_no_sets_snooze(session):
+    user = await _make_user(session)
+    await _seed_for_user(session, user.id, last_offset_days=5)
+    upd = _update("planext:no")
+    with _use_session(session), \
+            patch.object(handlers_module, "run_plan_extension", new=AsyncMock()) as m:
+        await handlers_module.plan_extend_callback(upd, None)
     m.assert_not_called()
+    snooze = await repository.get_state(session, user.id, handlers_module.PLAN_EXTEND_SNOOZE_KEY)
+    assert snooze and snooze > TODAY
+
+
+async def test_callback_yes_generates(session):
+    user = await _make_user(session)
+    await _seed_for_user(session, user.id, last_offset_days=5)
+    upd = _update("planext:yes")
+    with _use_session(session), \
+            patch.object(handlers_module, "run_plan_extension",
+                         new=AsyncMock(return_value=SimpleNamespace(id=1))) as m, \
+            patch.object(handlers_module, "user_runtime", new=_fake_runtime):
+        await handlers_module.plan_extend_callback(upd, None)
+    m.assert_awaited_once()
+    assert "Додав наступні тижні" in upd.callback_query.texts[-1]
+
+
+async def test_callback_yes_noop_when_not_near_end(session):
+    user = await _make_user(session)
+    await _seed_for_user(session, user.id, last_offset_days=40)  # plenty of runway
+    upd = _update("planext:yes")
+    with _use_session(session), \
+            patch.object(handlers_module, "run_plan_extension", new=AsyncMock()) as m, \
+            patch.object(handlers_module, "user_runtime", new=_fake_runtime):
+        await handlers_module.plan_extend_callback(upd, None)
+    m.assert_not_called()   # stale button → no paid generation
+    assert "актуально" in upd.callback_query.texts[-1]

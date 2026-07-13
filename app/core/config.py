@@ -82,12 +82,13 @@ class Settings(BaseSettings):
 
     # --- Open-ended "keep improving" plan (rolling blocks) ---
     # The `general` goal has no target race: generation lays a block of PLAN_BLOCK_WEEKS
-    # weeks and a daily top-up job auto-extends by another block once the plan's last
-    # workout falls within PLAN_EXTEND_LEAD_DAYS. The job runs at PLAN_EXTEND_HOUR
-    # (Europe/Warsaw) — before plan_sync (5) so freshly added weeks can be synced same day.
+    # weeks. When the plan's last workout falls within PLAN_EXTEND_LEAD_DAYS the morning
+    # tick asks (✅/❌) whether to add the next block — confirm-only, never auto-generated.
+    # An explicit ❌ snoozes the nudge for PLAN_EXTEND_SNOOZE_DAYS; an ignored one re-asks
+    # next morning.
     PLAN_BLOCK_WEEKS: int = 6
     PLAN_EXTEND_LEAD_DAYS: int = 10
-    PLAN_EXTEND_HOUR: int = 4
+    PLAN_EXTEND_SNOOZE_DAYS: int = 3
 
     # --- Adaptive plan (EP-02) ---
     # Weekly review: hour (Europe/Warsaw) + day-of-week it runs on. python-telegram-bot's

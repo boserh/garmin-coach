@@ -22,7 +22,6 @@ from bot.jobs import (
     PLAN_SYNC_HOUR,
     morning_job,
     plan_adapt_job,
-    plan_extend_job,
     plan_sync_job,
     weather_plan_job,
     weekly_digest_job,
@@ -71,6 +70,7 @@ def main() -> None:
     app.add_handler(CommandHandler("plan", handlers.plan))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
+    app.add_handler(CallbackQueryHandler(handlers.plan_extend_callback, pattern=r"^planext:"))
     app.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci:"))
     app.add_handler(CommandHandler("test_on", handlers.test_on))
     app.add_handler(CommandHandler("test_off", handlers.test_off))
@@ -111,12 +111,8 @@ def main() -> None:
         weather_plan_job,
         time=time(hour=settings.WEATHER_PLAN_HOUR, tzinfo=handlers.TZ),
     )
-    # Open-ended plans: daily auto-extend that tops up the next block when a plan is about
-    # to run out (before the sync job, so freshly added weeks can be pushed the same day).
-    app.job_queue.run_daily(
-        plan_extend_job,
-        time=time(hour=settings.PLAN_EXTEND_HOUR, tzinfo=handlers.TZ),
-    )
+    # Open-ended plans are topped up from the morning tick (_extend_nudge_for_user): a
+    # confirm-only ✅/❌ prompt, so no separate scheduled job here.
 
     logger.info("Bot started")
     print("Бот запущено. Ctrl+C для зупинки.")
