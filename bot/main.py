@@ -22,6 +22,7 @@ from bot.jobs import (
     PLAN_SYNC_HOUR,
     morning_job,
     plan_adapt_job,
+    plan_extend_job,
     plan_sync_job,
     weather_plan_job,
     weekly_digest_job,
@@ -109,6 +110,12 @@ def main() -> None:
     app.job_queue.run_daily(
         weather_plan_job,
         time=time(hour=settings.WEATHER_PLAN_HOUR, tzinfo=handlers.TZ),
+    )
+    # Open-ended plans: daily auto-extend that tops up the next block when a plan is about
+    # to run out (before the sync job, so freshly added weeks can be pushed the same day).
+    app.job_queue.run_daily(
+        plan_extend_job,
+        time=time(hour=settings.PLAN_EXTEND_HOUR, tzinfo=handlers.TZ),
     )
 
     logger.info("Bot started")

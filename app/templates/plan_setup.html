@@ -35,9 +35,15 @@
         {% for slug, label in goals.items() %}<option value="{{ slug }}">{{ label }}</option>{% endfor %}
       </select>
 
-      <label for="target_date">Цільова дата (необовʼязково)</label>
-      <input id="target_date" name="target_date" type="date" min="{{ today }}">
-      <div class="hint">Дата забігу/цілі. Якщо порожньо — підберу розумний термін.</div>
+      <div id="targetrow">
+        <label for="target_date">Цільова дата (необовʼязково)</label>
+        <input id="target_date" name="target_date" type="date" min="{{ today }}">
+        <div class="hint">Дата забігу/цілі. Якщо порожньо — підберу розумний термін.</div>
+      </div>
+      <div id="openendedhint" class="hint" style="display:none">
+        Безстроковий план: без цілі-події. Складу перший блок і автоматично дотворюватиму
+        наступні тижні, коли поточні добігатимуть кінця.
+      </div>
 
       <label>Дні бігу</label>
       <div class="days">
@@ -170,6 +176,21 @@
       cb.addEventListener('change', update);
     });
     update();
+
+    // Open-ended goals (general) have no target date — hide the date row and show the
+    // rolling-plan hint. Kept in sync with routers.plan.OPEN_ENDED_GOALS.
+    var OPEN_ENDED = ['general'];
+    var goalSel = document.getElementById('goal');
+    var targetRow = document.getElementById('targetrow');
+    var openHint = document.getElementById('openendedhint');
+    function updateGoal() {
+      var open = OPEN_ENDED.indexOf(goalSel.value) !== -1;
+      targetRow.style.display = open ? 'none' : 'block';
+      openHint.style.display = open ? 'block' : 'none';
+      if (open) document.getElementById('target_date').value = '';
+    }
+    goalSel.addEventListener('change', updateGoal);
+    updateGoal();
 
     // Default adjust level follows the goal: a race date → conservative, open-ended →
     // flexible. Stop auto-switching once the user picks a level explicitly.

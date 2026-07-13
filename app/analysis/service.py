@@ -84,6 +84,7 @@ from app.analysis.plans import (  # noqa: F401
     plan_edit_with_stats,
     run_plan_adaptation,
     run_plan_edit,
+    run_plan_extension,
     run_plan_generation,
     run_strength_preview,
     run_weather_plan_check,

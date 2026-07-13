@@ -174,7 +174,12 @@ GOALS = {
     "faster_5k": "Швидше 5 км",
     "first_10k": "Перші 10 км",
     "first_half": "Перший півмарафон",
+    "general": "Регулярний біг (без цілі-події)",
 }
+
+# Goals with no target race: an open-ended plan whose weeks are auto-extended in blocks
+# (see app.analysis.plans.run_plan_extension). Kept in sync with plans.OPEN_ENDED_GOAL.
+OPEN_ENDED_GOALS = {"general"}
 
 # weekday slug → Ukrainian label (used for the run-day picker)
 WEEKDAYS = {
@@ -495,6 +500,8 @@ async def plan_create(
 ):
     if goal not in GOALS:
         return RedirectResponse("/plan?error=goal", status_code=303)
+    if goal in OPEN_ENDED_GOALS:
+        target_date = ""   # open-ended plan: never pinned to a race date
     run_days = [d for d in WEEKDAYS if d in run_days]  # normalise to Mon→Sun order
     if len(run_days) < 2:
         return RedirectResponse("/plan?error=days", status_code=303)

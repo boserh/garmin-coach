@@ -8,7 +8,7 @@ ON CONFLICT).
 import datetime as dt
 from typing import Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -856,12 +856,47 @@ async def archive_plan(session: AsyncSession, plan: TrainingPlan) -> None:
     await session.commit()
 
 
+async def last_workout_date(session: AsyncSession, plan_id: int) -> Optional[str]:
+    """The latest workout date (ISO string) in a plan, or None if it has no workouts.
+    Used by the open-ended auto-extend job to know how far the plan currently reaches."""
+    return (
+        await session.execute(
+            select(func.max(PlannedWorkout.date)).where(
+                PlannedWorkout.plan_id == plan_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def append_workouts(
+    session: AsyncSession, plan: TrainingPlan, workouts: list, *, week_offset: int = 0
+) -> int:
+    """Append more run workouts to an EXISTING plan (open-ended extension) — unlike
+    ``create_plan`` this neither archives the plan nor touches prior rows. ``week_offset``
+    is added to each workout's ``week`` so the new block continues the plan's numbering.
+    Returns the number of rows added."""
+    added = 0
+    for w in workouts:
+        base_week = getattr(w, "week", None) or 1
+        session.add(PlannedWorkout(
+            plan_id=plan.id, user_id=plan.user_id, date=w.date,
+            week=base_week + week_offset,
+            type=w.type, dist_km=w.dist_km, description=w.description,
+            steps=_dump_steps(getattr(w, "steps", None)), status="planned",
+        ))
+        added += 1
+    await session.commit()
+    return added
+
+
 _WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
 async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
                                 assignments: dict, snapshots: Optional[dict] = None,
-                                custom: Optional[dict] = None) -> int:
+                                custom: Optional[dict] = None, *,
+                                start: Optional[str] = None, end: Optional[str] = None,
+                                week_offset: int = 0) -> int:
     """Add strength sessions on fixed weekdays across the plan's date range. ``assignments``
     maps a weekday slug (mon..sun) → {"id", "name"} of the saved Garmin workout to place on
     that weekday **every week** (a fixed pairing, not a rotation). Each carries a
@@ -869,7 +904,10 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
     caches each template's contents ({name?, exercises}) onto the row's ``strength_snapshot``
     so ``/plan`` renders the exercise accordion from the DB. ``custom`` maps a weekday slug →
     an already-sanitised ``strength_plan`` dict (the setup form's free-text "інше…" sessions,
-    built natively on push). A weekday in both prefers the saved workout. Returns the count."""
+    built natively on push). A weekday in both prefers the saved workout. ``start``/``end``
+    (ISO) override the plan's date range — the open-ended extension passes the new block's
+    window so strength lands only on the freshly-added weeks; ``week_offset`` continues the
+    plan's week numbering. Returns the count."""
     snapshots = snapshots or {}
     by_wd = {}
     for slug, t in (assignments or {}).items():
@@ -883,21 +921,23 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
             custom_by_wd[wd] = sp
     if not by_wd and not custom_by_wd:
         return 0
+    # ``start``/``end`` override the plan's own range — used by the open-ended extension to
+    # lay strength only across the freshly-added block. Default to the plan's date range.
     try:
-        start = dt.date.fromisoformat(plan.start_date)
+        start_d = dt.date.fromisoformat(start or plan.start_date)
     except (ValueError, TypeError):
         return 0
     try:
-        end = dt.date.fromisoformat(plan.target_date)
+        end_d = dt.date.fromisoformat(end or plan.target_date)
     except (ValueError, TypeError):
-        end = start + dt.timedelta(weeks=12)
-    if end < start:
-        end = start + dt.timedelta(weeks=12)
+        end_d = start_d + dt.timedelta(weeks=12)
+    if end_d < start_d:
+        end_d = start_d + dt.timedelta(weeks=12)
     added = 0
-    d = start
-    while d <= end:
+    d = start_d
+    while d <= end_d:
         wd = d.weekday()
-        week = (d - start).days // 7 + 1
+        week = (d - start_d).days // 7 + 1 + week_offset
         t = by_wd.get(wd)
         cp = custom_by_wd.get(wd)
         if t is not None:

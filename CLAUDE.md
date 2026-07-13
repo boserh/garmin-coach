@@ -827,6 +827,25 @@ taper mode ≤14 days to `target_date` (no moves, cut ≤15%); `flexible` allows
 spectrum incl. skip/token-2km. Adapt calls are NOT dedup-cached (`_complete` has no cache),
 so level/context changes always take effect. NB the prompt-for-JSON + Pydantic + one-retry
 choice avoids SDK tool-use, matching the rest of the `messages.create` usage.
+**Open-ended "keep improving" plans**: a fifth goal `general` (`GOALS`/`OPEN_ENDED_GOALS`
+in `routers/plan.py`, `plans.OPEN_ENDED_GOAL`) with **no target race** — a rolling plan you
+just keep running. Generation lays a first block of `PLAN_BLOCK_WEEKS` (6) weeks: the plan
+is stored with `target_date=None` (so all the `target_date`-guarded logic treats it as
+open — adjust-level defaults flexible, no taper), while the model gets a concrete block-end
+as its range plus an `open_ended` flag (`SYSTEM_PLAN`: no подводка, sustainable progression
+with room to grow). A daily job (`bot.jobs.plan_extend_job` → `_extend_for_user`, `run_daily`
+at `PLAN_EXTEND_HOUR`=4, before plan-sync) **auto-extends** it: when the plan's last workout
+is within `PLAN_EXTEND_LEAD_DAYS` (10), `analysis.plans.run_plan_extension` **appends** the
+next 6-week block to the SAME plan (`repository.append_workouts` — never archives/regenerates)
+continuing progression from the tail (`previous_weeks` context) and rebasing `week` numbers
+(`week_offset` = current max week). The gate is self-limiting (after a top-up the last date
+jumps ~a block out, so it won't re-fire; a failed gen just retries next day) — no bot_state
+guard. Strength is extended too, reusing the first block's custom sessions + re-cloning saved
+templates (`_add_plan_strength(..., reuse_only=True)`, windowed via `add_strength_workouts`'s
+`start`/`end`/`week_offset`) — **no extra Claude call**. Best-effort Garmin re-sync after; the
+user gets a short "додав наступні тижні" DM. Extension is auto-only (per the setup choice) —
+no manual button yet. **Cost note**: this is the one path that fires a real Opus call on a
+schedule (the user's own key), so it's gated tight and silent for everyone with runway left.
 
 ## Caching layers
 
