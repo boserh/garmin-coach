@@ -65,6 +65,37 @@ _DEFAULT_DAILY_Q = (
 )
 
 
+def _strength_exercises(w) -> Optional[dict]:
+    """Compact exercise list for a strength ``PlannedWorkout``, for the report's
+    ``plan_today`` (ST-09) — so the analyst narrates the real session instead of guessing
+    from history. From-scratch days read ``strength_plan.blocks``; clone days read the
+    build-time ``strength_snapshot`` (both display-only, straight from the DB — no Garmin
+    call on the report path). Returns ``{name?, exercises:[{category, exercise?, reps?}]}``
+    or ``None``. NB the JSON-null gotcha: an empty snapshot deserialises to Python ``None``
+    (falsy), so a plain truthiness check filters it."""
+    if getattr(w, "type", None) != "strength":
+        return None
+
+    def _compact(e: dict) -> dict:
+        return {k: v for k, v in (("category", e.get("category")),
+                                  ("exercise", e.get("exercise")),
+                                  ("reps", e.get("reps"))) if v is not None}
+
+    sp = getattr(w, "strength_plan", None)
+    if isinstance(sp, dict) and sp.get("blocks"):
+        ex = [_compact(e) for b in sp["blocks"] for e in (b.get("exercises") or [])
+              if e.get("category")]
+        if ex:
+            return {k: v for k, v in (("name", sp.get("name")), ("exercises", ex)) if v}
+
+    snap = getattr(w, "strength_snapshot", None)
+    if isinstance(snap, dict) and snap.get("exercises"):
+        ex = [_compact(e) for e in snap["exercises"] if e.get("category")]
+        if ex:
+            return {k: v for k, v in (("name", snap.get("name")), ("exercises", ex)) if v}
+    return None
+
+
 def analyze_with_stats(
     payload: Union[Payload, dict],
     question: str = "",
@@ -221,6 +252,7 @@ async def run_analysis(
                         "dist_km": w.dist_km,
                         "description": w.description,
                         "steps": w.steps,
+                        "exercises": _strength_exercises(w),
                     }.items() if v is not None}
                     for w in ws
                 ]

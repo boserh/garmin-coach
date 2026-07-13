@@ -78,6 +78,25 @@ def test_provider_without_credentials_raises(fake_garth):
         p.login()
 
 
+def test_connectapi_logs_in_lazily(fake_garth):
+    # ST-09: a flow that reaches Garmin without build_payload_cached (e.g. plan
+    # generation's strength snapshot) must still authenticate — connectapi logs in itself,
+    # otherwise the empty garth.Client() blows up on `assert self.oauth1_token`.
+    creds = UserCredentials(user_id=1, garth_token="good")
+    p = providers.build_user_provider(creds)
+    assert p._logged_in is False
+    out = p.connectapi("/workout-service/workout/42")
+    assert p._logged_in is True
+    assert out == {"path": "/workout-service/workout/42"}
+
+
+def test_username_property_logs_in_lazily(fake_garth):
+    creds = UserCredentials(user_id=1, garmin_email="e@x.com", garmin_password="p")
+    p = providers.build_user_provider(creds)
+    assert p.username == "tester"      # triggers the fresh login
+    assert p.new_token == "fresh-token"
+
+
 def test_get_provider_prefers_context(fake_garth):
     sentinel = object()
     token = providers.set_current_provider(sentinel)

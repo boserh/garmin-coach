@@ -1,10 +1,53 @@
 """Analysis-layer unit tests that need no API key."""
+import types
+
 import pytest
 
 from app.analysis import service
+from app.analysis.reports import _strength_exercises
 from app.analysis.service import _ask_cache_key, _cache_key
 
 _DATA = {"daily": [], "recent_activities": [], "planned_runs": []}
+
+
+def _wo(**kw):
+    kw.setdefault("type", "strength")
+    kw.setdefault("strength_plan", None)
+    kw.setdefault("strength_snapshot", None)
+    return types.SimpleNamespace(**kw)
+
+
+def test_strength_exercises_from_snapshot():
+    # ST-09: a clone day's exercises come from the build-time snapshot (display-only).
+    w = _wo(strength_snapshot={"name": "Day 2",
+                               "exercises": [{"category": "BENCH_PRESS", "exercise": "Incline",
+                                              "reps": 12},
+                                             {"category": "PLANK"}]})
+    got = _strength_exercises(w)
+    assert got["name"] == "Day 2"
+    assert got["exercises"] == [
+        {"category": "BENCH_PRESS", "exercise": "Incline", "reps": 12},
+        {"category": "PLANK"},
+    ]
+
+
+def test_strength_exercises_from_plan_blocks():
+    w = _wo(strength_plan={"name": "Все тіло",
+                           "blocks": [{"reps": 3, "exercises": [{"category": "SQUAT", "reps": 10}]},
+                                      {"exercises": [{"category": "ROW", "reps": 8}]}]})
+    got = _strength_exercises(w)
+    assert got == {"name": "Все тіло",
+                   "exercises": [{"category": "SQUAT", "reps": 10},
+                                 {"category": "ROW", "reps": 8}]}
+
+
+def test_strength_exercises_empty_snapshot_is_none():
+    # The JSON-null gotcha: an empty snapshot deserialises to Python None → no exercises,
+    # so the report says "силова за планом" instead of inventing a muscle group.
+    assert _strength_exercises(_wo(strength_snapshot=None)) is None
+    assert _strength_exercises(_wo(strength_snapshot={"exercises": []})) is None
+    non_strength = _wo(type="easy", strength_snapshot={"exercises": [{"category": "X"}]})
+    assert _strength_exercises(non_strength) is None
 
 
 _PREV = {"date": "2026-06-21", "text": "учора все ок"}
