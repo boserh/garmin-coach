@@ -32,7 +32,6 @@ from app.analysis.service import (
     run_health_alert,
     run_injury_check,
     run_plan_adaptation,
-    run_plan_extension,
     run_weather_plan_check,
 )
 from app.core.config import settings
@@ -42,7 +41,13 @@ from app.db.users import eligible_users
 from app.garmin import matching, plan_sync, repository, service
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
-from bot.handlers import MFA_REQUIRED_MSG, PENDING_ADAPT_KEY, TZ, checkin_keyboard
+from bot.handlers import (
+    MFA_REQUIRED_MSG,
+    PENDING_ADAPT_KEY,
+    PLAN_EXTEND_SNOOZE_KEY,
+    TZ,
+    checkin_keyboard,
+)
 
 logger = logging.getLogger("bot")
 
@@ -69,6 +74,10 @@ PLAN_SYNC_HOUR = 5
 # most once/day per user (guarded via bot_state, key below + today's date).
 ADAPT_HEAVY_TYPES = {"tempo", "intervals", "long"}
 ADAPT_GUARD_PREFIX = "adapt_suggested:"
+
+# Open-ended plan extend nudge: once-a-day guard keyed by date (bot_state extend_nudge:<date>),
+# so the morning "продовжити план?" ✅/❌ prompt is sent at most once per day per user.
+EXTEND_NUDGE_PREFIX = "extend_nudge:"
 
 # EP-07 weekly digest: once-a-week guard keyed by ISO week (bot_state key digest:<iso-week>).
 DIGEST_GUARD_PREFIX = "digest:"
@@ -352,6 +361,10 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
             # Independent guard from the morning report above — runs even on a later
             # tick within the same 07-12 window after the report already went out.
             await _adapt_morning_check(ctx, session, user, creds, today)
+
+            # Open-ended plans: ask (✅/❌) whether to add the next block when the plan is
+            # about to run out. Confirm-only — generation happens on the ✅ tap, not here.
+            await _extend_nudge_for_user(ctx, session, user, today)
     except MFARequired:
         # A different process (this one) can't finish the login Garmin is asking
         # about — just point the user at /settings once/day, don't spam every tick.
@@ -640,15 +653,23 @@ async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     await for_each_user(_sync_for_user, with_chat=False, label="PLAN sync")
 
 
-async def _extend_for_user(ctx, session, user: User) -> None:
-    """Auto-extend an open-ended (``general``) plan by another block once it's about to run
-    out (last workout within PLAN_EXTEND_LEAD_DAYS). Self-limiting: after a successful
-    extension the last date jumps ~a block ahead, so it won't re-fire until next time; a
-    failed generation simply retries next day. Best-effort — a per-user error never aborts
-    the job loop (for_each_user isolates it)."""
+async def _extend_nudge_for_user(ctx, session, user: User, today: str) -> None:
+    """Morning nudge for an open-ended (``general``) plan that's about to run out (last
+    workout within PLAN_EXTEND_LEAD_DAYS): ask ✅/❌ whether to add the next block. This is
+    **confirm-only** — the actual (paid Opus) generation happens in ``plan_extend_callback``
+    on a ✅, never here. Guarded once/day (so an in-window re-tick doesn't re-ask); a prior
+    ❌ snoozes it for a few days. Cheap: pure DB reads, zero Claude calls."""
+    if not user.telegram_chat_id:
+        return
+    guard_key = EXTEND_NUDGE_PREFIX + today
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    snooze = await repository.get_state(session, user.id, PLAN_EXTEND_SNOOZE_KEY)
+    if snooze and snooze >= today:   # ISO dates compare lexically
+        return
     plan = await repository.get_active_plan(session, user.id)
     if plan is None or plan.target_date or plan.goal != OPEN_ENDED_GOAL:
-        return   # only open-ended plans auto-extend
+        return
     last = await repository.last_workout_date(session, plan.id)
     if not last:
         return
@@ -657,38 +678,21 @@ async def _extend_for_user(ctx, session, user: User) -> None:
     except ValueError:
         return
     if days_left > settings.PLAN_EXTEND_LEAD_DAYS:
-        return   # still plenty of runway — nothing to do yet
-    logger.info(f"PLAN extend user={user.id} plan={plan.id}: {days_left}d left → topping up")
-    extended = None
-    async with user_runtime(session, user) as creds:
-        if not creds.anthropic_key:
-            return
-        extended = await run_plan_extension(
-            session, user_id=user.id, api_key=creds.anthropic_key)
-        # Push any freshly-added weeks now (best-effort); the daily sync also reconciles.
-        if extended is not None and user.garmin_sync_enabled:
-            try:
-                await plan_sync.sync_plan_to_garmin(session, user.id)
-            except Exception:
-                logger.exception(f"PLAN extend sync failed user={user.id}")
-    if extended is not None and user.telegram_chat_id:
-        try:
-            await ctx.bot.send_message(
-                user.telegram_chat_id,
-                "🗓 Додав наступні тижні до твого безстрокового плану бігу — "
-                "глянь /plan.")
-        except Exception:
-            logger.exception(f"PLAN extend notify failed user={user.id}")
+        return   # still plenty of runway — nothing to ask yet
 
-
-async def plan_extend_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Daily auto-extend for open-ended plans: top up the next block when a plan is about to
-    run out. Silent (no work, no Claude call) for everyone whose plan still has runway.
-    Scheduled by run_daily, so no further time guard is needed."""
-    async def worker(session, user):
-        await _extend_for_user(ctx, session, user)
-
-    await for_each_user(worker, with_chat=False, label="PLAN extend")
+    await repository.set_state(session, user.id, guard_key, "1")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Продовжити", callback_data="planext:yes"),
+        InlineKeyboardButton("❌ Не зараз", callback_data="planext:no"),
+    ]])
+    left = "сьогодні" if days_left <= 0 else f"за ~{days_left} дн."
+    await ctx.bot.send_message(
+        user.telegram_chat_id,
+        f"🗓 Твій план бігу добігає кінця ({left}). Додати наступні "
+        f"{settings.PLAN_BLOCK_WEEKS} тижнів?",
+        reply_markup=kb,
+    )
+    logger.info(f"PLAN extend nudge sent user={user.id} plan={plan.id} ({days_left}d left)")
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):

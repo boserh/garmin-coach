@@ -22,6 +22,7 @@ from app.analysis.service import (
     run_analysis,
     run_ask,
     run_plan_edit,
+    run_plan_extension,
 )
 from app.core.config import settings
 from app.db import users
@@ -39,6 +40,10 @@ TZ = ZoneInfo("Europe/Warsaw")
 # bot_state key for a pending adaptive-plan proposal (EP-02) — stored per-user, not
 # context.user_data, because the proposal can originate from a job (no chat context).
 PENDING_ADAPT_KEY = "pending_adapt"
+
+# bot_state key: date (ISO) until which the open-ended-plan extend nudge stays quiet after
+# an explicit ❌ (set by plan_extend_callback, read by the morning nudge). "" = not snoozed.
+PLAN_EXTEND_SNOOZE_KEY = "extend_snooze"
 
 _REPORT_Q = "Оціни відновлення і дай пораду до наступної запланованої пробіжки."
 _DEEP_Q = "Глибокий розбір сну, HRV і навантаження за два тижні."
@@ -600,6 +605,66 @@ async def adapt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 logger.exception(f"ADAPT sync failed user={user.id}")
     await q.edit_message_text(f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.")
+
+
+async def plan_extend_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Answer the morning "продовжити безстроковий план?" nudge (open-ended plans).
+    ``planext:yes`` generates the next block on demand (a real Opus call — only ever after
+    this explicit tap); ``planext:no`` snoozes the nudge for a few days. Idempotent against
+    a stale button: ✅ re-checks the plan still needs extending before spending anything."""
+    q = update.callback_query
+    await q.answer()
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+
+        if q.data == "planext:no":
+            until = (dt.date.today() + dt.timedelta(days=settings.PLAN_EXTEND_SNOOZE_DAYS))
+            await repository.set_state(
+                session, user.id, PLAN_EXTEND_SNOOZE_KEY, until.isoformat())
+            await q.edit_message_text("Ок, поки що не чіпаю план. Нагадаю пізніше.")
+            return
+
+        # ✅ — re-verify the plan is still an open-ended one about to run out (guards against
+        # a double tap / a stale button from a previous day after it was already extended).
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None or plan.target_date:
+            await q.edit_message_text("Немає безстрокового плану для продовження.")
+            return
+        last = await repository.last_workout_date(session, plan.id)
+        days_left = None
+        if last:
+            try:
+                days_left = (dt.date.fromisoformat(last) - dt.date.today()).days
+            except ValueError:
+                days_left = None
+        if days_left is not None and days_left > settings.PLAN_EXTEND_LEAD_DAYS:
+            await q.edit_message_text("План уже продовжено — усе актуально. /plan.")
+            return
+
+        await q.edit_message_text("⏳ Генерую наступні тижні, це може зайняти хвилину…")
+        try:
+            async with user_runtime(session, user) as creds:
+                if not creds.anthropic_key:
+                    await q.edit_message_text("Немає Anthropic-ключа — не можу згенерувати.")
+                    return
+                extended = await run_plan_extension(
+                    session, user_id=user.id, api_key=creds.anthropic_key)
+                if extended is not None and user.garmin_sync_enabled:
+                    try:
+                        await plan_sync.sync_plan_to_garmin(session, user.id)
+                    except Exception:
+                        logger.exception(f"PLAN extend sync failed user={user.id}")
+        except AnalystError as e:
+            await q.edit_message_text(f"Не вдалось продовжити план: {e}")
+            return
+        except Exception:
+            logger.exception(f"PLAN extend failed user={user.id}")
+            await q.edit_message_text("Не вдалось продовжити план. Спробуй пізніше.")
+            return
+    await q.edit_message_text("✅ Додав наступні тижні до плану. /plan — переглянути.")
 
 
 # ---------- TEST JOB ----------
