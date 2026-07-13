@@ -142,14 +142,23 @@ class _UserGarthProvider:
         self.new_token = self._client.dumps()
 
     def connectapi(self, path: str, **kwargs):
+        # Ensure the garth client is authenticated. Most paths go through
+        # build_payload_cached, which logs in first; but run_plan_generation (and any
+        # other flow reaching Garmin without a payload build) never did, so the client
+        # stayed an empty garth.Client() and every call blew up on
+        # `assert self.oauth1_token` — silently emptying the strength snapshot (ST-09).
+        # login() is guarded/idempotent and a plain loads() when a valid token exists.
+        self.login()
         return self._client.connectapi(path, **kwargs)
 
     @property
     def username(self) -> str:
+        self.login()
         return self._client.profile["userName"]
 
     @property
     def display_name(self) -> str:
+        self.login()
         return self._client.profile["displayName"]
 
 
