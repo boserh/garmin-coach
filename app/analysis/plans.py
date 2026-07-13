@@ -28,8 +28,12 @@ from app.analysis.prompts import (
     SYSTEM_STRENGTH_GEN,
     SYSTEM_WEATHER_PLAN,
 )
+from app.core.config import settings
 from app.garmin import exercises
 from app.garmin.schemas import GeneratedPlan, PlanEdit, StrengthSession
+
+# The `general` goal has no target race — an open-ended, continuously-extended plan.
+OPEN_ENDED_GOAL = "general"
 
 logger = logging.getLogger("claude")
 
@@ -44,6 +48,118 @@ def _coerce_plan(text: str) -> GeneratedPlan:
     if i != -1 and j > i:
         s = s[i:j + 1]
     return GeneratedPlan(**json.loads(s))
+
+
+def _block_end(start_date: Optional[str], weeks: int) -> Optional[str]:
+    """ISO end date (inclusive last day) of an ``weeks``-long block from ``start_date``."""
+    try:
+        s = dt.date.fromisoformat(start_date or "")
+    except (ValueError, TypeError):
+        return None
+    return (s + dt.timedelta(weeks=weeks) - dt.timedelta(days=1)).isoformat()
+
+
+_WD_SLUGS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _existing_custom_strength(workouts, intake) -> dict:
+    """Weekday slug → an already-generated ``strength_plan`` from the plan's current custom
+    strength rows, so an extension reuses them verbatim (no Claude call). Only weekdays the
+    intake marks as free-text "custom" are returned."""
+    wanted = set(((((intake or {}).get("strength")) or {}).get("custom") or {}).keys())
+    if not wanted:
+        return {}
+    out: dict = {}
+    for w in workouts:
+        if (w.type or "") != "strength" or not getattr(w, "strength_plan", None):
+            continue
+        try:
+            slug = _WD_SLUGS[dt.date.fromisoformat(w.date).weekday()]
+        except (ValueError, TypeError):
+            continue
+        if slug in wanted and slug not in out:
+            out[slug] = w.strength_plan
+    return out
+
+
+async def _add_plan_strength(
+    session, plan, *, intake, fitness, api_key, model,
+    start: Optional[str] = None, end: Optional[str] = None,
+    week_offset: int = 0, reuse_only: bool = False,
+) -> int:
+    """Lay the plan's opt-in strength sessions on their weekdays (best-effort — never fails
+    plan creation). Two sources: saved Garmin Day 1/Day 2 workouts (snapshotted here, cloned
+    on push) and free-text "інше…" sessions built from scratch. ``start``/``end`` bound the
+    window (an extension passes the new block); ``week_offset`` continues week numbering.
+    Confirmed setup-form previews (``custom_generated``) are reused verbatim, skipping the
+    Claude call; with ``reuse_only`` a free-text weekday with no reusable session is skipped
+    rather than regenerated (used by extensions, which reuse the first block's sessions)."""
+    from app.garmin import repository
+
+    strength = (intake or {}).get("strength") or {}
+    assignments = strength.get("assignments") or {}
+    custom = strength.get("custom") or {}
+    custom_generated = strength.get("custom_generated") or {}
+    if not (strength.get("enabled") and (assignments or custom)):
+        return 0
+    try:
+        from fastapi.concurrency import run_in_threadpool
+
+        from app.garmin import client, workout_export
+        amap: dict = {}
+        snapshots: dict = {}
+        if assignments:
+            saved = {w["id"]: workout_export.clean_workout_name(w["name"])
+                     for w in await run_in_threadpool(client.fetch_workouts)}
+            amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
+                    for slug, wid in assignments.items()}
+            # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
+            # so /plan renders the accordion from the DB instead of re-fetching per load.
+            for tid in set(assignments.values()):
+                raw = await run_in_threadpool(client.fetch_workout_full, tid)
+                if raw:
+                    snapshots[tid] = {
+                        "name": (raw.get("workoutName") or "").strip() or None,
+                        "exercises": workout_export.read_exercises(raw),
+                    }
+        # Generate each distinct free-text session once, sanitise categories, and lay it on
+        # its weekday as a from-scratch strength_plan (built natively on push).
+        custom_plans: dict = {}
+        gen_cache: dict = {}
+        for slug, desc in custom.items():
+            key = (desc or "").strip().lower()
+            if not key:
+                continue
+            # A confirmed preview / reused session for this weekday → skip the Claude call.
+            pre = repository._sanitize_strength(custom_generated.get(slug)) \
+                if custom_generated.get(slug) else None
+            if pre:
+                custom_plans[slug] = pre
+                continue
+            if reuse_only:
+                continue   # extension with nothing to reuse — skip rather than pay
+            if key not in gen_cache:
+                try:
+                    sess, _ = await _run_claude(
+                        generate_strength_with_stats,
+                        {"description": desc, "fitness": fitness or None,
+                         "exercise_categories": exercises.CATEGORIES},
+                        api_key, model)
+                    gen_cache[key] = repository._sanitize_strength(sess)
+                except Exception:
+                    logger.exception(f"PLAN strength gen failed plan={plan.id}")
+                    gen_cache[key] = None
+            if gen_cache[key]:
+                custom_plans[slug] = gen_cache[key]
+        n = await repository.add_strength_workouts(
+            session, plan, amap, snapshots, custom_plans,
+            start=start, end=end, week_offset=week_offset)
+        logger.info(f"PLAN strength plan={plan.id}: +{n} sessions "
+                    f"({len(amap)} saved, {len(custom_plans)} custom)")
+        return n
+    except Exception:
+        logger.exception(f"PLAN strength add failed plan={plan.id}")
+        return 0
 
 
 def generate_plan_with_stats(
@@ -114,9 +230,18 @@ async def run_plan_generation(
     ReportLog(kind="plan"), and return the new TrainingPlan. ``model`` selects the
     generation engine (Opus default; Fable via the setup-form toggle)."""
     gen_model = model or MODEL_PLAN_GEN
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import repository
+
+    # The `general` goal is open-ended: never pin the plan to a race date; instead plan a
+    # first block of PLAN_BLOCK_WEEKS weeks (the daily job auto-extends it later). The model
+    # gets a concrete block-end as its range + an open_ended flag (no taper) — see SYSTEM_PLAN.
+    open_ended = goal == OPEN_ENDED_GOAL
+    ctx_target = target_date
+    strength_end = target_date
+    if open_ended:
+        target_date = None
+        ctx_target = _block_end(start_date, settings.PLAN_BLOCK_WEEKS)
+        strength_end = ctx_target
 
     recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
                    if "run" in (a.get("type") or "")]
@@ -127,7 +252,8 @@ async def run_plan_generation(
     multisport = await _build_multisport(session, user_id)
     context = {
         "today": dt.date.today().isoformat(),
-        "goal": goal, "start_date": start_date, "target_date": target_date,
+        "goal": goal, "start_date": start_date, "target_date": ctx_target,
+        "open_ended": open_ended,
         "days_per_week": days_per_week, "intensity": intensity,
         "run_days": run_days, "long_run_day": long_run_day, "intake": intake,
         "recent_runs": recent_runs, "recovery": recovery[-14:],
@@ -151,73 +277,100 @@ async def run_plan_generation(
         start_date=start_date, days_per_week=days_per_week, intensity=intensity,
         intake=intake, summary=plan_out.summary, workouts=plan_out.workouts,
     )
-    # Optional strength on the chosen weekdays. Two sources, both best-effort (never fail
-    # plan creation): saved Day 1/Day 2 workouts the user picked (cloned to our own copies
-    # on push), and free-text "інше…" descriptions we generate from scratch here.
-    strength = (intake or {}).get("strength") or {}
-    assignments = strength.get("assignments") or {}
-    custom = strength.get("custom") or {}
-    # Sessions the user already previewed + confirmed in the setup form (ST-05): reuse
-    # them verbatim instead of paying to regenerate (still re-sanitised below — never
-    # trust a client-supplied session). Keyed by weekday slug.
-    custom_generated = strength.get("custom_generated") or {}
-    if strength.get("enabled") and (assignments or custom):
-        try:
-            from app.garmin import client, workout_export
-            amap: dict = {}
-            snapshots: dict = {}
-            if assignments:
-                saved = {w["id"]: workout_export.clean_workout_name(w["name"])
-                         for w in await run_in_threadpool(client.fetch_workouts)}
-                amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
-                        for slug, wid in assignments.items()}
-                # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
-                # so /plan renders the accordion from the DB instead of re-fetching per load.
-                for tid in set(assignments.values()):
-                    raw = await run_in_threadpool(client.fetch_workout_full, tid)
-                    if raw:
-                        snapshots[tid] = {
-                            "name": (raw.get("workoutName") or "").strip() or None,
-                            "exercises": workout_export.read_exercises(raw),
-                        }
-            # Generate each distinct free-text session once, sanitise categories, and lay it
-            # on its weekday as a from-scratch strength_plan (built natively on push).
-            custom_plans: dict = {}
-            gen_cache: dict = {}
-            for slug, desc in custom.items():
-                key = (desc or "").strip().lower()
-                if not key:
-                    continue
-                # A confirmed preview for this weekday → reuse it, skip the Claude call.
-                pre = repository._sanitize_strength(custom_generated.get(slug)) \
-                    if custom_generated.get(slug) else None
-                if pre:
-                    custom_plans[slug] = pre
-                    continue
-                if key not in gen_cache:
-                    try:
-                        sess, _ = await _run_claude(
-                            generate_strength_with_stats,
-                            {"description": desc, "fitness": fitness or None,
-                             "exercise_categories": exercises.CATEGORIES},
-                            api_key, gen_model)
-                        gen_cache[key] = repository._sanitize_strength(sess)
-                    except Exception:
-                        logger.exception(f"PLAN strength gen failed user={user_id}")
-                        gen_cache[key] = None
-                if gen_cache[key]:
-                    custom_plans[slug] = gen_cache[key]
-            n = await repository.add_strength_workouts(
-                session, plan, amap, snapshots, custom_plans)
-            logger.info(f"PLAN strength user={user_id}: +{n} sessions "
-                        f"({len(amap)} saved, {len(custom_plans)} custom)")
-        except Exception:
-            logger.exception(f"PLAN strength add failed user={user_id}")
+    await _add_plan_strength(
+        session, plan, intake=intake, fitness=fitness, api_key=api_key, model=gen_model,
+        end=strength_end,
+    )
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"plan: {goal}", report_text=plan_out.summary,
+    )
+    return plan
+
+
+async def run_plan_extension(
+    session, *, user_id: int, api_key: Optional[str] = None,
+    model: Optional[str] = None, weeks: Optional[int] = None,
+):
+    """Append the next block to an open-ended (``general``) plan, continuing progression
+    from where it currently ends — the rolling top-up behind the daily auto-extend job.
+    Returns the plan (now longer) or ``None`` when there's no active open-ended plan.
+    Appends ``PlannedWorkout`` rows to the SAME plan (never archives) and logs a
+    ReportLog(kind="plan"). Best-effort strength: reuses the first block's custom sessions
+    and re-clones saved templates onto the new weeks (no extra Claude call)."""
+    from app.garmin import repository
+
+    gen_model = model or MODEL_PLAN_GEN
+    weeks = weeks or settings.PLAN_BLOCK_WEEKS
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None or plan.target_date or plan.goal != OPEN_ENDED_GOAL:
+        return None   # only open-ended plans extend
+
+    last = await repository.last_workout_date(session, plan.id)
+    anchor = dt.date.today()
+    if last:
+        try:
+            anchor = max(anchor, dt.date.fromisoformat(last))
+        except ValueError:
+            pass
+    new_start = (anchor + dt.timedelta(days=1)).isoformat()
+    block_end = _block_end(new_start, weeks)
+
+    intake = plan.intake or {}
+    existing = await repository.list_workouts(session, plan.id)
+    # The tail of the existing plan so the model continues progression, not restarts.
+    tail = [{"date": w.date, "type": w.type, "dist_km": w.dist_km} for w in existing[-18:]]
+    week_offset = max((w.week or 0) for w in existing) if existing else 0
+
+    recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
+                   if "run" in (a.get("type") or "")]
+    recovery = await repository.read_history(session, user_id, days=30)
+    weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
+    ex = await repository.get_recent_extra(session, user_id, days=21)
+    fitness = _build_fitness_snapshot(ex)
+    multisport = await _build_multisport(session, user_id)
+    context = {
+        "today": dt.date.today().isoformat(),
+        "goal": plan.goal, "start_date": new_start, "target_date": block_end,
+        "open_ended": True, "extension": True, "previous_weeks": tail,
+        "days_per_week": plan.days_per_week, "intensity": plan.intensity,
+        "run_days": intake.get("run_days"), "long_run_day": intake.get("long_run_day"),
+        "intake": intake,
+        "recent_runs": recent_runs, "recovery": recovery[-14:],
+        "weekly_volume": weekly_volume or None,
+        "fitness": fitness or None, "multisport": multisport,
+    }
+    logger.info(f"PLAN extend user={user_id} plan={plan.id} {new_start}..{block_end}")
+    try:
+        plan_out, stats = await _run_claude(
+            generate_plan_with_stats, context, api_key, gen_model)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="plan", model=gen_model, ok=False,
+            question=f"extend: {plan.goal}", error=str(e)[:512],
+        )
+        raise
+    added = await repository.append_workouts(
+        session, plan, plan_out.workouts, week_offset=week_offset)
+    logger.info(f"PLAN extend user={user_id} plan={plan.id}: +{added} workouts")
+
+    # Extend opt-in strength onto the new block, reusing the first block's custom sessions
+    # (no extra Claude call); saved-template picks are re-cloned cheaply.
+    reuse = _existing_custom_strength(existing, intake)
+    if reuse:
+        strength = dict(intake.get("strength") or {}, custom_generated=reuse)
+        intake = dict(intake, strength=strength)
+    await _add_plan_strength(
+        session, plan, intake=intake, fitness=fitness, api_key=api_key, model=gen_model,
+        start=new_start, end=block_end, week_offset=week_offset, reuse_only=True,
+    )
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"extend: {plan.goal}", report_text=plan_out.summary,
     )
     return plan
 

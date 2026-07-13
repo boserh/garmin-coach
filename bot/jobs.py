@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 
 from app import records, weather
 from app.analysis import delivery
+from app.analysis.plans import OPEN_ENDED_GOAL
 from app.analysis.service import (
     AnalystError,
     build_health_alerts,
@@ -40,7 +41,13 @@ from app.db.users import eligible_users
 from app.garmin import matching, plan_sync, repository, service
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
-from bot.handlers import MFA_REQUIRED_MSG, PENDING_ADAPT_KEY, TZ, checkin_keyboard
+from bot.handlers import (
+    MFA_REQUIRED_MSG,
+    PENDING_ADAPT_KEY,
+    PLAN_EXTEND_SNOOZE_KEY,
+    TZ,
+    checkin_keyboard,
+)
 
 logger = logging.getLogger("bot")
 
@@ -67,6 +74,10 @@ PLAN_SYNC_HOUR = 5
 # most once/day per user (guarded via bot_state, key below + today's date).
 ADAPT_HEAVY_TYPES = {"tempo", "intervals", "long"}
 ADAPT_GUARD_PREFIX = "adapt_suggested:"
+
+# Open-ended plan extend nudge: once-a-day guard keyed by date (bot_state extend_nudge:<date>),
+# so the morning "продовжити план?" ✅/❌ prompt is sent at most once per day per user.
+EXTEND_NUDGE_PREFIX = "extend_nudge:"
 
 # EP-07 weekly digest: once-a-week guard keyed by ISO week (bot_state key digest:<iso-week>).
 DIGEST_GUARD_PREFIX = "digest:"
@@ -350,6 +361,10 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
             # Independent guard from the morning report above — runs even on a later
             # tick within the same 07-12 window after the report already went out.
             await _adapt_morning_check(ctx, session, user, creds, today)
+
+            # Open-ended plans: ask (✅/❌) whether to add the next block when the plan is
+            # about to run out. Confirm-only — generation happens on the ✅ tap, not here.
+            await _extend_nudge_for_user(ctx, session, user, today)
     except MFARequired:
         # A different process (this one) can't finish the login Garmin is asking
         # about — just point the user at /settings once/day, don't spam every tick.
@@ -636,6 +651,48 @@ async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Once-a-day per-user Garmin calendar sync (separate from the morning report);
     scheduled by run_daily, so no further time guard is needed."""
     await for_each_user(_sync_for_user, with_chat=False, label="PLAN sync")
+
+
+async def _extend_nudge_for_user(ctx, session, user: User, today: str) -> None:
+    """Morning nudge for an open-ended (``general``) plan that's about to run out (last
+    workout within PLAN_EXTEND_LEAD_DAYS): ask ✅/❌ whether to add the next block. This is
+    **confirm-only** — the actual (paid Opus) generation happens in ``plan_extend_callback``
+    on a ✅, never here. Guarded once/day (so an in-window re-tick doesn't re-ask); a prior
+    ❌ snoozes it for a few days. Cheap: pure DB reads, zero Claude calls."""
+    if not user.telegram_chat_id:
+        return
+    guard_key = EXTEND_NUDGE_PREFIX + today
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    snooze = await repository.get_state(session, user.id, PLAN_EXTEND_SNOOZE_KEY)
+    if snooze and snooze >= today:   # ISO dates compare lexically
+        return
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None or plan.target_date or plan.goal != OPEN_ENDED_GOAL:
+        return
+    last = await repository.last_workout_date(session, plan.id)
+    if not last:
+        return
+    try:
+        days_left = (dt.date.fromisoformat(last) - dt.date.today()).days
+    except ValueError:
+        return
+    if days_left > settings.PLAN_EXTEND_LEAD_DAYS:
+        return   # still plenty of runway — nothing to ask yet
+
+    await repository.set_state(session, user.id, guard_key, "1")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Продовжити", callback_data="planext:yes"),
+        InlineKeyboardButton("❌ Не зараз", callback_data="planext:no"),
+    ]])
+    left = "сьогодні" if days_left <= 0 else f"за ~{days_left} дн."
+    await ctx.bot.send_message(
+        user.telegram_chat_id,
+        f"🗓 Твій план бігу добігає кінця ({left}). Додати наступні "
+        f"{settings.PLAN_BLOCK_WEEKS} тижнів?",
+        reply_markup=kb,
+    )
+    logger.info(f"PLAN extend nudge sent user={user.id} plan={plan.id} ({days_left}d left)")
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
