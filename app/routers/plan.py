@@ -174,7 +174,7 @@ GOALS = {
     "faster_5k": "Швидше 5 км",
     "first_10k": "Перші 10 км",
     "first_half": "Перший півмарафон",
-    "general": "Регулярний біг (без цілі-події)",
+    "general": "Персональний тренер (постійні тренування)",
 }
 
 # Goals with no target race: an open-ended plan whose weeks are auto-extended in blocks
