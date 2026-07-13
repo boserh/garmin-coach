@@ -827,6 +827,28 @@ taper mode ≤14 days to `target_date` (no moves, cut ≤15%); `flexible` allows
 spectrum incl. skip/token-2km. Adapt calls are NOT dedup-cached (`_complete` has no cache),
 so level/context changes always take effect. NB the prompt-for-JSON + Pydantic + one-retry
 choice avoids SDK tool-use, matching the rest of the `messages.create` usage.
+**Open-ended "keep improving" plans**: a fifth goal `general` (`GOALS`/`OPEN_ENDED_GOALS`
+in `routers/plan.py`, `plans.OPEN_ENDED_GOAL`) with **no target race** — a rolling plan you
+just keep running. Generation lays a first block of `PLAN_BLOCK_WEEKS` (6) weeks: the plan
+is stored with `target_date=None` (so all the `target_date`-guarded logic treats it as
+open — adjust-level defaults flexible, no taper), while the model gets a concrete block-end
+as its range plus an `open_ended` flag (`SYSTEM_PLAN`: no подводка, sustainable progression
+with room to grow). Extending is **confirm-only** (never auto-generated — Opus costs money):
+the **morning tick** hook `bot.jobs._extend_nudge_for_user` (right after `_adapt_morning_check`,
+in-window) sends a ✅/❌ nudge when the plan's last workout is within `PLAN_EXTEND_LEAD_DAYS`
+(10) — pure DB reads, zero Claude calls, guarded once/day (`bot_state extend_nudge:<date>`).
+A ✅ (`bot.handlers.plan_extend_callback`, callback `planext:yes`) runs
+`analysis.plans.run_plan_extension` on demand: it **appends** the next 6-week block to the
+SAME plan (`repository.append_workouts` — never archives/regenerates), continuing progression
+from the tail (`previous_weeks` context) and rebasing `week` numbers (`week_offset` = current
+max week); it re-checks the plan is still near-end first, so a stale button never double-spends.
+A ❌ (`planext:no`) snoozes the nudge for `PLAN_EXTEND_SNOOZE_DAYS` (3, `bot_state extend_snooze`);
+an ignored nudge just re-asks next morning. Strength is extended too, reusing the first block's
+custom sessions + re-cloning saved templates (`_add_plan_strength(..., reuse_only=True)`,
+windowed via `add_strength_workouts`'s `start`/`end`/`week_offset`) — **no extra Claude call**.
+Best-effort Garmin re-sync after the ✅. **Cost note**: the extension is the one path that
+fires a real Opus call from a bot interaction, but only ever after an explicit ✅ tap — the
+morning nudge itself is free, and there's no scheduled auto-generation.
 
 ## Caching layers
 
