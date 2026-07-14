@@ -308,8 +308,12 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(str(e))
                 return
     # Offer the post-run check-in (EP-12) unless it's already been answered.
-    kb = None if act.subjective else checkin_keyboard(act.id)
-    await update.message.reply_text(text, reply_markup=kb)
+    if act.subjective:
+        await update.message.reply_text(text)
+    else:
+        await update.message.reply_text(
+            f"{text}\n\n{CHECKIN_PROMPT}", reply_markup=checkin_keyboard(act.id)
+        )
 
 
 # ---------- POST-RUN CHECK-IN (EP-12) ----------
@@ -324,6 +328,11 @@ _PAIN_PARTS = [
     ("thigh", "стегно"), ("calf", "литка"), ("back", "спина"), ("other", "інше"),
 ]
 _PART_LABELS = dict(_PAIN_PARTS)
+
+
+# Shown above the RPE 1-10 buttons so the numbers are self-explanatory without a legend
+# tap — "1" alone next to a run recap reads as noise, not a question.
+CHECKIN_PROMPT = "Наскільки важко відчувалось (RPE)? 1 — дуже легко, 10 — межа можливостей:"
 
 
 def checkin_keyboard(aid: int) -> InlineKeyboardMarkup:
@@ -422,7 +431,7 @@ async def checkin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if act.dist_km:
                 head += f" · {act.dist_km:.1f} км"
             await update.message.reply_text(
-                f"Як пройшло? {head} ({act.date})",
+                f"Як пройшло? {head} ({act.date})\n\n{CHECKIN_PROMPT}",
                 reply_markup=checkin_keyboard(act.id),
             )
             return
