@@ -62,6 +62,29 @@ def test_pace_target_maps_fast_slow_to_speed():
     assert round(step["targetValueTwo"], 5) == 2.32558     # slow bound (lower m/s)
 
 
+def test_hr_zone_target_for_easy_step():
+    # easy/recovery running targets a heart-rate zone, not a pace range
+    w = _w(type="easy", steps=[{"kind": "run", "dist_m": 4000, "hr_zone": 2}])
+    step = wx.build_workout(w)["workoutSegments"][0]["workoutSteps"][0]
+    assert step["targetType"]["workoutTargetTypeKey"] == "heart.rate.zone"
+    assert step["zoneNumber"] == 2
+    assert "targetValueOne" not in step
+
+
+def test_hr_zone_takes_precedence_over_pace():
+    # if both are (mistakenly) present, the effort zone wins — never a double target
+    w = _w(steps=[{"kind": "run", "dist_m": 4000, "pace_min_km": [6.75, 7.0], "hr_zone": 2}])
+    step = wx.build_workout(w)["workoutSegments"][0]["workoutSteps"][0]
+    assert step["targetType"]["workoutTargetTypeKey"] == "heart.rate.zone"
+    assert "targetValueOne" not in step
+
+
+def test_out_of_range_hr_zone_falls_back_to_no_target():
+    w = _w(steps=[{"kind": "run", "dist_m": 4000, "hr_zone": 9}])
+    step = wx.build_workout(w)["workoutSegments"][0]["workoutSteps"][0]
+    assert step["targetType"]["workoutTargetTypeKey"] == "no.target"
+
+
 def test_repeat_group_and_continuous_step_order():
     w = _w(type="intervals", steps=[
         {"kind": "warmup", "dist_m": 1500},

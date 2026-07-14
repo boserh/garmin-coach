@@ -93,12 +93,15 @@ def _fmt_step(s: dict) -> str:
         amount = f"{int(dur_s // 60)} хв" if dur_s >= 60 else f"{int(dur_s)} с"
     else:
         amount = ""
+    zone = s.get("hr_zone")
     pace = s.get("pace_min_km")
-    pace_str = ""
-    if isinstance(pace, (list, tuple)) and len(pace) == 2 and all(
+    target_str = ""
+    if isinstance(zone, int) and 1 <= zone <= 5:
+        target_str = f" @ пульс зона {zone}"
+    elif isinstance(pace, (list, tuple)) and len(pace) == 2 and all(
             isinstance(p, (int, float)) for p in pace):
-        pace_str = f" @ {_pace(pace[0])}–{_pace(pace[1])}/км"
-    return " ".join(p for p in (label, amount) if p) + pace_str
+        target_str = f" @ {_pace(pace[0])}–{_pace(pace[1])}/км"
+    return " ".join(p for p in (label, amount) if p) + target_str
 
 
 def _pace(dec: float) -> str:
@@ -148,7 +151,11 @@ def _step_amount(s: dict) -> str:
 
 
 def _step_pace(s: dict) -> str:
-    """Target pace range of a step, e.g. '6:45–7:15/км' (empty when no target)."""
+    """Target of a step — pace range ('6:45–7:15/км'), HR zone ('пульс зона 2') for
+    easy/recovery effort steps, or empty when there's no target."""
+    z = s.get("hr_zone")
+    if isinstance(z, int) and 1 <= z <= 5:
+        return f"пульс зона {z}"
     p = s.get("pace_min_km")
     if isinstance(p, (list, tuple)) and len(p) == 2 and all(
             isinstance(x, (int, float)) for x in p):

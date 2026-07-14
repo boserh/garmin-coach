@@ -71,7 +71,9 @@ class PlanStep(BaseModel):
     """One step of a structured workout — mirrors the Runna ``planned_runs[].detail.steps``
     shape (``dist_m`` + ``pace_min_km`` range) extended with warmup/cooldown/recovery and
     ``repeat`` blocks. Carries both the human detail and a future Garmin-Connect workout
-    export. Pace is a ``[fast, slow]`` range in DECIMAL min/km (e.g. [5.83, 6.17] = 5:50–6:10)."""
+    export. Pace is a ``[fast, slow]`` range in DECIMAL min/km (e.g. [5.83, 6.17] = 5:50–6:10).
+    A step targets EITHER a pace range OR a heart-rate zone (``hr_zone`` 1-5) — the latter for
+    easy/recovery running, where effort (a conversational HR zone) matters more than exact pace."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -79,6 +81,8 @@ class PlanStep(BaseModel):
     dist_m: Optional[float] = None             # distance-based step
     dur_s: Optional[int] = None                # time-based step (e.g. intervals)
     pace_min_km: Optional[List[float]] = None  # [fast, slow] target range
+    hr_zone: Optional[int] = None              # heart-rate zone 1-5 (easy/recovery effort target,
+                                               # instead of pace — conversational running by feel)
     reps: Optional[int] = None                 # kind=repeat: how many times
     steps: Optional[List["PlanStep"]] = None   # kind=repeat: the repeated sub-steps
     note: Optional[str] = None                 # optional short label (українською)
