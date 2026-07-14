@@ -434,6 +434,64 @@ async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
     return 0
 
 
+async def _resend_activity(email: str, activity_id: int, force: bool) -> int:
+    """Re-send the auto-analysis DM for one already-stored activity — the exact same
+    message + RPE/pain keyboard as right after a run (bot.jobs._activity_watch_for_user),
+    without waiting for a new sync. No Garmin call — just re-runs the Claude analysis and
+    pushes it via Telegram. ``--force`` clears that activity's dedup-cache entry first, so
+    a prompt/behavior change (e.g. a raised max_tokens) actually re-hits Claude instead of
+    replaying the old cached text."""
+    from sqlalchemy import delete
+
+    from app.analysis.cache import _activity_cache_key
+    from app.analysis.client import MODEL_ACTIVITY
+    from app.analysis.reports import activity_payload, run_activity_analysis
+    from app.db.models import ActivityRecord, LlmCache
+    from app.garmin import repository
+    from app.garmin.credentials import load_credentials
+    from bot.handlers import CHECKIN_PROMPT, checkin_keyboard
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        if not user.telegram_chat_id:
+            print(f"{email} has no Telegram chat linked.")
+            return 1
+        act = await session.get(ActivityRecord, activity_id)
+        if act is None or act.user_id != user.id:
+            print(f"Activity #{activity_id} not found for {email}.")
+            return 1
+
+        if force:
+            planned = await repository.get_workout_for_activity(session, user.id, act.id)
+            key = _activity_cache_key(activity_payload(act, planned), MODEL_ACTIVITY)
+            await session.execute(delete(LlmCache).where(LlmCache.key == key))
+            await session.commit()
+
+        creds = load_credentials(user)
+        analysis_text = await run_activity_analysis(
+            session, act, user_id=user.id, api_key=creds.anthropic_key
+        )
+        await session.commit()
+
+        head_parts = [act.type or "активність"]
+        if act.dist_km:
+            head_parts.append(f"{act.dist_km:.1f} км")
+        head = f"🏃 Нова активність: {' · '.join(head_parts)} ({act.date})"
+
+        from telegram import Bot
+        bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+        await bot.send_message(
+            user.telegram_chat_id, f"{head}\n\n{analysis_text}\n\n{CHECKIN_PROMPT}",
+            reply_markup=checkin_keyboard(act.id),
+        )
+    print(f"Sent activity #{activity_id} analysis to {email} (chat {user.telegram_chat_id}).")
+    return 0
+
+
 async def _list_workouts(email: str) -> int:
     """Print the user's saved Garmin workouts (id · sport · name) — to find the strength
     routines (Day 1 / Day 2) to reference in the plan."""
@@ -595,6 +653,15 @@ def main(argv=None) -> int:
     ceh.add_argument("--no-sync", action="store_true",
                      help="update the DB only, leave the Garmin calendar untouched")
 
+    ra = sub.add_parser(
+        "resend-activity",
+        help="Re-send the auto-analysis DM for one stored activity (same as right after a run)")
+    ra.add_argument("--email", required=True)
+    ra.add_argument("--id", type=int, required=True, dest="activity_id", help="ActivityRecord id")
+    ra.add_argument(
+        "--force", action="store_true",
+        help="clear this activity's cached analysis first, forcing a fresh Claude call")
+
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
@@ -630,6 +697,8 @@ def main(argv=None) -> int:
     if args.cmd == "convert-easy-hr":
         return asyncio.run(_convert_easy_hr(
             args.email, args.easy_zone, args.recovery_zone, args.dry_run, args.no_sync))
+    if args.cmd == "resend-activity":
+        return asyncio.run(_resend_activity(args.email, args.activity_id, args.force))
     if args.cmd == "list-workouts":
         return asyncio.run(_list_workouts(args.email))
     if args.cmd == "backfill-records":
