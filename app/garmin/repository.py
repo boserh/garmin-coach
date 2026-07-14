@@ -708,6 +708,21 @@ async def list_workouts(
     return (await session.execute(stmt.order_by(PlannedWorkout.date))).scalars().all()
 
 
+async def get_workout_for_activity(
+    session: AsyncSession, user_id: int, activity_id: int
+) -> Optional[PlannedWorkout]:
+    """The PlannedWorkout (if any) matched to this activity by ``matching.match_activities``
+    (``completed_activity_id``). Scoped to the user so cross-user ids can't leak."""
+    return (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.user_id == user_id,
+                PlannedWorkout.completed_activity_id == activity_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def upcoming_plan_workouts(
     session: AsyncSession, user_id: int, days: int = 2
 ) -> List[PlannedWorkout]:

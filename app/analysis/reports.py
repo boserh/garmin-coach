@@ -459,8 +459,23 @@ def _segments(series: list, n: int = 6) -> list:
     return segs
 
 
-def activity_payload(activity) -> dict:
-    """Compact LLM input for one ActivityRecord — summary fields plus run segments."""
+def _planned_payload(workout) -> dict:
+    """Compact planned-vs-actual slice for a matched PlannedWorkout (see matching.py)."""
+    info = workout.match_info or {}
+    return {
+        "type": workout.type, "planned_dist_km": workout.dist_km,
+        "description": workout.description,
+        "plan_pace_minkm": info.get("plan_pace_minkm"),
+        "actual_pace_minkm": info.get("actual_pace_minkm"),
+        "dist_delta_km": info.get("dist_delta_km"),
+        "status": workout.status,  # done | partial
+    }
+
+
+def activity_payload(activity, planned=None) -> dict:
+    """Compact LLM input for one ActivityRecord — summary fields plus run segments.
+    ``planned`` (optional PlannedWorkout matched by matching.match_activities) adds a
+    planned-vs-actual slice so the analysis can judge adherence, not just the raw effort."""
     data = {
         "type": activity.type, "date": activity.date,
         "dur_min": activity.dur_min, "dist_km": activity.dist_km,
@@ -476,6 +491,8 @@ def activity_payload(activity) -> dict:
     # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
     if getattr(activity, "subjective", None):
         data["subjective"] = activity.subjective
+    if planned is not None:
+        data["planned"] = _planned_payload(planned)
     return data
 
 
@@ -491,7 +508,7 @@ def analyze_activity_with_stats(
         from anthropic import APIConnectionError, APIStatusError
 
         msg = _get_client(api_key).messages.create(
-            model=model, max_tokens=1000, system=SYSTEM_ACTIVITY,
+            model=model, max_tokens=1500, system=SYSTEM_ACTIVITY,
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
         )
@@ -522,7 +539,9 @@ async def run_activity_analysis(
     from app.db import llm_cache
     from app.garmin import repository
 
-    data = activity_payload(activity)
+    planned = await repository.get_workout_for_activity(session, user_id, activity.id) \
+        if user_id is not None else None
+    data = activity_payload(activity, planned)
     q = f"activity #{activity.id} ({activity.type})"
     key = _activity_cache_key(data, MODEL_ACTIVITY)
     cached = await llm_cache.get(session, key)

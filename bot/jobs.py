@@ -42,6 +42,7 @@ from app.garmin import matching, plan_sync, repository, service
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
 from bot.handlers import (
+    CHECKIN_PROMPT,
     MFA_REQUIRED_MSG,
     PENDING_ADAPT_KEY,
     PLAN_EXTEND_SNOOZE_KEY,
@@ -214,7 +215,8 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
             )
             # Attach the EP-12 post-run check-in (RPE + pain) — one tap, silence is fine.
             await ctx.bot.send_message(
-                user.telegram_chat_id, f"{_activity_head(act)}\n\n{text}",
+                user.telegram_chat_id,
+                f"{_activity_head(act)}\n\n{text}\n\n{CHECKIN_PROMPT}",
                 reply_markup=checkin_keyboard(act.id),
             )
             logger.info(f"ACTIVITY_WATCH sent user={user.id} activity={act.id}")
@@ -325,16 +327,18 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
             payload, new_activities = await service.build_payload_cached(
                 session, user.id, days=3, activity_limit=20
             )
-            await _activity_watch_for_user(ctx, session, user, creds, new_activities)
 
-            # Match freshly synced activities to planned workouts — best-effort,
-            # same pattern as _sync_for_user (a failure here must not block the tick).
+            # Match freshly synced activities to planned workouts BEFORE the auto-analysis,
+            # so it can compare plan vs actual instead of just narrating the raw activity —
+            # best-effort, same pattern as _sync_for_user (a failure here must not block the tick).
             try:
                 result = await matching.match_activities(session, user.id)
                 if any(result.values()):
                     logger.info(f"MATCH user={user.id}: {result}")
             except Exception:
                 logger.exception(f"MATCH failed user={user.id}")
+
+            await _activity_watch_for_user(ctx, session, user, creds, new_activities)
 
             # Celebrate any new personal record (EP-14) — after the activity recap.
             await _records_check_for_user(ctx, session, user)
