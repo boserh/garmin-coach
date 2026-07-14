@@ -365,7 +365,11 @@ async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
             print("No active plan for this user.")
             return 1
 
-        changed = []  # (workout, n_steps_changed, new_steps)
+        today = dt.date.today().isoformat()
+        end = (dt.date.today() + dt.timedelta(days=14)).isoformat()
+
+        changed = []   # (workout, n_steps_changed, new_steps) — need a DB rewrite this run
+        to_sync = []   # easy/recovery sessions we mirror to Garmin (upcoming, in-window)
         for w in await repository.list_workouts(session, plan.id):
             zone = zones.get((w.type or "").lower())
             if zone is None:
@@ -373,43 +377,58 @@ async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
             new_steps, n = _convert_easy_steps(w.steps, zone)
             if n:
                 changed.append((w, n, new_steps))
+            # re-sync independently of a DB change this run: a plan already converted with
+            # --no-sync has nothing to rewrite but still needs its Garmin copy refreshed.
+            # Only upcoming in-window planned sessions — never strip past/completed ones.
+            if w.status == "planned" and today <= w.date <= end:
+                to_sync.append(w)
 
-        if not changed:
-            print("No easy/recovery pace steps to convert — plan already on HR zones.")
+        if not changed and not to_sync:
+            print("Nothing to do — no easy/recovery sessions to convert or re-sync.")
             return 0
 
-        print(f"{'[dry-run] ' if dry_run else ''}Converting {len(changed)} easy/recovery "
-              f"session(s) for {email} (easy→zone {easy_zone}, recovery→zone {recovery_zone}):")
-        for w, n, new_steps in changed:
-            zone = zones[(w.type or "").lower()]
-            print(f"  {w.date}  {w.type:9s} {n} step(s) → пульс зона {zone}")
+        if changed:
+            print(f"{'[dry-run] ' if dry_run else ''}Converting {len(changed)} easy/recovery "
+                  f"session(s) for {email} (easy→zone {easy_zone}, recovery→zone {recovery_zone}):")
+            for w, n, new_steps in changed:
+                zone = zones[(w.type or "").lower()]
+                print(f"  {w.date}  {w.type:9s} {n} step(s) → пульс зона {zone}")
+        else:
+            print("DB already on HR zones — nothing to rewrite.")
 
         if dry_run:
             # show the built Garmin target for the first still-upcoming session
-            today = dt.date.today().isoformat()
-            sample = next((c for c in changed if c[0].date >= today), changed[0])
-            w, _, new_steps = sample
-            w.steps = new_steps  # in-memory only; session is never committed on dry-run
-            payload = workout_export.build_workout(w)
-            targets = [st.get("targetType", {}).get("workoutTargetTypeKey")
-                       for st in payload["workoutSegments"][0]["workoutSteps"]]
-            print(f"\n[dry-run] sample push payload for {w.date} ({w.type}): "
-                  f"targets={targets}")
-            print("[dry-run] no DB or Garmin writes made.")
+            sample = next((c for c in changed if c[0].date >= today), None) or (
+                (changed[0] if changed else None))
+            if sample:
+                w, _, new_steps = sample
+                w.steps = new_steps  # in-memory only; session is never committed on dry-run
+                payload = workout_export.build_workout(w)
+                targets = [st.get("targetType", {}).get("workoutTargetTypeKey")
+                           for st in payload["workoutSegments"][0]["workoutSteps"]]
+                print(f"\n[dry-run] sample push payload for {w.date} ({w.type}): "
+                      f"targets={targets}")
+            print(f"[dry-run] would re-sync {len(to_sync)} in-window session(s) to Garmin. "
+                  "No DB or Garmin writes made.")
             return 0
 
-        for w, _, new_steps in changed:
-            w.steps = new_steps
-        await session.commit()
-        print(f"DB updated: {len(changed)} session(s) now target HR zones.")
+        if changed:
+            for w, _, new_steps in changed:
+                w.steps = new_steps
+            await session.commit()
+            print(f"DB updated: {len(changed)} session(s) now target HR zones.")
 
         if no_sync:
-            print("--no-sync: Garmin calendar left untouched.")
+            print(f"--no-sync: Garmin calendar left untouched ({len(to_sync)} in-window "
+                  "session(s) not re-synced — run again without --no-sync to push them).")
+            return 0
+
+        if not to_sync:
+            print("No upcoming in-window sessions to re-sync to Garmin.")
             return 0
 
         async with user_runtime(session, user):
-            res = await plan_sync.resync_workouts(
-                session, user.id, [w for w, _, _ in changed])
+            res = await plan_sync.resync_workouts(session, user.id, to_sync)
         print(f"Garmin re-synced: +{res['pushed']} pushed, -{res['removed']} removed "
               "(upcoming in-window sessions only).")
     return 0
