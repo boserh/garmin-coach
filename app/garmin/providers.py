@@ -38,10 +38,13 @@ class _GarthProvider:
     def login(self) -> None:
         garth = self._garth
         try:
-            garth.resume(self._token_dir)
-            garth.client.username
+            garth.resume(self._token_dir)  # local file read; no network validation touch
             return
         except Exception:
+            # Only a missing/corrupt token dir lands here (resume is a local read).
+            # We deliberately don't validate with a live API call — see the note in
+            # _UserGarthProvider.login (avoids a transient blip escalating to a full
+            # sso.garmin.com re-login → Cloudflare 1015 ban).
             pass
         email = settings.GARMIN_EMAIL or os.environ["GARMIN_EMAIL"]
         password = settings.GARMIN_PASSWORD or os.environ["GARMIN_PASSWORD"]
@@ -120,14 +123,23 @@ class _UserGarthProvider:
         if self._creds.garth_token:
             try:
                 self._client.loads(self._creds.garth_token)
-                _ = self._client.username  # touch profile to validate the session
+                # NB: DON'T validate the resumed session with a live API call here.
+                # loads() only restores the OAuth1/OAuth2 tokens (no network); a profile
+                # touch would hit Garmin on EVERY login, and — worse — any transient
+                # failure of that call (a 429 rate-limit, a network blip) would land in
+                # the except below and escalate to a full sso.garmin.com re-login. A burst
+                # of those is exactly what earns a Cloudflare 1015 IP ban (OPS-01). garth
+                # refreshes the OAuth2 token from OAuth1 on demand; a genuinely dead token
+                # (rare — OAuth1 lasts ~1 year) surfaces on the first real call and the
+                # user re-connects via /settings. So we only reach the fallback when
+                # loads() itself fails (a corrupt/unparseable stored token — local, no net).
                 self._logged_in = True
                 return
             except Exception as exc:
-                # Stale/invalid token — fall back to a fresh login. OPS-01
-                # monitoring: if these start appearing for tokens that aren't
-                # ~1 year old, Garmin likely broke the OAuth2 exchange — check
-                # for GARMIN AUTH FAIL right after (the migration trigger).
+                # Corrupt/unparseable stored token — fall back to a fresh login. OPS-01
+                # monitoring: if these start appearing for tokens that aren't ~1 year old,
+                # Garmin likely broke the OAuth2 exchange — check for GARMIN AUTH FAIL
+                # right after (the migration trigger).
                 logger.warning(
                     "GARMIN AUTH: stored token resume failed for user %s (%r) — "
                     "falling back to fresh login", self._creds.user_id, exc,
