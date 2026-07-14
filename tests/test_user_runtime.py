@@ -72,6 +72,32 @@ def test_provider_falls_back_when_token_stale(fake_garth):
     assert p.new_token == "fresh-token"
 
 
+def test_resume_does_not_validate_with_network_call(monkeypatch):
+    """A resumed token must NOT be validated with a live API call — a transient failure
+    of such a call used to escalate to a full sso.garmin.com re-login, and a burst of
+    those earns a Cloudflare 1015 ban (OPS-01). loads() succeeds → logged in, no fresh
+    login, even if username/profile would blow up on the network."""
+    calls = {"login": 0}
+
+    class NetTouchClient(FakeGarthClient):
+        @property
+        def username(self):  # simulate a rate-limited/blipped validation call
+            raise RuntimeError("429 rate limited")
+
+        def login(self, email, password, prompt_mfa=None):
+            calls["login"] += 1
+            super().login(email, password, prompt_mfa)
+
+    monkeypatch.setattr(garth, "Client", NetTouchClient)
+    creds = UserCredentials(user_id=1, garth_token="good",
+                            garmin_email="e@x.com", garmin_password="p")
+    p = providers.build_user_provider(creds)
+    p.login()
+    assert p._logged_in is True
+    assert p.new_token is None      # resumed — no fresh login triggered
+    assert calls["login"] == 0      # never hit the sso.garmin.com login path
+
+
 def test_provider_without_credentials_raises(fake_garth):
     p = providers.build_user_provider(UserCredentials(user_id=1))
     with pytest.raises(RuntimeError, match="No Garmin credentials"):
