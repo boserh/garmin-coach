@@ -314,6 +314,107 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     return 0
 
 
+def _convert_easy_steps(steps, zone: int):
+    """Return ``(new_steps, n_changed)``: every ``run`` step that carries a pace range is
+    rewritten to target a heart-rate zone instead (drops ``pace_min_km``, sets ``hr_zone``).
+    Recurses into ``repeat`` groups; leaves warmup/cooldown/recovery/no-target steps alone.
+    Pure — builds a fresh list (JSON columns need a reassignment to be marked dirty)."""
+    out, changed = [], 0
+    for s in steps or []:
+        if not isinstance(s, dict):
+            out.append(s)
+            continue
+        s = dict(s)
+        if s.get("kind") == "repeat":
+            s["steps"], c = _convert_easy_steps(s.get("steps"), zone)
+            changed += c
+        elif s.get("kind") == "run" and s.get("pace_min_km") is not None:
+            s.pop("pace_min_km", None)
+            s["hr_zone"] = zone
+            changed += 1
+        out.append(s)
+    return out, changed
+
+
+async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
+                           dry_run: bool, no_sync: bool) -> int:
+    """One-off migration: rewrite the active plan's easy/recovery run steps from a pace
+    range to a heart-rate-zone target (easy → ``--easy-zone``, recovery → ``--recovery-zone``),
+    then re-push the upcoming in-window sessions to Garmin (drop the old pace-based copy,
+    push the HR-zone one via ``plan_sync.resync_workouts``). Past/out-of-window sessions get
+    the DB rewrite only. ``--dry-run`` previews (incl. the built Garmin target) without
+    writing; ``--no-sync`` updates the DB but leaves the watch untouched.
+
+    NB the ``heart.rate.zone`` DTO is not yet verified field-for-field against a real saved
+    Garmin workout — dry-run it first and eyeball the target before a live push."""
+    import datetime as dt
+
+    from app.garmin import plan_sync, repository, workout_export
+    from app.garmin.runtime import user_runtime
+
+    zones = {"easy": easy_zone, "recovery": recovery_zone}
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+
+        changed = []  # (workout, n_steps_changed, new_steps)
+        for w in await repository.list_workouts(session, plan.id):
+            zone = zones.get((w.type or "").lower())
+            if zone is None:
+                continue
+            new_steps, n = _convert_easy_steps(w.steps, zone)
+            if n:
+                changed.append((w, n, new_steps))
+
+        if not changed:
+            print("No easy/recovery pace steps to convert — plan already on HR zones.")
+            return 0
+
+        print(f"{'[dry-run] ' if dry_run else ''}Converting {len(changed)} easy/recovery "
+              f"session(s) for {email} (easy→zone {easy_zone}, recovery→zone {recovery_zone}):")
+        for w, n, new_steps in changed:
+            zone = zones[(w.type or "").lower()]
+            print(f"  {w.date}  {w.type:9s} {n} step(s) → пульс зона {zone}")
+
+        if dry_run:
+            # show the built Garmin target for the first still-upcoming session
+            today = dt.date.today().isoformat()
+            sample = next((c for c in changed if c[0].date >= today), changed[0])
+            w, _, new_steps = sample
+            w.steps = new_steps  # in-memory only; session is never committed on dry-run
+            payload = workout_export.build_workout(w)
+            targets = [st.get("targetType", {}).get("workoutTargetTypeKey")
+                       for st in payload["workoutSegments"][0]["workoutSteps"]]
+            print(f"\n[dry-run] sample push payload for {w.date} ({w.type}): "
+                  f"targets={targets}")
+            print("[dry-run] no DB or Garmin writes made.")
+            return 0
+
+        for w, _, new_steps in changed:
+            w.steps = new_steps
+        await session.commit()
+        print(f"DB updated: {len(changed)} session(s) now target HR zones.")
+
+        if no_sync:
+            print("--no-sync: Garmin calendar left untouched.")
+            return 0
+
+        async with user_runtime(session, user):
+            res = await plan_sync.resync_workouts(
+                session, user.id, [w for w, _, _ in changed])
+        print(f"Garmin re-synced: +{res['pushed']} pushed, -{res['removed']} removed "
+              "(upcoming in-window sessions only).")
+    return 0
+
+
 async def _list_workouts(email: str) -> int:
     """Print the user's saved Garmin workouts (id · sport · name) — to find the strength
     routines (Day 1 / Day 2) to reference in the plan."""
@@ -463,6 +564,18 @@ def main(argv=None) -> int:
     up.add_argument("--email", required=True)
     up.add_argument("--date", help="remove only the session on this ISO date")
 
+    ceh = sub.add_parser(
+        "convert-easy-hr",
+        help="Rewrite active-plan easy/recovery runs from pace to HR-zone + re-push to Garmin")
+    ceh.add_argument("--email", required=True)
+    ceh.add_argument("--easy-zone", type=int, default=2, help="HR zone for easy runs (default 2)")
+    ceh.add_argument("--recovery-zone", type=int, default=2,
+                     help="HR zone for recovery runs (default 2)")
+    ceh.add_argument("--dry-run", action="store_true",
+                     help="preview the conversion + sample Garmin target, don't write")
+    ceh.add_argument("--no-sync", action="store_true",
+                     help="update the DB only, leave the Garmin calendar untouched")
+
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
@@ -495,6 +608,9 @@ def main(argv=None) -> int:
         return asyncio.run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
         return asyncio.run(_unpush_plan(args.email, args.date))
+    if args.cmd == "convert-easy-hr":
+        return asyncio.run(_convert_easy_hr(
+            args.email, args.easy_zone, args.recovery_zone, args.dry_run, args.no_sync))
     if args.cmd == "list-workouts":
         return asyncio.run(_list_workouts(args.email))
     if args.cmd == "backfill-records":

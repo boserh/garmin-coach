@@ -47,6 +47,11 @@ _KM_UNIT = {"unitId": 2, "unitKey": "kilometer", "factor": 100000.0}
 
 _TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target"}
 _TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone"}
+# HR-zone target: watch holds the user's zone HR bounds, we just name the zone (1-5).
+# NB: unlike pace.zone above, this DTO shape is NOT yet verified field-for-field against
+# a real saved HR-zone workout — verify before trusting a live push (used only by easy/
+# recovery steps that carry hr_zone).
+_TARGET_HR_ZONE = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone"}
 
 
 def _speed(pace_min_km: float) -> float:
@@ -74,7 +79,12 @@ def _exec_step(step: dict, order: int) -> dict:
         out["endCondition"] = dict(_COND_LAP)  # press lap to advance
 
     pace = step.get("pace_min_km")
-    if pace and len(pace) == 2 and all(pace):
+    zone = step.get("hr_zone")
+    if isinstance(zone, int) and 1 <= zone <= 5:
+        # effort target (easy/recovery) — the watch supplies the zone's HR bounds
+        out["targetType"] = dict(_TARGET_HR_ZONE)
+        out["zoneNumber"] = zone
+    elif pace and len(pace) == 2 and all(pace):
         fast, slow = pace
         out["targetType"] = dict(_TARGET_PACE)
         out["targetValueOne"] = _speed(fast)   # faster bound (higher m/s)
