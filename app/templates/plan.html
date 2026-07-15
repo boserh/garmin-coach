@@ -80,7 +80,12 @@
               {%- elif w.status == 'skipped' %} скіпнуто
               {%- endif %}</span>
               {%- if w.match_info and w.match_info.actual_dist_km %}
+                {%- if w.completed_activity_id %}
+                <a class="match-dist match-link" href="/me/activities/{{ w.completed_activity_id }}">
+                  {{- '%.1f'|format(w.match_info.actual_dist_km) }} км факт →</a>
+                {%- else %}
                 <span class="match-dist">{{ '%.1f'|format(w.match_info.actual_dist_km) }} км факт</span>
+                {%- endif %}
               {%- endif %}
             {% endif %}
           </div>
