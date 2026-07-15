@@ -461,6 +461,43 @@ def test_plan_archive_and_readonly_view(auth_client):
     assert "Архівувати / почати нову" not in view  # readonly — no archive button
 
 
+def test_plan_view_links_completed_workout_to_activity(auth_client):
+    """A done/partial workout matched to an activity (matching.match_activities) should
+    link to its /me/activities detail page instead of just showing the distance as text."""
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date="2026-06-02", week=1, type="easy", dist_km=5.0, description="легкий")])
+            plan = await repository.get_active_plan(s, uid)
+            workouts = await repository.list_workouts(s, plan.id)
+            w = workouts[0]
+            act = ActivityRecord(user_id=uid, activity_id=999001, date="2026-06-02",
+                                  type="running", dist_km=5.1, dur_min=30.0)
+            s.add(act)
+            await s.flush()
+            w.completed_activity_id = act.id
+            w.status = "done"
+            w.match_info = {"dist_delta_km": 0.1, "actual_dist_km": 5.1}
+            await s.commit()
+            return act.id
+
+    act_id = anyio.run(seed)
+
+    view = auth_client.get("/plan").text
+    assert f'href="/me/activities/{act_id}"' in view
+    assert "км факт" in view
+
+
 def test_plan_adjust_level_stored_from_form(auth_client):
     """ST-07: the form's adjust_level lands in intake; when omitted it defaults from
     the goal — a target_date means race prep (conservative), none means flexible."""
