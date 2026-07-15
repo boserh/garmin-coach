@@ -37,6 +37,7 @@ async def _post_init(application: Application) -> None:
     # populate the Telegram "/" command menu (user-facing commands only; the
     # test_* debug commands stay hidden)
     await application.bot.set_my_commands([
+        BotCommand("help", "Список команд"),
         BotCommand("report", "Звіт відновлення за 7 днів"),
         BotCommand("ask", "Питання за останніми звітами, напр. /ask чи бігти завтра"),
         BotCommand("deep", "Глибокий аналіз (Opus), напр. /deep вплив вело на HRV"),
@@ -57,6 +58,7 @@ def main() -> None:
         .build()
     )
 
+    app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("report", handlers.report))
     app.add_handler(CommandHandler("ask", handlers.ask))
     app.add_handler(CommandHandler("deep", handlers.deep))
