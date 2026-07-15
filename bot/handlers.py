@@ -56,6 +56,29 @@ MFA_REQUIRED_MSG = (
     "веб-кабінету — там з'явиться поле для коду."
 )
 
+HELP_TEXT = (
+    "🤖 Команди бота:\n\n"
+    "📋 Звіти та аналіз\n"
+    "/report — звіт відновлення за 7 днів (Sonnet)\n"
+    "/deep <питання> — глибокий аналіз сну/HRV/навантаження (Opus), "
+    "напр. /deep вплив вело на HRV\n"
+    "/ask <питання> — швидке питання за останніми звітами, "
+    "напр. /ask чи бігти завтра\n"
+    "/compare [тижнів] — порівняння з собою рік тому\n\n"
+    "🏃 Активності\n"
+    "/activities — останні активності\n"
+    "/activity <id> — розбір конкретної активності\n"
+    "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
+    "/records — особисті рекорди\n\n"
+    "🩺 Здоров'я\n"
+    "/risk — травматичний радар (сигнали перевантаження)\n"
+    "/health — алерти відновлення (HRV, сон, стрес)\n\n"
+    "🗓 План\n"
+    "/plan — переглянути програму\n"
+    "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n\n"
+    "/help — цей список"
+)
+
 
 async def _resolve_user(update: Update, session) -> "User | None":
     """Map the incoming chat to a registered user, or reply and return None."""
@@ -69,6 +92,12 @@ async def _resolve_user(update: Update, session) -> "User | None":
             await update.message.reply_text(_NOT_REGISTERED)
         return None
     return user
+
+
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/help — static list of commands. No DB/user lookup: useful even before registration."""
+    logger.info("CMD /help")
+    await update.message.reply_text(HELP_TEXT)
 
 
 async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
