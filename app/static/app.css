@@ -78,6 +78,8 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .st.done,.st-done{color:var(--easy)} .st.skip,.st-skipped{color:var(--muted)}
 .st-partial{color:#f0a500} .st-missed{color:var(--intervals)}
 .match-dist{font-size:.68rem;color:var(--muted);font-weight:500}
+.match-link{text-decoration:none;border-bottom:1px dotted var(--muted)}
+.match-link:hover{color:var(--accent);border-bottom-color:var(--accent)}
 .compliance{font-size:.72rem;font-weight:600;color:var(--muted);margin-left:auto}
 .desc{color:#cbd2dc;font-size:.92rem;line-height:1.55}
 .dist{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:1rem;
