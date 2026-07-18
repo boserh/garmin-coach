@@ -320,7 +320,9 @@ async def run_analysis(
 # query_daily / aggregate_weekly / get_activity_detail against the FULL stored history.
 MAX_ASK_ROUNDS = 5             # hard cap on tool-use round trips per question
 MAX_ASK_TOTAL_TOKENS = 60_000  # combined in+out tokens across all rounds — runaway guard
-ASK_TOOL_MAX_TOKENS = 1200     # answers are short; a tool-call round is just a JSON stub
+ASK_TOOL_MAX_TOKENS = 2000     # a tool-call round is just a JSON stub, but a detailed final
+                                # answer (e.g. a multi-week breakdown) needs real room — same
+                                # ceiling as the daily report (analyze_with_stats)
 
 ASK_LIMIT_TEXT = (
     "Це питання вимагає забагато кроків, щоб чесно відповісти з наявних даних. "
