@@ -25,7 +25,10 @@ def _tool_block(id, name, input):
 
 def test_ask_tools_schema_has_expected_tools():
     names = {t["name"] for t in reports._ask_tools()}
-    assert names == {"query_activities", "query_daily", "aggregate_weekly", "get_activity_detail"}
+    assert names == {
+        "query_activities", "query_daily", "aggregate_weekly",
+        "get_activity_detail", "get_training_plan",
+    }
     for t in reports._ask_tools():
         assert t["input_schema"]["type"] == "object"
 
@@ -85,6 +88,27 @@ async def test_run_ask_tool_get_activity_detail_excludes_series(session):
     got = await reports._run_ask_tool(session, 1, "get_activity_detail", {"id": 1})
     assert "series" not in got
     assert "segments" in got  # collapsed, not the raw point cloud
+
+
+async def test_run_ask_tool_get_training_plan(session):
+    from app.db.models import PlannedWorkout, TrainingPlan
+
+    plan = TrainingPlan(user_id=1, goal="first_5k", goal_label="Перші 5К",
+                        status="active", target_date="2026-08-01")
+    session.add(plan)
+    await session.flush()
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date="2026-06-10",
+                               type="tempo", dist_km=8.0, status="planned"))
+    await session.commit()
+
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    assert got["plan"]["goal_label"] == "Перші 5К"
+    assert got["sessions"][0]["type"] == "tempo"
+
+
+async def test_run_ask_tool_get_training_plan_no_plan(session):
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    assert got == {"plan": None}
 
 
 # ---------- run_ask_agent loop ----------

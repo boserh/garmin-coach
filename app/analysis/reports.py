@@ -57,7 +57,7 @@ from app.garmin.schemas import Payload
 logger = logging.getLogger("claude")
 
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
-ASK_CONTEXT_MIN = 5  # include /ask exchanges from the last N minutes as a conversation thread
+ASK_CONTEXT_MIN = 30  # include /ask exchanges from the last N minutes as a conversation thread
 RECORDS_CONTEXT_DAYS = 3  # mention a personal record set within the last N days (EP-14)
 
 _DEFAULT_DAILY_Q = (
@@ -404,6 +404,26 @@ def _ask_tools() -> list:
                 "required": ["id"],
             },
         },
+        {
+            "name": "get_training_plan",
+            "description": (
+                "This user's ACTIVE training plan/program: goal, target date, days/week, "
+                "intensity, the coach's approach summary, and its dated sessions (date, "
+                "week, type, dist_km, description, status: planned/done/partial/missed/"
+                "skipped) in a date range (both dates inclusive; omit either end for an "
+                "open range — omit both for the whole plan). Use this for anything about "
+                "\"the program\" itself — upcoming sessions, the goal, adherence — not "
+                "query_activities, which is actual completed workouts. Returns "
+                "{\"plan\": null} if there's no active plan."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {"type": "string", "description": "ISO date, inclusive"},
+                    "date_to": {"type": "string", "description": "ISO date, inclusive"},
+                },
+            },
+        },
     ]
 
 
@@ -445,6 +465,11 @@ async def _run_ask_tool(session, user_id: Optional[int], name: str, args: dict) 
             if act is None:
                 return {"error": f"no activity with id={aid} for this user"}
             return activity_payload(act)
+        if name == "get_training_plan":
+            return await repository.query_training_plan(
+                session, user_id,
+                date_from=args.get("date_from"), date_to=args.get("date_to"),
+            )
         return {"error": f"unknown tool '{name}'"}
     except Exception as e:
         logger.exception(f"ASK tool {name} failed")

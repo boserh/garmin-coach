@@ -39,7 +39,7 @@ async def _post_init(application: Application) -> None:
     await application.bot.set_my_commands([
         BotCommand("help", "Список команд"),
         BotCommand("report", "Звіт відновлення за 7 днів"),
-        BotCommand("ask", "Питання за останніми звітами, напр. /ask чи бігти завтра"),
+        BotCommand("ask", "Питання по всій історії, напр. /ask коли я біг швидше 5:00/км"),
         BotCommand("deep", "Глибокий аналіз (Opus), напр. /deep вплив вело на HRV"),
         BotCommand("activities", "Останні активності"),
         BotCommand("activity", "Розбір активності, напр. /activity 5"),
