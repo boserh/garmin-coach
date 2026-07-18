@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ Git commit identity — HARD RULE (do not skip)
+
+**Never commit as `Claude <noreply@anthropic.com>`.** Every commit (author *and*
+committer) must carry the repo owner's identity: `Serhii Bodnaruk <sergiwez@gmail.com>`
+(match whichever of `sergiwez@gmail.com` / `32734554+boserh@users.noreply.github.com`
+recent commits on the target branch use). Do **not** change global/local git config to
+do this (`user.name`/`user.email` stay untouched) — instead pass `--author=` on the
+commit and set `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` for that one command, e.g.:
+
+```bash
+GIT_COMMITTER_NAME="Serhii Bodnaruk" GIT_COMMITTER_EMAIL="sergiwez@gmail.com" \
+  git commit --author="Serhii Bodnaruk <sergiwez@gmail.com>" -m "..."
+```
+
+If a commit slips through with the wrong identity, fix it (amend, or rebase if it's not
+the tip) before considering the task done — check with `git log -1 --format='%an <%ae> / %cn <%ce>'`.
+The `Co-Authored-By: Claude ...` trailer some tooling appends to the message body is fine
+and unrelated — it's the author/committer *fields* that must never say Claude.
+
 ## ⚠️ Cost safety — HARD RULE (do not skip)
 
 **Never run anything that makes a real Anthropic API call without explicit, per-time
