@@ -8,15 +8,14 @@
 
 **Пріоритет (2026-07, після NF-04/05/06):** колонка «Пріор.» у таблицях нижче —
 🔴 highest / 🟠 high / 🟡 medium / 🟢 low / ⚪ lowest. Усі highest/high закрито:
-EP-12 (RPE-тренд/болі в адаптацію+дайджест+звіт), EP-08 (проактивні health-алерти) і
-CODE-01 (розбити analysis-сервіс) — ✅ зроблено (див. Done). Далі — 🟡 medium: **EP-09**
+EP-12 (RPE-тренд/болі в адаптацію+дайджест+звіт), EP-08 (проактивні health-алерти),
+CODE-01 (розбити analysis-сервіс) і ST-09 (реальні вправи силової в звіті) —
+✅ зроблено (див. Done). Далі — 🟡 medium: **EP-09**
 (`/ask` над усією історією, движок для EP-11/NF-08) чи EP-04/EP-05. Frozen-тікети — ⚪.
 
 ## Сторі покращення (S/M)
 
-| ID | Пріор. | Назва | Оцінка | Залежності |
-| --- | --- | --- | --- | --- |
-| [ST-09](ST-09-strength-exercises-in-report-context.md) | 🔴 high | Ранковий звіт має бачити реальні вправи силової (не вигадувати) — `plan_today` не віддає вправ + `strength_snapshot` clone-днів пишеться як JSON `null` | S–M | сусідить зі ST-05, ST-08 |
+Немає відкритих — усі закрито (див. Done).
 
 ## Епіки (L/XL)
 
@@ -109,6 +108,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 
 | ID | Назва | Де реалізовано |
 | --- | --- | --- |
+| [ST-09](ST-09-strength-exercises-in-report-context.md) | Ранковий звіт бачить реальні вправи силової (не вигадує) | `reports._strength_exercises` (пріоритет `strength_plan` → `strength_snapshot`) підключено в `plan_today`; `SYSTEM` секція `plan_today` каже спиратись лише на `plan_today[].exercises`, не на `recent_activities`; `_UserGarthProvider.connectapi`/`username`/`display_name` тепер ліниво логіняться (defense-in-depth — будь-який Garmin-виклик поза `build_payload_cached` тепер автентифікований), полагоджено day-frame `previous_report` — усе PR #134. Другорядне з цього PR: гучний лог `PLAN strength snapshot empty tid=<id>` замість тихого ковтання порожнього `fetch_workout_full`/`fetch_workouts` (`app/analysis/plans.py::_add_plan_strength`) + ідемпотентний бекфіл наявних активних планів (CLI `backfill-strength-snapshots --email`, `app/cli.py`) — фільтрує «порожнє» в Python (JSON-null gotcha), кешує live-фетч по `tid`, ніколи не перезаписує наявний снапшот. Тести на `_strength_exercises` — `tests/test_analysis.py` |
 | [EP-08](EP-08-health-alerts.md) | Проактивні health-алерти (аномалії відновлення) | `app/health.py` — чистий (нуль LLM) детектор recovery-аномалій: реюзає особисті персентиль-коридори NF-01 (`baselines.compute_baselines`) як пороги й ловить метрику, що кілька днів поза коридором у поганий бік — `hrv_low`/`rhr_up`/`sleep_debt`/`stress_high` → `Alert`/`HealthReport` (calibrating/none/alert), cold-start gate `HEALTH_MIN_HISTORY_DAYS`. `service.build_health_alerts`/`run_health_alert` (Sonnet `SYSTEM_HEALTH` + детермінований fallback `health.summary`, `ReportLog(kind="health")`), хук `_health_check_for_user` у morning-тіку (per-rule cooldown `alert:<kind>`, скіп якщо injury вже пінганув сьогодні — 1 risk-DM/день), команда `/health`, тумблери `HEALTH_ALERTS` + per-user `User.alerts_enabled` (форма `/settings`, міграція `b1c2d3e4f5a6`); `tests/test_health.py` |
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` на пакет | `app/analysis/` пакет: `client.py` (пул клієнтів, `PRICES`, `_complete`, `CallStats`, `AnalystError`), `cache.py` (дедуп-ключі + білдери контексту), `reports.py` (analyze/ask/activity/digest/compare/injury), `plans.py` (генерація/едити/адаптація/погода/силові); `service.py` — тонкий фасад із реекспортами (зовнішні імпорти незмінні), `prompts.py` не чіпано. Нуль поведінкових змін (тест-сьют зелений). PR #127 |
 | [ST-01](ST-01-morning-report-plan-context.md) | Ранковий звіт бачить сьогоднішнє тренування з плану | `plan_today` наскрізь у `app/analysis/service.py` (`analyze_with_stats` + cache key) |

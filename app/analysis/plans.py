@@ -109,8 +109,10 @@ async def _add_plan_strength(
         amap: dict = {}
         snapshots: dict = {}
         if assignments:
-            saved = {w["id"]: workout_export.clean_workout_name(w["name"])
-                     for w in await run_in_threadpool(client.fetch_workouts)}
+            workouts = await run_in_threadpool(client.fetch_workouts)
+            if not workouts:
+                logger.warning(f"PLAN strength snapshot empty: fetch_workouts() plan={plan.id}")
+            saved = {w["id"]: workout_export.clean_workout_name(w["name"]) for w in workouts}
             amap = {slug: {"id": wid, "name": saved.get(wid) or "Силова"}
                     for slug, wid in assignments.items()}
             # Snapshot each chosen template's exercises + name NOW (Garmin is bound here),
@@ -122,6 +124,8 @@ async def _add_plan_strength(
                         "name": (raw.get("workoutName") or "").strip() or None,
                         "exercises": workout_export.read_exercises(raw),
                     }
+                else:
+                    logger.warning(f"PLAN strength snapshot empty tid={tid} plan={plan.id}")
         # Generate each distinct free-text session once, sanitise categories, and lay it on
         # its weekday as a from-scratch strength_plan (built natively on push).
         custom_plans: dict = {}
