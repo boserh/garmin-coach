@@ -42,12 +42,17 @@
       не вимагає жодного існуючого звіту для старту (стара гвардія знята — тепер
       підстава для відповіді йде з інструментів, а не лише з `recent_reports`).
 - [x] Інструменти read-only, user-scoped, з лімітами на розмір результату. →
-      `query_activities`/`query_daily`/`aggregate_weekly`/`get_activity_detail`
-      (`app/analysis/reports.py::_ask_tools`/`_run_ask_tool`) поверх нових
-      user-scoped repository-функцій (`app/garmin/repository.py`), капнутих на
-      `ASK_MAX_ROWS`=200 рядків; `query_daily` обмежено білим списком
+      `query_activities`/`query_daily`/`aggregate_weekly`/`get_activity_detail`/
+      `get_training_plan` (`app/analysis/reports.py::_ask_tools`/`_run_ask_tool`)
+      поверх нових user-scoped repository-функцій (`app/garmin/repository.py`),
+      капнутих на `ASK_MAX_ROWS`=200 рядків; `query_daily` обмежено білим списком
       `ASK_DAILY_FIELDS`; `get_activity_detail` реюзає `activity_payload` (сегменти,
-      не сирий `series`).
+      не сирий `series`). `get_training_plan` (`repository.query_training_plan`)
+      додано окремо — без нього питання про сáму ПРОГРАМУ (наступні сесії, ціль,
+      дотримання) не мали за що зачепитись: жоден з перших 4 інструментів не читає
+      `TrainingPlan`/`PlannedWorkout`, а `recent_reports` згадує план лише на
+      сьогодні/завтра. Промпт явно розділяє `get_training_plan` (план) і
+      `query_activities` (факт), щоб не плутались.
 - [x] Хард-ліміт раундів + сумарний token-бюджет на питання; перевищення →
       чесна відповідь «уточни питання». → `MAX_ASK_ROUNDS`=5,
       `MAX_ASK_TOTAL_TOKENS`=60k у `run_ask_agent`; обидва ліміти повертають

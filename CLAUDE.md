@@ -16,8 +16,20 @@ GIT_COMMITTER_NAME="Serhii Bodnaruk" GIT_COMMITTER_EMAIL="sergiwez@gmail.com" \
   git commit --author="Serhii Bodnaruk <sergiwez@gmail.com>" -m "..."
 ```
 
-If a commit slips through with the wrong identity, fix it (amend, or rebase if it's not
-the tip) before considering the task done — check with `git log -1 --format='%an <%ae> / %cn <%ce>'`.
+**This applies to EVERY command that creates or rewrites a commit** — not just
+`git commit`: `git cherry-pick`, `git rebase`, `git commit --amend`, `git revert`, `git
+merge` all silently set the *committer* (not the author) to whatever the ambient git
+identity is, which in this environment defaults to `Claude <noreply@anthropic.com>`.
+`git cherry-pick` in particular preserves the original *author* from the source commit,
+so it's easy to check `%an` and see the right name while `%cn` is still wrong. Prefix
+**every one of these commands** with the same `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`
+env vars, e.g. `GIT_COMMITTER_NAME="Serhii Bodnaruk" GIT_COMMITTER_EMAIL="sergiwez@gmail.com" git cherry-pick <sha>`.
+
+After ANY rebase/cherry-pick/amend/merge, verify the **whole range** you touched, not
+just the tip — `git log --format='%h %an <%ae> / %cn <%ce>' <base>..HEAD` — before
+pushing or opening a PR. Fix (interactive rebase, or reset+recommit with the env vars)
+before considering the task done.
+
 **Also strip any `Co-Authored-By: Claude ...` / `Claude-Session: ...` trailer** some
 tooling appends to the message body by default — those are wrong too, not "unrelated": no
 Claude attribution anywhere in the commit, body included.
@@ -741,20 +753,25 @@ no SDK tool-use" choice noted below for plan gen/edit/adapt, which stays as-is; 
 alone needed open-ended multi-step lookups a single JSON schema can't express).
 `run_ask` seeds the loop with the last `ASK_DEFAULT_N` (3) **daily** reports
 (`repository.get_recent_reports`, filtered to `kind="report"`) **plus** `get_recent_asks`
-— this user's `/ask` exchanges from the last `ASK_CONTEXT_MIN` (5) minutes — so an
+— this user's `/ask` exchanges from the last `ASK_CONTEXT_MIN` (30) minutes — so an
 in-context follow-up answers in one round, no tool calls. Anything needing more drives
 `run_ask_agent` (`app/analysis/reports.py`): up to `MAX_ASK_ROUNDS` (5) round trips of
-`client._complete_tools` (Sonnet, `SYSTEM_ASK_TOOLS`) against four **read-only,
+`client._complete_tools` (Sonnet, `SYSTEM_ASK_TOOLS`) against five **read-only,
 user-scoped** tools (`_ask_tools()`, dispatched by `_run_ask_tool`) — `query_activities`/
 `query_daily` (date-range reads, capped at `repository.ASK_MAX_ROWS`=200 rows,
 `query_daily` restricted to the `ASK_DAILY_FIELDS` whitelist so a typo'd field is a silent
 miss, not an arbitrary-column fishing trip), `aggregate_weekly` (one metric bucketed per
 ISO week — run-volume via `weekly_run_volume` or any `ASK_DAILY_FIELDS` name averaged per
-week), and `get_activity_detail` (reuses `activity_payload` — segments, not the raw
-series). A tool never raises; a bad name/arg/DB hiccup becomes `{"error": ...}` the model
-can react to. `MAX_ASK_TOTAL_TOKENS` (60k combined in+out) is a second, cost-based cutoff
-independent of the round count. Hitting either limit while still mid-tool-use returns
-`ASK_LIMIT_TEXT` (an honest "уточни питання") instead of a partial/guessed answer — never
+week), `get_activity_detail` (reuses `activity_payload` — segments, not the raw series),
+and `get_training_plan` (`repository.query_training_plan` — the active `TrainingPlan`'s
+goal/target/summary plus its dated sessions in a range; without it, a question about the
+*program itself* — upcoming sessions, goal, adherence — had nothing but a stray mention in
+a report's text to go on; the prompt tells the model this tool is plan, `query_activities`
+is fact, don't conflate them). A tool never raises; a bad name/arg/DB hiccup becomes
+`{"error": ...}` the model can react to. `MAX_ASK_TOTAL_TOKENS` (60k combined in+out) is a
+second, cost-based cutoff independent of the round count. Hitting either limit while still
+mid-tool-use returns `ASK_LIMIT_TEXT` (an honest "уточни питання") instead of a
+partial/guessed answer — never
 raised as an error. Dedup-cached on the question + `repository.latest_daily_date` (a
 pure-DB, no-Garmin "how fresh is the data" proxy — see `_ask_cache_key`); logs a
 `ReportLog(kind="ask", tool_rounds=<n>)` so a multi-round question's real cost is visible

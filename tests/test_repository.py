@@ -421,6 +421,44 @@ async def test_latest_daily_date(session):
     assert await repository.latest_daily_date(session, U1) == "2026-06-05"  # not U2's later date
 
 
+async def test_query_training_plan_no_active_plan(session):
+    assert await repository.query_training_plan(session, U1) == {"plan": None}
+
+
+async def test_query_training_plan_returns_goal_and_sessions_in_range(session):
+    plan = TrainingPlan(user_id=U1, goal="first_5k", goal_label="Перші 5К",
+                        status="active", start_date="2026-06-01", target_date="2026-08-01",
+                        days_per_week=3, intensity="easy", summary="плавний старт")
+    session.add(plan)
+    await session.flush()
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-06-01", week=1,
+                               type="easy", dist_km=5.0, description="легко",
+                               status="done"))
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-06-10", week=2,
+                               type="tempo", dist_km=8.0, description="темпова",
+                               status="planned"))
+    # a different (archived) plan for the same user must not leak in
+    other = TrainingPlan(user_id=U1, goal="g", status="archived",
+                         start_date="2026-01-01", target_date="2026-02-01")
+    session.add(other)
+    await session.flush()
+    session.add(PlannedWorkout(plan_id=other.id, user_id=U1, date="2026-06-05",
+                               type="long", status="planned"))
+    await session.commit()
+
+    got = await repository.query_training_plan(session, U1)
+    assert got["plan"]["goal"] == "first_5k"
+    assert got["plan"]["goal_label"] == "Перші 5К"
+    assert got["plan"]["target_date"] == "2026-08-01"
+    assert [s["date"] for s in got["sessions"]] == ["2026-06-01", "2026-06-10"]
+
+    ranged = await repository.query_training_plan(
+        session, U1, date_from="2026-06-05", date_to="2026-06-30")
+    assert [s["date"] for s in ranged["sessions"]] == ["2026-06-10"]
+
+    assert await repository.query_training_plan(session, U2) == {"plan": None}
+
+
 async def _make_plan(session, user_id: int, start: str, end: str) -> TrainingPlan:
     plan = TrainingPlan(user_id=user_id, goal="g", status="active",
                         start_date=start, target_date=end)

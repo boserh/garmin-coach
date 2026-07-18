@@ -176,6 +176,49 @@ async def latest_daily_date(session: AsyncSession, user_id: int) -> Optional[str
     ).scalar_one_or_none()
 
 
+async def query_training_plan(
+    session: AsyncSession, user_id: int, *,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    limit: int = ASK_MAX_ROWS,
+) -> dict:
+    """EP-09 ``/ask`` tool: this user's active training plan (goal/target/summary) plus its
+    dated sessions in a date range (both ends inclusive; omit either for an open range,
+    oldest first). Without this, a question about "the program" itself (upcoming sessions,
+    goal, target date) had no real data to answer from — only whatever a daily report
+    happened to mention about today/tomorrow. Read-only, user-scoped, capped at ``limit``
+    sessions (never above ``ASK_MAX_ROWS``). Returns ``{"plan": None}`` if there's no active
+    plan (an archived one isn't visible here — that's a deliberate v1 scope, not a bug)."""
+    plan = (
+        await session.execute(
+            select(TrainingPlan).where(
+                TrainingPlan.user_id == user_id, TrainingPlan.status == "active"
+            ).order_by(TrainingPlan.id.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if plan is None:
+        return {"plan": None}
+    stmt = select(PlannedWorkout).where(PlannedWorkout.plan_id == plan.id)
+    if date_from:
+        stmt = stmt.where(PlannedWorkout.date >= date_from)
+    if date_to:
+        stmt = stmt.where(PlannedWorkout.date <= date_to)
+    stmt = stmt.order_by(PlannedWorkout.date).limit(max(1, min(limit, ASK_MAX_ROWS)))
+    rows = (await session.execute(stmt)).scalars().all()
+    return {
+        "plan": {
+            "goal": plan.goal, "goal_label": plan.goal_label,
+            "target_date": plan.target_date, "start_date": plan.start_date,
+            "days_per_week": plan.days_per_week, "intensity": plan.intensity,
+            "summary": plan.summary,
+        },
+        "sessions": [
+            {"date": w.date, "week": w.week, "type": w.type, "dist_km": w.dist_km,
+             "description": w.description, "status": w.status}
+            for w in rows
+        ],
+    }
+
+
 async def get_activity(session: AsyncSession, user_id: int, row_id: int):
     """One activity by its DB id, scoped to the user (None if missing / not theirs)."""
     return (
