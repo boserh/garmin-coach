@@ -72,16 +72,26 @@
       `build_payload_cached` автентифікується сам (login guard-ed/ідемпотентний, при
       валідному токені — просто `loads()`). Чинить і втрату імені
       (`description="Силова"`). (цей PR)
-- [ ] Другорядно: **не ковтати тихо** порожній `fetch_workout_full`/`fetch_workouts` —
+- [x] Другорядно: **не ковтати тихо** порожній `fetch_workout_full`/`fetch_workouts` —
       залогувати гучний маркер (`PLAN strength snapshot empty tid=<id>`), щоб майбутні
-      діри були видимі, а не мовчазні. _(не в цьому PR)_
-- [ ] **Ідемпотентний бекфіл** наявних активних планів: заповнити `null`-снапшоти
+      діри були видимі, а не мовчазні. → `app/analysis/plans.py::_add_plan_strength`
+      (обидва фетчі; `fetch_workouts()` логує без `tid`, per-темплейт — з `tid=`).
+- [x] **Ідемпотентний бекфіл** наявних активних планів: заповнити `null`-снапшоти
       clone-днів одним проходом (читає темплейти live один раз, під `user_runtime` +
       `login()`; найближчий родич — CLI `backfill-*`). Врахувати JSON-null gotcha при
-      виборі «порожніх» рядків.
-- [ ] Тести: `plan_today` з clone-снапшотом → вправи в контексті; from-scratch
+      виборі «порожніх» рядків. → CLI `backfill-strength-snapshots --email`
+      (`app/cli.py::_backfill_strength_snapshots`): фільтрує в Python
+      (`isinstance(..., dict) and .get("exercises")`), кешує фетч по `tid` (не
+      перетягує той самий темплейт двічі), `--dry-run` не потрібен — це чисте
+      заповнення `NULL`-полів, ніколи не перезаписує наявний снапшот.
+- [x] Тести: `plan_today` з clone-снапшотом → вправи в контексті; from-scratch
       `strength_plan` → вправи в контексті; обидва порожні → без вправ (промпт-гард
-      покриває цей випадок).
+      покриває цей випадок). → вже покрито `tests/test_analysis.py`
+      (`test_strength_exercises_from_snapshot`/`_from_plan_blocks`/`_empty_snapshot_is_none`,
+      додано разом з основним фіксом PR #134). CLI-бекфіл — тонка glue-обгортка
+      (DB + Garmin), без юніт-тесту, як і решта `backfill-*`/`push-plan` команд у
+      цьому файлі (проєктна конвенція — див. `tests/test_convert_easy_hr.py`, єдиний
+      виняток, тестує лише чисту функцію-трансформер).
 
 ## Підводні камені
 

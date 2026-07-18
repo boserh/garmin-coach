@@ -209,6 +209,68 @@ async def _backfill_records(email: str) -> int:
     return 0
 
 
+async def _backfill_strength_snapshots(email: str) -> int:
+    """ST-09: fill in null strength_snapshot on the active plan's clone days (a
+    garmin_template_id set but the snapshot never got written — the pre-fix symptom was a
+    garth client that never logged in before the strength fetch, so it silently degraded to
+    {}/[]). Idempotent: only rows whose snapshot is missing/empty are touched (the JSON-null
+    gotcha — filter in Python, not `.is_(None)`), so a repeat run is a no-op. Fetches each
+    distinct template once, live, under a bound + logged-in Garmin session."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import client, repository, workout_export
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+        ws = await repository.list_workouts(session, plan.id)
+        todo = [
+            w for w in ws
+            if w.type == "strength" and w.garmin_template_id
+            and not (isinstance(w.strength_snapshot, dict) and w.strength_snapshot.get("exercises"))
+        ]
+        if not todo:
+            print("Nothing to backfill (all clone-day snapshots already filled).")
+            return 0
+
+        print(f"Backfilling {len(todo)} strength snapshot(s) for {email}...")
+        async with user_runtime(session, user):
+            await run_in_threadpool(get_provider().login)
+            cache: dict = {}
+            for w in todo:
+                tid = w.garmin_template_id
+                if tid not in cache:
+                    raw = await run_in_threadpool(client.fetch_workout_full, tid)
+                    if raw:
+                        cache[tid] = {
+                            "name": (raw.get("workoutName") or "").strip() or None,
+                            "exercises": workout_export.read_exercises(raw),
+                        }
+                    else:
+                        cache[tid] = None
+                        print(f"  tid={tid}: empty fetch, skipped")
+                    await asyncio.sleep(0.3)  # be gentle on Garmin
+                snap = cache[tid]
+                if snap and snap.get("exercises"):
+                    w.strength_snapshot = snap
+                    print(f"  {w.date}  {snap.get('name') or 'Силова'}"
+                          f"  ({len(snap['exercises'])} exercise(s))")
+        done = sum(1 for w in todo if isinstance(w.strength_snapshot, dict)
+                   and w.strength_snapshot.get("exercises"))
+        await session.commit()
+        print(f"Done: {done}/{len(todo)} snapshots filled.")
+    return 0
+
+
 async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> int:
     """Push the user's active-plan workouts in the next ``days`` to the Garmin calendar.
 
@@ -602,6 +664,11 @@ def main(argv=None) -> int:
         "backfill-records", help="Seed personal records from stored history (silent, EP-14)")
     br.add_argument("--email", required=True)
 
+    bss = sub.add_parser(
+        "backfill-strength-snapshots",
+        help="Fill null strength_snapshot on the active plan's clone days (ST-09)")
+    bss.add_argument("--email", required=True)
+
     sub.add_parser(
         "token-expiry",
         help="Decode all users' stored garth tokens: OAuth1 issue/expiry dates (read-only)",
@@ -634,6 +701,8 @@ def main(argv=None) -> int:
         return asyncio.run(_list_workouts(args.email))
     if args.cmd == "backfill-records":
         return asyncio.run(_backfill_records(args.email))
+    if args.cmd == "backfill-strength-snapshots":
+        return asyncio.run(_backfill_strength_snapshots(args.email))
     if args.cmd == "token-expiry":
         return asyncio.run(_token_expiry())
     return 0
