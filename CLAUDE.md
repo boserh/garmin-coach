@@ -405,7 +405,7 @@ app/
     auth.py            GET/POST /login, GET /logout
     settings.py        /settings (own creds), /admin/users (admin)
     health.py          GET /health (public), GET /status (login, per-user)
-    reports.py         GET /report.json (Sonnet), GET /deep (Opus), GET /ask (tool-use, EP-09) — login, per-user
+    reports.py         GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py         GET /history?days=N — trends from DB, login, per-user
     plan.py            GET/POST /plan — training-plan setup form + view, login, per-user
     admin.py           /ui DB browser — admin only
@@ -447,8 +447,6 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost.
 - `GET /report.json` — daily report (Sonnet). Login; current user.
 - `GET /deep?q=...` — deep analysis (Opus). Login; current user.
-- `GET /ask?q=...` — EP-09 tool-use agent over the full history (Sonnet). Login; current
-  user; pure DB read, no Garmin fetch (like `/compare`).
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Login; current user.
 - `GET/POST /plan` — training-plan setup form (no active plan) / plan view; `POST /plan/archive`
   (archive active), `GET /plan/archive` (list archived), `GET /plan/{id}` (read-only view of
@@ -760,8 +758,8 @@ independent of the round count. Hitting either limit while still mid-tool-use re
 raised as an error. Dedup-cached on the question + `repository.latest_daily_date` (a
 pure-DB, no-Garmin "how fresh is the data" proxy — see `_ask_cache_key`); logs a
 `ReportLog(kind="ask", tool_rounds=<n>)` so a multi-round question's real cost is visible
-(`tool_rounds` is null for every other `kind`, and for a cache hit). Bot **and** web
-(`GET /ask?q=`, login) — both pure-DB, no Garmin fetch (`load_credentials`, not
+(`tool_rounds` is null for every other `kind`, and for a cache hit). Bot-only (no web
+endpoint — deliberately kept out of the web app); pure-DB (`load_credentials`, not
 `user_runtime`, like `/compare`), so an MFA gate never blocks a question.
 
 **Stored question**: `ReportLog.question` records the asked prompt — for `/ask` (the

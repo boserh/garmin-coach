@@ -55,9 +55,11 @@
 - [x] Дедуп-кеш: ключ включає питання + денний зріз БД (грубо: last_data_date) —
       повтор питання того ж дня — кеш-хіт. → `repository.latest_daily_date`
       (pure-DB, без Garmin) + `_ask_cache_key(..., last_data_date)`.
-- [x] Веб-ендпоінт `/ask` (GET, login) — тепер має сенс і поза ботом. →
-      `GET /ask?q=` (`app/routers/reports.py`), pure-DB (`load_credentials`, не
-      `user_runtime` — як `/compare`, без ризику MFA).
+- [ ] Веб-ендпоінт `/ask` (GET, login) — тепер має сенс і поза ботом.
+      → **свідомо не зроблено**: спробували (`GET /ask?q=`), власник репо попросив
+      прибрати з вебу — `/ask` лишається бот-only. `run_ask` як функція
+      web-агностична (`load_credentials`, не `user_runtime`), тож додати ендпоінт
+      тривіально, якщо продукт зміниться.
 
 ## Підводні камені
 
