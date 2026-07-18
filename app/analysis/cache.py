@@ -100,9 +100,15 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list) -> str:
+def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list,
+                   last_data_date: Optional[str] = None) -> str:
+    # EP-09: keyed on a coarse daily-data slice (last_data_date — the most recent stored
+    # daily_metrics date, a pure-DB proxy for "has anything changed") rather than the
+    # calendar date alone, so a repeat question before today's data has synced is still a
+    # cache hit instead of paying for an identical tool-use run. Falls back to today's date
+    # for a brand-new user with no stored days yet.
     material = {
-        "today": dt.date.today().isoformat(),
+        "last_data_date": last_data_date or dt.date.today().isoformat(),
         "reports": reports,
         "recent_asks": recent_asks,
         "question": question,

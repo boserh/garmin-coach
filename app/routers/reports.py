@@ -8,11 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import weather
 from app.analysis import delivery
-from app.analysis.service import AnalystError, run_analysis
+from app.analysis.service import AnalystError, run_analysis, run_ask
 from app.core.auth import current_user
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import service
+from app.garmin.credentials import load_credentials
 from app.garmin.runtime import user_runtime
 
 router = APIRouter(tags=["reports"])
@@ -69,3 +70,19 @@ async def deep(
         "question": q or _DEEP_Q,
         "report": text,
     }
+
+
+@router.get("/ask")
+async def ask(
+    q: str = Query(..., min_length=1, description="Question about your training history"),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """EP-09: a bounded tool-use agent over the full stored history (not just the last few
+    reports). Pure DB read + Claude — no Garmin fetch, so no MFA risk (like /compare)."""
+    creds = load_credentials(user)
+    try:
+        text = await run_ask(session, q, user_id=user.id, api_key=creds.anthropic_key)
+    except AnalystError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"question": q, "answer": text}

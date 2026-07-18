@@ -18,8 +18,9 @@ GIT_COMMITTER_NAME="Serhii Bodnaruk" GIT_COMMITTER_EMAIL="sergiwez@gmail.com" \
 
 If a commit slips through with the wrong identity, fix it (amend, or rebase if it's not
 the tip) before considering the task done — check with `git log -1 --format='%an <%ae> / %cn <%ce>'`.
-The `Co-Authored-By: Claude ...` trailer some tooling appends to the message body is fine
-and unrelated — it's the author/committer *fields* that must never say Claude.
+**Also strip any `Co-Authored-By: Claude ...` / `Claude-Session: ...` trailer** some
+tooling appends to the message body by default — those are wrong too, not "unrelated": no
+Claude attribution anywhere in the commit, body included.
 
 ## ⚠️ Cost safety — HARD RULE (do not skip)
 
@@ -399,12 +400,12 @@ app/
   weather.py           Open-Meteo geocode (settings) + today's forecast (morning report)
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
-    prompts.py         SYSTEM + SYSTEM_ASK prompts
+    prompts.py         SYSTEM + SYSTEM_ASK_TOOLS prompts
   routers/
     auth.py            GET/POST /login, GET /logout
     settings.py        /settings (own creds), /admin/users (admin)
     health.py          GET /health (public), GET /status (login, per-user)
-    reports.py         GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
+    reports.py         GET /report.json (Sonnet), GET /deep (Opus), GET /ask (tool-use, EP-09) — login, per-user
     history.py         GET /history?days=N — trends from DB, login, per-user
     plan.py            GET/POST /plan — training-plan setup form + view, login, per-user
     admin.py           /ui DB browser — admin only
@@ -446,6 +447,8 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost.
 - `GET /report.json` — daily report (Sonnet). Login; current user.
 - `GET /deep?q=...` — deep analysis (Opus). Login; current user.
+- `GET /ask?q=...` — EP-09 tool-use agent over the full history (Sonnet). Login; current
+  user; pure DB read, no Garmin fetch (like `/compare`).
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Login; current user.
 - `GET/POST /plan` — training-plan setup form (no active plan) / plan view; `POST /plan/archive`
   (archive active), `GET /plan/archive` (list archived), `GET /plan/{id}` (read-only view of
@@ -734,15 +737,32 @@ $2/$10 through 2026-08-31 (bump to $3/$15 on 2026-09-01), Sonnet 4.6 $3/$15, Opu
 $5/$25, Fable 5 $10/$50. NB Sonnet 5 uses the newer tokenizer (~30% more tokens for the
 same text than Sonnet 4.6), so per-request token counts rise.
 
-**`/ask <question>`**: cheap follow-up Q&A (Sonnet) grounded in the last `ASK_DEFAULT_N`
-(3) **daily** reports' text — no Garmin fetch, no payload. `run_ask` reads
-`repository.get_recent_reports` (filtered to `kind="report"`, so `/deep` and prior
-`/ask` answers don't pollute the daily context), **plus** `get_recent_asks` — this
-user's `/ask` exchanges (question + answer) from the last `ASK_CONTEXT_MIN` (5) minutes,
-so a follow-up can build on the previous one. Both go to `analyze_with_stats`' sibling
-`ask_with_stats` (separate `SYSTEM_ASK` prompt; the recent thread arrives as `recent_qa`
-and is part of the dedup-cache key), which logs a `ReportLog` row with `kind="ask"`.
-Bot-only — no web endpoint.
+**`/ask <question>` (EP-09): a bounded tool-use agent over the FULL stored history** — the
+project's **first SDK tool-use** (a deliberate reversal of the earlier "prompt-for-JSON,
+no SDK tool-use" choice noted below for plan gen/edit/adapt, which stays as-is; `/ask`
+alone needed open-ended multi-step lookups a single JSON schema can't express).
+`run_ask` seeds the loop with the last `ASK_DEFAULT_N` (3) **daily** reports
+(`repository.get_recent_reports`, filtered to `kind="report"`) **plus** `get_recent_asks`
+— this user's `/ask` exchanges from the last `ASK_CONTEXT_MIN` (5) minutes — so an
+in-context follow-up answers in one round, no tool calls. Anything needing more drives
+`run_ask_agent` (`app/analysis/reports.py`): up to `MAX_ASK_ROUNDS` (5) round trips of
+`client._complete_tools` (Sonnet, `SYSTEM_ASK_TOOLS`) against four **read-only,
+user-scoped** tools (`_ask_tools()`, dispatched by `_run_ask_tool`) — `query_activities`/
+`query_daily` (date-range reads, capped at `repository.ASK_MAX_ROWS`=200 rows,
+`query_daily` restricted to the `ASK_DAILY_FIELDS` whitelist so a typo'd field is a silent
+miss, not an arbitrary-column fishing trip), `aggregate_weekly` (one metric bucketed per
+ISO week — run-volume via `weekly_run_volume` or any `ASK_DAILY_FIELDS` name averaged per
+week), and `get_activity_detail` (reuses `activity_payload` — segments, not the raw
+series). A tool never raises; a bad name/arg/DB hiccup becomes `{"error": ...}` the model
+can react to. `MAX_ASK_TOTAL_TOKENS` (60k combined in+out) is a second, cost-based cutoff
+independent of the round count. Hitting either limit while still mid-tool-use returns
+`ASK_LIMIT_TEXT` (an honest "уточни питання") instead of a partial/guessed answer — never
+raised as an error. Dedup-cached on the question + `repository.latest_daily_date` (a
+pure-DB, no-Garmin "how fresh is the data" proxy — see `_ask_cache_key`); logs a
+`ReportLog(kind="ask", tool_rounds=<n>)` so a multi-round question's real cost is visible
+(`tool_rounds` is null for every other `kind`, and for a cache hit). Bot **and** web
+(`GET /ask?q=`, login) — both pure-DB, no Garmin fetch (`load_credentials`, not
+`user_runtime`, like `/compare`), so an MFA gate never blocks a question.
 
 **Stored question**: `ReportLog.question` records the asked prompt — for `/ask` (the
 question), `/deep` (the user's question) and morning (its fixed prompt); `/report` leaves
@@ -845,7 +865,9 @@ and move ≤2 days — enforced by `_filter_ops_to_level`, not just the prompt �
 taper mode ≤14 days to `target_date` (no moves, cut ≤15%); `flexible` allows the full
 spectrum incl. skip/token-2km. Adapt calls are NOT dedup-cached (`_complete` has no cache),
 so level/context changes always take effect. NB the prompt-for-JSON + Pydantic + one-retry
-choice avoids SDK tool-use, matching the rest of the `messages.create` usage.
+choice avoids SDK tool-use here — unlike `/ask` (EP-09, above), which needs open-ended
+multi-step DB lookups a single JSON schema can't express; every other `messages.create`
+call in the app (plan gen/edit/adapt/weather/strength, all narration) stays prompt-only.
 **Open-ended "keep improving" plans**: a fifth goal `general` (`GOALS`/`OPEN_ENDED_GOALS`
 in `routers/plan.py`, `plans.OPEN_ENDED_GOAL`) with **no target race** — a rolling plan you
 just keep running. Generation lays a first block of `PLAN_BLOCK_WEEKS` (6) weeks: the plan
@@ -875,8 +897,10 @@ morning nudge itself is free, and there's no scheduled auto-generation.
   payload (`daily`, `recent_activities`, `planned_runs`) + date + question + model +
   `previous_report`. The volatile `generated` timestamp is deliberately excluded —
   otherwise the key changes every minute and never hits (the main gotcha if you touch the
-  key logic). `/ask` keys instead on the recent reports + `recent_qa` thread + question +
-  model. 1-week TTL; expired rows purged lazily on write. Hit logs `CLAUDE CACHE HIT`.
+  key logic). `/ask` (EP-09) keys instead on the recent reports + `recent_qa` thread +
+  question + model + `last_data_date` (a coarse daily-data-freshness proxy — see the
+  `/ask` section above). 1-week TTL; expired rows purged lazily on write. Hit logs
+  `CLAUDE CACHE HIT`.
   The get/put lives in the async `run_*` wrappers (`app.db.llm_cache` — they hold the
   session; the sync `*_with_stats` functions run in a threadpool and stay cache-free),
   so the bot and web processes share hits — the old per-process `claude_cache.json`

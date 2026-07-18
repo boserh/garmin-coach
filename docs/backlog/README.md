@@ -10,8 +10,8 @@
 🔴 highest / 🟠 high / 🟡 medium / 🟢 low / ⚪ lowest. Усі highest/high закрито:
 EP-12 (RPE-тренд/болі в адаптацію+дайджест+звіт), EP-08 (проактивні health-алерти),
 CODE-01 (розбити analysis-сервіс) і ST-09 (реальні вправи силової в звіті) —
-✅ зроблено (див. Done). Далі — 🟡 medium: **EP-09**
-(`/ask` над усією історією, движок для EP-11/NF-08) чи EP-04/EP-05. Frozen-тікети — ⚪.
+✅ зроблено (див. Done). З 🟡 medium далі закрито **EP-09** (`/ask` над усією
+історією). Наступні — EP-04/EP-05. Frozen-тікети — ⚪.
 
 ## Сторі покращення (S/M)
 
@@ -21,7 +21,6 @@ CODE-01 (розбити analysis-сервіс) і ST-09 (реальні впра
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [EP-09](EP-09-ask-full-history.md) | 🟡 medium | `/ask` над усією історією (tool-use агент над БД) — движок для EP-11/NF-08 | L–XL | — |
 | [EP-04](EP-04-web-dashboard.md) | 🟡 medium | Веб-дашборд — продуктове відчуття без LLM-витрат | L | EP-01 ✅ (бейджі план/факт) |
 | [EP-05](EP-05-race-pack.md) | 🟡 medium | Race pack — підготовка до перегонів | L | фаза 0: типізувати `target_date`; GAP-модуль спільний з EP-15 |
 | [EP-11](EP-11-web-coach-chat.md) | 🟢 low | Веб-чат з тренером | L | EP-09 бажано |
@@ -89,7 +88,7 @@ EP-13-погодою — поки окрема джоба о 19:00) →
 on-demand `/report`) → **EP-14** ✅ (особисті рекорди) — філери.
 
 **Стратегічні ставки (місяць+ кожна, це і є моат):** **NF-01** ✅ (підсилює звіти,
-EP-08-пороги і NF-06) → **EP-09** (движок для EP-11 і NF-08) → **NF-05**
+EP-08-пороги і NF-06) → **EP-09** ✅ (движок для EP-11 і NF-08) → **NF-05** ✅
 (коректність адаптації для реального мультиспорт-профілю) → EP-04 (продуктове
 відчуття без LLM-витрат).
 
@@ -108,6 +107,7 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 
 | ID | Назва | Де реалізовано |
 | --- | --- | --- |
+| [EP-09](EP-09-ask-full-history.md) | `/ask` над усією історією — перший tool-use агент у проєкті | `run_ask_agent` (`app/analysis/reports.py`): до `MAX_ASK_ROUNDS`=5 раундів `client._complete_tools` (Sonnet, `SYSTEM_ASK_TOOLS`) над 4 read-only user-scoped інструментами (`_ask_tools`/`_run_ask_tool`) — `query_activities`/`query_daily` (нові `repository.query_activities`/`query_daily`, капнуті на `ASK_MAX_ROWS`=200, `query_daily` по білому списку `ASK_DAILY_FIELDS`), `aggregate_weekly` (run-volume або будь-яка `ASK_DAILY_FIELDS`-метрика по тижнях), `get_activity_detail` (реюзає `activity_payload` — сегменти, не сирий `series`). Питання без потреби в історії відповідається за 1 раунд без tool-викликів (recent_reports/recent_qa як і раніше). Хард-ліміт раундів + `MAX_ASK_TOTAL_TOKENS`=60k — перевищення повертає чесний `ASK_LIMIT_TEXT`, ніколи не кидає помилку. Дедуп-кеш на питання + `repository.latest_daily_date` (pure-DB, без Garmin). `ReportLog.tool_rounds` (нова колонка, міграція `f19ea8917ca6`) робить вартість багатораундового питання видимою. Веб-ендпоінт `GET /ask?q=` (`app/routers/reports.py`) — pure-DB, `load_credentials` замість `user_runtime` (як `/compare`), без ризику MFA; бот-хендлер `/ask` так само перейшов на `load_credentials`. `tests/test_ask_agent.py` + нові тести в `tests/test_repository.py`/`test_analysis.py` |
 | [ST-09](ST-09-strength-exercises-in-report-context.md) | Ранковий звіт бачить реальні вправи силової (не вигадує) | `reports._strength_exercises` (пріоритет `strength_plan` → `strength_snapshot`) підключено в `plan_today`; `SYSTEM` секція `plan_today` каже спиратись лише на `plan_today[].exercises`, не на `recent_activities`; `_UserGarthProvider.connectapi`/`username`/`display_name` тепер ліниво логіняться (defense-in-depth — будь-який Garmin-виклик поза `build_payload_cached` тепер автентифікований), полагоджено day-frame `previous_report` — усе PR #134. Другорядне з цього PR: гучний лог `PLAN strength snapshot empty tid=<id>` замість тихого ковтання порожнього `fetch_workout_full`/`fetch_workouts` (`app/analysis/plans.py::_add_plan_strength`) + ідемпотентний бекфіл наявних активних планів (CLI `backfill-strength-snapshots --email`, `app/cli.py`) — фільтрує «порожнє» в Python (JSON-null gotcha), кешує live-фетч по `tid`, ніколи не перезаписує наявний снапшот. Тести на `_strength_exercises` — `tests/test_analysis.py` |
 | [EP-08](EP-08-health-alerts.md) | Проактивні health-алерти (аномалії відновлення) | `app/health.py` — чистий (нуль LLM) детектор recovery-аномалій: реюзає особисті персентиль-коридори NF-01 (`baselines.compute_baselines`) як пороги й ловить метрику, що кілька днів поза коридором у поганий бік — `hrv_low`/`rhr_up`/`sleep_debt`/`stress_high` → `Alert`/`HealthReport` (calibrating/none/alert), cold-start gate `HEALTH_MIN_HISTORY_DAYS`. `service.build_health_alerts`/`run_health_alert` (Sonnet `SYSTEM_HEALTH` + детермінований fallback `health.summary`, `ReportLog(kind="health")`), хук `_health_check_for_user` у morning-тіку (per-rule cooldown `alert:<kind>`, скіп якщо injury вже пінганув сьогодні — 1 risk-DM/день), команда `/health`, тумблери `HEALTH_ALERTS` + per-user `User.alerts_enabled` (форма `/settings`, міграція `b1c2d3e4f5a6`); `tests/test_health.py` |
 | [CODE-01](CODE-01-split-analysis-service.md) | Розбити `analysis/service.py` на пакет | `app/analysis/` пакет: `client.py` (пул клієнтів, `PRICES`, `_complete`, `CallStats`, `AnalystError`), `cache.py` (дедуп-ключі + білдери контексту), `reports.py` (analyze/ask/activity/digest/compare/injury), `plans.py` (генерація/едити/адаптація/погода/силові); `service.py` — тонкий фасад із реекспортами (зовнішні імпорти незмінні), `prompts.py` не чіпано. Нуль поведінкових змін (тест-сьют зелений). PR #127 |

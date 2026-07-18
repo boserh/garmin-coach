@@ -117,6 +117,16 @@ def test_ask_cache_key_varies_with_question_and_reports():
     assert base == _ask_cache_key(list(_REPORTS), "чи бігти?", "claude-sonnet-4-6", [])
 
 
+def test_ask_cache_key_varies_with_last_data_date():
+    # EP-09: keyed on the coarse daily-data slice, not just the calendar date — a repeat
+    # question before today's data has synced should still be a cache hit.
+    a = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [], "2026-07-17")
+    b = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [], "2026-07-18")
+    assert a != b
+    # stable for the same last_data_date
+    assert a == _ask_cache_key(list(_REPORTS), "чи бігти?", "claude-sonnet-4-6", [], "2026-07-17")
+
+
 _FITNESS = {"acwr_pct": 95.0, "readiness_score": 72, "resting_hr": 52}
 
 

@@ -79,6 +79,103 @@ async def list_activities(session: AsyncSession, user_id: int, n: int = 5) -> Li
     ]
 
 
+ASK_MAX_ROWS = 200  # EP-09: hard cap on rows a single /ask tool call may return
+
+
+async def query_activities(
+    session: AsyncSession, user_id: int, *,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    type: Optional[str] = None, min_dist_km: Optional[float] = None,
+    limit: int = ASK_MAX_ROWS,
+) -> List[dict]:
+    """EP-09 ``/ask`` tool: this user's activities in a date range (both ends inclusive,
+    ISO dates), optionally filtered by activity type (substring match, e.g. "running") or a
+    minimum distance. Read-only, user-scoped, newest-first, capped at ``limit`` (never above
+    ``ASK_MAX_ROWS``) so a tool result stays small enough for the model to read. Compact rows
+    only — no series; ``get_activity_detail`` is the drill-down for one activity."""
+    stmt = select(ActivityRecord).where(ActivityRecord.user_id == user_id)
+    if date_from:
+        stmt = stmt.where(ActivityRecord.date >= date_from)
+    if date_to:
+        stmt = stmt.where(ActivityRecord.date <= date_to)
+    if type:
+        stmt = stmt.where(ActivityRecord.type.ilike(f"%{type}%"))
+    if min_dist_km is not None:
+        stmt = stmt.where(ActivityRecord.dist_km >= min_dist_km)
+    stmt = stmt.order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc()) \
+                .limit(max(1, min(limit, ASK_MAX_ROWS)))
+    rows = (await session.execute(stmt)).scalars().all()
+    out = []
+    for a in rows:
+        pace = round(a.dur_min / a.dist_km, 2) if (a.dur_min and a.dist_km) else None
+        out.append({
+            "id": a.id, "date": a.date, "type": a.type, "dist_km": a.dist_km,
+            "dur_min": a.dur_min, "avg_hr": a.avg_hr, "max_hr": a.max_hr,
+            "avg_pace_minkm": pace,
+        })
+    return out
+
+
+# EP-09 /ask whitelist for query_daily/aggregate_weekly — base DailyMetric columns plus a
+# subset of `extra` (everything a tool call is allowed to read; keeps a hallucinated field
+# name a harmless miss instead of an arbitrary-column fishing expedition).
+ASK_DAILY_BASE_FIELDS = {
+    "sleep_score", "sleep_h", "deep_h", "rem_h", "light_h", "awake_h",
+    "hrv_avg", "hrv_status", "stress_avg", "stress_max", "bb_charged", "bb_drained",
+}
+ASK_DAILY_EXTRA_FIELDS = {
+    "resting_hr", "readiness_score", "readiness_level", "acwr_pct", "acute_load",
+    "recovery_time_h", "vo2max", "fitness_age", "endurance_score", "endurance_class",
+    "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
+    "spo2_avg", "respiration_avg",
+}
+ASK_DAILY_FIELDS = ASK_DAILY_BASE_FIELDS | ASK_DAILY_EXTRA_FIELDS
+
+
+async def query_daily(
+    session: AsyncSession, user_id: int, *,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    fields: Optional[List[str]] = None, limit: int = ASK_MAX_ROWS,
+) -> List[dict]:
+    """EP-09 ``/ask`` tool: daily recovery/sleep metrics in a date range (oldest first, so a
+    trend reads left-to-right), restricted to ``ASK_DAILY_FIELDS`` — an unknown/misspelled
+    field name is silently dropped rather than erroring the tool call. ``fields=None`` returns
+    all whitelisted fields. Capped at ``limit`` rows (never above ``ASK_MAX_ROWS``); a day with
+    no stored data yet is simply absent, not a null-filled row."""
+    stmt = select(DailyMetric).where(DailyMetric.user_id == user_id)
+    if date_from:
+        stmt = stmt.where(DailyMetric.date >= date_from)
+    if date_to:
+        stmt = stmt.where(DailyMetric.date <= date_to)
+    stmt = stmt.order_by(DailyMetric.date.desc()).limit(max(1, min(limit, ASK_MAX_ROWS)))
+    rows = (await session.execute(stmt)).scalars().all()
+    want = [f for f in (fields or sorted(ASK_DAILY_FIELDS)) if f in ASK_DAILY_FIELDS]
+    if not want:
+        want = sorted(ASK_DAILY_FIELDS)
+    out = []
+    for m in rows:
+        ex = m.extra or {}
+        row = {"date": m.date}
+        for f in want:
+            v = getattr(m, f) if f in ASK_DAILY_BASE_FIELDS else ex.get(f)
+            if v is not None:
+                row[f] = v
+        out.append(row)
+    out.reverse()  # oldest → newest
+    return out
+
+
+async def latest_daily_date(session: AsyncSession, user_id: int) -> Optional[str]:
+    """Most recent date with a stored ``daily_metrics`` row for this user — a pure-DB,
+    no-Garmin proxy for "how fresh is the data" (EP-09 ``/ask`` dedup-cache key: a coarse
+    daily-slice signal, since the answer's actual DB reads only happen mid-loop)."""
+    return (
+        await session.execute(
+            select(func.max(DailyMetric.date)).where(DailyMetric.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+
+
 async def get_activity(session: AsyncSession, user_id: int, row_id: int):
     """One activity by its DB id, scoped to the user (None if missing / not theirs)."""
     return (
@@ -333,6 +430,45 @@ async def weekly_run_volume(
         b["km"] = round(b["km"], 1)
         b["longest_km"] = round(b["longest_km"], 1)
     return out
+
+
+# EP-09 /ask tool: run-volume metrics reuse weekly_run_volume's buckets; anything else in
+# ASK_DAILY_FIELDS is averaged per ISO week from query_daily.
+_ASK_WEEKLY_RUN_KEYS = {"run_km": "km", "run_count": "runs", "longest_km": "longest_km"}
+ASK_WEEKLY_METRICS = sorted(set(_ASK_WEEKLY_RUN_KEYS) | ASK_DAILY_FIELDS)
+
+
+async def aggregate_weekly(
+    session: AsyncSession, user_id: int, metric: str, weeks: int = 12
+) -> dict:
+    """EP-09 ``/ask`` tool: one metric bucketed per ISO week (oldest first) over the last
+    ``weeks`` weeks (capped at 26 — a bounded tool result, not a full-history dump).
+    ``metric`` is either a run-volume key (``run_km``/``run_count``/``longest_km``, from
+    :func:`weekly_run_volume`) or any :data:`ASK_DAILY_FIELDS` name, averaged per week from
+    :func:`query_daily`. An unknown metric returns ``{"error": ...}`` (not raised — the model
+    can read the error and retry with a valid one) listing the valid names."""
+    weeks = max(1, min(weeks, 26))
+    if metric in _ASK_WEEKLY_RUN_KEYS:
+        vol = await weekly_run_volume(session, user_id, weeks=weeks)
+        key = _ASK_WEEKLY_RUN_KEYS[metric]
+        return {"metric": metric, "weeks": [{"week": w["week"], "value": w[key]} for w in vol]}
+    if metric in ASK_DAILY_FIELDS:
+        cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+        rows = await query_daily(session, user_id, date_from=cutoff, fields=[metric])
+        buckets: dict = {}
+        for row in rows:
+            v = row.get(metric)
+            if v is None:
+                continue
+            try:
+                label = dt.date.fromisoformat(row["date"]).strftime("%G-W%V")
+            except (TypeError, ValueError):
+                continue
+            buckets.setdefault(label, []).append(v)
+        weeks_out = [{"week": w, "value": round(sum(vs) / len(vs), 1)}
+                    for w, vs in sorted(buckets.items())]
+        return {"metric": metric, "weeks": weeks_out}
+    return {"error": f"unknown metric '{metric}'. Valid: {ASK_WEEKLY_METRICS}"}
 
 
 async def weekly_activity_load(
@@ -637,11 +773,13 @@ async def log_report(
     error: Optional[str] = None,
     question: Optional[str] = None,
     report_text: Optional[str] = None,
+    tool_rounds: Optional[int] = None,
 ) -> None:
     session.add(ReportLog(
         user_id=user_id, kind=kind, model=model, input_tokens=input_tokens,
         output_tokens=output_tokens, cost_usd=cost_usd, ok=ok, cached=cached,
         error=error, question=question, report_text=report_text,
+        tool_rounds=tool_rounds,
     ))
     await session.commit()
 
