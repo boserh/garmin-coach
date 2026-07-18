@@ -161,3 +161,38 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
         raise _status_error(e)
     except APIConnectionError:
         raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
+
+
+def _complete_tools(
+    model: str, system: str, messages: list, tools: list,
+    api_key: Optional[str], max_tokens: int = 1200,
+) -> Tuple[object, "CallStats"]:
+    """One tool-capable ``messages.create`` round → (msg, stats). Sibling of ``_complete``
+    for a multi-turn tool-use loop (EP-09's ``/ask``): unlike ``_complete``, it takes the
+    full running ``messages`` list (not a single user turn) and returns the **raw** Anthropic
+    message — not just joined text — since the caller needs ``stop_reason`` and any
+    ``tool_use`` content blocks to keep the loop going. Blocking; run on the dedicated Claude
+    thread pool via ``_run_claude`` like every other Claude call."""
+    from anthropic import APIConnectionError, APIStatusError
+
+    try:
+        msg = _get_client(api_key).messages.create(
+            model=model, max_tokens=max_tokens, system=system,
+            messages=messages, tools=tools,
+        )
+        stats = CallStats(kind="ask", model=model)
+        usage = getattr(msg, "usage", None)
+        if usage:
+            pin, pout = PRICES.get(model, (0, 0))
+            stats.input_tokens = usage.input_tokens
+            stats.output_tokens = usage.output_tokens
+            stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
+            logger.info(
+                f"CLAUDE OK  {model} (ask-tool)  in={usage.input_tokens} "
+                f"out={usage.output_tokens} ~${stats.cost_usd:.4f}"
+            )
+        return msg, stats
+    except APIStatusError as e:
+        raise _status_error(e)
+    except APIConnectionError:
+        raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")

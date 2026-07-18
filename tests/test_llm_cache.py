@@ -122,12 +122,12 @@ async def test_run_ask_second_call_is_cache_hit(session, monkeypatch):
     monkeypatch.setattr(repository, "get_recent_asks", no_asks)
     calls = []
 
-    def fake_ask(reports, question, api_key=None, recent_asks=None):
+    async def fake_agent(session, user_id, question, reports, recent_asks, api_key):
         calls.append(question)
-        return "відповідь", service.CallStats(kind="ask", model="m")
+        return "відповідь", service.CallStats(kind="ask", model="m"), 1
 
     from app.analysis import reports
-    monkeypatch.setattr(reports, "ask_with_stats", fake_ask)
+    monkeypatch.setattr(reports, "run_ask_agent", fake_agent)
     a1 = await service.run_ask(session, "чи бігти?")
     a2 = await service.run_ask(session, "чи бігти?")
     assert a1 == a2 == "відповідь"

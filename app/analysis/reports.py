@@ -36,6 +36,7 @@ from app.analysis.client import (
     AnalystError,
     CallStats,
     _complete,
+    _complete_tools,
     _get_client,
     _run_claude,
     _status_error,
@@ -44,7 +45,7 @@ from app.analysis.plans import _days_to_target, _recent_compliance
 from app.analysis.prompts import (
     SYSTEM,
     SYSTEM_ACTIVITY,
-    SYSTEM_ASK,
+    SYSTEM_ASK_TOOLS,
     SYSTEM_COMPARE,
     SYSTEM_DIGEST,
     SYSTEM_HEALTH,
@@ -311,19 +312,157 @@ async def run_analysis(
     return text
 
 
-def ask_with_stats(
-    reports: list,
-    question: str,
-    api_key: Optional[str] = None,
-    recent_asks: Optional[list] = None,
-) -> Tuple[str, CallStats]:
-    """Free-form follow-up Q&A grounded in the recent daily reports (no Garmin
-    payload). ``recent_asks`` ([{question, answer}, ...]) is the last few minutes'
-    /ask thread so a follow-up can build on it. Returns (text, stats); raises
-    AnalystError on API failure. Shares the error handling with
-    :func:`analyze_with_stats`; the dedup cache is checked in :func:`run_ask`."""
+# EP-09: /ask is a bounded tool-use agent, not a single completion — the first tool-use
+# loop in the project (a deliberate departure from the "prompt-for-JSON, no SDK tool-use"
+# choice elsewhere; see CLAUDE.md). A question already answered by recent_reports/recent_qa
+# resolves in round 1 with no tool calls (the old cheap path still happens, it's just no
+# longer a separate code path); anything needing more history drives query_activities /
+# query_daily / aggregate_weekly / get_activity_detail against the FULL stored history.
+MAX_ASK_ROUNDS = 5             # hard cap on tool-use round trips per question
+MAX_ASK_TOTAL_TOKENS = 60_000  # combined in+out tokens across all rounds — runaway guard
+ASK_TOOL_MAX_TOKENS = 1200     # answers are short; a tool-call round is just a JSON stub
+
+ASK_LIMIT_TEXT = (
+    "Це питання вимагає забагато кроків, щоб чесно відповісти з наявних даних. "
+    "Спробуй звузити період або сформулювати конкретніше."
+)
+
+
+def _ask_tools() -> list:
+    """Anthropic tool schemas for the /ask agent loop — read-only, user-scoped DB queries
+    over the full stored history (never raw Garmin/API calls). Built on each call (cheap)
+    rather than as a module constant, so the field lists always match
+    ``app.garmin.repository.ASK_DAILY_FIELDS``/``ASK_WEEKLY_METRICS``."""
+    from app.garmin import repository
+
+    fields = ", ".join(sorted(repository.ASK_DAILY_FIELDS))
+    weekly_metrics = ", ".join(repository.ASK_WEEKLY_METRICS)
+    return [
+        {
+            "name": "query_activities",
+            "description": (
+                "List this user's activities in a date range (both dates inclusive, ISO "
+                "yyyy-mm-dd; omit either end for an open range), optionally filtered by "
+                "type (substring match, e.g. 'running') or a minimum distance in km. "
+                "Returns compact rows: id, date, type, dist_km, dur_min, avg_hr, max_hr, "
+                "avg_pace_minkm. Capped at 200 rows, newest first. Use get_activity_detail "
+                "with the returned id to drill into one activity."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {"type": "string", "description": "ISO date, inclusive"},
+                    "date_to": {"type": "string", "description": "ISO date, inclusive"},
+                    "type": {"type": "string", "description": "substring match, e.g. 'running'"},
+                    "min_dist_km": {"type": "number"},
+                },
+            },
+        },
+        {
+            "name": "query_daily",
+            "description": (
+                "Daily recovery/sleep metrics in a date range (both dates inclusive; omit "
+                "either end for an open range), oldest first. `fields` picks which metrics "
+                f"to return (default: all). Available fields: {fields}. A day with no "
+                "stored data yet is simply absent from the result."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {"type": "string"},
+                    "date_to": {"type": "string"},
+                    "fields": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        {
+            "name": "aggregate_weekly",
+            "description": (
+                "One metric bucketed per ISO week (oldest first) over the last `weeks` "
+                f"weeks (default 12, max 26). Valid metrics: {weekly_metrics}."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string"},
+                    "weeks": {"type": "integer"},
+                },
+                "required": ["metric"],
+            },
+        },
+        {
+            "name": "get_activity_detail",
+            "description": (
+                "Full detail on one activity by its DB id (from query_activities): for "
+                "runs, pace/HR broken into ~6 segments (not the raw point series); "
+                "strength exercises; the runner's subjective RPE/pain check-in if any; "
+                "plan-vs-actual comparison if it was matched to a planned session."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"],
+            },
+        },
+    ]
+
+
+async def _run_ask_tool(session, user_id: Optional[int], name: str, args: dict) -> dict:
+    """Dispatch one tool call to the matching user-scoped, read-only repository query.
+    Never raises: an unknown tool name, bad arguments, or a DB hiccup becomes a compact
+    ``{"error": ...}`` the model can see and react to (retry differently, or give up
+    honestly) instead of aborting the whole answer."""
+    from app.garmin import repository
+
+    try:
+        if name == "query_activities":
+            rows = await repository.query_activities(
+                session, user_id,
+                date_from=args.get("date_from"), date_to=args.get("date_to"),
+                type=args.get("type"), min_dist_km=args.get("min_dist_km"),
+            )
+            return {"activities": rows}
+        if name == "query_daily":
+            rows = await repository.query_daily(
+                session, user_id,
+                date_from=args.get("date_from"), date_to=args.get("date_to"),
+                fields=args.get("fields"),
+            )
+            return {"days": rows}
+        if name == "aggregate_weekly":
+            metric = args.get("metric")
+            if not metric:
+                return {"error": "metric is required"}
+            return await repository.aggregate_weekly(
+                session, user_id, metric, weeks=args.get("weeks") or 12
+            )
+        if name == "get_activity_detail":
+            try:
+                aid = int(args.get("id"))
+            except (TypeError, ValueError):
+                return {"error": "id must be an integer (the id from query_activities)"}
+            act = await repository.get_activity(session, user_id, aid)
+            if act is None:
+                return {"error": f"no activity with id={aid} for this user"}
+            return activity_payload(act)
+        return {"error": f"unknown tool '{name}'"}
+    except Exception as e:
+        logger.exception(f"ASK tool {name} failed")
+        return {"error": str(e)[:200]}
+
+
+async def run_ask_agent(
+    session, user_id: Optional[int], question: str,
+    reports: list, recent_asks: list, api_key: Optional[str],
+) -> Tuple[str, CallStats, int]:
+    """The EP-09 tool-use loop: up to ``MAX_ASK_ROUNDS`` round trips, each either
+    answering (``stop_reason != "tool_use"``) or requesting one or more of
+    :func:`_ask_tools`. Returns ``(text, cumulative_stats, rounds_used)``. Hitting the
+    round or token budget with the model still mid-tool-use returns
+    :data:`ASK_LIMIT_TEXT` instead of a partial/guessed answer. Raises AnalystError on
+    an API failure (same mapping as every other Claude call)."""
     model = MODEL_ASK
-    recent_asks = recent_asks or []
+    tools = _ask_tools()
     user_content = {
         "today": dt.date.today().isoformat(),
         "recent_reports": reports,
@@ -331,50 +470,37 @@ def ask_with_stats(
     }
     if recent_asks:
         user_content["recent_qa"] = recent_asks
-    try:
-        from anthropic import APIConnectionError, APIStatusError
+    messages = [{"role": "user", "content": json.dumps(user_content, ensure_ascii=False)}]
 
-        msg = _get_client(api_key).messages.create(
-            model=model,
-            max_tokens=1000,
-            system=SYSTEM_ASK,
-            messages=[{"role": "user",
-                       "content": json.dumps(user_content, ensure_ascii=False)}],
+    total = CallStats(kind="ask", model=model)
+    for round_n in range(1, MAX_ASK_ROUNDS + 1):
+        msg, stats = await _run_claude(
+            _complete_tools, model, SYSTEM_ASK_TOOLS, messages, tools, api_key,
+            ASK_TOOL_MAX_TOKENS,
         )
-        stats = CallStats(kind="ask", model=model)
-        usage = getattr(msg, "usage", None)
-        if usage:
-            pin, pout = PRICES.get(model, (0, 0))
-            stats.input_tokens = usage.input_tokens
-            stats.output_tokens = usage.output_tokens
-            stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
-            logger.info(
-                f"CLAUDE OK  {model} (ask)  in={usage.input_tokens} out={usage.output_tokens} "
-                f"~${stats.cost_usd:.4f}"
-            )
-        text = "".join(b.text for b in msg.content if b.type == "text")
-        return text, stats
+        total.input_tokens += stats.input_tokens
+        total.output_tokens += stats.output_tokens
+        total.cost_usd += stats.cost_usd
 
-    except APIStatusError as e:
-        status = getattr(e, "status_code", None)
-        body = str(getattr(e, "message", e)).lower()
+        if msg.stop_reason != "tool_use":
+            text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+            return text, total, round_n
 
-        if status == 400 and "credit balance is too low" in body:
-            raise AnalystError(
-                "❗️ Закінчились кредити Anthropic API.\n"
-                "Поповни баланс на console.anthropic.com → Billing і повтори запит."
-            )
-        if status == 429:
-            raise AnalystError("⏳ Ліміт запитів перевищено. Спробуй за хвилину.")
-        if status == 401:
-            raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")
-        if status == 529:
-            raise AnalystError("🛠 Сервіс Anthropic тимчасово перевантажений. Спробуй пізніше.")
-        logger.error(f"CLAUDE ERR {status}: {body[:150]}")
-        raise AnalystError(f"Помилка API ({status}): {body[:200]}")
+        if total.input_tokens + total.output_tokens > MAX_ASK_TOTAL_TOKENS:
+            return ASK_LIMIT_TEXT, total, round_n
 
-    except APIConnectionError:
-        raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
+        messages.append({"role": "assistant", "content": msg.content})
+        tool_results = []
+        for block in msg.content:
+            if getattr(block, "type", None) == "tool_use":
+                result = await _run_ask_tool(session, user_id, block.name, block.input or {})
+                tool_results.append({
+                    "type": "tool_result", "tool_use_id": block.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+        messages.append({"role": "user", "content": tool_results})
+
+    return ASK_LIMIT_TEXT, total, MAX_ASK_ROUNDS
 
 
 async def run_ask(
@@ -385,32 +511,35 @@ async def run_ask(
     n: int = ASK_DEFAULT_N,
     api_key: Optional[str] = None,
 ) -> str:
-    """Fetch the last ``n`` daily reports plus the recent /ask thread, answer
-    ``question`` against them, persist a ReportLog row (kind="ask", with the
-    question), return the text. Raises AnalystError if there are no reports to ground
-    the answer in."""
+    """Answer a free-form question about this user's training/recovery history (EP-09).
+    Starts from the last ``n`` daily reports plus the recent /ask thread (so a question
+    already answered there resolves in one round, no tool calls); anything needing more
+    drives :func:`run_ask_agent`'s bounded tool-use loop over the FULL stored history.
+    Persists a ReportLog (kind="ask", ``tool_rounds`` set on a fresh call) and returns the
+    text. Dedup-cached on the question + a coarse daily-data slice (``last_data_date`` —
+    a pure-DB, no-Garmin proxy for "has anything changed"): a repeat the same day the data
+    last changed is a cache hit."""
     from app.db import llm_cache
     from app.garmin import repository
 
     reports = await repository.get_recent_reports(session, user_id, n=n)
-    if not reports:
-        raise AnalystError("Поки немає жодного звіту для контексту. Спершу зроби /report.")
     recent_asks = await repository.get_recent_asks(session, user_id, minutes=ASK_CONTEXT_MIN)
+    last_data_date = await repository.latest_daily_date(session, user_id)
 
-    key = _ask_cache_key(reports, question, MODEL_ASK, recent_asks)
+    key = _ask_cache_key(reports, question, MODEL_ASK, recent_asks, last_data_date)
     cached = await llm_cache.get(session, key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {MODEL_ASK} (ask)")
-        text, stats = cached, CallStats(kind="ask", model=MODEL_ASK, cached=True)
+        text = cached
         await repository.log_report(
-            session, user_id=user_id, kind=stats.kind, model=stats.model, ok=True,
+            session, user_id=user_id, kind="ask", model=MODEL_ASK, ok=True,
             cached=True, question=question, report_text=text,
         )
         return text
 
     try:
-        text, stats = await _run_claude(
-            ask_with_stats, reports, question, api_key, recent_asks
+        text, stats, rounds = await run_ask_agent(
+            session, user_id, question, reports, recent_asks, api_key,
         )
     except AnalystError as e:
         await repository.log_report(
@@ -428,9 +557,10 @@ async def run_ask(
         output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd,
         ok=True,
-        cached=stats.cached,
+        cached=False,
         question=question,
         report_text=text,
+        tool_rounds=rounds,
     )
     return text
 

@@ -149,6 +149,11 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/ask <питання> — EP-09: a bounded tool-use agent over the full stored history.
+    Pure DB read + Claude calls; no Garmin fetch, so load_credentials (not user_runtime)
+    is enough, like /compare."""
+    from app.garmin.credentials import load_credentials
+
     question = " ".join(ctx.args).strip()
     if not question:
         await update.message.reply_text(
@@ -160,15 +165,15 @@ async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = await _resolve_user(update, session)
         if user is None:
             return
-        await update.message.reply_text("Дивлюсь у твої останні звіти...")
-        async with user_runtime(session, user) as creds:
-            try:
-                text = await run_ask(
-                    session, question, user_id=user.id, api_key=creds.anthropic_key
-                )
-            except AnalystError as e:
-                logger.error(f"ANALYST {e}")
-                text = str(e)
+        await update.message.reply_text("Шукаю у твоїй історії...")
+        creds = load_credentials(user)
+        try:
+            text = await run_ask(
+                session, question, user_id=user.id, api_key=creds.anthropic_key
+            )
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            text = str(e)
     await update.message.reply_text(text)
 
 

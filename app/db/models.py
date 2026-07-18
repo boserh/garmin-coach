@@ -169,6 +169,9 @@ class ReportLog(Base):
     error: Mapped[Optional[str]] = mapped_column(String(512))
     question: Mapped[Optional[str]] = mapped_column(Text)      # the asked question / prompt
     report_text: Mapped[Optional[str]] = mapped_column(Text)  # the delivered report
+    # EP-09: how many tool-use round trips /ask's agent loop took (null for every other
+    # kind, and for an /ask served from the dedup cache — no fresh round happened).
+    tool_rounds: Mapped[Optional[int]] = mapped_column(Integer)
 
 
 class PersonalRecord(Base):

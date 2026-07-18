@@ -317,6 +317,110 @@ async def test_weekly_run_volume_groups_by_iso_week(session):
         assert weeks[w]["longest_km"] == round(e["longest"], 1)
 
 
+# ---------- EP-09 /ask tool queries ----------
+
+async def test_query_activities_filters_and_scopes(session):
+    await repository.upsert_activity(session, U1, 1, {
+        "date": "2026-06-01", "type": "running", "dist_km": 5.0, "dur_min": 30.0})
+    await repository.upsert_activity(session, U1, 2, {
+        "date": "2026-06-10", "type": "trail_running", "dist_km": 15.0, "dur_min": 100.0})
+    await repository.upsert_activity(session, U1, 3, {
+        "date": "2026-06-15", "type": "cycling", "dist_km": 40.0, "dur_min": 90.0})
+    await repository.upsert_activity(session, U2, 4, {
+        "date": "2026-06-10", "type": "running", "dist_km": 8.0, "dur_min": 45.0})
+    await session.commit()
+
+    all_u1 = await repository.query_activities(session, U1)
+    assert {a["id"] for a in all_u1} == {1, 2, 3}  # scoped to U1, not U2's row 4
+    assert all_u1[0]["date"] == "2026-06-15"  # newest first
+
+    runs = await repository.query_activities(session, U1, type="running")
+    assert {a["id"] for a in runs} == {1, 2}  # substring match incl. trail_running
+
+    long_runs = await repository.query_activities(session, U1, type="running", min_dist_km=10)
+    assert [a["id"] for a in long_runs] == [2]
+
+    ranged = await repository.query_activities(
+        session, U1, date_from="2026-06-05", date_to="2026-06-12")
+    assert {a["id"] for a in ranged} == {2}
+
+    got = next(a for a in all_u1 if a["id"] == 1)
+    assert got["avg_pace_minkm"] == 6.0  # 30 min / 5 km
+    assert "series" not in got  # compact row, no raw points
+
+
+async def test_query_activities_caps_at_ask_max_rows(session, monkeypatch):
+    monkeypatch.setattr(repository, "ASK_MAX_ROWS", 3)
+    for i in range(1, 6):
+        await repository.upsert_activity(session, U1, i, {
+            "date": f"2026-06-{i:02d}", "type": "running", "dist_km": 5.0})
+    await session.commit()
+    got = await repository.query_activities(session, U1, limit=100)  # over-limit clamps
+    assert len(got) == 3
+
+
+async def test_query_daily_whitelists_fields_and_orders_oldest_first(session):
+    await repository.upsert_daily(session, U1, DailySummary(
+        date="2026-06-01", sleep_score=70, hrv_avg=50, has_data=True,
+        extra={"resting_hr": 48, "acwr_pct": 110}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date="2026-06-02", sleep_score=80, hrv_avg=55, has_data=True,
+        extra={"resting_hr": 47}))
+    await session.commit()
+
+    rows = await repository.query_daily(session, U1)
+    assert [r["date"] for r in rows] == ["2026-06-01", "2026-06-02"]  # oldest first
+    assert rows[0]["resting_hr"] == 48
+    assert rows[0]["acwr_pct"] == 110
+    assert "acwr_pct" not in rows[1]  # absent, not null-filled
+
+    only_hrv = await repository.query_daily(session, U1, fields=["hrv_avg", "not_a_real_field"])
+    assert only_hrv[0] == {"date": "2026-06-01", "hrv_avg": 50}  # bogus field silently dropped
+
+
+async def test_aggregate_weekly_run_km_matches_weekly_run_volume(session):
+    today = dt.date.today()
+    await repository.upsert_activity(session, U1, 1, {
+        "date": today.isoformat(), "type": "running", "dist_km": 6.0})
+    await repository.upsert_activity(session, U1, 2, {
+        "date": (today - dt.timedelta(days=1)).isoformat(), "type": "running", "dist_km": 4.0})
+    await session.commit()
+
+    vol = await repository.weekly_run_volume(session, U1, weeks=4)
+    agg = await repository.aggregate_weekly(session, U1, "run_km", weeks=4)
+    assert agg["metric"] == "run_km"
+    assert agg["weeks"] == [{"week": w["week"], "value": w["km"]} for w in vol]
+
+
+async def test_aggregate_weekly_recovery_metric_averages_per_week(session):
+    today = dt.date.today()
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=today.isoformat(), hrv_avg=60, has_data=True))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=(today - dt.timedelta(days=1)).isoformat(), hrv_avg=40, has_data=True))
+    await session.commit()
+
+    agg = await repository.aggregate_weekly(session, U1, "hrv_avg", weeks=4)
+    assert agg["metric"] == "hrv_avg"
+    this_week = today.strftime("%G-W%V")
+    week_entry = next(w for w in agg["weeks"] if w["week"] == this_week)
+    assert week_entry["value"] == 50.0  # avg(60, 40)
+
+
+async def test_aggregate_weekly_unknown_metric_is_a_soft_error(session):
+    got = await repository.aggregate_weekly(session, U1, "not_a_metric")
+    assert "error" in got
+
+
+async def test_latest_daily_date(session):
+    assert await repository.latest_daily_date(session, U1) is None
+    await repository.upsert_daily(session, U1, DailySummary(date="2026-06-01", has_data=True))
+    await repository.upsert_daily(session, U1, DailySummary(date="2026-06-05", has_data=True))
+    await repository.upsert_daily(session, U2, DailySummary(date="2026-06-20", has_data=True))
+    await session.commit()
+    assert await repository.latest_daily_date(session, U1) == "2026-06-05"  # not U2's later date
+
+
 async def _make_plan(session, user_id: int, start: str, end: str) -> TrainingPlan:
     plan = TrainingPlan(user_id=user_id, goal="g", status="active",
                         start_date=start, target_date=end)
