@@ -109,6 +109,10 @@ def test_fmt_step_renders_human_labels():
     assert _fmt_step({"kind": "run", "dist_m": 4000,
                       "pace_min_km": [6.75, 7.0]}) == "біг 4.0 км @ 6:45–7:00/км"
     assert _fmt_step({"kind": "warmup", "dist_m": 1500, "pace_min_km": None}) == "розминка 1.5 км"
+    # sub-km steps show metres — 50 m and 100 m must be distinguishable (both were "0.1 км")
+    assert _fmt_step({"kind": "run", "dist_m": 100,
+                      "pace_min_km": [4.8, 5.1]}) == "біг 100 м @ 4:48–5:06/км"
+    assert _fmt_step({"kind": "recovery", "dist_m": 50, "pace_min_km": None}) == "відновлення 50 м"
     rep = _fmt_step({"kind": "repeat", "reps": 5, "steps": [
         {"kind": "run", "dur_s": 180, "pace_min_km": [5.25, 5.4]},
         {"kind": "recovery", "dur_s": 120, "pace_min_km": None}]})

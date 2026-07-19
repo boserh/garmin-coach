@@ -76,6 +76,15 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
+def _fmt_dist(dm: float) -> str:
+    """Human distance: metres under 1 km ('50 м', '100 м'), km above ('2.4 км'). Sub-km
+    steps (stride recoveries) MUST show metres — '.1f км' collapses 50 m and 100 m both to
+    '0.1 км' (the watch shows 0.05 vs 0.10 correctly; our view must too)."""
+    if dm < 1000:
+        return f"{int(round(dm))} м"
+    return f"{dm / 1000:.1f} км"
+
+
 def _fmt_step(s: dict) -> str:
     """Render one structured workout step as a compact human label, e.g.
     'розминка 1.5 км', 'біг 3 хв @ 5:15–5:24/км', '5× (…)'."""
@@ -89,7 +98,7 @@ def _fmt_step(s: dict) -> str:
     label = kinds.get(s.get("kind"), s.get("kind") or "")
     dist_m, dur_s = s.get("dist_m"), s.get("dur_s")
     if isinstance(dist_m, (int, float)):
-        amount = f"{dist_m / 1000:.1f} км".rstrip()
+        amount = _fmt_dist(dist_m)
     elif isinstance(dur_s, (int, float)):
         amount = f"{int(dur_s // 60)} хв" if dur_s >= 60 else f"{int(dur_s)} с"
     else:
@@ -209,7 +218,7 @@ def _step_amount(s: dict) -> str:
     """Distance/time of a step, e.g. '2.7 км' or '20 с'."""
     dm, ds = s.get("dist_m"), s.get("dur_s")
     if isinstance(dm, (int, float)):
-        return f"{dm / 1000:.1f} км"
+        return _fmt_dist(dm)
     if isinstance(ds, (int, float)):
         return f"{int(ds // 60)} хв" if ds >= 60 else f"{int(ds)} с"
     return ""
