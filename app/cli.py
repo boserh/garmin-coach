@@ -376,11 +376,23 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     return 0
 
 
+def _pace_hint(pace) -> str:
+    """[fast, slow] decimal min/km → 'орієнтовно 6:45–7:00/км' — the text stashed in a
+    step's ``note`` when its pace target is replaced by an HR zone, so the range is still
+    visible on the watch (as the step description) instead of vanishing."""
+    def fmt(dec):
+        total = round(dec * 60)
+        return f"{total // 60}:{total % 60:02d}"
+    return f"орієнтовно {fmt(pace[0])}–{fmt(pace[1])}/км"
+
+
 def _convert_easy_steps(steps, zone: int):
     """Return ``(new_steps, n_changed)``: every ``run`` step that carries a pace range is
-    rewritten to target a heart-rate zone instead (drops ``pace_min_km``, sets ``hr_zone``).
-    Recurses into ``repeat`` groups; leaves warmup/cooldown/recovery/no-target steps alone.
-    Pure — builds a fresh list (JSON columns need a reassignment to be marked dirty)."""
+    rewritten to target a heart-rate zone instead (drops ``pace_min_km``, sets ``hr_zone``,
+    and — unless the step already has a ``note`` — stashes the old pace range as text via
+    ``_pace_hint`` so it still shows on the watch as the step's description). Recurses into
+    ``repeat`` groups; leaves warmup/cooldown/recovery/no-target steps alone. Pure — builds a
+    fresh list (JSON columns need a reassignment to be marked dirty)."""
     out, changed = [], 0
     for s in steps or []:
         if not isinstance(s, dict):
@@ -391,21 +403,25 @@ def _convert_easy_steps(steps, zone: int):
             s["steps"], c = _convert_easy_steps(s.get("steps"), zone)
             changed += c
         elif s.get("kind") == "run" and s.get("pace_min_km") is not None:
-            s.pop("pace_min_km", None)
+            pace = s.pop("pace_min_km", None)
             s["hr_zone"] = zone
+            if not s.get("note") and isinstance(pace, (list, tuple)) and len(pace) == 2:
+                s["note"] = _pace_hint(pace)
             changed += 1
         out.append(s)
     return out, changed
 
 
-async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
+async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int, long_zone: int,
                            dry_run: bool, no_sync: bool) -> int:
-    """One-off migration: rewrite the active plan's easy/recovery run steps from a pace
-    range to a heart-rate-zone target (easy → ``--easy-zone``, recovery → ``--recovery-zone``),
-    then re-push the upcoming in-window sessions to Garmin (drop the old pace-based copy,
-    push the HR-zone one via ``plan_sync.resync_workouts``). Past/out-of-window sessions get
-    the DB rewrite only. ``--dry-run`` previews (incl. the built Garmin target) without
-    writing; ``--no-sync`` updates the DB but leaves the watch untouched.
+    """One-off migration: rewrite the active plan's easy/recovery/long run steps from a pace
+    range to a heart-rate-zone target (easy → ``--easy-zone``, recovery → ``--recovery-zone``,
+    long → ``--long-zone``), stashing the old pace range as the step's ``note`` (shows on the
+    watch as the step description), then re-push the upcoming in-window sessions to Garmin
+    (drop the old pace-based copy, push the HR-zone one via ``plan_sync.resync_workouts``).
+    Past/out-of-window sessions get the DB rewrite only. ``--dry-run`` previews (incl. the
+    built Garmin target) without writing; ``--no-sync`` updates the DB but leaves the watch
+    untouched.
 
     NB the ``heart.rate.zone`` DTO is not yet verified field-for-field against a real saved
     Garmin workout — dry-run it first and eyeball the target before a live push."""
@@ -414,7 +430,7 @@ async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
     from app.garmin import plan_sync, repository, workout_export
     from app.garmin.runtime import user_runtime
 
-    zones = {"easy": easy_zone, "recovery": recovery_zone}
+    zones = {"easy": easy_zone, "recovery": recovery_zone, "long": long_zone}
 
     await init_db()
     async with async_session_maker() as session:
@@ -431,7 +447,7 @@ async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
         end = (dt.date.today() + dt.timedelta(days=14)).isoformat()
 
         changed = []   # (workout, n_steps_changed, new_steps) — need a DB rewrite this run
-        to_sync = []   # easy/recovery sessions we mirror to Garmin (upcoming, in-window)
+        to_sync = []   # easy/recovery/long sessions we mirror to Garmin (upcoming, in-window)
         for w in await repository.list_workouts(session, plan.id):
             zone = zones.get((w.type or "").lower())
             if zone is None:
@@ -446,12 +462,13 @@ async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int,
                 to_sync.append(w)
 
         if not changed and not to_sync:
-            print("Nothing to do — no easy/recovery sessions to convert or re-sync.")
+            print("Nothing to do — no easy/recovery/long sessions to convert or re-sync.")
             return 0
 
         if changed:
-            print(f"{'[dry-run] ' if dry_run else ''}Converting {len(changed)} easy/recovery "
-                  f"session(s) for {email} (easy→zone {easy_zone}, recovery→zone {recovery_zone}):")
+            print(f"{'[dry-run] ' if dry_run else ''}Converting {len(changed)} easy/recovery/long "
+                  f"session(s) for {email} (easy→zone {easy_zone}, recovery→zone {recovery_zone}, "
+                  f"long→zone {long_zone}):")
             for w, n, new_steps in changed:
                 zone = zones[(w.type or "").lower()]
                 print(f"  {w.date}  {w.type:9s} {n} step(s) → пульс зона {zone}")
@@ -647,11 +664,12 @@ def main(argv=None) -> int:
 
     ceh = sub.add_parser(
         "convert-easy-hr",
-        help="Rewrite active-plan easy/recovery runs from pace to HR-zone + re-push to Garmin")
+        help="Rewrite active-plan easy/recovery/long runs from pace to HR-zone + re-push to Garmin")
     ceh.add_argument("--email", required=True)
     ceh.add_argument("--easy-zone", type=int, default=2, help="HR zone for easy runs (default 2)")
     ceh.add_argument("--recovery-zone", type=int, default=2,
                      help="HR zone for recovery runs (default 2)")
+    ceh.add_argument("--long-zone", type=int, default=2, help="HR zone for long runs (default 2)")
     ceh.add_argument("--dry-run", action="store_true",
                      help="preview the conversion + sample Garmin target, don't write")
     ceh.add_argument("--no-sync", action="store_true",
@@ -696,7 +714,8 @@ def main(argv=None) -> int:
         return asyncio.run(_unpush_plan(args.email, args.date))
     if args.cmd == "convert-easy-hr":
         return asyncio.run(_convert_easy_hr(
-            args.email, args.easy_zone, args.recovery_zone, args.dry_run, args.no_sync))
+            args.email, args.easy_zone, args.recovery_zone, args.long_zone,
+            args.dry_run, args.no_sync))
     if args.cmd == "list-workouts":
         return asyncio.run(_list_workouts(args.email))
     if args.cmd == "backfill-records":
