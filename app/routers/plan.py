@@ -111,9 +111,13 @@ def _pace(dec: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-# Fallback pace (min/km) for a distance step that carries no pace target of its own
-# (e.g. an easy run prescribed by HR zone) — used only if the workout has no pace at all.
+# Easy-pace anchor (min/km) used when a user has no run history yet to derive one from.
 _DEFAULT_PACE_MIN_KM = 6.5
+
+# HR zone → pace as a multiple of the easy (≈ zone 2) anchor pace: a distance step that
+# only prescribes an HR zone gets a *directional* pace so fast strides (zone 5) aren't
+# timed at the same speed as an easy jog. Rough on purpose — this is an approximation.
+_ZONE_PACE_FACTOR = {1: 1.12, 2: 1.0, 3: 0.90, 4: 0.83, 5: 0.76}
 
 
 def _step_mid_pace(s: dict) -> Optional[float]:
@@ -125,22 +129,19 @@ def _step_mid_pace(s: dict) -> Optional[float]:
     return None
 
 
-def _first_pace(steps) -> Optional[float]:
-    """First pace midpoint found anywhere in the step tree (a per-workout fallback so a
-    warmup/easy step with only an HR zone still gets estimated at the run's own pace)."""
-    for s in steps or []:
-        if not isinstance(s, dict):
-            continue
-        m = _step_mid_pace(s)
-        if m is not None:
-            return m
-        m = _first_pace(s.get("steps"))
-        if m is not None:
-            return m
-    return None
+def _step_pace_for_est(s: dict, anchor: float) -> float:
+    """Best pace (min/km) to time a distance step by: its own range if given, else its HR
+    zone scaled off the easy anchor, else the anchor itself (an untargeted recovery jog)."""
+    mid = _step_mid_pace(s)
+    if mid is not None:
+        return mid
+    z = s.get("hr_zone")
+    if isinstance(z, int) and z in _ZONE_PACE_FACTOR:
+        return anchor * _ZONE_PACE_FACTOR[z]
+    return anchor
 
 
-def _steps_seconds(steps, fallback: float) -> float:
+def _steps_seconds(steps, anchor: float) -> float:
     """Sum the estimated time (seconds) of a step tree: ``dur_s`` verbatim, a distance
     step as dist × pace, and a repeat group as reps × its inner time."""
     total = 0.0
@@ -150,7 +151,7 @@ def _steps_seconds(steps, fallback: float) -> float:
         if s.get("kind") == "repeat":
             reps = s.get("reps")
             reps = reps if isinstance(reps, (int, float)) else 1
-            total += reps * _steps_seconds(s.get("steps"), fallback)
+            total += reps * _steps_seconds(s.get("steps"), anchor)
             continue
         ds = s.get("dur_s")
         if isinstance(ds, (int, float)):
@@ -158,18 +159,17 @@ def _steps_seconds(steps, fallback: float) -> float:
             continue
         dm = s.get("dist_m")
         if isinstance(dm, (int, float)):
-            pace = _step_mid_pace(s)
-            total += (float(dm) / 1000.0) * (pace if pace is not None else fallback) * 60.0
+            total += (float(dm) / 1000.0) * _step_pace_for_est(s, anchor) * 60.0
     return total
 
 
-def _est_minutes(steps) -> Optional[int]:
+def _est_minutes(steps, anchor: Optional[float] = None) -> Optional[int]:
     """Approximate total duration (whole minutes) of a run's structured steps, or None
-    when it can't be estimated. Powers the '~NN хв' hint next to the distance."""
+    when it can't be estimated. ``anchor`` is the user's typical easy pace (min/km); HR-zone
+    steps are timed relative to it. Powers the '~NN хв' hint next to the distance."""
     if not steps:
         return None
-    fallback = _first_pace(steps) or _DEFAULT_PACE_MIN_KM
-    secs = _steps_seconds(steps, fallback)
+    secs = _steps_seconds(steps, anchor or _DEFAULT_PACE_MIN_KM)
     if secs <= 0:
         return None
     return int(round(secs / 60.0))
@@ -456,12 +456,13 @@ async def plan_page(
     workouts = await repository.list_workouts(session, plan.id)
     strength_view, strength_names = await _strength_details(session, user, workouts)
     compliance = await repository.weekly_compliance(session, plan.id)
+    anchor_pace = await repository.typical_run_pace(session, user.id)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
-         "compliance": compliance,
+         "compliance": compliance, "anchor_pace": anchor_pace,
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "count": len(workouts), "readonly": False},
@@ -493,12 +494,13 @@ async def plan_view(
     workouts = await repository.list_workouts(session, plan.id)
     strength_view, strength_names = await _strength_details(session, user, workouts)
     compliance = await repository.weekly_compliance(session, plan.id)
+    anchor_pace = await repository.typical_run_pace(session, user.id)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
-         "compliance": compliance,
+         "compliance": compliance, "anchor_pace": anchor_pace,
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "count": len(workouts), "readonly": True},
     )

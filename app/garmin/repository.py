@@ -363,6 +363,33 @@ async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> L
     ]
 
 
+async def typical_run_pace(
+    session: AsyncSession, user_id: int, days: int = 42
+) -> Optional[float]:
+    """Median run pace (min/km) over the last ``days`` days for this user, or None when
+    there aren't enough runs. The grounded anchor for time estimates on plan steps that
+    only carry an HR zone (see routers.plan._est_minutes). Same sanity band as records.py."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord.dist_km, ActivityRecord.dur_min).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+            )
+        )
+    ).all()
+    paces = sorted(
+        d / km for km, d in rows
+        if km and d and km > 0 and 2.5 <= d / km <= 12.0
+    )
+    if not paces:
+        return None
+    n = len(paces)
+    return paces[n // 2] if n % 2 else (paces[n // 2 - 1] + paces[n // 2]) / 2
+
+
 async def count_daily_metrics(session: AsyncSession, user_id: int) -> int:
     """Total number of stored daily rows for this user — the calibration gate for the
     injury radar (NF-04): no warnings until there's enough history to trust the signals."""

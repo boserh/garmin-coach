@@ -117,7 +117,7 @@ def test_fmt_step_renders_human_labels():
 
 def test_est_minutes_from_steps():
     from app.routers.plan import _est_minutes
-    # a single distance step: 3.5 km @ 7:00–7:24/км (mid 7.2) ≈ 25 min
+    # a single distance step: 3.5 km @ 7:00–7:24/км (mid 7.2) ≈ 25 min (explicit pace wins)
     assert _est_minutes([{"kind": "run", "dist_m": 3500,
                           "pace_min_km": [7.0, 7.4]}]) == 25
     # dur_s steps count verbatim; repeat multiplies; distance steps use their pace
@@ -127,11 +127,30 @@ def test_est_minutes_from_steps():
             {"kind": "run", "dist_m": 400, "pace_min_km": [4.9, 5.1]},
             {"kind": "recovery", "dur_s": 60}]},
         {"kind": "cooldown", "dist_m": 1000, "pace_min_km": [7.0, 7.2]}]) == 33
-    # a distance step with only an HR zone falls back to the default easy pace
+    # a distance step with only an HR zone falls back to the default easy pace (6.5)
     assert _est_minutes([{"kind": "run", "dist_m": 5000, "hr_zone": 2}]) == 32
     # nothing to estimate → None (no '~хв' hint rendered)
     assert _est_minutes([]) is None
     assert _est_minutes(None) is None
+
+
+def test_est_minutes_uses_anchor_and_zone():
+    """HR-zone steps are timed off the user's typical (anchor) easy pace; a fast-zone
+    stride is timed faster than the easy jog (the screenshot bug: everything at a flat 6.5)."""
+    from app.routers.plan import _est_minutes
+    # zone 2 (easy) @ anchor 7.1 → 5 km * 7.1 = 35.5 → 36 min (grounded, not the 6.5 guess)
+    assert _est_minutes([{"kind": "run", "dist_m": 5000, "hr_zone": 2}], 7.1) == 36
+    # a zone-5 stride is timed fast (7.1 * 0.76 ≈ 5.4/км), not at easy pace
+    assert _est_minutes([{"kind": "run", "dist_m": 400, "hr_zone": 5}], 7.1) == 2
+    # the screenshot workout (2.4 km easy + 4×(100 m + 100 m recovery), all zone 2) at a
+    # real 7:06/km anchor → ~23 min, vs the misleading flat-6.5 guess (~21) without one.
+    shot = [
+        {"kind": "run", "dist_m": 2400, "hr_zone": 2},
+        {"kind": "repeat", "reps": 4, "steps": [
+            {"kind": "run", "dist_m": 100, "hr_zone": 2},
+            {"kind": "recovery", "dist_m": 100}]}]
+    assert _est_minutes(shot, 7.1) == 23
+    assert _est_minutes(shot) == 21
 
 
 def test_by_week_groups_by_calendar_monday():
