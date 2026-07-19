@@ -179,15 +179,58 @@ async def test_rest_type_not_matched(session):
     assert w.status == WorkoutStatus.PLANNED
 
 
-async def test_strength_type_not_matched(session):
-    """Strength days are never matched by a running activity."""
+async def test_strength_not_matched_by_running_activity(session):
+    """A strength day is not satisfied by a *running* activity (today's stays planned)."""
     plan = await _make_plan(session)
-    w = await _make_workout(session, plan, YESTERDAY, type_="strength", dist_km=None)
-    await _make_activity(session, YESTERDAY, dist_km=5.0)
+    w = await _make_workout(session, plan, TODAY, type_="strength", dist_km=None)
+    await _make_activity(session, TODAY, dist_km=5.0, type_="running")
     await session.commit()
 
     await matching.match_activities(session, U1)
 
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.PLANNED
+    assert w.completed_activity_id is None
+
+
+async def test_strength_matched_by_strength_activity(session):
+    """A strength day is marked done by a strength_training activity within ±1 day."""
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, type_="strength", dist_km=None)
+    a = await _make_activity(
+        session, YESTERDAY, dist_km=0.0, dur_min=45.0, type_="strength_training")
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["done"] == 1
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.DONE
+    assert w.completed_activity_id == a.id
+
+
+async def test_strength_missed_when_no_activity(session):
+    """A past strength day with no strength activity → missed."""
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, type_="strength", dist_km=None)
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["missed"] == 1
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.MISSED
+
+
+async def test_strength_today_stays_planned(session):
+    """Today's strength day with no activity yet must not be marked missed."""
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, TODAY, type_="strength", dist_km=None)
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["missed"] == 0
     await session.refresh(w)
     assert w.status == WorkoutStatus.PLANNED
 

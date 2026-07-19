@@ -85,6 +85,8 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .dist{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:1rem;
       color:var(--ink);white-space:nowrap}
 .dist small{display:block;font-weight:600;font-size:.68rem;color:var(--faint);letter-spacing:.04em;margin-top:.1rem}
+.dist .est{font-size:.82rem;font-weight:600;color:var(--muted);margin-top:.4rem}
+.dist .est small{color:var(--faint)}
 
 /* structured steps — one per line, role-labelled (a real workout breakdown) */
 .steps{margin-top:.8rem;display:flex;flex-direction:column;gap:.36rem;
