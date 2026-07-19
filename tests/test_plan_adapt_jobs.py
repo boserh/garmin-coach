@@ -196,8 +196,11 @@ async def test_weekly_skips_without_active_plan(session):
 
 async def test_send_adapt_proposal_stores_pending_in_bot_state(session):
     user = await _make_user(session)
+    plan = await _seed_plan(session, user.id, workouts=[
+        dict(date="2026-07-10", type="long", dist_km=10.0, status="planned"),
+    ])
     edit = _edit([PlanOp(action="modify", date="2026-07-10", dist_km=5.0)])
-    await jobs_module._send_adapt_proposal(_FakeCtx(), session, user, edit)
+    await jobs_module._send_adapt_proposal(_FakeCtx(), session, user, plan.id, edit)
     raw = await repository.get_state(session, user.id, jobs_module.PENDING_ADAPT_KEY)
     assert raw is not None
     data = json.loads(raw)
@@ -205,16 +208,34 @@ async def test_send_adapt_proposal_stores_pending_in_bot_state(session):
     assert data["alt"] == []
 
 
+async def test_send_adapt_proposal_lists_concrete_changes(session):
+    """The proposal text must spell out what actually changes (before → after), not
+    just the LLM's free-text reasoning — a vague summary alone left users unable to
+    tell which session moved or by how much."""
+    user = await _make_user(session)
+    plan = await _seed_plan(session, user.id, workouts=[
+        dict(date="2026-07-10", type="long", dist_km=12.0, status="planned"),
+    ])
+    edit = _edit([PlanOp(action="modify", date="2026-07-10", dist_km=9.0)])
+    ctx = _FakeCtx()
+    await jobs_module._send_adapt_proposal(ctx, session, user, plan.id, edit)
+    _chat_id, text, _kb = ctx.bot.sent[0]
+    assert "12 → 9 км" in text
+
+
 async def test_risky_proposal_offers_three_buttons(session):
     from telegram import InlineKeyboardMarkup
 
     user = await _make_user(session)
+    plan = await _seed_plan(session, user.id, workouts=[
+        dict(date="2026-07-10", type="long", dist_km=10.0, status="planned"),
+    ])
     ops = [PlanOp(action="modify", date="2026-07-10", dist_km=8.0)]
     alt = [PlanOp(action="modify", date="2026-07-10", dist_km=6.0)]
     edit = PlanEdit(summary="ризиковано", operations=ops, risky=True,
                      alt_summary="безпечніше", alt_operations=alt)
     ctx = _FakeCtx()
-    await jobs_module._send_adapt_proposal(ctx, session, user, edit)
+    await jobs_module._send_adapt_proposal(ctx, session, user, plan.id, edit)
     _chat_id, _text, kb = ctx.bot.sent[0]
     assert isinstance(kb, InlineKeyboardMarkup)
     assert len(kb.inline_keyboard) == 3

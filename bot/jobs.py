@@ -399,14 +399,72 @@ def _adapt_ops_dump(edit) -> str:
     )
 
 
-async def _send_adapt_proposal(ctx, session, user: User, edit) -> None:
+_DOW_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+
+_TYPE_UK = {
+    "easy": "легкий біг", "long": "довга пробіжка", "tempo": "темпова",
+    "intervals": "інтервали", "rest": "відпочинок", "cross": "кросс-тренування",
+    "strength": "силова",
+}
+
+
+def _dow_label(iso: str) -> str:
+    try:
+        d = dt.date.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return iso or "?"
+    return f"{_DOW_UK[d.weekday()]} {iso[5:]}"
+
+
+def _type_label(t: Optional[str]) -> str:
+    return _TYPE_UK.get((t or "").lower(), t or "тренування")
+
+
+async def _op_change_line(session, plan_id: int, op) -> str:
+    """One concrete before→after line for a single proposed PlanOp, so the proposal
+    shows what actually changes instead of only the LLM's reasoning (the summary text
+    alone left users unable to tell which session moved or by how much)."""
+    d = _dow_label(op.date)
+    if op.action == "add":
+        dist = f" {op.dist_km:.0f} км" if op.dist_km else ""
+        return f"• {d}: додається {_type_label(op.type)}{dist}"
+    if op.action == "skip":
+        return f"• {d}: скасовується"
+    old = await repository.workout_on_date(session, plan_id, op.date)
+    if op.action == "move" and op.to_date:
+        nd = _dow_label(op.to_date)
+        what = _type_label(old.type) if old else _type_label(op.type)
+        return f"• {d} → {nd}: {what}"
+    if op.action == "modify":
+        parts = []
+        if op.dist_km is not None:
+            was = f"{old.dist_km:.0f}" if old and old.dist_km else "?"
+            parts.append(f"{was} → {op.dist_km:.0f} км")
+        if op.type is not None and (old is None or op.type != old.type):
+            parts.append(_type_label(op.type))
+        return f"• {d}: {', '.join(parts) if parts else 'деталі сесії'}"
+    return f"• {d}: {op.action}"
+
+
+async def _ops_changes_text(session, plan_id: int, ops: list) -> str:
+    lines = [await _op_change_line(session, plan_id, op) for op in ops]
+    return "\n".join(lines)
+
+
+async def _send_adapt_proposal(ctx, session, user: User, plan_id: int, edit) -> None:
     """Store the proposed ops in bot_state (survives a bot restart, unlike
     context.user_data — see EP-02 pitfalls) and send the confirm/reject buttons."""
     await repository.set_state(session, user.id, PENDING_ADAPT_KEY, _adapt_ops_dump(edit))
+    changes = await _ops_changes_text(session, plan_id, edit.operations)
     if edit.risky and edit.alt_operations:
         text = "📅 Пропоную скоригувати план.\n\n⚠️ " + edit.summary
+        if changes:
+            text += "\n\n" + changes
         if edit.alt_summary:
             text += "\n\n🛡 Безпечніше: " + edit.alt_summary
+            alt_changes = await _ops_changes_text(session, plan_id, edit.alt_operations)
+            if alt_changes:
+                text += "\n" + alt_changes
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Як пропоновано", callback_data="adapt_apply")],
             [InlineKeyboardButton("🛡 Безпечніший варіант", callback_data="adapt_apply_alt")],
@@ -414,6 +472,8 @@ async def _send_adapt_proposal(ctx, session, user: User, edit) -> None:
         ])
     else:
         text = "📅 Пропоную скоригувати план.\n\n" + edit.summary
+        if changes:
+            text += "\n\n" + changes
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Прийняти", callback_data="adapt_apply"),
             InlineKeyboardButton("❌ Відхилити", callback_data="adapt_cancel"),
@@ -454,7 +514,7 @@ async def _adapt_morning_check(ctx, session, user: User, creds, today: str) -> N
         return
     if plan is None or edit is None or not edit.operations:
         return
-    await _send_adapt_proposal(ctx, session, user, edit)
+    await _send_adapt_proposal(ctx, session, user, plan.id, edit)
 
 
 async def _adapt_weekly_for_user(ctx, session, user: User) -> None:
@@ -477,7 +537,7 @@ async def _adapt_weekly_for_user(ctx, session, user: User) -> None:
         return
     if edit is None or not edit.operations:   # None → plan's adjust_level is off
         return
-    await _send_adapt_proposal(ctx, session, user, edit)
+    await _send_adapt_proposal(ctx, session, user, plan.id, edit)
 
 
 async def plan_adapt_job(ctx: ContextTypes.DEFAULT_TYPE):
@@ -538,7 +598,7 @@ async def _weather_plan_for_user(ctx, session, user: User) -> None:
         return
     if edit is None or not edit.operations:
         return
-    await _send_adapt_proposal(ctx, session, user, edit)
+    await _send_adapt_proposal(ctx, session, user, plan.id, edit)
 
 
 async def weather_plan_job(ctx: ContextTypes.DEFAULT_TYPE):

@@ -787,3 +787,12 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(MFA_REQUIRED_MSG)
     else:
         logger.exception("Unhandled bot error", exc_info=err)
+    # A failed inline-button tap (plan/adapt/checkin callbacks) otherwise leaves the
+    # button visibly stuck — the user taps and, from their side, nothing happens. Best
+    # effort: pop a toast so they know the tap failed and to retry, instead of silence.
+    cbq = getattr(update, "callback_query", None) if isinstance(update, Update) else None
+    if cbq is not None:
+        try:
+            await cbq.answer("Сталася помилка, спробуй ще раз.", show_alert=False)
+        except Exception:
+            pass
