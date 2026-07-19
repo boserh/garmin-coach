@@ -270,6 +270,11 @@ Optional, with defaults:
   (= the OAuth2 JWT `iat`, since we persist only right after a fresh login) and the
   ≈+1y death date, i.e. each user's auth deadline (`app/garmin/token_info.py`;
   read-only raw SQL so it works even on a half-migrated DB).
+  `trigger-plan-adapt --email` runs the weekly plan-adaptation review (EP-02, same call
+  as `plan_adapt_job`) on demand from the console instead of waiting for Sunday — a real
+  Claude call, and when it proposes a change it sends the normal ✅/❌ proposal to the
+  user's Telegram chat via a standalone `telegram.Bot` (reusing `bot.jobs._send_adapt_proposal`
+  so the confirm/reject flow is unchanged) — console-triggered, Telegram-delivered.
 - **Live calendar sync** (`app.garmin.plan_sync.sync_plan_to_garmin`): the automated
   rolling-window keeper (the CLI's manual cousin). Two passes — **forward** (push the
   active plan's upcoming in-window unpushed runs) and **cleanup** (remove anything we

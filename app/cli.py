@@ -377,6 +377,58 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     return 0
 
 
+async def _trigger_plan_adapt(email: str) -> int:
+    """Manually run the weekly plan-adaptation review (EP-02) for one user, outside
+    Sunday's schedule — same call plan_adapt_job makes. Pure-DB + one Claude call, no
+    Garmin login needed. When it proposes a change, sends the normal confirm/reject
+    proposal to the user's Telegram chat (the review itself is console-triggered; the
+    ✅/❌ still happens in the bot, same as always) via a standalone Bot instance."""
+    from types import SimpleNamespace
+
+    from telegram import Bot
+
+    from app.analysis.service import AnalystError, run_plan_adaptation
+    from app.garmin import repository
+    from app.garmin.credentials import load_credentials
+    from bot.jobs import _send_adapt_proposal
+
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            print(f"User {email} not found.")
+            return 1
+        if not user.telegram_chat_id:
+            print("User has no telegram_chat_id — nowhere to send a proposal.")
+            return 1
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+        creds = load_credentials(user)
+        if not creds.anthropic_key:
+            print("No Anthropic key configured for this user.")
+            return 1
+        try:
+            _plan, edit = await run_plan_adaptation(
+                session, user_id=user.id, api_key=creds.anthropic_key, trigger="weekly",
+            )
+        except AnalystError as e:
+            print(f"Adaptation call failed: {e}")
+            return 1
+        if edit is None:
+            print("adjust_level=off for this plan — adaptation is disabled, no call made.")
+            return 0
+        if not edit.operations:
+            print("Plan looks fine — nothing to propose.")
+            return 0
+        async with Bot(token=settings.TELEGRAM_BOT_TOKEN) as bot:
+            await _send_adapt_proposal(
+                SimpleNamespace(bot=bot), session, user, plan.id, edit)
+        print(f"Proposal sent to {email}'s Telegram chat ({len(edit.operations)} op(s)).")
+    return 0
+
+
 def _pace_hint(pace) -> str:
     """[fast, slow] decimal min/km → 'орієнтовно 6:45–7:00/км' — the text stashed in a
     step's ``note`` when its pace target is replaced by an HR zone, so the range is still
@@ -805,6 +857,12 @@ def main(argv=None) -> int:
     up.add_argument("--email", required=True)
     up.add_argument("--date", help="remove only the session on this ISO date")
 
+    tpa = sub.add_parser(
+        "trigger-plan-adapt",
+        help="Run the weekly plan-adaptation review (EP-02) now, outside Sunday's schedule "
+             "(real Claude call — sends the usual ✅/❌ proposal to Telegram if it has one)")
+    tpa.add_argument("--email", required=True)
+
     ceh = sub.add_parser(
         "convert-easy-hr",
         help="Rewrite active-plan easy/recovery/long runs from pace to HR-zone + re-push to Garmin")
@@ -864,6 +922,8 @@ def main(argv=None) -> int:
         return asyncio.run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
         return asyncio.run(_unpush_plan(args.email, args.date))
+    if args.cmd == "trigger-plan-adapt":
+        return asyncio.run(_trigger_plan_adapt(args.email))
     if args.cmd == "convert-easy-hr":
         return asyncio.run(_convert_easy_hr(
             args.email, args.easy_zone, args.recovery_zone, args.long_zone,
