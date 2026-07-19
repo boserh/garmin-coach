@@ -49,8 +49,9 @@ _TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target"}
 _TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone"}
 # HR-zone target: watch holds the user's zone HR bounds, we just name the zone (1-5).
 # NB: unlike pace.zone above, this DTO shape is NOT yet verified field-for-field against
-# a real saved HR-zone workout — verify before trusting a live push (used only by easy/
-# recovery steps that carry hr_zone).
+# a real saved HR-zone workout — verify before trusting a live push (used by easy/long/
+# recovery steps that carry hr_zone; their pace hint, if any, rides in `note` → `description`
+# below instead of a pace.zone target).
 _TARGET_HR_ZONE = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone"}
 
 
