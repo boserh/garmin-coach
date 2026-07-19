@@ -1183,7 +1183,9 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
     return added
 
 
-async def _workout_on(session: AsyncSession, plan_id: int, date: str):
+async def workout_on_date(session: AsyncSession, plan_id: int, date: str):
+    """The plan's session on a given date, or None. Public: also used to describe a
+    proposed op's before-state (bot/jobs.py) without duplicating the query."""
     return (
         await session.execute(
             select(PlannedWorkout)
@@ -1241,7 +1243,7 @@ async def apply_plan_ops(
             session.add(w)
             affected.append(w)
             continue
-        w = await _workout_on(session, plan.id, op.date)
+        w = await workout_on_date(session, plan.id, op.date)
         if w is None:
             continue
         if op.action == "skip":
