@@ -132,7 +132,11 @@
           </details>
           {% endif %}
         </div>
-        <div class="dist">{% if w.dist_km %}{{ '%.1f'|format(w.dist_km) }}<small>КМ</small>{% endif %}</div>
+        <div class="dist">
+          {% if w.dist_km %}{{ '%.1f'|format(w.dist_km) }}<small>КМ</small>{% endif %}
+          {% set em = w.steps|est_min %}
+          {% if em %}<div class="est">~{{ em }}<small>ХВ</small></div>{% endif %}
+        </div>
       </div>
       {% endfor %}
     {% endfor %}

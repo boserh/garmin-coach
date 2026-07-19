@@ -115,6 +115,25 @@ def test_fmt_step_renders_human_labels():
     assert rep == "5× (біг 3 хв @ 5:15–5:24/км + відновлення 2 хв)"
 
 
+def test_est_minutes_from_steps():
+    from app.routers.plan import _est_minutes
+    # a single distance step: 3.5 km @ 7:00–7:24/км (mid 7.2) ≈ 25 min
+    assert _est_minutes([{"kind": "run", "dist_m": 3500,
+                          "pace_min_km": [7.0, 7.4]}]) == 25
+    # dur_s steps count verbatim; repeat multiplies; distance steps use their pace
+    assert _est_minutes([
+        {"kind": "warmup", "dist_m": 1500, "pace_min_km": [7.0, 7.2]},
+        {"kind": "repeat", "reps": 5, "steps": [
+            {"kind": "run", "dist_m": 400, "pace_min_km": [4.9, 5.1]},
+            {"kind": "recovery", "dur_s": 60}]},
+        {"kind": "cooldown", "dist_m": 1000, "pace_min_km": [7.0, 7.2]}]) == 33
+    # a distance step with only an HR zone falls back to the default easy pace
+    assert _est_minutes([{"kind": "run", "dist_m": 5000, "hr_zone": 2}]) == 32
+    # nothing to estimate → None (no '~хв' hint rendered)
+    assert _est_minutes([]) is None
+    assert _est_minutes(None) is None
+
+
 def test_by_week_groups_by_calendar_monday():
     from types import SimpleNamespace
 

@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -110,6 +111,70 @@ def _pace(dec: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+# Fallback pace (min/km) for a distance step that carries no pace target of its own
+# (e.g. an easy run prescribed by HR zone) — used only if the workout has no pace at all.
+_DEFAULT_PACE_MIN_KM = 6.5
+
+
+def _step_mid_pace(s: dict) -> Optional[float]:
+    """Midpoint of a step's ``pace_min_km`` range, or None."""
+    p = s.get("pace_min_km")
+    if isinstance(p, (list, tuple)) and len(p) == 2 and all(
+            isinstance(x, (int, float)) for x in p):
+        return (float(p[0]) + float(p[1])) / 2
+    return None
+
+
+def _first_pace(steps) -> Optional[float]:
+    """First pace midpoint found anywhere in the step tree (a per-workout fallback so a
+    warmup/easy step with only an HR zone still gets estimated at the run's own pace)."""
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        m = _step_mid_pace(s)
+        if m is not None:
+            return m
+        m = _first_pace(s.get("steps"))
+        if m is not None:
+            return m
+    return None
+
+
+def _steps_seconds(steps, fallback: float) -> float:
+    """Sum the estimated time (seconds) of a step tree: ``dur_s`` verbatim, a distance
+    step as dist × pace, and a repeat group as reps × its inner time."""
+    total = 0.0
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("kind") == "repeat":
+            reps = s.get("reps")
+            reps = reps if isinstance(reps, (int, float)) else 1
+            total += reps * _steps_seconds(s.get("steps"), fallback)
+            continue
+        ds = s.get("dur_s")
+        if isinstance(ds, (int, float)):
+            total += float(ds)
+            continue
+        dm = s.get("dist_m")
+        if isinstance(dm, (int, float)):
+            pace = _step_mid_pace(s)
+            total += (float(dm) / 1000.0) * (pace if pace is not None else fallback) * 60.0
+    return total
+
+
+def _est_minutes(steps) -> Optional[int]:
+    """Approximate total duration (whole minutes) of a run's structured steps, or None
+    when it can't be estimated. Powers the '~NN хв' hint next to the distance."""
+    if not steps:
+        return None
+    fallback = _first_pace(steps) or _DEFAULT_PACE_MIN_KM
+    secs = _steps_seconds(steps, fallback)
+    if secs <= 0:
+        return None
+    return int(round(secs / 60.0))
+
+
 _DOW_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
 
@@ -171,6 +236,7 @@ templates.env.filters["step_amount"] = _step_amount
 templates.env.filters["step_pace"] = _step_pace
 templates.env.filters["exlabel"] = lambda cat, ex="": _exercises.label(cat or "", ex or "")
 templates.env.filters["pace_fmt"] = _pace  # decimal min/km → "m:ss"
+templates.env.filters["est_min"] = _est_minutes  # steps → approx whole minutes
 
 logger = logging.getLogger("plan")
 

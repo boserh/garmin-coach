@@ -1,13 +1,13 @@
-"""Plan/actual matching: link completed running activities to planned workout sessions.
+"""Plan/actual matching: link completed activities to planned workout sessions.
 
 Runs after every Garmin sync (``bot.jobs._tick_for_user``) and is idempotent —
 it only touches workouts whose status is still ``planned``. Manual ``skipped``
 statuses are never overwritten.
 
-Matching rules
---------------
-* Only run-type workouts (easy / long / tempo / intervals / race) are matched —
-  rest, cross, and strength sessions are ignored.
+Matching rules — runs
+---------------------
+* Run-type workouts (easy / long / tempo / intervals / race) are matched against
+  running activities. Rest and cross sessions are ignored.
 * Candidate activities: running ``ActivityRecord`` rows within ±1 day of the
   planned date that are not yet linked to another session (``completed_activity_id``
   already set on a different workout).
@@ -16,6 +16,13 @@ Matching rules
   - |Δdist| ≤ DIST_PARTIAL_THRESH of the planned km → ``done``
   - |Δdist| > DIST_PARTIAL_THRESH → ``partial`` (completed but off-plan)
   - No match and date < today → ``missed`` (only today's workout may still sync)
+
+Matching rules — strength
+-------------------------
+* Strength workouts are matched against ``strength_training`` activities within
+  ±1 day (closest date wins). There's no distance to compare, so a match is simply
+  ``done``; no match with a past date → ``missed``. This is what makes completed
+  strength sessions show a ✅/❌ on ``/plan`` instead of sitting forever ``planned``.
 """
 import datetime as dt
 import logging
@@ -35,8 +42,12 @@ DIST_PARTIAL_THRESH = 0.25
 # Workout types we try to match against running activities.
 _PLAN_RUN_TYPES = {"easy", "long", "tempo", "intervals", "race"}
 
-# Activity type substring that identifies a running activity.
+# Workout types matched against strength activities (presence-only, no distance).
+_PLAN_STRENGTH_TYPES = {"strength"}
+
+# Activity type substrings that identify a running / strength activity.
 _ACT_RUN_SUBSTR = "run"
+_ACT_STRENGTH_SUBSTR = "strength"
 
 
 def _extract_target_pace(w: PlannedWorkout) -> Optional[float]:
@@ -66,16 +77,16 @@ def _extract_target_pace(w: PlannedWorkout) -> Optional[float]:
     return None
 
 
-async def _get_unlinked_running_activities(
-    session: AsyncSession, user_id: int, date_from: str, date_to: str
+async def _get_unlinked_activities(
+    session: AsyncSession, user_id: int, date_from: str, date_to: str, type_substr: str
 ) -> list:
-    """Running activities for this user in [date_from, date_to] that haven't been
-    linked to a planned workout yet."""
+    """Activities of a given type substring for this user in [date_from, date_to] that
+    haven't been linked to a planned workout yet."""
     rows = (
         await session.execute(
             select(ActivityRecord).where(
                 ActivityRecord.user_id == user_id,
-                ActivityRecord.type.contains(_ACT_RUN_SUBSTR),
+                ActivityRecord.type.contains(type_substr),
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= date_from,
                 ActivityRecord.date <= date_to,
@@ -99,7 +110,7 @@ async def _get_unlinked_running_activities(
 
 
 async def match_activities(session: AsyncSession, user_id: int) -> dict:
-    """Match completed running activities to planned workouts for this user.
+    """Match completed activities (runs + strength) to planned workouts for this user.
 
     Idempotent: only workouts with ``status == 'planned'`` are touched; already-matched
     or manually skipped workouts are left unchanged.
@@ -110,9 +121,20 @@ async def match_activities(session: AsyncSession, user_id: int) -> dict:
     if plan is None:
         return {"done": 0, "partial": 0, "missed": 0}
 
-    today = dt.date.today()
-    today_s = today.isoformat()
+    today_s = dt.date.today().isoformat()
 
+    done, partial, missed = await _match_runs(session, plan, user_id, today_s)
+    s_done, s_missed = await _match_strength(session, plan, user_id, today_s)
+
+    await session.commit()
+    return {"done": done + s_done, "partial": partial, "missed": missed + s_missed}
+
+
+async def _match_runs(
+    session: AsyncSession, plan, user_id: int, today_s: str
+) -> tuple[int, int, int]:
+    """Match run-type workouts against running activities. Returns (done, partial, missed).
+    Mutates workouts in place; the caller commits."""
     # Only run-type workouts that are still in planned state and have passed (≤ today).
     workouts = [
         w for w in await repository.list_workouts(session, plan.id)
@@ -122,14 +144,15 @@ async def match_activities(session: AsyncSession, user_id: int) -> dict:
         and w.date >= (plan.start_date or "")
     ]
     if not workouts:
-        return {"done": 0, "partial": 0, "missed": 0}
+        return 0, 0, 0
 
     min_date = min(w.date for w in workouts)
     max_date = max(w.date for w in workouts)
     range_from = (dt.date.fromisoformat(min_date) - dt.timedelta(days=1)).isoformat()
     range_to = (dt.date.fromisoformat(max_date) + dt.timedelta(days=1)).isoformat()
 
-    activities = await _get_unlinked_running_activities(session, user_id, range_from, range_to)
+    activities = await _get_unlinked_activities(
+        session, user_id, range_from, range_to, _ACT_RUN_SUBSTR)
 
     used_ids: set = set()
     done = partial = missed = 0
@@ -193,5 +216,66 @@ async def match_activities(session: AsyncSession, user_id: int) -> dict:
             f"Δdist={w.match_info['dist_delta_km']:+.2f}km activity={best.id}"
         )
 
-    await session.commit()
-    return {"done": done, "partial": partial, "missed": missed}
+    return done, partial, missed
+
+
+async def _match_strength(
+    session: AsyncSession, plan, user_id: int, today_s: str
+) -> tuple[int, int]:
+    """Match strength workouts against ``strength_training`` activities (presence-only,
+    closest date wins). Returns (done, missed). Mutates workouts in place; the caller
+    commits."""
+    workouts = [
+        w for w in await repository.list_workouts(session, plan.id)
+        if w.status == WorkoutStatus.PLANNED
+        and (w.type or "").lower() in _PLAN_STRENGTH_TYPES
+        and w.date <= today_s
+        and w.date >= (plan.start_date or "")
+    ]
+    if not workouts:
+        return 0, 0
+
+    min_date = min(w.date for w in workouts)
+    max_date = max(w.date for w in workouts)
+    range_from = (dt.date.fromisoformat(min_date) - dt.timedelta(days=1)).isoformat()
+    range_to = (dt.date.fromisoformat(max_date) + dt.timedelta(days=1)).isoformat()
+
+    activities = await _get_unlinked_activities(
+        session, user_id, range_from, range_to, _ACT_STRENGTH_SUBSTR)
+
+    used_ids: set = set()
+    done = missed = 0
+
+    for w in sorted(workouts, key=lambda x: x.date):
+        w_date = dt.date.fromisoformat(w.date)
+        candidates = [
+            a for a in activities
+            if a.id not in used_ids
+            and a.date is not None
+            and abs((dt.date.fromisoformat(a.date) - w_date).days) <= 1
+        ]
+
+        if not candidates:
+            # Activity hasn't synced yet; only today's session may still sync.
+            if w.date < today_s:
+                w.status = WorkoutStatus.MISSED
+                missed += 1
+                logger.debug(
+                    f"MATCH missed(strength) plan_id={plan.id} workout={w.id} date={w.date}")
+            continue
+
+        best = min(
+            candidates, key=lambda a: abs((dt.date.fromisoformat(a.date) - w_date).days))
+        used_ids.add(best.id)
+
+        w.completed_activity_id = best.id
+        w.match_info = {"activity_date": best.date, "actual_dist_km": None}
+        w.status = WorkoutStatus.DONE
+        done += 1
+
+        logger.info(
+            f"MATCH done(strength) plan_id={plan.id} workout={w.id} date={w.date} "
+            f"activity={best.id}"
+        )
+
+    return done, missed
