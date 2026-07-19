@@ -165,6 +165,31 @@ async def test_get_last_report(session):
     assert date == yesterday.date().isoformat()
 
 
+async def test_typical_run_pace(session):
+    # no runs yet → None (the estimate then falls back to its own default)
+    assert await repository.typical_run_pace(session, U1) is None
+
+    today = dt.date.today().isoformat()
+    # three runs at 6/7/8 min/km → median 7.0; a walk and a garbage-pace run are ignored
+    for i, (km, dur) in enumerate([(5.0, 30.0), (5.0, 35.0), (5.0, 40.0)]):
+        session.add(ActivityRecord(
+            user_id=U1, activity_id=900 + i, date=today, type="running",
+            dist_km=km, dur_min=dur))
+    session.add(ActivityRecord(  # walk — not a run, excluded
+        user_id=U1, activity_id=950, date=today, type="walking",
+        dist_km=3.0, dur_min=45.0))
+    session.add(ActivityRecord(  # 2.0 min/km is below the sanity floor, excluded
+        user_id=U1, activity_id=951, date=today, type="running",
+        dist_km=5.0, dur_min=10.0))
+    # another user's fast run must not leak in
+    session.add(ActivityRecord(
+        user_id=U2, activity_id=952, date=today, type="running",
+        dist_km=5.0, dur_min=20.0))
+    await session.commit()
+
+    assert abs(await repository.typical_run_pace(session, U1) - 7.0) < 0.01
+
+
 async def test_get_recent_reports_filters_and_orders(session):
     await repository.log_report(session, user_id=U1, kind="report", model="m",
                                 ok=False, error="x")
