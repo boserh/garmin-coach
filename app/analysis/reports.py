@@ -155,6 +155,13 @@ def analyze_with_stats(
             model=model,
             max_tokens=2000,
             system=SYSTEM,
+            # Sonnet 5 (MODEL_DAILY) runs adaptive thinking by default when `thinking`
+            # is omitted (Opus/MODEL_DEEP already runs without it by default either
+            # way) — with max_tokens=2000 that can consume the whole budget on
+            # thinking and leave nothing for the actual report text (empty response,
+            # stop_reason=max_tokens). This is narration over already-computed data,
+            # not a reasoning task, so disable thinking explicitly.
+            thinking={"type": "disabled"},
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
         )
@@ -666,6 +673,10 @@ def analyze_activity_with_stats(
 
         msg = _get_client(api_key).messages.create(
             model=model, max_tokens=1500, system=SYSTEM_ACTIVITY,
+            # See analyze_with_stats above: Sonnet 5 (MODEL_ACTIVITY) defaults to
+            # adaptive thinking when omitted, which can eat the whole max_tokens
+            # budget and leave no room for the actual text.
+            thinking={"type": "disabled"},
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
         )

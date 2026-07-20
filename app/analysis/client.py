@@ -138,12 +138,22 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
     mapping (used by the plan calls; the older report calls keep their inline copies)."""
     from anthropic import APIConnectionError, APIStatusError
 
+    kwargs = dict(
+        model=model, max_tokens=max_tokens, system=system,
+        messages=[{"role": "user",
+                   "content": json.dumps(user_content, ensure_ascii=False)}],
+    )
+    # Sonnet 5 runs adaptive thinking by default when `thinking` is omitted (unlike
+    # Sonnet 4.6, which ran without it) — with these small max_tokens budgets, thinking
+    # can eat the whole budget and leave no room for the actual text (empty response,
+    # stop_reason=max_tokens). These are mechanical/narration calls that never wanted
+    # thinking, so disable it explicitly. Fable 5 rejects an explicit disable (400) but
+    # always thinks regardless, so it's excluded here.
+    if model != FABLE_5:
+        kwargs["thinking"] = {"type": "disabled"}
+
     try:
-        msg = _get_client(api_key).messages.create(
-            model=model, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user",
-                       "content": json.dumps(user_content, ensure_ascii=False)}],
-        )
+        msg = _get_client(api_key).messages.create(**kwargs)
         stats = CallStats(kind=kind, model=model)
         usage = getattr(msg, "usage", None)
         if usage:
@@ -175,11 +185,18 @@ def _complete_tools(
     thread pool via ``_run_claude`` like every other Claude call."""
     from anthropic import APIConnectionError, APIStatusError
 
+    kwargs = dict(
+        model=model, max_tokens=max_tokens, system=system,
+        messages=messages, tools=tools,
+    )
+    # See _complete() above: Sonnet 5 defaults to adaptive thinking when `thinking` is
+    # omitted, which can silently eat the whole max_tokens budget. /ask never wanted
+    # thinking, so disable it explicitly (skip for Fable 5, which rejects the flag).
+    if model != FABLE_5:
+        kwargs["thinking"] = {"type": "disabled"}
+
     try:
-        msg = _get_client(api_key).messages.create(
-            model=model, max_tokens=max_tokens, system=system,
-            messages=messages, tools=tools,
-        )
+        msg = _get_client(api_key).messages.create(**kwargs)
         stats = CallStats(kind="ask", model=model)
         usage = getattr(msg, "usage", None)
         if usage:
