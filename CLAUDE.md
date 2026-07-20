@@ -132,12 +132,10 @@ Optional, with defaults:
 | `LOGIN_RATE_LIMIT` | `5` | SEC-01: max `POST /login`/`POST /register` attempts per window before a 429; `0` disables (tests set it to 0). In-memory + per-process (`app/core/ratelimit.py`) — a single Pi web process, by design. |
 | `LOGIN_RATE_WINDOW_S` | `300` | SEC-01: the rate-limit window in seconds. |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
-| `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
 | `GARMIN_RPS` | `3.0` | Process-wide Garmin request rate cap (req/s); `0` disables the limiter (PERF-05) |
 | `GARMIN_RETRIES` | `2` | 429 retries with exponential backoff inside `client._api` (PERF-05) |
 | `CLAUDE_MAX_WORKERS` | `4` | Size of the dedicated Claude thread pool, off the shared anyio pool (PERF-04b) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
-| `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by login (kept for compatibility) |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root level (`DEBUG` shows skip-reason logs) |
 | `GARMIN_CACHE_DIR` | `garmin_cache` | Per-key disk cache for immutable Garmin assets (PERF-02) |
@@ -230,7 +228,8 @@ Optional, with defaults:
   chat id + Garmin creds, each guarded once-a-day via per-user `bot_state`.
 - **CLI**: `python -m app.cli create-user [--admin] [--seed-env]` — `--seed-env`
   encrypts `.env` creds into the user and claims pre-existing (unowned) data rows.
-  `import-garth-token --email` seeds a user's garth session from `~/.garth`;
+  `import-garth-token --email [--path ~/.garth]` seeds a user's garth session from a
+  token dir (`--path` defaults to `~/.garth`);
   `backfill-series --email` fetches the pace/HR series for already-stored runs that
   predate the feature (fills nulls only, idempotent). `import-export --email --path
   [--since YYYY-MM-DD] [--overwrite]` backfills `daily_metrics` (+`extra`) **and**
@@ -396,7 +395,6 @@ app/
   core/
     config.py          pydantic-settings Settings — the single source for all env vars
     logging.py         logging config (was logging_setup.py)
-    security.py        verify_token dependency (legacy WEB_TOKEN; superseded by auth.py)
     crypto.py          Fernet encrypt/decrypt for creds + bcrypt password hashing
     auth.py            current_user / require_admin deps; session login/logout helpers
   db/
@@ -426,7 +424,7 @@ app/
     history.py         GET /history?days=N — trends from DB, login, per-user
     plan.py            GET/POST /plan — training-plan setup form + view, login, per-user
     admin.py           /ui DB browser — admin only
-  dependencies.py      shared deps (get_session, verify_token)
+  dependencies.py      shared deps (get_session)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
   handlers.py          /report, /ask, /deep, /activities, /activity, /records, /risk, /health, /plan (+edit), /test_*; _resolve_user, error handler
@@ -475,8 +473,7 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   Templates in `app/templates/`.
 
 Auth: a signed cookie session set at `/login` (no token headers). `current_user`
-gates user endpoints; `require_admin` gates `/ui` and `/admin/users`. `WEB_TOKEN` is
-legacy and no longer used by these routes.
+gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 
 ## Database
 

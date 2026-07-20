@@ -22,10 +22,10 @@ from app.db import users
 from app.db.base import async_session_maker, init_db
 
 
-async def _import_garth_token(email: str) -> int:
-    garth_dir = pathlib.Path.home() / ".garth"
+async def _import_garth_token(email: str, path: str) -> int:
+    garth_dir = pathlib.Path(path).expanduser()
     if not garth_dir.exists():
-        print("~/.garth not found.")
+        print(f"{garth_dir} not found.")
         return 1
     try:
         import garth
@@ -822,8 +822,9 @@ def main(argv=None) -> int:
         help="encrypt Garmin/Claude/Telegram creds from .env into this user",
     )
 
-    igt = sub.add_parser("import-garth-token", help="Import ~/.garth token into a user's DB record")
+    igt = sub.add_parser("import-garth-token", help="Import a garth token dir into a user record")
     igt.add_argument("--email", required=True)
+    igt.add_argument("--path", default="~/.garth", help="garth token dir (default ~/.garth)")
 
     bf = sub.add_parser("backfill-series", help="Fetch pace/HR series for stored runs missing one")
     bf.add_argument("--email", required=True)
@@ -909,7 +910,7 @@ def main(argv=None) -> int:
             parser.error("password must not be empty")
         return asyncio.run(_create_user(args.email, password, args.admin, args.seed_env))
     if args.cmd == "import-garth-token":
-        return asyncio.run(_import_garth_token(args.email))
+        return asyncio.run(_import_garth_token(args.email, args.path))
     if args.cmd == "backfill-series":
         return asyncio.run(_backfill_series(args.email, args.since))
     if args.cmd == "backfill-auto-activities":

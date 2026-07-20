@@ -25,6 +25,12 @@ warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 logger = logging.getLogger("garmin")
 
+# Legacy single-user token dir. Per-user tokens live encrypted in the DB
+# (``_UserGarthProvider``); this only backs the .env-seeded global fallback and
+# the ``gconn`` plan-B provider (OPS-01). It used to be the ``GARTH_TOKEN_DIR``
+# setting (CODE-03: dropped — nobody configured it away from the default).
+_LEGACY_TOKEN_DIR = os.path.expanduser("~/.garth")
+
 
 class _GarthProvider:
     """The known-good provider. Mirrors the original module-level garth calls."""
@@ -33,7 +39,7 @@ class _GarthProvider:
         import garth
 
         self._garth = garth
-        self._token_dir = os.path.expanduser(settings.GARTH_TOKEN_DIR)
+        self._token_dir = _LEGACY_TOKEN_DIR
 
     def login(self) -> None:
         garth = self._garth
@@ -71,7 +77,7 @@ class _GConnProvider:
         from garminconnect import Garmin
 
         self._Garmin = Garmin
-        self._token_dir = os.path.expanduser(settings.GARTH_TOKEN_DIR)
+        self._token_dir = _LEGACY_TOKEN_DIR
         self._api = None
 
     def login(self) -> None:
