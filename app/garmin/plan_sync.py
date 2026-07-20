@@ -57,6 +57,30 @@ def _pushable(w) -> bool:
     return _runnable(w) or bool(w.garmin_template_id) or bool(w.strength_plan)
 
 
+async def select_forward(session, plan_id: int, *, days: int = 14, only_date: str = None):
+    """The forward-pass selection: a plan's upcoming, pushable, not-yet-pushed sessions
+    within the next ``days`` (or exactly ``only_date`` if given). The single source for
+    "what counts as pushable and in-window", shared by the daily ``sync_plan_to_garmin``
+    and the manual CLI ``push-plan`` so the run/strength/skip rules never drift apart."""
+    upcoming = await repository.list_workouts(session, plan_id, upcoming_only=True)
+    if only_date:
+        in_window = lambda w: w.date == only_date  # noqa: E731
+    else:
+        end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
+        in_window = lambda w: w.date <= end  # noqa: E731
+    return [w for w in upcoming
+            if in_window(w) and _pushable(w) and w.garmin_workout_id is None]
+
+
+async def select_pushed(session, plan_id: int, *, only_date: str = None):
+    """The remove-pass selection: workouts of one plan that WE pushed (have a stored
+    ``garmin_workout_id``), optionally narrowed to a single ``only_date``. Shared by the
+    CLI ``unpush-plan`` so the "only touch what we created" rule lives in one place."""
+    return [w for w in await repository.list_workouts(session, plan_id)
+            if w.garmin_workout_id is not None
+            and (only_date is None or w.date == only_date)]
+
+
 async def push_workout(session, w):
     """Create + schedule one workout, store its Garmin ids, commit. Returns the id (or
     None if a strength template couldn't be cloned). A strength session carries a
@@ -124,14 +148,12 @@ async def sync_plan_to_garmin(session, user_id: int, *, days: int = 14) -> dict:
         await remove_workout(session, w)
         removed += 1
 
-    # forward: active plan's upcoming, in-window, unpushed, runnable sessions.
+    # forward: active plan's upcoming, in-window, unpushed, pushable sessions.
     pushed = 0
     if active_id is not None:
-        end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-        for w in await repository.list_workouts(session, active_id, upcoming_only=True):
-            if w.date <= end and _pushable(w) and w.garmin_workout_id is None:
-                if await push_workout(session, w):
-                    pushed += 1
+        for w in await select_forward(session, active_id, days=days):
+            if await push_workout(session, w):
+                pushed += 1
 
     if pushed or removed:
         logger.info(f"GARMIN sync user={user_id}: +{pushed} pushed, -{removed} removed")

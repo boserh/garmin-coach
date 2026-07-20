@@ -167,6 +167,46 @@ async def test_today_done_workout_stays_on_calendar(session):
     assert w.garmin_workout_id == 777
 
 
+async def test_select_forward_window_and_pushable(session):
+    """The shared forward selection (CODE-02): in-window + pushable + not-yet-pushed."""
+    near = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    far = (dt.date.today() + dt.timedelta(days=40)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=near, week=1, type="easy", dist_km=5.0, status="planned"),      # in
+        dict(date=near, week=1, type="rest", status="planned"),                   # not pushable
+        dict(date=near, week=1, type="easy", status="planned",
+             garmin_workout_id=9, garmin_schedule_id=8),                          # already pushed
+        dict(date=far, week=6, type="easy", dist_km=5.0, status="planned"),       # out of window
+    ])
+    todo = await plan_sync.select_forward(session, plan.id, days=14)
+    assert [w.date for w in todo] == [near]
+
+
+async def test_select_forward_only_date(session):
+    """--date narrows the selection to a single session, ignoring the window."""
+    d1 = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    d2 = (dt.date.today() + dt.timedelta(days=5)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=d1, week=1, type="easy", dist_km=5.0, status="planned"),
+        dict(date=d2, week=1, type="easy", dist_km=6.0, status="planned"),
+    ])
+    todo = await plan_sync.select_forward(session, plan.id, only_date=d2)
+    assert [w.date for w in todo] == [d2]
+
+
+async def test_select_pushed_and_only_date(session):
+    """The shared remove selection (CODE-02): only rows WE pushed, optionally one date."""
+    d1 = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    d2 = (dt.date.today() + dt.timedelta(days=5)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=d1, week=1, type="easy", status="planned",
+             garmin_workout_id=1, garmin_schedule_id=2),
+        dict(date=d2, week=1, type="easy", status="planned"),                     # never pushed
+    ])
+    assert [w.date for w in await plan_sync.select_pushed(session, plan.id)] == [d1]
+    assert await plan_sync.select_pushed(session, plan.id, only_date=d2) == []
+
+
 async def test_sync_removes_past_and_pushes_future(session):
     past = (dt.date.today() - dt.timedelta(days=2)).isoformat()
     fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()

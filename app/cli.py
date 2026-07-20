@@ -299,11 +299,9 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
             print("No active plan for this user.")
             return 1
         end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-        upcoming = await repository.list_workouts(session, plan.id, upcoming_only=True)
-        todo = [w for w in upcoming
-                if (w.date == date if date else w.date <= end)
-                and plan_sync._pushable(w)
-                and w.garmin_workout_id is None]
+        # Reuse plan_sync's forward selection (window/pushable/skip-already-pushed) — the
+        # CLI adds only its own extras: --dry-run and ignoring garmin_sync_enabled.
+        todo = await plan_sync.select_forward(session, plan.id, days=days, only_date=date)
         if not todo:
             scope = date if date else f"next {days} days"
             print(f"Nothing to push ({scope} already up to date).")
@@ -357,9 +355,7 @@ async def _unpush_plan(email: str, date: str = None) -> int:
         if plan is None:
             print("No active plan for this user.")
             return 1
-        pushed = [w for w in await repository.list_workouts(session, plan.id)
-                  if w.garmin_workout_id is not None
-                  and (w.date == date if date else True)]
+        pushed = await plan_sync.select_pushed(session, plan.id, only_date=date)
         if not pushed:
             print("Nothing pushed for this plan.")
             return 0
