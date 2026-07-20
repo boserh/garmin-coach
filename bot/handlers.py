@@ -64,7 +64,8 @@ HELP_TEXT = (
     "напр. /deep вплив вело на HRV\n"
     "/ask <питання> — питання по всій твоїй історії тренувань і відновлення, "
     "напр. /ask коли я востаннє біг швидше 5:00/км\n"
-    "/compare [тижнів] — порівняння з собою рік тому\n\n"
+    "/compare [тижнів] — порівняння з собою рік тому\n"
+    "/wrapped [рік|квартал] — святковий підсумок сезону (Opus)\n\n"
     "🏃 Активності\n"
     "/activities — останні активності\n"
     "/activity <id> — розбір конкретної активності\n"
@@ -258,6 +259,42 @@ async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cur_start, cur_end, past_start, past_end = compare_mod.window_pair(dt.date.today(), weeks)
     header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_start, cur_end)}) "
               f"проти себе рік тому ({compare_mod.fmt_range(past_start, past_end)}):\n\n")
+    await update.message.reply_text(header + text)
+
+
+async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/wrapped [рік|квартал] — a celebratory season recap (NF-07). Pure DB read + one Opus
+    call; no Garmin fetch, so no MFA risk."""
+    from app import wrapped as wrapped_mod
+    from app.analysis.service import run_wrapped
+    from app.garmin.credentials import load_credentials
+
+    period = wrapped_mod.parse_period(ctx.args)
+    logger.info(f"CMD /wrapped {period}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await update.message.reply_text(
+            f"Збираю твій підсумок ({wrapped_mod.label(period)})… це трохи коштує, тому раз "
+            "на сезон 🙂")
+        creds = load_credentials(user)
+        try:
+            text = await run_wrapped(
+                session, user_id=user.id, period=period, api_key=creds.anthropic_key
+            )
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            await update.message.reply_text(str(e))
+            return
+    if not text:
+        await update.message.reply_text(
+            "Замало історії для підсумку — назбирай кілька пробіжок (або зроби бекфіл "
+            "GDPR-експорту) і повертайся."
+        )
+        return
+    start, end = wrapped_mod.period_window(dt.date.today(), period)
+    header = f"✨ Твій {wrapped_mod.label(period)}: {wrapped_mod.fmt_range(start, end)}\n\n"
     await update.message.reply_text(header + text)
 
 

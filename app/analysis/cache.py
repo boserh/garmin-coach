@@ -146,6 +146,23 @@ def _digest_cache_key(context: dict, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _wrapped_cache_key(context: dict, model: str) -> str:
+    """Key a Wrapped review (NF-07) on the period + its assembled stats + records, so a
+    repeat within the same day/data is a cache hit (all Claude context must key the cache —
+    the README pitfall). The window date-range lives inside the context."""
+    material = {
+        "period": context.get("period"),
+        "start": context.get("start"),
+        "end": context.get("end"),
+        "stats": context.get("stats"),
+        "records": context.get("records"),
+        "model": model,
+        "wrapped": True,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _compare_cache_key(context: dict, model: str) -> str:
     """Key the comparison on the two assembled windows + framing (not ``today`` alone), so a
     repeat within the same day/data is a cache hit — the README pitfall (all Claude context

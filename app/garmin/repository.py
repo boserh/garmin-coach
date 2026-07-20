@@ -668,6 +668,108 @@ async def window_stats(
     }
 
 
+async def records_in_range(
+    session: AsyncSession, user_id: int, start: str, end: str
+) -> List[PersonalRecord]:
+    """PersonalRecords achieved within the inclusive ISO date range ``[start, end]`` (newest
+    first) — the milestones for a Wrapped review (NF-07)."""
+    return list(
+        (
+            await session.execute(
+                select(PersonalRecord)
+                .where(
+                    PersonalRecord.user_id == user_id,
+                    PersonalRecord.date >= start,
+                    PersonalRecord.date <= end,
+                )
+                .order_by(PersonalRecord.date.desc(), PersonalRecord.id.desc())
+            )
+        ).scalars().all()
+    )
+
+
+async def wrapped_stats(
+    session: AsyncSession, user_id: int, start: str, end: str
+) -> dict:
+    """Period aggregate for a Wrapped review (NF-07): the run/recovery numbers from
+    :func:`window_stats` (reused — no duplicate volume math), augmented with the whole-period
+    extras a recap wants: an all-sport activity breakdown + hours, the biggest running week
+    in the window, and the VO2max arc (first vs last). All from stored data; an empty window
+    is a valid, honestly-empty result."""
+    from app import multisport
+
+    base = await window_stats(session, user_id, start, end)
+
+    # all-sport breakdown + total moving time
+    act_rows = (
+        await session.execute(
+            select(
+                ActivityRecord.type, ActivityRecord.dur_min,
+            ).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= start,
+                ActivityRecord.date <= end,
+            )
+        )
+    ).all()
+    sports: Dict[str, int] = {}
+    total_min = 0.0
+    for a_type, dur in act_rows:
+        sports[multisport.sport_bucket(a_type)] = sports.get(multisport.sport_bucket(a_type), 0) + 1
+        total_min += dur or 0.0
+
+    # biggest running week within the window (by km)
+    week_km: Dict[str, float] = {}
+    run_rows = (
+        await session.execute(
+            select(ActivityRecord.date, ActivityRecord.dist_km).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= start,
+                ActivityRecord.date <= end,
+            )
+        )
+    ).all()
+    for date_s, dist in run_rows:
+        try:
+            wk = dt.date.fromisoformat(date_s).strftime("%G-W%V")
+        except (TypeError, ValueError):
+            continue
+        week_km[wk] = week_km.get(wk, 0.0) + (dist or 0.0)
+    biggest_week = None
+    if week_km:
+        wk, km = max(week_km.items(), key=lambda kv: kv[1])
+        biggest_week = {"week": wk, "km": round(km, 1)}
+
+    # VO2max arc — first vs last non-null in the window
+    vo2_rows = (
+        await session.execute(
+            select(DailyMetric.date, DailyMetric.extra)
+            .where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.date >= start,
+                DailyMetric.date <= end,
+                DailyMetric.extra.is_not(None),
+            )
+            .order_by(DailyMetric.date)
+        )
+    ).all()
+    vo2_series = [float(ex["vo2max"]) for _, ex in vo2_rows
+                  if isinstance(ex, dict) and ex.get("vo2max")]
+
+    base.update({
+        "sports": {k: v for k, v in sorted(sports.items(), key=lambda kv: -kv[1])},
+        "total_activities": len(act_rows),
+        "total_hours": round(total_min / 60, 1) if total_min else 0.0,
+        "biggest_week": biggest_week,
+        "vo2_start": vo2_series[0] if vo2_series else None,
+        "vo2_end": vo2_series[-1] if vo2_series else None,
+    })
+    return base
+
+
 # ---------- WRITE ----------
 
 def _dump_steps(steps) -> Optional[list]:

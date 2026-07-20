@@ -22,6 +22,7 @@ from app.analysis.cache import (
     _cache_key,
     _compare_cache_key,
     _digest_cache_key,
+    _wrapped_cache_key,
 )
 from app.analysis.client import (
     MODEL_ACTIVITY,
@@ -32,6 +33,7 @@ from app.analysis.client import (
     MODEL_DIGEST,
     MODEL_HEALTH,
     MODEL_INJURY,
+    MODEL_WRAPPED,
     PRICES,
     AnalystError,
     CallStats,
@@ -50,6 +52,7 @@ from app.analysis.prompts import (
     SYSTEM_DIGEST,
     SYSTEM_HEALTH,
     SYSTEM_INJURY,
+    SYSTEM_WRAPPED,
 )
 from app.core.config import settings
 from app.garmin.schemas import Payload
@@ -906,6 +909,58 @@ async def run_compare(
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"compare:{weeks}w/{years_back}y", report_text=text,
+    )
+    return text
+
+
+# ---------- WRAPPED — QUARTERLY/YEARLY REVIEW (NF-07) ----------
+
+def wrapped_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate a season Wrapped recap (Opus — one aesthetic longread). Returns (text, stats);
+    raises AnalystError on API failure. The dedup cache is checked in :func:`run_wrapped`."""
+    return _complete(MODEL_WRAPPED, SYSTEM_WRAPPED, context, "wrapped", api_key, max_tokens=1200)
+
+
+async def run_wrapped(
+    session, *, user_id: int, period: str = "year", api_key: Optional[str] = None,
+) -> Optional[str]:
+    """Assemble the period's numbers (NF-07) and narrate a "Wrapped" recap via one Opus call.
+    Caches + logs (``ReportLog(kind="wrapped")``) and returns the text. Returns ``None`` when
+    the window is too empty to recap (a new user) — the caller shows a friendly message."""
+    from app import wrapped as wrapped_mod
+    from app.db import llm_cache
+    from app.garmin import repository
+
+    start, end = wrapped_mod.period_window(dt.date.today(), period)
+    stats = await repository.wrapped_stats(session, user_id, start, end)
+    if not wrapped_mod.has_signal(stats):
+        logger.info(f"WRAPPED skip user={user_id}: not enough history in {period}")
+        return None
+    records = await repository.records_in_range(session, user_id, start, end)
+    context = wrapped_mod.build_context(period, start, end, stats, records)
+
+    key = _wrapped_cache_key(context, MODEL_WRAPPED)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_WRAPPED} (wrapped)")
+        text, stats_ = cached, CallStats(kind="wrapped", model=MODEL_WRAPPED, cached=True)
+    else:
+        try:
+            text, stats_ = await _run_claude(wrapped_with_stats, context, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind="wrapped", model=MODEL_WRAPPED, ok=False,
+                question=f"wrapped:{period}", error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats_.kind, model=stats_.model,
+        input_tokens=stats_.input_tokens, output_tokens=stats_.output_tokens,
+        cost_usd=stats_.cost_usd, ok=True, cached=stats_.cached,
+        question=f"wrapped:{period}", report_text=text,
     )
     return text
 
