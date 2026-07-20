@@ -418,16 +418,21 @@ async def test_aggregate_weekly_run_km_matches_weekly_run_volume(session):
 
 
 async def test_aggregate_weekly_recovery_metric_averages_per_week(session):
+    # Anchor both dates to the Monday/Tuesday of the current ISO week rather than
+    # "today"/"yesterday" — the latter cross an ISO-week boundary whenever the suite
+    # runs on a Monday (yesterday lands in the previous week), which was flaky.
     today = dt.date.today()
+    monday = today - dt.timedelta(days=today.weekday())
+    day1, day2 = monday, monday + dt.timedelta(days=1)
     await repository.upsert_daily(session, U1, DailySummary(
-        date=today.isoformat(), hrv_avg=60, has_data=True))
+        date=day1.isoformat(), hrv_avg=60, has_data=True))
     await repository.upsert_daily(session, U1, DailySummary(
-        date=(today - dt.timedelta(days=1)).isoformat(), hrv_avg=40, has_data=True))
+        date=day2.isoformat(), hrv_avg=40, has_data=True))
     await session.commit()
 
     agg = await repository.aggregate_weekly(session, U1, "hrv_avg", weeks=4)
     assert agg["metric"] == "hrv_avg"
-    this_week = today.strftime("%G-W%V")
+    this_week = monday.strftime("%G-W%V")
     week_entry = next(w for w in agg["weeks"] if w["week"] == this_week)
     assert week_entry["value"] == 50.0  # avg(60, 40)
 
