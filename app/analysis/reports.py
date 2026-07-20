@@ -22,6 +22,7 @@ from app.analysis.cache import (
     _cache_key,
     _compare_cache_key,
     _digest_cache_key,
+    _insights_cache_key,
     _wrapped_cache_key,
 )
 from app.analysis.client import (
@@ -33,6 +34,7 @@ from app.analysis.client import (
     MODEL_DIGEST,
     MODEL_HEALTH,
     MODEL_INJURY,
+    MODEL_INSIGHTS,
     MODEL_WRAPPED,
     PRICES,
     AnalystError,
@@ -52,6 +54,7 @@ from app.analysis.prompts import (
     SYSTEM_DIGEST,
     SYSTEM_HEALTH,
     SYSTEM_INJURY,
+    SYSTEM_INSIGHTS,
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
@@ -961,6 +964,63 @@ async def run_wrapped(
         input_tokens=stats_.input_tokens, output_tokens=stats_.output_tokens,
         cost_usd=stats_.cost_usd, ok=True, cached=stats_.cached,
         question=f"wrapped:{period}", report_text=text,
+    )
+    return text
+
+
+# ---------- CORRELATION INSIGHTS (NF-02) ----------
+
+INSIGHTS_WINDOW_DAYS = 120   # how much recovery history the correlation pass looks over
+
+
+def insights_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate the significant correlations (Sonnet). Returns (text, stats); raises
+    AnalystError on API failure. The dedup cache is checked in :func:`run_insights`."""
+    return _complete(MODEL_INSIGHTS, SYSTEM_INSIGHTS, context, "insights", api_key,
+                     max_tokens=700)
+
+
+async def run_insights(
+    session, *, user_id: int, api_key: Optional[str] = None,
+) -> Optional[str]:
+    """Run the NF-02 correlation pass over the user's recovery history and narrate the
+    significant findings via one Sonnet call. Caches + logs (``ReportLog(kind="insights")``)
+    and returns the text. Returns ``None`` when no association is statistically defensible
+    (the honest "not enough data" path) — the caller shows a friendly message and never
+    spends a Claude call in that case."""
+    from app import correlations
+    from app.db import llm_cache
+    from app.garmin import repository
+
+    history = await repository.read_history(session, user_id, days=INSIGHTS_WINDOW_DAYS)
+    findings = correlations.find_correlations(history)
+    if not findings:
+        logger.info(f"INSIGHTS skip user={user_id}: no significant correlations")
+        return None
+    context = correlations.build_context(findings, INSIGHTS_WINDOW_DAYS)
+
+    key = _insights_cache_key(context, MODEL_INSIGHTS)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_INSIGHTS} (insights)")
+        text, stats = cached, CallStats(kind="insights", model=MODEL_INSIGHTS, cached=True)
+    else:
+        try:
+            text, stats = await _run_claude(insights_with_stats, context, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind="insights", model=MODEL_INSIGHTS, ok=False,
+                question=f"insights:{len(findings)}", error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"insights:{len(findings)}", report_text=text,
     )
     return text
 

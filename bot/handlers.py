@@ -65,7 +65,8 @@ HELP_TEXT = (
     "/ask <питання> — питання по всій твоїй історії тренувань і відновлення, "
     "напр. /ask коли я востаннє біг швидше 5:00/км\n"
     "/compare [тижнів] — порівняння з собою рік тому\n"
-    "/wrapped [рік|квартал] — святковий підсумок сезону (Opus)\n\n"
+    "/wrapped [рік|квартал] — святковий підсумок сезону (Opus)\n"
+    "/insights — що на тебе насправді впливає (кореляції сну/HRV/стресу)\n\n"
     "🏃 Активності\n"
     "/activities — останні активності\n"
     "/activity <id> — розбір конкретної активності\n"
@@ -296,6 +297,34 @@ async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     start, end = wrapped_mod.period_window(dt.date.today(), period)
     header = f"✨ Твій {wrapped_mod.label(period)}: {wrapped_mod.fmt_range(start, end)}\n\n"
     await update.message.reply_text(header + text)
+
+
+async def insights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/insights — personal correlation findings (NF-02): "what actually affects you". Pure
+    DB read + one Sonnet call only when there's a significant pattern; no Garmin, no MFA."""
+    from app.analysis.service import run_insights
+    from app.garmin.credentials import load_credentials
+
+    logger.info("CMD /insights")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await update.message.reply_text("Шукаю закономірності у твоїх даних…")
+        creds = load_credentials(user)
+        try:
+            text = await run_insights(session, user_id=user.id, api_key=creds.anthropic_key)
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            await update.message.reply_text(str(e))
+            return
+    if not text:
+        await update.message.reply_text(
+            "Поки що не бачу статистично надійних закономірностей — треба більше історії "
+            "відновлення (сон/HRV/стрес за кілька тижнів). Повернись пізніше 🙂"
+        )
+        return
+    await update.message.reply_text("🔎 Що на тебе впливає:\n\n" + text)
 
 
 async def risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

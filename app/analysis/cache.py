@@ -146,6 +146,20 @@ def _digest_cache_key(context: dict, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _insights_cache_key(context: dict, model: str) -> str:
+    """Key a correlation insight (NF-02) on the found associations + window (all Claude
+    context must key the dedup cache — the README pitfall). The findings are already the
+    distilled, order-stable result, so the same significant set within the TTL is a hit."""
+    material = {
+        "window_days": context.get("window_days"),
+        "findings": context.get("findings"),
+        "model": model,
+        "insights": True,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _wrapped_cache_key(context: dict, model: str) -> str:
     """Key a Wrapped review (NF-07) on the period + its assembled stats + records, so a
     repeat within the same day/data is a cache hit (all Claude context must key the cache —

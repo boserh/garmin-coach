@@ -31,6 +31,7 @@ from app.analysis.service import (
     run_digest,
     run_health_alert,
     run_injury_check,
+    run_insights,
     run_plan_adaptation,
     run_weather_plan_check,
 )
@@ -87,6 +88,10 @@ DIGEST_GUARD_PREFIX = "digest:"
 # month, on the first weekly digest of that month (bot_state key compare:<YYYY-MM>).
 COMPARE_GUARD_PREFIX = "compare:"
 COMPARE_WEEKS = 4   # last 4 weeks vs the same 4 weeks a year ago (matches /compare default)
+
+# NF-02 correlation insights: a monthly "what actually affects you" block, appended once per
+# calendar month on the first weekly digest of that month (bot_state key insights:<YYYY-MM>).
+INSIGHTS_GUARD_PREFIX = "insights:"
 
 # NF-04 injury radar: bot_state key holding the last date an advisory was sent, so we warn at
 # most once per settings.INJURY_GUARD_DAYS (the same signals persist for days — don't nag).
@@ -656,6 +661,28 @@ async def _monthly_compare_for_user(ctx, session, user: User, creds) -> None:
     logger.info(f"COMPARE monthly sent user={user.id} month={guard_key}")
 
 
+async def _monthly_insights_for_user(ctx, session, user: User, creds) -> None:
+    """Once a calendar month (on the first weekly digest of the month), append a NF-02
+    correlation-insight block ("what actually affects you"). Best-effort and guarded via
+    bot_state so it fires at most once a month; a no-findings month leaves the guard unset
+    (so it retries next week) and any failure is silent — it never breaks the digest send."""
+    if not user.telegram_chat_id:
+        return
+    guard_key = INSIGHTS_GUARD_PREFIX + dt.datetime.now(TZ).strftime("%Y-%m")
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    try:
+        text = await run_insights(session, user_id=user.id, api_key=creds.anthropic_key)
+    except AnalystError:
+        logger.exception(f"INSIGHTS monthly failed user={user.id}")
+        return
+    if not text:
+        return   # no significant correlations yet — retry next week, don't set the guard
+    await ctx.bot.send_message(user.telegram_chat_id, "🔎 Що на тебе впливає:\n\n" + text)
+    await repository.set_state(session, user.id, guard_key, "1")
+    logger.info(f"INSIGHTS monthly sent user={user.id} month={guard_key}")
+
+
 async def _digest_for_user(ctx, session, user: User) -> None:
     """Scheduled weekly digest for one user, guarded to once per ISO week via bot_state."""
     if not user.telegram_chat_id:
@@ -670,8 +697,10 @@ async def _digest_for_user(ctx, session, user: User) -> None:
         if await _deliver_digest(ctx, session, user, creds):
             await repository.set_state(session, user.id, guard_key, "1")
             logger.info(f"DIGEST sent user={user.id} week={guard_key}")
-            # Monthly NF-06 comparison block, riding on the first digest of the month.
+            # Monthly NF-06 comparison + NF-02 insight blocks, riding on the first digest of
+            # the month (each self-guards to once a month via bot_state).
             await _monthly_compare_for_user(ctx, session, user, creds)
+            await _monthly_insights_for_user(ctx, session, user, creds)
 
 
 async def force_digest_for_user(ctx, session, user: User) -> None:
