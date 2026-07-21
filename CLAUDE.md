@@ -826,7 +826,12 @@ zero LLM cost on our side (the MCP client's own subscription pays for inference)
 your own data" from Claude Desktop/Code without the bot/web UI. Run:
 `./venv/bin/python -m app.mcp_server --email me@example.com`, then point a client's MCP
 config at that command. Deliberately kept read-only — NF-08's own ticket names scope creep
-as the main risk, so there's no write tool here and none should be added. `tests/test_mcp_server.py`.
+as the main risk, so there's no write tool here and none should be added.
+**Every `mcp` release requires Python >=3.10** — it cannot install into the project's
+Python 3.9 baseline (the Pi/CI target), so this is meant to run from a separate 3.10+
+venv (wherever the MCP client lives), not necessarily on the Pi itself; the test module
+(`tests/test_mcp_server.py`) skips itself via `pytest.importorskip("mcp")` when the extra
+isn't installed, so CI (3.9, `.[dev]` only) stays green without it.
 
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the

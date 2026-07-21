@@ -1,14 +1,20 @@
 """NF-08: the personal MCP server is a thin read-only wrapper around the same
 `_run_ask_tool` dispatch EP-09's `/ask` agent uses — these tests cover the wrapper
 (user binding, session handling) since the dispatch logic itself is covered by
-tests/test_ask_agent.py."""
+tests/test_ask_agent.py.
+
+``mcp`` is an opt-in extra (`pip install -e ".[mcp]"`, Python 3.10+ — it isn't
+installable on the project's Python 3.9 baseline/CI) — skip this whole module
+when it isn't present rather than failing collection."""
 import contextlib
 
 import pytest
 
-from app import mcp_server
-from app.db import users
-from app.garmin import repository
+pytest.importorskip("mcp")
+
+from app import mcp_server  # noqa: E402
+from app.db import users  # noqa: E402
+from app.garmin import repository  # noqa: E402
 
 
 class _FakeMaker:

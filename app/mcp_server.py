@@ -16,6 +16,13 @@ or ``claude mcp add``). Every tool is read-only and funnels through the single
 dispatch point in ``_run_ask_tool`` — the same validation/caps as ``/ask`` (row caps,
 whitelisted daily fields). Adding a write tool here would defeat NF-08's whole point
 (its own ticket names scope creep as the main risk) — keep it read-only.
+
+**Python version note**: the ``mcp`` package requires Python >=3.10 on every release —
+it will not install into the project's Python 3.9 venv (the Pi deployment baseline;
+see CI/``pyproject.toml``). This module is meant to run wherever the MCP *client*
+(Claude Desktop/Code) lives, not necessarily on the Pi — point ``DATABASE_URL`` at the
+same DB (or copy it) and run this from a separate 3.10+ venv if the Pi itself stays on
+3.9.
 """
 import argparse
 import asyncio
