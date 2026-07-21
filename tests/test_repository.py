@@ -304,6 +304,29 @@ async def test_get_recent_extra_coalesces_newest_per_key(session):
     assert "endurance_score" not in merged     # 40 days ago → outside the window
 
 
+async def test_read_fitness_history_keeps_per_day_series(session):
+    import datetime as dt
+    today = dt.date.today()
+    d1 = (today - dt.timedelta(days=10)).isoformat()
+    d2 = (today - dt.timedelta(days=3)).isoformat()
+    d_stale = (today - dt.timedelta(days=200)).isoformat()
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d1, has_data=True, extra={"race_5k_s": 1620, "vo2max": 45}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d2, has_data=True, extra={"race_5k_s": 1600}))
+    # a day with no fitness-trend keys at all contributes no row
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=today.isoformat(), has_data=True, extra={"readiness_score": 70}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d_stale, has_data=True, extra={"race_5k_s": 2000}))
+    await session.commit()
+
+    rows = await repository.read_fitness_history(session, U1, days=120)
+    assert [r["date"] for r in rows] == [d1, d2]   # oldest first, stale day excluded
+    assert rows[0] == {"date": d1, "race_5k_s": 1620, "vo2max": 45}
+    assert rows[1] == {"date": d2, "race_5k_s": 1600}
+
+
 async def test_weekly_run_volume_groups_by_iso_week(session):
     import collections
     import datetime as dt

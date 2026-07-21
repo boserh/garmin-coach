@@ -66,6 +66,7 @@ def main() -> None:
     app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("checkin", handlers.checkin))
     app.add_handler(CommandHandler("records", handlers.records_cmd))
+    app.add_handler(CommandHandler("goal", handlers.goal_cmd))
     app.add_handler(CommandHandler("compare", handlers.compare))
     app.add_handler(CommandHandler("wrapped", handlers.wrapped))
     app.add_handler(CommandHandler("insights", handlers.insights))

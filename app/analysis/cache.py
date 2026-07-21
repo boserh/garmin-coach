@@ -140,6 +140,7 @@ def _digest_cache_key(context: dict, model: str) -> str:
         "fitness": context.get("fitness"),
         "multisport": context.get("multisport"),
         "goal": context.get("goal"),
+        "goal_projection": context.get("goal_projection"),
         "records": context.get("records"),
         "model": model,
         "digest": True,

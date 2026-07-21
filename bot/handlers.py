@@ -78,7 +78,8 @@ HELP_TEXT = (
     "🗓 План\n"
     "/plan — переглянути програму\n"
     "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n"
-    "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n\n"
+    "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n"
+    "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n\n"
     "/help — цей список"
 )
 
@@ -226,6 +227,38 @@ async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
     lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
+
+
+async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/goal — quantified progress toward the active plan's target (NF-10): Garmin's own
+    race-time-prediction trend (or VO2max for the open-ended goal), projected forward.
+    Pure DB read, zero Claude calls in the minimal version — no Garmin fetch, no MFA risk."""
+    from app import goal as goal_mod
+
+    logger.info("CMD /goal")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            await update.message.reply_text(
+                "Спершу створи план на /plan — /goal рахує прогрес відносно нього."
+            )
+            return
+        metric_key, label, higher_better = goal_mod.metric_for_goal(plan.goal)
+        history = await repository.read_fitness_history(session, user.id)
+        proj = goal_mod.project(
+            history, metric_key=metric_key, higher_better=higher_better,
+            target_date=plan.target_date,
+        )
+    if proj is None:
+        await update.message.reply_text(
+            "Замало даних для тренду — потрібно кілька тижнів історії з прогнозами "
+            "Garmin (race predictions / VO2max). Повернись пізніше."
+        )
+        return
+    await update.message.reply_text(goal_mod.summary(proj, label=label))
 
 
 async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

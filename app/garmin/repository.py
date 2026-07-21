@@ -307,6 +307,38 @@ async def recent_records(
     )
 
 
+FITNESS_TREND_KEYS = ("race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s", "vo2max")
+
+
+async def read_fitness_history(
+    session: AsyncSession, user_id: int, days: int = 120
+) -> List[dict]:
+    """Daily fitness-trend readings (race-time predictions + VO2max) over the last
+    ``days`` days, oldest first — one row per day that carries at least one of
+    ``FITNESS_TREND_KEYS``. Unlike :func:`get_recent_extra` (which coalesces to a single
+    latest snapshot), this keeps the raw per-day series so NF-10's goal projection can
+    fit a trend across weeks."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    rows = (
+        await session.execute(
+            select(DailyMetric.date, DailyMetric.extra).where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.extra.is_not(None),
+                DailyMetric.date >= cutoff,
+            ).order_by(DailyMetric.date)
+        )
+    ).all()
+    out = []
+    for date, ex in rows:
+        if not isinstance(ex, dict):
+            continue
+        row = {k: ex[k] for k in FITNESS_TREND_KEYS if ex.get(k) is not None}
+        if row:
+            row["date"] = date
+            out.append(row)
+    return out
+
+
 async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) -> dict:
     """Merge the last ``days`` days of ``extra`` into one dict — the most recent non-null
     value wins per key. Garmin metrics refresh at different cadences (race predictions &

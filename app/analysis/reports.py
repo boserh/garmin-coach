@@ -823,6 +823,7 @@ async def run_digest(
     plan = await repository.get_active_plan(session, user_id)
     compliance = None
     goal = None
+    goal_projection = None
     if plan is not None:
         compliance = _recent_compliance(
             await repository.weekly_compliance(session, plan.id), weeks=DIGEST_COMPLIANCE_WEEKS
@@ -834,6 +835,16 @@ async def run_digest(
             "days_to_target": _days_to_target(plan.target_date, today),
             "summary": plan.summary,
         }.items() if v is not None}
+        # NF-10: a quantified read on the same question ("чи на треку до цілі") — a
+        # weekly-median trend of Garmin's own race-time prediction (or VO2max for the
+        # open-ended goal), projected to target_date when that's not too far out.
+        from app import goal as goal_mod
+        metric_key, _label, higher_better = goal_mod.metric_for_goal(plan.goal)
+        fitness_history = await repository.read_fitness_history(session, user_id)
+        goal_projection = goal_mod.project(
+            fitness_history, metric_key=metric_key, higher_better=higher_better,
+            target_date=plan.target_date,
+        )
 
     # Nothing worth saying for a brand-new user with no runs, no metrics and no plan.
     if not weekly_volume and not fitness and plan is None:
@@ -850,6 +861,7 @@ async def run_digest(
         "fitness": fitness or None,
         "multisport": multisport,
         "goal": goal,
+        "goal_projection": goal_projection,
         "records": month_records,
         "has_plan": plan is not None,
     }
