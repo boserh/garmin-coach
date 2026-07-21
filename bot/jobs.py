@@ -21,7 +21,7 @@ from telegram.ext import ContextTypes
 
 from app import records, weather
 from app.analysis import delivery
-from app.analysis.plans import OPEN_ENDED_GOAL
+from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
     AnalystError,
     build_health_alerts,
@@ -101,6 +101,10 @@ INJURY_WARNED_KEY = "injury_warned"
 # the same drifting metric isn't re-flagged daily. Kept per-kind (not one global guard) so a
 # new anomaly (e.g. sleep debt) can still fire while an older one (hrv_low) is still cooling.
 HEALTH_ALERT_PREFIX = "alert:"
+
+# NF-09 auto-deload: how many days ahead to look for a heavy (tempo/intervals/long) session
+# before bothering to turn a risk signal into an adaptation proposal.
+DELOAD_HEAVY_WINDOW_DAYS = 5
 
 # ST-11: warn once per threshold as the stored garth token nears its ~1y OAuth1 death date.
 # The guard *value* holds the token's issue date, so a fresh re-login (new issue date, after
@@ -330,6 +334,65 @@ async def _health_check_for_user(ctx, session, user: User, creds, today: str) ->
         return False
 
 
+async def _deload_check_for_user(ctx, session, user: User, creds, today: str) -> bool:
+    """NF-09: when the injury radar (NF-04) or the health-alert detector (EP-08) already
+    has an actionable signal AND a heavy session (tempo/intervals/long) sits within
+    DELOAD_HEAVY_WINDOW_DAYS, turn the warning into a concrete ✅/❌ deload proposal via the
+    EP-02 adaptation engine (the pre-computed signals ride along as ``risk`` context) instead
+    of leaving the user to act on a plain advisory manually. Reuses the same once-per-
+    INJURY_GUARD_DAYS guard as the plain injury advisory (INJURY_WARNED_KEY) — a fired
+    proposal IS that day's one risk touchpoint, so the caller must skip the plain injury/
+    health advisories when this returns True (see _tick_for_user, the EP-13 "don't ping
+    twice" pattern extended to a third proposer via _has_pending_proposal). Best-effort:
+    any failure here just falls through to the plain advisories."""
+    if not user.plan_adapt_enabled or not user.telegram_chat_id or not creds.anthropic_key:
+        return False
+    last = await repository.get_state(session, user.id, INJURY_WARNED_KEY)
+    if _within_guard(last, today, settings.INJURY_GUARD_DAYS):
+        return False
+    if await _has_pending_proposal(session, user.id):
+        return False
+    ws = await repository.upcoming_plan_workouts(session, user.id, days=DELOAD_HEAVY_WINDOW_DAYS)
+    if not any((w.type or "").lower() in ADAPT_HEAVY_TYPES for w in ws):
+        return False
+
+    try:
+        assessment = await build_injury_assessment(session, user_id=user.id)
+        health_report = await build_health_alerts(session, user_id=user.id)
+        if not assessment.actionable and not health_report.actionable:
+            return False
+
+        from app import health as health_mod
+        from app import injury as injury_mod
+
+        risk = {}
+        if assessment.actionable:
+            risk["injury"] = injury_mod.to_context(assessment)
+        if health_report.actionable:
+            risk["health"] = health_mod.to_context(health_report)["alerts"]
+
+        plan, edit = await run_plan_adaptation(
+            session, user_id=user.id, api_key=creds.anthropic_key,
+            trigger="deload", window_days=ADAPT_WINDOW_DAYS_DEFAULT, risk=risk,
+        )
+    except AnalystError:
+        logger.exception(f"DELOAD check failed user={user.id}")
+        return False
+    except Exception:
+        logger.exception(f"DELOAD check failed user={user.id}")
+        return False
+    if plan is None or edit is None or not edit.operations:
+        return False
+
+    # Set the guard BEFORE sending — same "can't loop into a re-warn" reasoning as the
+    # other risk hooks — and only once we know a real proposal is going out.
+    await repository.set_state(session, user.id, INJURY_WARNED_KEY, today)
+    await _send_adapt_proposal(ctx, session, user, plan.id, edit)
+    logger.info(f"DELOAD proposal sent user={user.id}: injury={assessment.level} "
+                f"health={[a['kind'] for a in risk.get('health', [])]}")
+    return True
+
+
 async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
     """ST-11: decode the stored garth token's estimated OAuth1 death date
     (``app.garmin.token_info``, ~1y from issue) and DM a heads-up once the deadline is
@@ -397,16 +460,22 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
             # Celebrate any new personal record (EP-14) — after the activity recap.
             await _records_check_for_user(ctx, session, user)
 
-            # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack up.
-            await _injury_check_for_user(ctx, session, user, creds, today)
+            # NF-09 auto-deload: try turning an actionable injury/health signal into a
+            # concrete ✅/❌ correction FIRST — that proposal IS the day's one risk
+            # touchpoint, so the plain advisories below are skipped when it fires.
+            deload_sent = await _deload_check_for_user(ctx, session, user, creds, today)
 
-            # Proactive health alerts (EP-08) — recovery anomalies vs the personal baseline.
-            # Skip when an injury advisory already went out today: at most one risk DM per day
-            # (the two detectors share the "don't stack risk pings" rule).
-            injury_sent = (
-                await repository.get_state(session, user.id, INJURY_WARNED_KEY) == today)
-            if not injury_sent:
-                await _health_check_for_user(ctx, session, user, creds, today)
+            if not deload_sent:
+                # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack up.
+                await _injury_check_for_user(ctx, session, user, creds, today)
+
+                # Proactive health alerts (EP-08) — recovery anomalies vs the personal
+                # baseline. Skip when an injury advisory already went out today: at most one
+                # risk DM per day (the detectors share the "don't stack risk pings" rule).
+                injury_sent = (
+                    await repository.get_state(session, user.id, INJURY_WARNED_KEY) == today)
+                if not injury_sent:
+                    await _health_check_for_user(ctx, session, user, creds, today)
 
             if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
                 return
