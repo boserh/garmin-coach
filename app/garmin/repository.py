@@ -931,6 +931,24 @@ async def get_recent_asks(
     return [{"question": q, "answer": a} for q, a in rows]
 
 
+async def month_cost(session: AsyncSession, user_id: int) -> float:
+    """Sum of ``cost_usd`` for this user's Claude calls in the current calendar month
+    (UTC) — the dashboard's "AI cost this month" tile (EP-04); reused later by EP-06's
+    quotas. Includes failed/errored calls (their cost is usually 0 anyway, but a
+    partial call that still burned tokens should count)."""
+    month_start = dt.datetime.now(dt.timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    total = (
+        await session.execute(
+            select(func.sum(ReportLog.cost_usd)).where(
+                ReportLog.user_id == user_id, ReportLog.created_at >= month_start,
+            )
+        )
+    ).scalar_one()
+    return round(total or 0.0, 4)
+
+
 async def log_report(
     session: AsyncSession,
     *,

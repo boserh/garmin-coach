@@ -302,7 +302,7 @@ def test_admin_approves_then_user_can_login(auth_client):
         follow_redirects=False,
     )
     assert login.status_code == 303
-    assert login.headers["location"] == "/settings"  # non-admin lands on settings
+    assert login.headers["location"] == "/dashboard"  # non-admin lands on the dashboard
 
 
 def test_admin_deletes_user(auth_client):

@@ -23,7 +23,7 @@ from app.core.auth import RequiresLogin
 from app.core.config import settings
 from app.db.base import dispose_db, init_db
 from app.garmin.mfa import MFARequired
-from app.routers import admin, auth, health, history, me, plan, reports
+from app.routers import admin, auth, dashboard, health, history, me, plan, reports
 from app.routers import settings as settings_router
 
 logger = logging.getLogger("api")
@@ -97,11 +97,13 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def root(request: Request):
         if request.session.get("user_id"):
-            return RedirectResponse("/me", status_code=303)
+            # EP-04: the dashboard is the product home (was /me).
+            return RedirectResponse("/dashboard", status_code=303)
         return RedirectResponse("/login", status_code=303)
 
     app.include_router(auth.router)
     app.include_router(settings_router.router)
+    app.include_router(dashboard.router)
     app.include_router(me.router)
     app.include_router(plan.router)
     app.include_router(health.router)
