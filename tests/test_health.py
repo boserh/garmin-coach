@@ -242,3 +242,65 @@ async def test_health_hook_silent_when_not_actionable(session):
         sent = await jobs._health_check_for_user(ctx, session, user, creds, "2026-07-11")
     assert sent is False
     assert ctx.bot.sent == []
+
+
+# ---- ST-10: health alerts in the daily/morning report context --------------
+
+def _fake_analyze(captured):
+    def fake(payload, question="", deep=False, kind=None, previous_report=None,
+             api_key=None, weather=None, plan_today=None, fitness=None, records=None,
+             norm=None, subjective=None, health_alerts=None):
+        captured["health_alerts"] = health_alerts
+        return "звіт", service.CallStats(kind=kind or "report", model="m")
+    return fake
+
+
+_ST10_PAYLOAD = {"daily": [], "recent_activities": [], "planned_runs": [],
+                 "synced_today": True, "has_data": True}
+
+
+async def test_run_analysis_includes_actionable_health_alerts(session, monkeypatch):
+    today = dt.date.today()
+    for i in range(20):
+        d = (today - dt.timedelta(days=19 - i)).isoformat()
+        hrv = 40 if i >= 17 else 60   # last 3 days sustained-low → an hrv_low alert
+        session.add(DailyMetric(user_id=U1, date=d, hrv_avg=hrv))
+    await session.commit()
+
+    captured = {}
+    monkeypatch.setattr(reports, "analyze_with_stats", _fake_analyze(captured))
+    await service.run_analysis(session, _ST10_PAYLOAD, user_id=U1, question="q")
+
+    assert captured["health_alerts"] is not None
+    assert captured["health_alerts"]["level"] == "alert"
+    assert "hrv_low" in [a["kind"] for a in captured["health_alerts"]["alerts"]]
+
+
+async def test_run_analysis_omits_health_alerts_when_calm(session, monkeypatch):
+    today = dt.date.today()
+    for i in range(20):
+        d = (today - dt.timedelta(days=19 - i)).isoformat()
+        session.add(DailyMetric(user_id=U1, date=d, hrv_avg=60))   # stable, no anomaly
+    await session.commit()
+
+    captured = {}
+    monkeypatch.setattr(reports, "analyze_with_stats", _fake_analyze(captured))
+    await service.run_analysis(session, _ST10_PAYLOAD, user_id=U1, question="q")
+
+    assert captured["health_alerts"] is None
+
+
+async def test_run_analysis_omits_health_alerts_on_deep(session, monkeypatch):
+    """/deep is a one-off dive — it skips the whole norm/health/subjective block."""
+    today = dt.date.today()
+    for i in range(20):
+        d = (today - dt.timedelta(days=19 - i)).isoformat()
+        hrv = 40 if i >= 17 else 60
+        session.add(DailyMetric(user_id=U1, date=d, hrv_avg=hrv))
+    await session.commit()
+
+    captured = {}
+    monkeypatch.setattr(reports, "analyze_with_stats", _fake_analyze(captured))
+    await service.run_analysis(session, _ST10_PAYLOAD, user_id=U1, question="q", deep=True)
+
+    assert captured["health_alerts"] is None

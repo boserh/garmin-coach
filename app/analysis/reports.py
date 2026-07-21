@@ -116,6 +116,7 @@ def analyze_with_stats(
     records: Optional[list] = None,
     norm: Optional[dict] = None,
     subjective: Optional[dict] = None,
+    health_alerts: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -154,6 +155,8 @@ def analyze_with_stats(
         user_content["norm"] = norm
     if subjective:
         user_content["subjective"] = subjective
+    if health_alerts:
+        user_content["health_alerts"] = health_alerts
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -250,6 +253,7 @@ async def run_analysis(
     records = None
     norm = None
     subjective = None
+    health_alerts = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -286,12 +290,22 @@ async def run_analysis(
             subj_runs = await repository.recent_subjective_runs(
                 session, user_id, days=subjective_mod.WINDOW_DAYS)
             subjective = subjective_mod.summarize(subj_runs)
+            # Proactive health alerts (ST-10, future extension of EP-08): reuse the SAME
+            # 90-day history slice `norm` was just built from (no second DB read) and only
+            # surface an actionable report — calibrating/none stay silent, same as the alert
+            # DM itself. The report only *aligns* with an already-sent alert, never a second
+            # warning channel of its own.
+            from app import health
+            health_report = health.detect(
+                history, min_history_days=settings.HEALTH_MIN_HISTORY_DAYS)
+            if health_report.actionable:
+                health_alerts = health.to_context(health_report)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
-                           subjective)
+                           subjective, health_alerts)
     cached = await llm_cache.get(session, cache_key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -300,7 +314,7 @@ async def run_analysis(
         try:
             text, stats = await _run_claude(
                 analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
-                weather, plan_today, fitness, records, norm, subjective
+                weather, plan_today, fitness, records, norm, subjective, health_alerts
             )
         except AnalystError as e:
             await repository.log_report(

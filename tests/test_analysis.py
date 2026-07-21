@@ -106,6 +106,15 @@ def test_cache_key_varies_with_subjective():
     assert base != _cache_key(_DATA, "q", "claude-sonnet-4-6", subjective=subj)
 
 
+def test_cache_key_varies_with_health_alerts():
+    # ST-10: an actionable health-alert report must key the cache (the README
+    # наскрізна pitfall — every piece of Claude context enters the dedup key).
+    base = _cache_key(_DATA, "q", "claude-sonnet-4-6")
+    alerts = {"level": "alert", "alerts": [{"kind": "hrv_low", "severity": 1,
+                                            "detail": "HRV нижче норми 3 дні"}]}
+    assert base != _cache_key(_DATA, "q", "claude-sonnet-4-6", health_alerts=alerts)
+
+
 def test_ask_cache_key_varies_with_question_and_reports():
     base = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [])
     assert base != _ask_cache_key(_REPORTS, "інше питання", "claude-sonnet-4-6", [])

@@ -102,6 +102,13 @@ INJURY_WARNED_KEY = "injury_warned"
 # new anomaly (e.g. sleep debt) can still fire while an older one (hrv_low) is still cooling.
 HEALTH_ALERT_PREFIX = "alert:"
 
+# ST-11: warn once per threshold as the stored garth token nears its ~1y OAuth1 death date.
+# The guard *value* holds the token's issue date, so a fresh re-login (new issue date, after
+# a manual reconnect) naturally makes the stored value stop matching and re-arms both
+# thresholds — no explicit "clear the guard" step needed.
+TOKEN_WARN_THRESHOLDS = (30, 7)   # days-until-expiry, most distant first
+TOKEN_WARN_PREFIX = "token_warn:"
+
 _MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
 # Morning keeps its own stale wording ("звіт" not "аналіз", cf. delivery.STALE_NOTE) — a
 # deliberate difference: morning decides stale via the stricter _recovery_synced check
@@ -323,6 +330,44 @@ async def _health_check_for_user(ctx, session, user: User, creds, today: str) ->
         return False
 
 
+async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
+    """ST-11: decode the stored garth token's estimated OAuth1 death date
+    (``app.garmin.token_info``, ~1y from issue) and DM a heads-up once the deadline is
+    within TOKEN_WARN_THRESHOLDS days — so a re-login happens in /settings before the
+    morning job starts hard-failing on it (OPS-01 turned from a fire into a scheduled
+    chore). Pure decode, no network call; best-effort like the other risk hooks — a
+    missing/undecodable token blob is a silent skip, never a tick failure."""
+    if not user.telegram_chat_id or not user.garth_token_enc:
+        return
+    try:
+        from app.core.crypto import decrypt
+        from app.garmin.token_info import decode_token_info
+        info = decode_token_info(decrypt(user.garth_token_enc))
+    except Exception:
+        return
+    issued = info.get("oauth1_issued")
+    expiry = info.get("oauth1_expiry_est")
+    if not issued or not expiry:
+        return
+    days_left = (expiry.date() - dt.date.today()).days
+    issued_iso = issued.date().isoformat()
+    for threshold in TOKEN_WARN_THRESHOLDS:
+        if days_left > threshold:
+            continue
+        guard_key = TOKEN_WARN_PREFIX + str(threshold)
+        if await repository.get_state(session, user.id, guard_key) == issued_iso:
+            continue
+        await repository.set_state(session, user.id, guard_key, issued_iso)
+        await ctx.bot.send_message(
+            user.telegram_chat_id,
+            f"⏳ Токен Garmin спливає приблизно {expiry.date().isoformat()} "
+            "(≈рік від останнього повного логіну). Перелогінься завчасно в /settings, "
+            "щоб ранкові звіти не перервались.",
+        )
+        logger.info(f"TOKEN_EXPIRY warn user={user.id} days_left={days_left} threshold={threshold}")
+        return
+
+
 async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
@@ -332,6 +377,10 @@ async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str)
             payload, new_activities = await service.build_payload_cached(
                 session, user.id, days=3, activity_limit=20
             )
+
+            # OPS-01/ST-11: warn well ahead of the ~1y garth token death date — pure decode,
+            # no network, so it runs unconditionally alongside the other risk hooks.
+            await _token_expiry_check_for_user(ctx, session, user)
 
             # Match freshly synced activities to planned workouts BEFORE the auto-analysis,
             # so it can compare plan vs actual instead of just narrating the raw activity —
