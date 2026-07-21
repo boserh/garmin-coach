@@ -413,12 +413,15 @@ app/
     schemas.py         Pydantic Payload / DailySummary / Activity / PlannedRun
     exercise_names.py  Garmin exercise NAME codes → readable Ukrainian
   weather.py           Open-Meteo geocode (settings) + today's forecast (morning report)
+  charts.py            inline-SVG chart helpers (series/trend_series/run_series/run_charts) — shared by admin/me/dashboard (EP-04)
+  mcp_server.py        NF-08: personal read-only MCP server (stdio) over the same /ask tools
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     prompts.py         SYSTEM + SYSTEM_ASK_TOOLS prompts
   routers/
     auth.py            GET/POST /login, GET /logout
     settings.py        /settings (own creds), /admin/users (admin)
+    dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
     health.py          GET /health (public), GET /status (login, per-user)
     reports.py         GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py         GET /history?days=N — trends from DB, login, per-user
@@ -427,7 +430,7 @@ app/
   dependencies.py      shared deps (get_session)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /sick, /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -459,6 +462,10 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET/POST /login`, `GET /logout`, `GET/POST /register` — cookie-session auth +
   self-registration (new users await admin approval before they can log in).
 - `GET /health` — liveness (public, no auth).
+- `GET /dashboard` — mobile-first overview (EP-04): readiness today, 30-day HRV/RHR/
+  sleep/stress trends, next 7 days of the active plan, last 5 activities, this month's
+  AI cost. Pure DB read (no Garmin/Claude). Login; current user; the post-login/root
+  redirect for a non-admin.
 - `GET /status` — the logged-in user's Garmin auth, DB stats, last morning report, cost.
 - `GET /report.json` — daily report (Sonnet). Login; current user.
 - `GET /deep?q=...` — deep analysis (Opus). Login; current user.
@@ -616,6 +623,25 @@ adapt, morning nudge, weather) skip when an unanswered proposal is already pendi
 `✅/❌` at a time, never overwriting the last one's stored ops. Not dedup-cached (like adapt —
 `_complete` has no cache). No test/force command yet (chat-only concern is the plan itself).
 
+**Sick/travel mode (NF-03)**: a hard training plan snaps at the first week of flu — EP-02
+eases a *day*, but "missed 5 days" was still manual `/plan` edits. `SYSTEM_SICK`
+(`app/analysis/prompts.py`) + `run_sick_check`/`sick_with_stats` (`app/analysis/plans.py`,
+built on the same `_plan_ops_with_stats` engine as edit/adapt/weather — CODE-06) propose a
+*block rebuild*: skip the missed/near-term days, ease (modify) the sessions right after
+return to easy/recovery, re-ramp by the usual ~10%/week rule — conservative, explicitly
+non-medical wording (never diagnoses, never suggests medication). `_filter_sick_ops` is the
+guard behind the prompt (same idea as `_filter_weather_ops`): only move/modify/skip survive,
+dated within `today-SICK_LOOKBACK_DAYS..today+SICK_WINDOW_DAYS` (14 days back/forward) — the
+model can propose freely, but a stray add/swap_exercise or a date outside the current block
+never reaches the confirm buttons. Deliberately ignores the plan's `adjust_level` (ST-07):
+illness is a reason to step outside the plan's normal adaptation bounds, not a candidate for
+the "off"/"conservative" caps. Triggered by the **`/sick [днів]`** bot command
+(`bot/handlers.py::sick`, optional "how many days already missed" argument, default 0 →
+today/tomorrow easy) — reuses the existing `plan_callback`/`ctx.user_data["pending_plan"]`
+✅/❌ flow (no new callback handler). `ReportLog(kind="sick")`; not dedup-cached (like the
+other plan-ops calls). No automatic EP-08-style illness detector yet (the ticket names it as
+a future trigger) — `/sick` is the only entry point today. `tests/test_sick.py`
+
 **Personal records (EP-14)**: a **pure-Python, zero-LLM** detector (`app/records.py`) over data
 already in the DB — no network, no Claude, cheap enough to run on every morning tick. Categories:
 fastest ~5K/~10K/~half (min avg pace among whole runs within ±5% of the distance; pace floored at
@@ -767,6 +793,40 @@ logs `ReportLog(kind="insights")`. Surfaced two ways: the **`/insights`** bot co
 at most one Sonnet call) and a **monthly auto-block** riding the first weekly digest of the month
 (`_monthly_insights_for_user` in `bot/jobs.py`, guarded via `bot_state` `insights:<YYYY-MM>`, set only
 after a send — same pattern as NF-06). `tests/test_correlations.py`.
+
+**Web dashboard (EP-04)**: `GET /dashboard` (`app/routers/dashboard.py`) is a single
+mobile-first overview page replacing "page through the raw `/me` tables" as the product
+home — a **pure DB read**, zero Garmin/Claude calls, so it renders in well under 100ms.
+Reuses building blocks rather than growing a parallel stack: the "today" hero ring is
+`me._latest_ring` (the same readiness/sleep-score ring as `/me`), the 30-day HRV/RHR/
+sleep/stress sparklines are `app.charts.trend_series` (hover-enabled), the plan-week rows
+mirror `/plan`'s markup (`plan._dow`/`_dm` filters), and the activity cards reuse
+`me._act_meta`/`_pace_str`. `app/charts.py` is new: the inline-SVG chart primitives
+(`series`/`trend_series`/`run_series`/`run_charts`) were extracted out of
+`app/routers/admin.py` (and a near-duplicate `me.py::_trend_series`) into one shared
+module — `admin.py`/`me.py` now import from it with zero behaviour change. The one new
+repository read is `repository.month_cost(session, user_id)` — `SUM(cost_usd)` since the
+start of the current calendar month (UTC); EP-06's future quota work reuses it as-is.
+Empty states (no history / no plan / no activities) render a short note linking to
+`/settings`/`/plan` instead of a blank page. The post-login redirect for a non-admin
+(`routers/auth.py::login_submit`) and the logged-in root `/` (`app/main.py`) now point at
+`/dashboard` (admins still land on `/ui`). PWA-minimum: `app/static/manifest.json` +
+`app/static/icon.svg`, linked only from `dashboard.html` (no app-wide `<link>` — there's no
+single base template to hang it off). `tests/test_dashboard.py`.
+
+**Personal MCP server (NF-08, experiment)**: `app/mcp_server.py` is a thin **read-only**
+stdio MCP wrapper (opt-in dependency, `pip install -e ".[mcp]"`) around the exact same
+user-scoped, read-only tools EP-09's `/ask` agent uses —
+`query_activities`/`query_daily`/`aggregate_weekly`/`get_activity_detail`/
+`get_training_plan` — all funneled through the single dispatch point
+`app.analysis.reports._run_ask_tool` (same row caps, same whitelisted daily fields, zero
+duplicated validation). Single-user process: `--email` resolves to a `user_id` once at
+startup (`_resolve_user_id`); every tool call opens a fresh DB session. Zero Garmin calls,
+zero LLM cost on our side (the MCP client's own subscription pays for inference) — "talk to
+your own data" from Claude Desktop/Code without the bot/web UI. Run:
+`./venv/bin/python -m app.mcp_server --email me@example.com`, then point a client's MCP
+config at that command. Deliberately kept read-only — NF-08's own ticket names scope creep
+as the main risk, so there's no write tool here and none should be added. `tests/test_mcp_server.py`.
 
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
@@ -1009,4 +1069,3 @@ to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
 
 - Validate the `gconn` provider against the live Garmin API.
 - Deploy to Raspberry Pi 4 (systemd units for `bot.main` and `uvicorn`).
-- Optional: dashboard/history visualization.
