@@ -679,6 +679,11 @@ async def run_plan_adaptation(
     from app import subjective as subjective_mod
     subj_runs = await repository.recent_subjective_runs(
         session, user_id, days=subjective_mod.WINDOW_DAYS)
+    # Step-level plan-vs-actual (NF-14): a low hit-rate on structured sessions is a
+    # calibration signal (targets are set too fast/slow), not the same thing as a missed
+    # or partial session — feed it alongside compliance, not instead of it.
+    from app import stepmatch
+    step_match = stepmatch.aggregate(await repository.recent_step_match(session, plan.id))
     context = {
         "today": today.isoformat(),
         "trigger": trigger,
@@ -692,6 +697,7 @@ async def run_plan_adaptation(
         "fitness": fitness or None,
         "multisport": multisport,
         "subjective": subjective_mod.summarize(subj_runs),
+        "step_match": step_match,
         "risk": risk or None,
     }
     try:

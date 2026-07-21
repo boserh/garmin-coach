@@ -1137,6 +1137,48 @@ async def weekly_compliance(
     return buckets
 
 
+STEP_MATCH_DAYS = 30   # how far back the adaptation context looks for step-level results
+
+
+async def recent_step_match(
+    session: AsyncSession, plan_id: int, days: int = STEP_MATCH_DAYS
+) -> List[dict]:
+    """This plan's recent completed sessions' step-level plan-vs-actual results (NF-14) —
+    ``[{date, steps_hit, steps_total}]``, oldest first. Only workouts matched to an
+    activity that actually has a ``step_match`` (i.e. pushed with structure and scored)
+    contribute a row; everything else is silently skipped."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    workouts = (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id == plan_id,
+                PlannedWorkout.date >= cutoff,
+                PlannedWorkout.completed_activity_id.is_not(None),
+            ).order_by(PlannedWorkout.date)
+        )
+    ).scalars().all()
+    ids = [w.completed_activity_id for w in workouts]
+    if not ids:
+        return []
+    rows = (
+        await session.execute(
+            select(ActivityRecord.id, ActivityRecord.date, ActivityRecord.step_match).where(
+                ActivityRecord.id.in_(ids), ActivityRecord.step_match.is_not(None)
+            )
+        )
+    ).all()
+    by_id = {aid: (date, sm) for aid, date, sm in rows if isinstance(sm, dict)}
+    out = []
+    for w in workouts:
+        hit = by_id.get(w.completed_activity_id)
+        if not hit:
+            continue
+        date, sm = hit
+        out.append({"date": date, "steps_hit": sm.get("steps_hit"),
+                    "steps_total": sm.get("steps_total")})
+    return out
+
+
 async def list_pushed_workouts(session: AsyncSession, user_id: int) -> List[PlannedWorkout]:
     """This user's workouts already pushed to Garmin (``garmin_workout_id`` set), across
     all plans — for the sync cleanup pass. (A BigInteger column → real SQL NULL, so

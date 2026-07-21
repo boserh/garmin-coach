@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from app import records, weather
+from app import records, stepmatch, weather
 from app.analysis import delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
@@ -215,6 +215,30 @@ def _activity_head(act) -> str:
     return f"🏃 Нова активність: {' · '.join(parts)} ({act.date})"
 
 
+async def _step_match_for_activity(session, user_id: int, act) -> None:
+    """NF-14: score a run's actual laps against its planned structured steps, once. Gated
+    on the activity being matched (EP-01) to a session WE pushed WITH structure
+    (``garmin_workout_id`` set — a manually-run, unpushed workout has no reliable
+    lap-to-step correspondence, so it stays silent rather than guessing). Idempotent
+    (skips if already scored) and best-effort — a Garmin/parse hiccup never blocks the
+    auto-analysis that follows. Mutates ``act.step_match`` in place; caller commits."""
+    try:
+        if getattr(act, "step_match", None) is not None:
+            return
+        workout = await repository.get_workout_for_activity(session, user_id, act.id)
+        if workout is None or not workout.garmin_workout_id or not workout.steps:
+            return
+        from app.garmin import client
+        laps = await run_in_threadpool(client.fetch_activity_splits, act.activity_id)
+        result = stepmatch.match(workout.steps, laps)
+        if result is not None:
+            act.step_match = result
+            logger.info(f"STEPMATCH user={user_id} activity={act.id}: "
+                        f"{result['steps_hit']}/{result['steps_total']}")
+    except Exception:
+        logger.exception(f"STEPMATCH failed user={user_id} activity={act.id}")
+
+
 async def _activity_watch_for_user(ctx, session, user: User, creds, new_activities) -> None:
     """Auto-analyze freshly synced running activities and DM each result. Best-effort
     per activity — a Claude/Telegram failure here must not break the tick or block
@@ -226,13 +250,18 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
         if not act.date or act.date < cutoff or "run" not in (act.type or ""):
             continue
         try:
+            # NF-14 first, so the step-level result rides along in the analysis context
+            # (activity_payload) instead of arriving a tick later.
+            await _step_match_for_activity(session, user.id, act)
             text = await run_activity_analysis(
                 session, act, user_id=user.id, api_key=creds.anthropic_key
             )
+            badge = stepmatch.badge(getattr(act, "step_match", None))
+            head = f"{_activity_head(act)}\n{badge}" if badge else _activity_head(act)
             # Attach the EP-12 post-run check-in (RPE + pain) — one tap, silence is fine.
             await ctx.bot.send_message(
                 user.telegram_chat_id,
-                f"{_activity_head(act)}\n\n{text}\n\n{CHECKIN_PROMPT}",
+                f"{head}\n\n{text}\n\n{CHECKIN_PROMPT}",
                 reply_markup=checkin_keyboard(act.id),
             )
             logger.info(f"ACTIVITY_WATCH sent user={user.id} activity={act.id}")

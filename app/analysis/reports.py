@@ -675,6 +675,10 @@ def activity_payload(activity, planned=None) -> dict:
     # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
     if getattr(activity, "subjective", None):
         data["subjective"] = activity.subjective
+    # NF-14: step-level plan-vs-actual (app.stepmatch) — whether the runner actually hit
+    # the planned pace inside each structured interval, not just "the session happened".
+    if getattr(activity, "step_match", None):
+        data["step_match"] = activity.step_match
     if planned is not None:
         data["planned"] = _planned_payload(planned)
     return data

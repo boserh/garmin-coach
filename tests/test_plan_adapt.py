@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.analysis import plans
 from app.analysis.service import CallStats, run_plan_adaptation
-from app.db.models import PlannedWorkout, ReportLog, TrainingPlan
+from app.db.models import ActivityRecord, PlannedWorkout, ReportLog, TrainingPlan
 from app.garmin.schemas import PlanEdit, PlanOp
 
 U1 = 1
@@ -167,6 +167,37 @@ async def test_flexible_allows_token_run_and_skip(session):
                        return_value=(_edit(ops), CallStats(kind="adapt", model="m"))):
         _plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
     assert [op.action for op in edit.operations] == ["modify", "skip"]
+
+
+# ---------- step-level context (NF-14) ----------
+
+async def test_step_match_aggregate_enters_the_context(session):
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    plan = await _seed_plan(session, workouts=[dict(date=fut, type="easy", status="planned")])
+    past = (dt.date.today() - dt.timedelta(days=3)).isoformat()
+    act = ActivityRecord(user_id=U1, activity_id=8888, date=past, type="running",
+                         dist_km=8.0, dur_min=40.0,
+                         step_match={"steps_hit": 3, "steps_total": 6, "misses": []})
+    session.add(act)
+    await session.flush()
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date=past, type="tempo",
+                               status="done", completed_activity_id=act.id))
+    await session.commit()
+
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1)
+    assert seen["step_match"] == {"sessions": 1, "steps_hit": 3, "steps_total": 6,
+                                  "hit_rate": 0.5}
+
+
+async def test_step_match_none_without_any_scored_sessions(session):
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    await _seed_plan(session, workouts=[dict(date=fut, type="easy", status="planned")])
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1)
+    assert seen["step_match"] is None
 
 
 async def test_taper_allows_only_minimal_easing(session):
