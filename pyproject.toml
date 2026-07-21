@@ -36,6 +36,9 @@ dev = [
     "httpx",
     "ruff",
 ]
+mcp = [
+    "mcp",   # NF-08: personal read-only MCP server over the DB — opt-in, not a base dep
+]
 
 [tool.setuptools]
 packages = ["app", "app.core", "app.db", "app.garmin", "app.analysis", "app.routers", "bot"]
