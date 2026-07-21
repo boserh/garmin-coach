@@ -132,12 +132,10 @@ Optional, with defaults:
 | `LOGIN_RATE_LIMIT` | `5` | SEC-01: max `POST /login`/`POST /register` attempts per window before a 429; `0` disables (tests set it to 0). In-memory + per-process (`app/core/ratelimit.py`) — a single Pi web process, by design. |
 | `LOGIN_RATE_WINDOW_S` | `300` | SEC-01: the rate-limit window in seconds. |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
-| `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
 | `GARMIN_RPS` | `3.0` | Process-wide Garmin request rate cap (req/s); `0` disables the limiter (PERF-05) |
 | `GARMIN_RETRIES` | `2` | 429 retries with exponential backoff inside `client._api` (PERF-05) |
 | `CLAUDE_MAX_WORKERS` | `4` | Size of the dedicated Claude thread pool, off the shared anyio pool (PERF-04b) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
-| `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by login (kept for compatibility) |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root level (`DEBUG` shows skip-reason logs) |
 | `GARMIN_CACHE_DIR` | `garmin_cache` | Per-key disk cache for immutable Garmin assets (PERF-02) |
@@ -230,7 +228,8 @@ Optional, with defaults:
   chat id + Garmin creds, each guarded once-a-day via per-user `bot_state`.
 - **CLI**: `python -m app.cli create-user [--admin] [--seed-env]` — `--seed-env`
   encrypts `.env` creds into the user and claims pre-existing (unowned) data rows.
-  `import-garth-token --email` seeds a user's garth session from `~/.garth`;
+  `import-garth-token --email [--path ~/.garth]` seeds a user's garth session from a
+  token dir (`--path` defaults to `~/.garth`);
   `backfill-series --email` fetches the pace/HR series for already-stored runs that
   predate the feature (fills nulls only, idempotent). `import-export --email --path
   [--since YYYY-MM-DD] [--overwrite]` backfills `daily_metrics` (+`extra`) **and**
@@ -396,7 +395,6 @@ app/
   core/
     config.py          pydantic-settings Settings — the single source for all env vars
     logging.py         logging config (was logging_setup.py)
-    security.py        verify_token dependency (legacy WEB_TOKEN; superseded by auth.py)
     crypto.py          Fernet encrypt/decrypt for creds + bcrypt password hashing
     auth.py            current_user / require_admin deps; session login/logout helpers
   db/
@@ -426,10 +424,10 @@ app/
     history.py         GET /history?days=N — trends from DB, login, per-user
     plan.py            GET/POST /plan — training-plan setup form + view, login, per-user
     admin.py           /ui DB browser — admin only
-  dependencies.py      shared deps (get_session, verify_token)
+  dependencies.py      shared deps (get_session)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /risk, /health, /plan (+edit), /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -475,8 +473,7 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   Templates in `app/templates/`.
 
 Auth: a signed cookie session set at `/login` (no token headers). `current_user`
-gates user endpoints; `require_admin` gates `/ui` and `/admin/users`. `WEB_TOKEN` is
-legacy and no longer used by these routes.
+gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 
 ## Database
 
@@ -741,6 +738,35 @@ no Garmin fetch, no MFA risk) and a **monthly auto-block** riding on the first w
 calendar month (`_monthly_compare_for_user` in `bot/jobs.py`, guarded via `bot_state`
 `compare:<YYYY-MM>` — the guard is set only after a message goes out, so a no-history month retries
 next week). `tests/test_compare.py`.
+
+**Quarterly/yearly Wrapped (NF-07)**: a season of training given a shape — a celebratory recap.
+`app/wrapped.py` is the **pure-Python** part (mirrors `compare.py`): `period_window(today, kind)`
+picks the trailing window (`year`=52 weeks / `quarter`=13 weeks, rolling so it's never empty),
+`parse_period` reads the `/wrapped [рік|квартал]` arg, `has_signal` bails on a near-empty window,
+`label`/`fmt_range` render the header, `build_context` shapes the payload. `repository.wrapped_stats`
+**reuses `window_stats`** (no duplicate volume math — the CODE-02 lesson) and augments it with the
+whole-period extras a recap wants: an all-sport activity breakdown (via `multisport.sport_bucket`) +
+total hours, the biggest running week, and the VO2max arc (first vs last); `records_in_range` pulls
+the milestones set in the window. `service.run_wrapped` narrates **one aesthetic Opus longread**
+(`SYSTEM_WRAPPED`, `MODEL_WRAPPED`=Opus — rare, so the cost is fine), dedup-caches on the period +
+stats + records (`_wrapped_cache_key`), logs `ReportLog(kind="wrapped")`, returns `None` on an empty
+window. Surfaced as the **`/wrapped [рік|квартал]`** bot command (pure DB read + one Opus call, no
+Garmin/MFA). `tests/test_wrapped.py`.
+
+**Correlation engine (NF-02)**: "what actually affects you" — a **pure-Python, zero-LLM** monthly
+pass over the recovery history in the DB (`app/correlations.py`). Tests a fixed set of lagged metric
+pairs (sleep→next-day HRV, stress→HRV, resting-HR→HRV, …) for a real personal association and keeps
+only the **statistically defensible** ones: `find_correlations(history)` gates each pair on a minimum
+sample count (`MIN_SAMPLES`=30), a meaningful effect size (`|r|` ≥ `R_THRESHOLD`=0.35) **and** a
+Fisher-z 95% CI that excludes zero (`_fisher_ci_excludes_zero` — numpy-free significance) so noise on
+thin data is filtered, not surfaced. `pearson`/`_paired` (lag-aware, indexes by ISO date so a backfill
+gap drops a pair rather than misaligning). Nothing significant → an honest `None` (no Claude call).
+`service.run_insights` narrates the survivors via **one Sonnet call** (`SYSTEM_INSIGHTS`,
+`MODEL_INSIGHTS`, cautious — correlation≠causation), dedup-caches on the findings (`_insights_cache_key`),
+logs `ReportLog(kind="insights")`. Surfaced two ways: the **`/insights`** bot command (pure DB read +
+at most one Sonnet call) and a **monthly auto-block** riding the first weekly digest of the month
+(`_monthly_insights_for_user` in `bot/jobs.py`, guarded via `bot_state` `insights:<YYYY-MM>`, set only
+after a send — same pattern as NF-06). `tests/test_correlations.py`.
 
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the

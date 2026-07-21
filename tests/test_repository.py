@@ -429,7 +429,13 @@ async def test_aggregate_weekly_recovery_metric_averages_per_week(session):
     assert agg["metric"] == "hrv_avg"
     this_week = today.strftime("%G-W%V")
     week_entry = next(w for w in agg["weeks"] if w["week"] == this_week)
-    assert week_entry["value"] == 50.0  # avg(60, 40)
+    # Both days share this ISO week only when today isn't a Monday; on a Monday, yesterday
+    # (Sunday) belongs to the previous ISO week, so this week holds today's 60 alone.
+    yesterday = today - dt.timedelta(days=1)
+    if yesterday.strftime("%G-W%V") == this_week:
+        assert week_entry["value"] == 50.0  # avg(60, 40)
+    else:
+        assert week_entry["value"] == 60.0  # only today's value falls in this week
 
 
 async def test_aggregate_weekly_unknown_metric_is_a_soft_error(session):

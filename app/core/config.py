@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     GARMIN_PASSWORD: Optional[str] = None
     # Which backend talks to Garmin Connect: "garth" (working) or "gconn" (untested).
     GARMIN_PROVIDER: str = "garth"
-    GARTH_TOKEN_DIR: str = "~/.garth"
     # PERF-05: a process-wide, polite request pattern to Garmin's unofficial API
     # (post-Cloudflare an aggressive pattern risks an account ban, not just a 429).
     # GARMIN_RPS caps requests/sec across all threads (0 disables the limiter);
@@ -42,11 +41,6 @@ class Settings(BaseSettings):
     # Bot's public @username (without @) — used to render a t.me/ link in the web
     # onboarding so users know which bot to message. Override via env if it changes.
     TELEGRAM_BOT_USERNAME: Optional[str] = "garmim_coach_bot"
-
-    # --- Web layer ---
-    # Shared-secret for the data/cost endpoints. Empty string disables auth.
-    # Legacy: superseded by per-user login; kept as an optional fallback.
-    WEB_TOKEN: str = ""
 
     # --- Auth / secrets ---
     # Master key for Fernet credential encryption AND cookie-session signing.

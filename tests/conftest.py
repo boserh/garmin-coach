@@ -6,7 +6,6 @@ import os
 # Hard-override (not setdefault): a DATABASE_URL exported in the shell or set in
 # .env must NEVER leak the real garmin.db into the test run.
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_garmin.db"
-os.environ["WEB_TOKEN"] = ""
 # SEC-01: disable the login/register rate limiter globally — the router tests log in
 # many times in a row with the same email. Dedicated rate-limit tests build their own
 # limiter instead of relying on this default.

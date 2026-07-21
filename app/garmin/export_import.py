@@ -217,33 +217,92 @@ def _series_from_points(points: list) -> list:
 _FIT_MIN_BYTES = 4000
 
 
-async def import_fit_series(
-    session, user_id: int, folder: str, since: Optional[str] = None,
-) -> dict:
-    """Backfill the pace/HR ``series`` for stored runs from the export's FIT files
-    (``DI-Connect-Uploaded-Files``) — no API. Scans FIT files, matches each activity FIT
-    to a run by its session start time (== the activity ``beginTimestamp``), parses the
-    records, and stores the downsampled series. Runs only (where the charts apply).
+def _descend_to_di(folder: str, marker: str) -> str:
+    """If ``folder`` doesn't directly contain ``marker``, descend into a ``DI_CONNECT``
+    subfolder that does. Mirrors both importers' 'top-level export vs DI_CONNECT' probe."""
+    if os.path.isdir(os.path.join(folder, marker)):
+        return folder
+    inner = os.path.join(folder, "DI_CONNECT")
+    if os.path.isdir(inner):
+        return inner
+    return folder
 
-    Cost control: the FIT filenames are upload ids (not activity ids), so we must read
-    each file's session to match — but we skip tiny non-activity files by size, stop as
-    soon as every target run is matched, and parse each file only once."""
-    import io
+
+def _ts_ms(ts) -> Optional[int]:
+    """A FIT record ``timestamp`` (naive UTC datetime) → epoch milliseconds, to match an
+    activity's ``beginTimestamp``. Returns None for anything not a datetime."""
+    if not isinstance(ts, dt.datetime):
+        return None
+    return int(ts.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
+def _record_speed(m):
+    """A FIT ``record``'s speed — prefer ``enhanced_speed`` (higher precision), fall back
+    to ``speed``."""
+    s = m.get_value("enhanced_speed")
+    return s if s is not None else m.get_value("speed")
+
+
+def build_targets(runs, aid_begin: dict) -> dict:
+    """Map each run to its session-start timestamp (ms) via the activity index, so a FIT
+    file's first-record timestamp resolves straight to a run. FIT filenames are upload ids,
+    not activity ids (CLAUDE.md) — the session start time is the only join key."""
+    return {aid_begin[r.activity_id]: r for r in runs if r.activity_id in aid_begin}
+
+
+def read_fit_activity(messages, resolve_target):
+    """Stream one FIT file's messages **once** and return ``(target, points)``.
+
+    ``resolve_target(start_ms)`` maps the first-record timestamp (== the session start ==
+    the activity ``beginTimestamp``) to the run row we want, or None to skip. Bails early:
+    a ``file_id`` that isn't an ``activity``, a missing/unresolvable first-record timestamp,
+    all short-circuit before decoding the rest — so the ~half of the export that isn't a
+    run we need is cheap. ``messages`` is any iterable of objects with ``.name`` and
+    ``.get_value(key)`` (a ``fitparse.FitFile``, or fakes in tests) — no fitparse import
+    here, keeping this pure and unit-testable."""
+    target = None
+    points: list = []
+    for m in messages:
+        name = m.name
+        if name == "file_id":
+            if m.get_value("type") != "activity":
+                return None, []
+        elif name == "record":
+            if target is None:               # first record → the start timestamp
+                start_ms = _ts_ms(m.get_value("timestamp"))
+                if start_ms is None:
+                    return None, []
+                target = resolve_target(start_ms)
+                if target is None:           # not a run we need — stop reading this file
+                    return None, []
+            points.append((m.get_value("distance"), _record_speed(m),
+                           m.get_value("heart_rate")))
+    return target, points
+
+
+def _iter_fit_bytes(uploaded: str):
+    """Yield the raw bytes of every activity-sized ``.fit`` member across the upload zips
+    (skipping tiny non-activity files by their zip-directory size, no decompression). A
+    flat generator so the caller's scan loop stays a single level of nesting and can break
+    out the moment every target run is matched."""
     import zipfile
 
-    import fitparse
+    for z in sorted(glob.glob(os.path.join(uploaded, "*.zip"))):
+        try:
+            zf = zipfile.ZipFile(z)
+        except Exception as e:
+            logger.warning(f"EXPORT fit-series skip {os.path.basename(z)}: {e}")
+            continue
+        for info in zf.infolist():
+            if info.filename.endswith(".fit") and info.file_size >= _FIT_MIN_BYTES:
+                yield zf.read(info.filename)
+
+
+async def _load_series_targets(session, user_id: int, di: str, since: Optional[str]):
+    """(runs, targets): the stored runs missing a series and their start-ms → run index."""
     from sqlalchemy import select
 
     from app.db.models import ActivityRecord
-
-    di = folder
-    if not os.path.isdir(os.path.join(di, "DI-Connect-Fitness")):
-        inner = os.path.join(di, "DI_CONNECT")
-        if os.path.isdir(inner):
-            di = inner
-    uploaded = os.path.join(di, "DI-Connect-Uploaded-Files")
-    if not os.path.isdir(uploaded):
-        return {"error": "DI-Connect-Uploaded-Files not found (copy the FIT zips)"}
 
     aid_begin = {a["activityId"]: int(a["beginTimestamp"])
                  for a in parse_activities(di)
@@ -255,59 +314,52 @@ async def import_fit_series(
     if since:
         stmt = stmt.where(ActivityRecord.date >= since)
     runs = [r for r in (await session.execute(stmt)).scalars().all() if not r.series]
-    targets = {aid_begin[r.activity_id]: r for r in runs if r.activity_id in aid_begin}
+    return runs, build_targets(runs, aid_begin)
+
+
+async def import_fit_series(
+    session, user_id: int, folder: str, since: Optional[str] = None,
+) -> dict:
+    """Backfill the pace/HR ``series`` for stored runs from the export's FIT files
+    (``DI-Connect-Uploaded-Files``) — no API. Scans FIT files, matches each activity FIT
+    to a run by its session start time (== the activity ``beginTimestamp``), parses the
+    records, and stores the downsampled series. Runs only (where the charts apply).
+
+    Cost control: the FIT filenames are upload ids (not activity ids), so we must read
+    each file's session to match — but we skip tiny non-activity files by size, stop as
+    soon as every target run is matched, and parse each file only once. Orchestration only;
+    the parsing/matching/scan steps are the pure helpers above."""
+    import io
+
+    import fitparse
+
+    di = _descend_to_di(folder, "DI-Connect-Fitness")
+    uploaded = os.path.join(di, "DI-Connect-Uploaded-Files")
+    if not os.path.isdir(uploaded):
+        return {"error": "DI-Connect-Uploaded-Files not found (copy the FIT zips)"}
+
+    runs, targets = await _load_series_targets(session, user_id, di, since)
     if not targets:
         logger.info(f"EXPORT fit-series user={user_id}: nothing to match ({len(runs)} runs)")
         return {"runs": len(runs), "series_added": 0}
 
     total = len(targets)
     done = scanned = 0
-    for z in glob.glob(os.path.join(uploaded, "*.zip")):
-        zf = zipfile.ZipFile(z)
-        for info in zf.infolist():
-            if not info.filename.endswith(".fit") or info.file_size < _FIT_MIN_BYTES:
-                continue
-            scanned += 1
-            if scanned % 500 == 0:
-                logger.info(f"EXPORT fit-series: scanned {scanned} files, "
-                            f"matched {done}/{total}")
-            # Iterate messages in file order and bail early: `file_id` is first, the first
-            # `record` timestamp == the session start (== the activity `beginTimestamp`),
-            # and `session` is last. So we can decide "not a target" right after the first
-            # record and skip decoding the rest — the matched files (a handful) are the
-            # only ones we read to the end.
-            row = None
-            points: list = []
-            try:
-                for m in fitparse.FitFile(io.BytesIO(zf.read(info.filename))):
-                    name = m.name
-                    if name == "file_id":
-                        if m.get_value("type") != "activity":
-                            break
-                    elif name == "record":
-                        if row is None:          # first record → the start timestamp
-                            ts = m.get_value("timestamp")
-                            if ts is None:
-                                break
-                            ms = int(ts.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
-                            row = targets.pop(ms, None)  # matched — also removes it
-                            if row is None:      # not a run we need — stop reading this file
-                                break
-                        s = m.get_value("enhanced_speed")
-                        if s is None:
-                            s = m.get_value("speed")
-                        points.append((m.get_value("distance"), s, m.get_value("heart_rate")))
-            except Exception:
-                continue
-            if row is None:
-                continue
+    resolve = lambda ms: targets.pop(ms, None)  # noqa: E731 — match + remove, None on miss
+    for raw in _iter_fit_bytes(uploaded):
+        scanned += 1
+        if scanned % 500 == 0:
+            logger.info(f"EXPORT fit-series: scanned {scanned} files, matched {done}/{total}")
+        try:
+            row, points = read_fit_activity(fitparse.FitFile(io.BytesIO(raw)), resolve)
+        except Exception:
+            continue
+        if row is not None:
             series = _series_from_points(points)
             if series:
                 row.series = series
                 done += 1
-            if not targets:            # every run filled; stop scanning
-                break
-        if not targets:
+        if not targets:                # every run filled; stop scanning
             break
     await session.commit()
     stats = {"runs": len(runs), "series_added": done, "scanned": scanned}
@@ -330,10 +382,7 @@ async def import_export(
     from app.db.models import ActivityRecord, DailyMetric
     from app.garmin import repository
 
-    if not os.path.isdir(os.path.join(folder, "DI-Connect-Wellness")):
-        inner = os.path.join(folder, "DI_CONNECT")
-        if os.path.isdir(inner):
-            folder = inner
+    folder = _descend_to_di(folder, "DI-Connect-Wellness")
 
     days = {d: row for d, row in parse_export(folder).items()
             if row["has_data"] and (since is None or d >= since)}

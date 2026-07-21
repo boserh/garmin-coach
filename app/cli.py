@@ -22,10 +22,10 @@ from app.db import users
 from app.db.base import async_session_maker, init_db
 
 
-async def _import_garth_token(email: str) -> int:
-    garth_dir = pathlib.Path.home() / ".garth"
+async def _import_garth_token(email: str, path: str) -> int:
+    garth_dir = pathlib.Path(path).expanduser()
     if not garth_dir.exists():
-        print("~/.garth not found.")
+        print(f"{garth_dir} not found.")
         return 1
     try:
         import garth
@@ -299,11 +299,9 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
             print("No active plan for this user.")
             return 1
         end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-        upcoming = await repository.list_workouts(session, plan.id, upcoming_only=True)
-        todo = [w for w in upcoming
-                if (w.date == date if date else w.date <= end)
-                and plan_sync._pushable(w)
-                and w.garmin_workout_id is None]
+        # Reuse plan_sync's forward selection (window/pushable/skip-already-pushed) — the
+        # CLI adds only its own extras: --dry-run and ignoring garmin_sync_enabled.
+        todo = await plan_sync.select_forward(session, plan.id, days=days, only_date=date)
         if not todo:
             scope = date if date else f"next {days} days"
             print(f"Nothing to push ({scope} already up to date).")
@@ -357,9 +355,7 @@ async def _unpush_plan(email: str, date: str = None) -> int:
         if plan is None:
             print("No active plan for this user.")
             return 1
-        pushed = [w for w in await repository.list_workouts(session, plan.id)
-                  if w.garmin_workout_id is not None
-                  and (w.date == date if date else True)]
+        pushed = await plan_sync.select_pushed(session, plan.id, only_date=date)
         if not pushed:
             print("Nothing pushed for this plan.")
             return 0
@@ -822,8 +818,9 @@ def main(argv=None) -> int:
         help="encrypt Garmin/Claude/Telegram creds from .env into this user",
     )
 
-    igt = sub.add_parser("import-garth-token", help="Import ~/.garth token into a user's DB record")
+    igt = sub.add_parser("import-garth-token", help="Import a garth token dir into a user record")
     igt.add_argument("--email", required=True)
+    igt.add_argument("--path", default="~/.garth", help="garth token dir (default ~/.garth)")
 
     bf = sub.add_parser("backfill-series", help="Fetch pace/HR series for stored runs missing one")
     bf.add_argument("--email", required=True)
@@ -909,7 +906,7 @@ def main(argv=None) -> int:
             parser.error("password must not be empty")
         return asyncio.run(_create_user(args.email, password, args.admin, args.seed_env))
     if args.cmd == "import-garth-token":
-        return asyncio.run(_import_garth_token(args.email))
+        return asyncio.run(_import_garth_token(args.email, args.path))
     if args.cmd == "backfill-series":
         return asyncio.run(_backfill_series(args.email, args.since))
     if args.cmd == "backfill-auto-activities":

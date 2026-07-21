@@ -135,10 +135,8 @@ variables below.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
-| `GARTH_TOKEN_DIR` | `~/.garth` | Legacy global garth token dir (per-user tokens live in the DB) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
 | `DB_ECHO` | `false` | Log every SQL statement (verbose) |
-| `WEB_TOKEN` | `` (empty) | Legacy shared secret; superseded by the login session |
 | `TELEGRAM_BOT_USERNAME` | `garmim_coach_bot` | Bot's @username, rendered as a t.me/ link in onboarding |
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root log level (`DEBUG` shows skip-reason logs) |
@@ -192,7 +190,7 @@ first `alembic upgrade head`.
 
 * `create-user [--admin] [--seed-env]` — create a web-login user; `--seed-env`
   encrypts the `.env` creds into it and claims pre-existing data
-* `import-garth-token` — seed a user's Garmin session from `~/.garth`
+* `import-garth-token [--path ~/.garth]` — seed a user's Garmin session from a token dir
 * `import-export --path [--since] [--overwrite]` — backfill daily metrics +
   activities from a Garmin GDPR export folder (offline, no API)
 * `import-fit-series --path [--since]` — fill runs' pace/HR series from the

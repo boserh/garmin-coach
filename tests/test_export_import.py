@@ -1,9 +1,113 @@
 """Garmin GDPR export → daily_metrics backfill (offline, no network)."""
+import datetime as dt
 import json
 import os
+from types import SimpleNamespace
 
 from app.garmin import repository
-from app.garmin.export_import import _series_from_points, import_export, parse_export
+from app.garmin.export_import import (
+    _series_from_points,
+    build_targets,
+    import_export,
+    parse_export,
+    read_fit_activity,
+)
+
+
+class _Msg:
+    """A stand-in for a fitparse message: ``.name`` + ``.get_value(key)`` (no fitparse)."""
+
+    def __init__(self, name, **values):
+        self.name = name
+        self._v = values
+
+    def get_value(self, key):
+        return self._v.get(key)
+
+
+def _fit(start: dt.datetime, points):
+    """A fake FIT message stream: a file_id(activity) + one record per (dist, speed, hr).
+    The FIRST record carries ``start`` as its timestamp (== the session start)."""
+    msgs = [_Msg("file_id", type="activity")]
+    for i, (d, s, hr) in enumerate(points):
+        ts = start if i == 0 else start + dt.timedelta(seconds=i)
+        msgs.append(_Msg("record", timestamp=ts, distance=d, enhanced_speed=s, heart_rate=hr))
+    return msgs
+
+
+def _ms(d: dt.datetime) -> int:
+    return int(d.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
+def test_build_targets_indexes_runs_by_start_ms():
+    r1 = SimpleNamespace(activity_id=1)
+    r2 = SimpleNamespace(activity_id=2)
+    r3 = SimpleNamespace(activity_id=3)   # no matching begin ts → dropped
+    targets = build_targets([r1, r2, r3], {1: 1000, 2: 2000})
+    assert targets == {1000: r1, 2000: r2}
+
+
+def test_read_fit_activity_matches_and_collects_points():
+    start = dt.datetime(2025, 3, 1, 6, 0, 0)
+    row = SimpleNamespace(activity_id=1)
+    targets = {_ms(start): row}
+    msgs = _fit(start, [(0.0, 2.5, 120), (100.0, 2.6, 122)])
+    got, points = read_fit_activity(msgs, lambda ms: targets.pop(ms, None))
+    assert got is row
+    assert points == [(0.0, 2.5, 120), (100.0, 2.6, 122)]
+    assert targets == {}                  # matched target removed
+
+
+def test_read_fit_activity_close_start_does_not_crossmatch():
+    """Two runs with starts a few seconds apart must not match the wrong FIT (exact ms)."""
+    start = dt.datetime(2025, 3, 1, 6, 0, 0)
+    off = start + dt.timedelta(seconds=3)
+    targets = {_ms(off): SimpleNamespace(activity_id=9)}   # only the 3s-later run is a target
+    got, points = read_fit_activity(_fit(start, [(0.0, 2.5, 120)]),
+                                    lambda ms: targets.pop(ms, None))
+    assert got is None and points == []
+    assert _ms(off) in targets            # the other run stays unmatched
+
+
+def test_read_fit_activity_skips_non_activity_file():
+    msgs = [_Msg("file_id", type="settings"), _Msg("record", timestamp=dt.datetime(2025, 1, 1))]
+    got, points = read_fit_activity(msgs, lambda ms: SimpleNamespace())
+    assert got is None and points == []
+
+
+def test_read_fit_activity_falls_back_to_plain_speed():
+    start = dt.datetime(2025, 3, 1, 6, 0, 0)
+    row = SimpleNamespace(activity_id=1)
+    msgs = [_Msg("file_id", type="activity"),
+            _Msg("record", timestamp=start, distance=0.0, speed=3.0, heart_rate=100)]
+    got, points = read_fit_activity(msgs, lambda ms: row)
+    assert got is row and points == [(0.0, 3.0, 100)]   # enhanced_speed absent → speed
+
+
+async def test_load_series_targets_skips_runs_that_already_have_a_series(session, tmp_path):
+    """Idempotency contract: a run whose series is already filled is not a target
+    (the JSON-null gotcha — filtered in Python, not via series.is_(None))."""
+    from app.db.models import ActivityRecord
+    from app.garmin.export_import import _load_series_targets
+
+    session.add_all([
+        ActivityRecord(user_id=1, activity_id=100, type="running",
+                       date="2025-03-01", series=None),                 # needs a series
+        ActivityRecord(user_id=1, activity_id=200, type="running",
+                       date="2025-03-02", series=[{"d": 1, "p": 5, "hr": 120}]),  # already has
+    ])
+    await session.commit()
+
+    f = str(tmp_path)
+    _write(f, "DI-Connect-Fitness/x_summarizedActivities.json", [{
+        "summarizedActivitiesExport": [
+            {"activityId": 100, "beginTimestamp": 1000, "activityType": "running"},
+            {"activityId": 200, "beginTimestamp": 2000, "activityType": "running"},
+        ],
+    }])
+    runs, targets = await _load_series_targets(session, 1, f, since=None)
+    assert {r.activity_id for r in runs} == {100}   # only the seriesless run
+    assert targets == {1000: runs[0]}               # keyed by its beginTimestamp
 
 
 def _write(folder, rel, data):
