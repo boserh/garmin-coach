@@ -534,6 +534,17 @@ migration plan + a standalone recon script (`scripts/ops01_recon_gconn.py`, run 
 throwaway venv with the latest `python-garminconnect`) live in
 `docs/backlog/OPS-01-garmin-auth-plan-b.md`.
 
+**Token-expiry warning (ST-11)**: OPS-01's `token_info.decode_token_info` could always tell you
+a token's ~1y death date, but nobody was watching it proactively — a stale token meant the
+morning job silently starts hard-failing into MFA. `bot/jobs.py::_token_expiry_check_for_user`
+runs unconditionally in the tick (pure decode, zero network) and DMs a heads-up once the
+estimated `oauth1_expiry_est` is within `TOKEN_WARN_THRESHOLDS` (30, 7) days. The `bot_state`
+guard (`token_warn:<threshold>`) stores the token's *issue date* as its value rather than a bare
+flag — comparing against the current issue date means a fresh re-login (new issue date) makes
+the stored guard stop matching and silently re-arms both thresholds, no explicit reset needed.
+Best-effort: a missing/undecodable token blob is a silent skip, never a tick failure.
+`tests/test_token_expiry.py`.
+
 **HRV is the primary recovery signal** — `hrv_status = BALANCED` means recovered; a drop is
 the main stress indicator. (The dedicated resting-HR endpoint 403s via garth, but RHR comes
 free inside the sleep DTO — stored in `extra.resting_hr`; see below.)
@@ -699,8 +710,8 @@ command (instant DB read — shows calibrating/clear/signals) and a **morning-ti
 (`_injury_check_for_user` in `bot/jobs.py`, after the records check) that DMs one advisory when
 actionable, guarded to at most once per `INJURY_GUARD_DAYS` (5) via `bot_state` `injury_warned`
 (guard set before the send so a hiccup can't loop). Process-level `INJURY_RADAR` on/off (personal
-app; no per-user column). Deeper EP-02 auto-deload integration is left as a future step (the ticket
-sits "on top of EP-08+12"). `tests/test_injury.py`.
+app; no per-user column). EP-02 auto-deload integration is now wired — see NF-09 below.
+`tests/test_injury.py`.
 
 **Proactive health alerts (EP-08)**: a **pure-Python, zero-LLM** recovery-anomaly detector
 (`app/health.py`) — the *recovery/illness* sibling of the injury radar (same "risk signal" chassis,
@@ -726,9 +737,37 @@ command (instant DB read — calibrating/clear/alerts) and a **morning-tick hook
 still fires; guard set before the send). To avoid stacking two risk pings, the tick **skips the
 health push when an injury advisory already went out today** (at most one risk DM/day). Process-level
 `HEALTH_ALERTS` on/off + a **per-user** `User.alerts_enabled` toggle (settings form; default on;
-deactivated/disabled → silence). Not fed into the daily report context — the report already gets
-recovery context from NF-01 `norm`; that synergy is a documented future extension.
+deactivated/disabled → silence). Fed into the daily report context — see ST-10 below.
 `tests/test_health.py`.
+
+**Health alerts in the daily report (ST-10)**: EP-08's own future-extension note — the report
+already got `norm` (NF-01's raw percentile bands) but never the *detector's conclusion* ("this
+metric has sat outside your band for 3+ days"). `run_analysis` (report/morning, not `/deep`) now
+reuses the SAME 90-day history slice `norm` is built from (`health.detect`, zero extra DB read,
+zero LLM) and, only when `level="alert"`, folds a compact `health_alerts` (`health.to_context` —
+`{level, alerts:[{kind,severity,detail}]}`) into `user_content` **and `_cache_key`** (the README
+pitfall). `SYSTEM`'s "СИГНАЛИ ВІДНОВЛЕННЯ" section tells the analyst to align tone with an alert
+that already went out as its own DM, not repeat it as a second warning — the field is simply
+absent while calibrating/none, so the prompt stays silent by default.
+
+**Auto-deload from risk signals (NF-09)**: NF-04 and EP-08 detect risk and DM a warning, but the
+plan itself never reacted — tomorrow's intervals stayed on the calendar regardless (NF-04's own
+"future step" note). The morning tick now tries `bot/jobs.py::_deload_check_for_user` FIRST,
+before the plain injury/health advisories: when `build_injury_assessment` is elevated/high or
+`build_health_alerts` is actionable, AND a heavy session (tempo/intervals/long) sits within
+`DELOAD_HEAVY_WINDOW_DAYS` (5) days, it calls the existing `run_plan_adaptation(..., trigger=
+"deload", risk={...})` — a new optional `risk` param (`{"injury": injury.to_context(...),
+"health": health.to_context(...)["alerts"]}`) that rides into the `SYSTEM_PLAN_ADAPT` prompt as
+already-confirmed evidence (a new `trigger="deload"` rule: ease 5-7 days, cut harder on
+`level="high"` or stacked signals, gentler on one weak signal — `adjust_level`'s bounds still
+apply). Sends the same ✅/❌ confirm buttons as any other adaptation proposal
+(`_send_adapt_proposal`). Reuses the injury guard (`INJURY_WARNED_KEY`, once per
+`INJURY_GUARD_DAYS`) as the shared "one risk touchpoint per day" gate — a fired deload proposal
+counts as that day's warning, so `_tick_for_user` skips the plain injury/health DMs when it fires
+(`if not deload_sent: ...`); `_has_pending_proposal` is honoured like every other auto-proposer.
+`plan_adapt_enabled=False` or `adjust_level="off"` → `run_plan_adaptation` itself returns
+`(plan, None)` with zero Claude calls, same as any other adaptation trigger. Not dedup-cached
+(adaptation never is). `tests/test_deload.py`.
 
 **Multisport weekly load budget (NF-05)**: a **pure-Python, zero-LLM** cross-sport training-load
 budget (`app/multisport.py`). Our `weekly_run_volume` only sees runs, so a 3h kite session or an
@@ -908,6 +947,53 @@ collapsed to ~6 pace/HR segments so the LLM sees pacing and HR drift), calls Son
 `SYSTEM_ACTIVITY`, **stores the text on `ActivityRecord.analysis`** (shown as a block on the
 web detail page) and logs a `ReportLog` (kind="activity"). Shares the dedup cache
 (`_activity_cache_key`). Works for any type; runs additionally get the segment detail.
+
+**Step-level plan-vs-actual (NF-14)**: EP-01 only matches a session as a whole ("the tempo run
+happened") — but structured workouts push per-interval pace targets to the watch
+(`PlannedWorkout.steps` → `workout_export.build_workout`), and nobody checked whether the runner
+actually hit them ("did 8x400" can mean nailed every one or blew up after the third — opposite
+adaptation signals). `app/stepmatch.py` is **pure, zero-LLM**: `flatten_steps` expands the steps
+tree into the exact order the watch executes them (a `repeat` block's children appear `reps`
+times in a row; the container itself is never a lap, mirroring `workout_export._build_steps`'s
+numbering), `match` pairs that sequence positionally against the activity's actual laps
+(`client.fetch_activity_splits`, `/activity-service/activity/{id}/splits`, disk-cached
+`splits:v1:<id>`, immutable) and scores each **working** step (run/tempo/interval with a pace
+target) hit/miss with a small tolerance (`PACE_TOLERANCE_PCT`/`PACE_TOLERANCE_MIN_KM`) —
+warmup/recovery/cooldown steps still occupy a slot (for index alignment) but are never a
+"working" miss; fewer laps than steps (stopped early) scores the un-lapped work as an honest
+partial (`actual: null`). Gated on the activity being matched (EP-01) to a session **we actually
+pushed with structure** (`garmin_workout_id` + `steps` both set) — an unpushed or freeform run
+stays silently `None` rather than guessing. Computed once in the morning tick right after
+matching, before the auto-analysis (`bot/jobs.py::_step_match_for_activity`, idempotent,
+best-effort — a Garmin/parse hiccup never blocks the analysis), stored on
+`ActivityRecord.step_match` (migration `e48815b991f2`). Three consumers: `activity_payload`
+feeds it to `SYSTEM_ACTIVITY` (and automatically enters `_activity_cache_key`, which hashes the
+whole payload), a `"🎯 6/8 у цілі"` badge (`stepmatch.badge`) in the auto-analysis DM and the
+`/me` activity detail page, and `stepmatch.aggregate`/`repository.recent_step_match` feed a
+compact hit-rate summary into `run_plan_adaptation`'s context — a systematically missed pace
+target is a *calibration* signal (the plan's target paces are off), not the same thing as a
+missed session. `tests/test_stepmatch.py` + `test_step_match_job.py`.
+
+**Goal progress projection (NF-10)**: the weekly digest could only say "відстаєш" qualitatively
+— nothing put a number on it. `app/goal.py` is **pure, zero-LLM** (mirrors `compare.py`/
+`wrapped.py`'s shape): `weekly_medians` smooths Garmin's daily-jitter race-time predictions into
+one median per ISO week (the same "trust weekly, not daily" reasoning EP-14 uses for records),
+`_linear_trend` fits a numpy-free least-squares line over week ORDER (not calendar week number,
+so a backfill gap just shortens the series instead of skewing it), and `project` extrapolates to
+the plan's `target_date` **only when it's within `FAR_HORIZON_WEEKS` (12)** — an honest refusal
+to promise a number too far out. `metric_for_goal(plan.goal)` maps a race goal to Garmin's
+matching prediction (`race_5k_s`/`race_10k_s`/`race_half_s`) or falls back to `vo2max`
+(`higher_better=True`) for the open-ended `general` goal, which has no target race at all.
+`repository.read_fitness_history` keeps the raw per-day series (unlike `get_recent_extra`, which
+coalesces to one latest snapshot) so the trend has real weekly buckets to fit. A `verdict`
+(on_track/close/behind) only appears once a `target_s` exists — the plan-setup form has **no
+time-target input today**, so `/goal` is honestly trend-only in practice (a documented,
+deliberate limitation, not a bug — `target_s` is wired for when that input lands).
+`goal.summary` is a deterministic Ukrainian formatter (**zero Claude calls** in this version).
+Surfaced two ways: the **`/goal`** bot command (pure DB read, no Garmin/MFA risk) and a
+`goal_projection` block in the weekly digest context (**and `_digest_cache_key`** — the README
+pitfall) that `SYSTEM_DIGEST`'s "чи на треку до цілі" section now leads with instead of eyeballing
+raw race predictions. `tests/test_goal.py`.
 
 **Post-run check-in (EP-12)**: after the auto-analysis DM (and on `/activity`) the bot
 attaches an inline keyboard — RPE 1–10 (one tap) + «🩹 щось боліло» → body-part buttons
