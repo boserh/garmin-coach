@@ -13,9 +13,22 @@ CODE-01 (розбити analysis-сервіс) і ST-09 (реальні впра
 ✅ зроблено (див. Done). З 🟡 medium далі закрито **EP-09** (`/ask` над усією
 історією). Наступні — EP-04/EP-05. Frozen-тікети — ⚪.
 
+**Поповнення 2026-07-21 (BA-аналіз):** NF-09…NF-13 + ST-10…ST-14 — здебільшого
+«монетизація» вже задокументованих у коді future extensions і замикання наявних
+петель. Рекомендований порядок партії: NF-09 → ST-10+ST-11 (по пів дня) →
+NF-10 → NF-11 (поки спека) → решта як філери.
+
 ## Сторі покращення (S/M)
 
-Немає відкритих — усі закрито (див. Done).
+Нова партія — BA-аналіз 2026-07-21 (попередні всі закрито, див. Done).
+
+| ID | Пріор. | Назва | Оцінка | Залежності |
+| --- | --- | --- | --- | --- |
+| [ST-10](ST-10-health-alerts-in-report-context.md) | 🟠 high | Health-алерти в контекст ранкового звіту (future extension EP-08) | S | EP-08 ✅, NF-01 ✅ |
+| [ST-11](ST-11-token-expiry-warning.md) | 🟠 high | Ворнінг про смерть garth-токена в morning-тику | S | OPS-01 ✅ (`token_info`) |
+| [ST-14](ST-14-per-user-timezone.md) | 🟡 medium | Per-user timezone (передумова NF-03) | S–M | — |
+| [ST-12](ST-12-costs-bot-command.md) | 🟢 low | Бот-команда `/costs [місяць]` | S | — |
+| [ST-13](ST-13-weather-chips-on-plan-page.md) | 🟢 low | Прогноз погоди у веб-в'ю `/plan` | S | EP-13 ✅ |
 
 ## Епіки (L/XL)
 
@@ -36,6 +49,16 @@ CODE-01 (розбити analysis-сервіс) і ST-09 (реальні впра
 | --- | --- | --- | --- | --- | --- |
 | [NF-03](NF-03-sickness-travel-mode.md) | 🟡 medium | Режим «хвороба/подорож» — ремонт плану одним тапом | M | 0.6 | EP-08 бажано |
 | [NF-08](NF-08-personal-mcp-server.md) | 🟢 low | Особистий MCP-сервер над БД (експеримент) — після EP-09 | M | 0.9 | EP-09 (спільні tool-хелпери) |
+
+### Нові фічі — BA-аналіз 2026-07-21
+
+| ID | Пріор. | Назва | Оцінка | Залежності |
+| --- | --- | --- | --- | --- |
+| [NF-09](NF-09-auto-deload-from-risk-signals.md) | 🟠 high | Авто-deload: injury/health-сигнали → адаптація плану (future step NF-04) | M | NF-04 ✅, EP-08 ✅, EP-02 ✅ |
+| [NF-10](NF-10-goal-progress-tracker.md) | 🟡 medium | `/goal` — кількісний прогрес до цілі з проєкцією | M | синергія з EP-05 фазою 0 |
+| [NF-11](NF-11-heat-fueling-advisor.md) | 🟡 medium (сезонно — зараз) | Гідрація/харчування для ключових сесій у спеку | S–M | EP-13 ✅, ST-01 ✅ |
+| [NF-12](NF-12-seasonal-multisport-intake.md) | 🟢 low | Сезонний мультиспорт-intake («кайт-сезон», future extension NF-05) | M | NF-05 ✅; intake спільний з EP-16 |
+| [NF-13](NF-13-user-data-export.md) | 🟢 low | Експорт власних даних (`/me/export`) | S–M | —; сировина для NF-08 |
 
 ## Перфоманс
 
