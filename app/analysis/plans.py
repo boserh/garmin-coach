@@ -25,6 +25,7 @@ from app.analysis.prompts import (
     SYSTEM_PLAN,
     SYSTEM_PLAN_ADAPT,
     SYSTEM_PLAN_EDIT,
+    SYSTEM_SICK,
     SYSTEM_STRENGTH_GEN,
     SYSTEM_WEATHER_PLAN,
 )
@@ -795,5 +796,93 @@ async def run_weather_plan_check(
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question="weather", report_text=edit.summary,
+    )
+    return plan, edit
+
+
+# ---------- SICK / TRAVEL MODE (NF-03) ----------
+
+SICK_WINDOW_DAYS = 14        # how far ahead the rebuild may touch dates
+SICK_LOOKBACK_DAYS = 14      # how far back an already-missed (still "planned") date may be
+_SICK_ALLOWED_ACTIONS = {"move", "modify", "skip"}   # never add/swap_exercise
+
+
+def _filter_sick_ops(ops: list, today: dt.date) -> list:
+    """Keep only move/modify/skip operations dated within
+    today-SICK_LOOKBACK_DAYS..today+SICK_WINDOW_DAYS — a rebuild touches the current
+    block, never the whole plan (mirrors the weather/adapt window guards)."""
+    lo = today - dt.timedelta(days=SICK_LOOKBACK_DAYS)
+    hi = today + dt.timedelta(days=SICK_WINDOW_DAYS)
+    kept = []
+    for op in ops:
+        if op.action not in _SICK_ALLOWED_ACTIONS:
+            continue
+        try:
+            d = dt.date.fromisoformat(op.date)
+        except (TypeError, ValueError):
+            continue
+        if lo <= d <= hi:
+            kept.append(op)
+    return kept
+
+
+def sick_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[PlanEdit, CallStats]:
+    """Propose a sick/travel-mode block rebuild — same JSON schema as the other plan-ops
+    calls (``PlanEdit``). One retry on a parse miss."""
+    return _plan_ops_with_stats(
+        context, api_key,
+        system=SYSTEM_SICK, kind="sick", log_label="SICK",
+        error_msg="Не вдалось сформувати пропозицію перебудови плану.",
+    )
+
+
+async def run_sick_check(
+    session, *, user_id: int, api_key: Optional[str] = None, days_missed: int = 0,
+):
+    """NF-03: rebuild the current plan block after illness/travel — shift the long run,
+    cancel this week's intensity, re-ramp by the 10%-rule. Triggered by the ``/sick``
+    command (``days_missed`` from free text, 0 if unspecified) or, in the future, an
+    EP-08-style detector. Returns ``(plan, PlanEdit)``, or ``(None, None)`` when there's
+    no active plan. Does NOT apply the change — the caller confirms via the same bot
+    buttons as a regular plan edit. Logs ``ReportLog(kind="sick")``. Not dedup-cached
+    (like the other plan-ops calls) — a repeat call may see fresher upcoming workouts."""
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        return None, None
+
+    today = dt.date.today()
+    lo = (today - dt.timedelta(days=SICK_LOOKBACK_DAYS)).isoformat()
+    hi = (today + dt.timedelta(days=SICK_WINDOW_DAYS)).isoformat()
+    ws = [w for w in await repository.list_workouts(session, plan.id)
+          if lo <= w.date <= hi and w.status != "done"]
+    days_to_target = _days_to_target(plan.target_date, today)
+    context = {
+        "today": today.isoformat(),
+        "days_missed": max(0, days_missed),
+        "window_days": SICK_WINDOW_DAYS,
+        "target_date": plan.target_date,
+        "days_to_target": days_to_target,
+        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                      "description": w.description} for w in ws],
+    }
+    try:
+        edit, stats = await _run_claude(sick_with_stats, context, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="sick", model=MODEL_PLAN, ok=False,
+            question=f"sick:{days_missed}", error=str(e)[:512],
+        )
+        raise
+    edit.operations = _filter_sick_ops(edit.operations, today)
+    edit.alt_operations = None   # sick-mode proposals are already the conservative option
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"sick:{days_missed}", report_text=edit.summary,
     )
     return plan, edit

@@ -11,6 +11,8 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.charts import run_charts as _run_charts
+from app.charts import series as _series
 from app.core.auth import require_admin
 from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog, User
 from app.dependencies import get_session
@@ -38,35 +40,9 @@ INDEX_COLS = {
 # The raw DB browser spans all users' rows → admin only.
 router = APIRouter(tags=["ui"], dependencies=[Depends(require_admin)])
 
-# inline-SVG sparkline geometry (no JS / no CDN — renders server-side)
-_SVG_W, _SVG_H, _SVG_PAD = 720, 120, 22
-
 
 async def _count(session: AsyncSession, model) -> int:
     return (await session.execute(select(func.count()).select_from(model))).scalar_one()
-
-
-def _series(values):
-    """Scale a chronological value list to SVG coords for a trend sparkline.
-    Returns None when there are fewer than 2 data points to draw."""
-    pairs = [(i, float(v)) for i, v in enumerate(values) if v is not None]
-    if len(pairs) < 2:
-        return None
-    n = len(values)
-    ys = [v for _, v in pairs]
-    ymin, ymax = min(ys), max(ys)
-    span = (ymax - ymin) or 1.0
-
-    def px(i):
-        return _SVG_PAD + (i / (n - 1)) * (_SVG_W - 2 * _SVG_PAD)
-
-    def py(v):
-        return _SVG_H - _SVG_PAD - ((v - ymin) / span) * (_SVG_H - 2 * _SVG_PAD)
-
-    dots = [(round(px(i), 1), round(py(v), 1)) for i, v in pairs]
-    points = " ".join(f"{x},{y}" for x, y in dots)
-    return {"points": points, "dots": dots, "ymin": ymin, "ymax": ymax,
-            "last": ys[-1], "W": _SVG_W, "H": _SVG_H}
 
 
 async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
@@ -82,49 +58,6 @@ async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
     charts = [{"label": lbl, "color": c, "s": s}
               for lbl, c, vals in defs if (s := _series(vals))]
     return charts, (dates[0] if dates else ""), (dates[-1] if dates else "")
-
-
-def _run_series(values, dists):
-    """Like ``_series`` but also carries each point's raw value + distance (``pts``,
-    x as a 0..1 fraction) so the detail page can show them on hover."""
-    pairs = [(i, v) for i, v in enumerate(values) if v is not None]
-    if len(pairs) < 2:
-        return None
-    n = len(values)
-    ys = [v for _, v in pairs]
-    ymin, ymax = min(ys), max(ys)
-    span = (ymax - ymin) or 1.0
-
-    def px(i):
-        return _SVG_PAD + (i / (n - 1)) * (_SVG_W - 2 * _SVG_PAD)
-
-    def py(v):
-        return _SVG_H - _SVG_PAD - ((v - ymin) / span) * (_SVG_H - 2 * _SVG_PAD)
-
-    points = " ".join(f"{round(px(i), 1)},{round(py(v), 1)}" for i, v in pairs)
-    pts = [{"x": round(i / (n - 1), 4), "v": v,
-            "d": dists[i] if i < len(dists) else None} for i, v in pairs]
-    return {"points": points, "pts": pts, "ymin": ymin, "ymax": ymax,
-            "last": ys[-1], "W": _SVG_W, "H": _SVG_H}
-
-
-def _run_charts(series):
-    """Pace + HR sparklines for a run's per-point series ([{d, p, hr}, ...]).
-    Returns (charts, first_km, last_km) for the activity detail page. Each chart
-    carries a ``fmt`` hint (pace/hr) so the hover tooltip formats the value right."""
-    if not series:
-        return [], "", ""
-    dists = [p.get("d") for p in series]
-    defs = [
-        ("Темп, хв/км", "#6cb6ff", "pace", [p.get("p") for p in series]),
-        ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in series]),
-    ]
-    charts = [{"label": lbl, "color": c, "fmt": fmt, "s": s}
-              for lbl, c, fmt, vals in defs if (s := _run_series(vals, dists))]
-    valid = [d for d in dists if d is not None]
-    first = f"{valid[0]:.1f} км" if valid else ""
-    last = f"{valid[-1]:.1f} км" if valid else ""
-    return charts, first, last
 
 
 @router.get("/ui", response_class=HTMLResponse)

@@ -548,3 +548,24 @@ async def test_upcoming_plan_workouts_user_scoped(session):
 async def test_upcoming_plan_workouts_no_plan(session):
     ws = await repository.upcoming_plan_workouts(session, user_id=99, days=2)
     assert ws == []
+
+
+async def test_month_cost_sums_current_month_only(session):
+    assert await repository.month_cost(session, U1) == 0.0
+
+    await repository.log_report(session, user_id=U1, kind="report", model="m", cost_usd=0.01)
+    await repository.log_report(session, user_id=U1, kind="deep", model="m", cost_usd=0.02)
+    # a different user's cost never counts
+    await repository.log_report(session, user_id=U2, kind="report", model="m", cost_usd=5.0)
+    await session.commit()
+    assert await repository.month_cost(session, U1) == 0.03
+
+    # a call from last month is excluded
+    row = (await session.execute(
+        select(ReportLog).where(ReportLog.user_id == U1, ReportLog.kind == "deep")
+    )).scalar_one()
+    this_month_start = dt.datetime.now(dt.timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0)
+    row.created_at = this_month_start - dt.timedelta(days=1)
+    await session.commit()
+    assert await repository.month_cost(session, U1) == 0.01

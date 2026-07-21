@@ -69,7 +69,9 @@ async def login_submit(
     if not user.is_active:
         return _login_page(request, error="Акаунт деактивовано.", status_code=403)
     login_session(request, user)
-    return RedirectResponse("/ui" if user.is_admin else "/settings", status_code=303)
+    # EP-04: a non-admin lands on the dashboard (readiness/trends/plan/cost at a
+    # glance) instead of the raw settings form.
+    return RedirectResponse("/ui" if user.is_admin else "/dashboard", status_code=303)
 
 
 @router.post("/logout")

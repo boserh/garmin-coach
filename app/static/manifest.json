@@ -1,0 +1,14 @@
+{
+  "name": "Garmin Coach",
+  "short_name": "Coach",
+  "description": "Готовність, тренди відновлення й план тренувань в один погляд.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090b0f",
+  "theme_color": "#090b0f",
+  "lang": "uk",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}

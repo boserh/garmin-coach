@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Дашборд</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <meta name="theme-color" content="#090b0f">
+</head>
+<body>
+  {% set active = 'dashboard' %}
+  {% include "_nav.html" %}
+
+  {% set DOT = {"easy":"var(--easy)","recovery":"var(--recovery)","long":"var(--long)",
+                "tempo":"var(--tempo)","intervals":"var(--intervals)","race":"var(--race)",
+                "rest":"var(--rest)","cross":"var(--rest)","strength":"#3aa0ff"} %}
+  {% set TLABEL = {"easy":"Легкий","recovery":"Відновлення","long":"Довгий","tempo":"Темповий",
+                   "intervals":"Інтервали","race":"Забіг","rest":"Відпочинок","cross":"Крос",
+                   "strength":"🏋️ Силова"} %}
+
+  <div class="wrap">
+    <p class="eyebrow">Дашборд</p>
+    <h1 class="title" style="font-size:1.7rem">Привіт{% if user.email %}, {{ user.email.split('@')[0] }}{% endif %}</h1>
+
+    {% if not has_history %}
+      <div class="note">
+        Ще немає історії відновлення — після першого синку Garmin тут з'явиться сьогоднішня
+        готовність і тренди. А поки що можна <a href="/settings">перевірити налаштування</a>.
+      </div>
+    {% else %}
+      {% set hero = today %}
+      {% include "_hero_ring.html" %}
+
+      {% if charts %}
+      <div class="charts">
+        {% for c in charts %}{% set s = c.s %}
+          <div class="chart" data-fmt="{{ c.fmt }}" data-pts='{{ s.pts|tojson }}'>
+            <div class="chead"><span style="color:{{ c.color }}">●</span> {{ c.label }}
+              <span class="meta">— {{ '%.0f'|format(s.ymin) }}…{{ '%.0f'|format(s.ymax) }},
+                останнє {{ '%.1f'|format(s.last) }}</span></div>
+            <div class="cwrap">
+              <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img" aria-label="{{ c.label }}">
+                <polyline fill="none" stroke="{{ c.color }}" stroke-width="2" stroke-linejoin="round" points="{{ s.points }}"/>
+                {% for x, y in s.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="{{ c.color }}"/>{% endfor %}
+              </svg>
+              <div class="guide" style="background:{{ c.color }}66"></div>
+              <div class="tip" style="color:{{ c.color }}"></div>
+            </div>
+            <div class="meta xaxis"><span>{{ first_x }}</span><span>{{ last_x }}</span></div>
+          </div>
+        {% endfor %}
+      </div>
+      <script>
+        document.querySelectorAll('.chart[data-pts]').forEach(function (ch) {
+          var pts = JSON.parse(ch.dataset.pts), fmt = ch.dataset.fmt;
+          var wrap = ch.querySelector('.cwrap'),
+              tip = ch.querySelector('.tip'), guide = ch.querySelector('.guide');
+          function show(e) {
+            var r = wrap.getBoundingClientRect(), frac = (e.clientX - r.left) / r.width;
+            var best = null, bd = 2;
+            pts.forEach(function (p) { var d = Math.abs(p.x - frac); if (d < bd) { bd = d; best = p; } });
+            if (!best) return;
+            var x = best.x * r.width;
+            guide.style.left = x + 'px'; guide.style.display = 'block';
+            tip.style.left = Math.min(Math.max(x, 42), r.width - 42) + 'px';
+            tip.style.display = 'block';
+            tip.textContent = (fmt === 'f1' ? best.v.toFixed(1) : Math.round(best.v))
+                              + (best.lbl ? ' · ' + best.lbl : '');
+          }
+          wrap.addEventListener('mousemove', show);
+          wrap.addEventListener('mouseleave', function () {
+            tip.style.display = 'none'; guide.style.display = 'none';
+          });
+        });
+      </script>
+      {% endif %}
+    {% endif %}
+
+    <div class="bigstats">
+      <div class="bigstat"><div class="v">${{ '%.2f'|format(month_cost) }}</div><div class="k">AI цього місяця</div></div>
+    </div>
+
+    <p class="eyebrow" style="margin-top:2rem">Наступні 7 днів</p>
+    {% if not plan %}
+      <div class="note">Немає активної програми. <a href="/plan">Створити план →</a></div>
+    {% elif not upcoming %}
+      <div class="empty">У найближчі 7 днів тренувань не заплановано. <a href="/plan">Переглянути програму →</a></div>
+    {% else %}
+      <div style="margin-top:1rem">
+        {% for w in upcoming %}
+        <div class="row {{ 'today' if w.date == today_iso else '' }}">
+          <div class="when">
+            <div class="dd">{{ w.date|dm }}</div>
+            <div class="dw">{{ w.date|dow }}</div>
+          </div>
+          <div class="main">
+            <div class="kind">
+              <span class="dot" style="background:{{ DOT.get(w.type, 'var(--muted)') }}"></span>
+              <span class="klabel">{{ TLABEL.get(w.type, w.type) }}</span>
+              {% if w.date == today_iso %}<span class="badge-today">сьогодні</span>{% endif %}
+            </div>
+            {% if w.description %}<div class="desc">{{ w.description }}</div>{% endif %}
+          </div>
+          {% if w.dist_km %}<div class="dist">{{ '%.1f'|format(w.dist_km) }}<small>км</small></div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="crumb" style="margin-top:1rem"><a href="/plan">Уся програма →</a></div>
+    {% endif %}
+
+    <p class="eyebrow" style="margin-top:2rem">Останні тренування</p>
+    {% if not activities %}
+      <div class="empty">Активностей поки немає.</div>
+    {% else %}
+      <div class="acts">
+        {% for a in activities %}
+        <a class="act" href="/me/activities/{{ a.id }}" style="--accent:{{ a.color }}">
+          <div class="ic-wrap"><div class="ic">{{ a.emoji }}</div></div>
+          <div class="info">
+            <div class="atype">{{ a.type }}</div>
+            <div class="adate">{{ a.date }}</div>
+            <div class="stats">
+              {% if a.dist_km %}<span class="m"><b>{{ '%.1f'|format(a.dist_km) }}</b><span>км</span></span>{% endif %}
+              {% if a.pace %}<span class="m"><b>{{ a.pace }}</b><span>/км</span></span>{% endif %}
+              {% if a.dur_min %}<span class="m"><b>{{ a.dur_min|int }}</b><span>хв</span></span>{% endif %}
+              {% if a.avg_hr %}<span class="m"><b>{{ a.avg_hr }}</b><span>уд</span></span>{% endif %}
+            </div>
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+      <div class="crumb" style="margin-top:1rem"><a href="/me/activities">Усі тренування →</a></div>
+    {% endif %}
+  </div>
+</body>
+</html>

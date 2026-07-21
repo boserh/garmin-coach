@@ -72,6 +72,7 @@ def main() -> None:
     app.add_handler(CommandHandler("risk", handlers.risk))
     app.add_handler(CommandHandler("health", handlers.health))
     app.add_handler(CommandHandler("plan", handlers.plan))
+    app.add_handler(CommandHandler("sick", handlers.sick))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
     app.add_handler(CallbackQueryHandler(handlers.plan_extend_callback, pattern=r"^planext:"))

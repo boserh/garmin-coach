@@ -36,6 +36,12 @@ dev = [
     "httpx",
     "ruff",
 ]
+mcp = [
+    # NF-08: personal read-only MCP server over the DB — opt-in, not a base dep.
+    # Requires Python >=3.10 (every mcp release does) — install into a separate venv
+    # if the main deployment stays on the project's 3.9 baseline.
+    "mcp",
+]
 
 [tool.setuptools]
 packages = ["app", "app.core", "app.db", "app.garmin", "app.analysis", "app.routers", "bot"]

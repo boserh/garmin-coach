@@ -77,7 +77,8 @@ HELP_TEXT = (
     "/health — алерти відновлення (HRV, сон, стрес)\n\n"
     "🗓 План\n"
     "/plan — переглянути програму\n"
-    "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n\n"
+    "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n"
+    "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n\n"
     "/help — цей список"
 )
 
@@ -620,6 +621,52 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         ]])
         text = "Пропоную:\n\n" + edit.summary
     await update.message.reply_text(text, reply_markup=kb)
+
+
+async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/sick [днів] — NF-03: ремонт плану після хвороби/подорожі одним тапом. Опційний
+    аргумент — скільки днів уже пропущено/буде пропущено (напр. "/sick 3"); без нього —
+    консервативний дефолт (сьогодні-завтра легко). Пропонує перебудову блоку через той
+    самий confirm-флоу, що /plan <текст> (плюс skip у палітрі дій)."""
+    from app.analysis.service import run_sick_check
+    from app.garmin.credentials import load_credentials
+
+    days_missed = 0
+    if ctx.args and ctx.args[0].isdigit():
+        days_missed = int(ctx.args[0])
+    logger.info(f"CMD /sick days_missed={days_missed}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        await update.message.reply_text("Перебудовую план під хворобу/подорож…")
+        creds = load_credentials(user)
+        try:
+            _plan, edit = await run_sick_check(
+                session, user_id=user.id, days_missed=days_missed,
+                api_key=creds.anthropic_key,
+            )
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            await update.message.reply_text(str(e))
+            return
+    if _plan is None:
+        await update.message.reply_text(
+            "Немає активної програми. Створи її на сторінці /plan у вебі."
+        )
+        return
+    if not edit.operations:
+        await update.message.reply_text(edit.summary or "Перебудовувати нічого.")
+        return
+    ops = [op.model_dump() for op in edit.operations]
+    ctx.user_data["pending_plan"] = {"ops": ops, "alt": []}
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
+    ]])
+    await update.message.reply_text(
+        "🤒 Пропоную перебудову:\n\n" + edit.summary, reply_markup=kb
+    )
 
 
 def _ops_hint(ops: list) -> str:
