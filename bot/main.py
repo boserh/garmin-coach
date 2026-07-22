@@ -41,10 +41,18 @@ async def _post_init(application: Application) -> None:
         BotCommand("report", "Звіт відновлення за 7 днів"),
         BotCommand("ask", "Питання по всій історії, напр. /ask коли я біг швидше 5:00/км"),
         BotCommand("deep", "Глибокий аналіз (Opus), напр. /deep вплив вело на HRV"),
+        BotCommand("compare", "Порівняння з собою рік тому"),
+        BotCommand("wrapped", "Святковий підсумок сезону (Opus)"),
+        BotCommand("insights", "Що на тебе насправді впливає (кореляції сну/HRV/стресу)"),
         BotCommand("activities", "Останні активності"),
         BotCommand("activity", "Розбір активності, напр. /activity 5"),
         BotCommand("checkin", "Оцінити останнє тренування (RPE + чи боліло)"),
+        BotCommand("records", "Особисті рекорди"),
+        BotCommand("risk", "Травматичний радар (сигнали перевантаження)"),
+        BotCommand("health", "Алерти відновлення (HRV, сон, стрес)"),
         BotCommand("plan", "Програма; /plan <текст> щоб змінити, напр. додай біг сьогодні"),
+        BotCommand("sick", "Захворів/у подорожі: перебудувати найближчий блок плану"),
+        BotCommand("goal", "Кількісний прогрес до цілі (прогноз Garmin + тренд)"),
     ])
 
 
