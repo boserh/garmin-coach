@@ -240,6 +240,86 @@ async def test_no_active_plan_returns_zeros(session):
     assert result == {"done": 0, "partial": 0, "missed": 0}
 
 
+# ---- cycling (EP-10 phase 3) -------------------------------------------------
+
+async def test_cycling_matched_by_bike_activity_variant_type(session):
+    """A cycling workout is matched against a 'road_biking'-typed activity — not just a
+    bare 'cycling' string — since Garmin's own type strings vary (BIKE_NEEDLES, not a
+    single substring)."""
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, type_="cycling", dist_km=40.0)
+    a = await _make_activity(session, YESTERDAY, dist_km=40.0, dur_min=90.0,
+                             type_="road_biking")
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["done"] == 1
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.DONE
+    assert w.completed_activity_id == a.id
+    assert w.match_info["dist_delta_km"] == pytest.approx(0.0, abs=0.01)
+    assert "actual_pace_minkm" not in w.match_info   # cycling never carries a pace target
+
+
+async def test_cycling_not_matched_by_running_activity(session):
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, TODAY, type_="cycling", dist_km=40.0)
+    await _make_activity(session, TODAY, dist_km=5.0, type_="running")
+    await session.commit()
+
+    await matching.match_activities(session, U1)
+
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.PLANNED
+    assert w.completed_activity_id is None
+
+
+async def test_cycling_distance_over_threshold_gives_partial(session):
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, type_="cycling", dist_km=40.0)
+    await _make_activity(session, YESTERDAY, dist_km=20.0, dur_min=45.0, type_="cycling")
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["partial"] == 1
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.PARTIAL
+
+
+async def test_cycling_missed_when_no_activity(session):
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, type_="cycling", dist_km=40.0)
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["missed"] == 1
+    await session.refresh(w)
+    assert w.status == WorkoutStatus.MISSED
+
+
+async def test_running_and_cycling_matched_independently_same_day(session):
+    """A run and a ride planned the same day each grab their own activity, not the
+    other's — the two matchers don't cross-claim candidates."""
+    plan = await _make_plan(session)
+    run_w = await _make_workout(session, plan, YESTERDAY, type_="easy", dist_km=5.0)
+    ride_w = await _make_workout(session, plan, YESTERDAY, type_="cycling", dist_km=40.0)
+    run_a = await _make_activity(session, YESTERDAY, dist_km=5.0, type_="running")
+    ride_a = await _make_activity(session, YESTERDAY, dist_km=40.0, dur_min=90.0,
+                                  type_="cycling")
+    await session.commit()
+
+    result = await matching.match_activities(session, U1)
+
+    assert result["done"] == 2
+    await session.refresh(run_w)
+    await session.refresh(ride_w)
+    assert run_w.completed_activity_id == run_a.id
+    assert ride_w.completed_activity_id == ride_a.id
+
+
 async def test_activity_not_linked_to_two_workouts(session):
     """One activity must satisfy at most one workout (used_ids guard)."""
     plan = await _make_plan(session, start=DAY_BEFORE)

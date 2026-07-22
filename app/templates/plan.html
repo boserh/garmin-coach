@@ -15,10 +15,11 @@
 
   {% set DOT = {"easy":"var(--easy)","recovery":"var(--recovery)","long":"var(--long)",
                 "tempo":"var(--tempo)","intervals":"var(--intervals)","race":"var(--race)",
-                "rest":"var(--rest)","cross":"var(--rest)","strength":"#3aa0ff"} %}
+                "rest":"var(--rest)","cross":"var(--rest)","strength":"#3aa0ff",
+                "cycling":"#6cb6ff"} %}
   {% set TLABEL = {"easy":"Легкий","recovery":"Відновлення","long":"Довгий","tempo":"Темповий",
                    "intervals":"Інтервали","race":"Забіг","rest":"Відпочинок","cross":"Крос",
-                   "strength":"🏋️ Силова"} %}
+                   "strength":"🏋️ Силова","cycling":"🚴 Вело"} %}
   {% set ST_BADGE = {"done":"✅","partial":"⚠️","missed":"❌","skipped":"⏭"} %}
 
   <div class="wrap">
@@ -147,8 +148,10 @@
         </div>
         <div class="dist">
           {% if w.dist_km %}{{ '%.1f'|format(w.dist_km) }}<small>КМ</small>{% endif %}
+          {% if w.type != 'cycling' %}
           {% set em = w.steps|est_min(anchor_pace) %}
           {% if em %}<div class="est">~{{ em }}<small>ХВ</small></div>{% endif %}
+          {% endif %}
         </div>
       </div>
       {% endfor %}
@@ -185,6 +188,10 @@
           <button class="arch" type="submit">Зберегти</button>
         </form>
       </div>
+      {% if cycling %}
+      <div class="meta">🚴 Вело-сесії: {{ cycling.days|map('wdlabel')|join(', ') }}
+        · ~{{ cycling.avg_min }} хв (закладено в генерацію цієї програми)</div>
+      {% endif %}
       <div>
         <form class="inline" method="post" action="/plan/archive"
               onsubmit="return confirm('Архівувати поточну програму і почати нову?');">

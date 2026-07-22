@@ -266,6 +266,7 @@ async def run_plan_generation(
         "fitness": fitness or None,
         "multisport": multisport,
         "season": (intake or {}).get("season") or None,
+        "cycling": (intake or {}).get("cycling") or None,
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
@@ -348,6 +349,7 @@ async def run_plan_extension(
         "weekly_volume": weekly_volume or None,
         "fitness": fitness or None, "multisport": multisport,
         "season": intake.get("season") or None,
+        "cycling": intake.get("cycling") or None,
     }
     logger.info(f"PLAN extend user={user_id} plan={plan.id} {new_start}..{block_end}")
     try:
