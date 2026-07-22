@@ -390,6 +390,9 @@ async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> L
             "bb_drained": m.bb_drained,
             # resting HR drift is a key fatigue marker; it lives in extra, not a column
             "resting_hr": (m.extra or {}).get("resting_hr"),
+            # NF-16: the evening sleep-nudge wants Garmin's own sleep_need_h (extra) vs
+            # actual sleep_h — cheaper to carry the whole dict than add a second column.
+            "extra": m.extra,
         }
         for m in rows
     ]
@@ -979,6 +982,43 @@ async def month_cost(session: AsyncSession, user_id: int) -> float:
         )
     ).scalar_one()
     return round(total or 0.0, 4)
+
+
+async def costs_for_month(
+    session: AsyncSession, user_id: int, start: dt.datetime, end: dt.datetime
+) -> dict:
+    """ST-12: cost aggregation over ``[start, end)`` — total $, a per-``kind`` breakdown
+    ({cost, calls}), total/cache-hit call counts, and the 3 priciest individual calls.
+    Bounds are caller-supplied UTC datetimes (bot/handlers computes them in the user's own
+    timezone via ST-14's ``user_tz`` — a calendar month means THEIR month, not UTC's) so
+    this stays a dumb range query. A ``cached=True`` row carries ~$0 cost — counted towards
+    ``calls`` (visible cache effectiveness) but excluded from ``top3`` (nothing to show)."""
+    rows = (
+        await session.execute(
+            select(ReportLog).where(
+                ReportLog.user_id == user_id,
+                ReportLog.created_at >= start, ReportLog.created_at < end,
+            )
+        )
+    ).scalars().all()
+    by_kind: Dict[str, dict] = {}
+    for r in rows:
+        b = by_kind.setdefault(r.kind, {"cost": 0.0, "calls": 0})
+        b["cost"] += r.cost_usd or 0.0
+        b["calls"] += 1
+    for b in by_kind.values():
+        b["cost"] = round(b["cost"], 4)
+    top = sorted(
+        (r for r in rows if (r.cost_usd or 0.0) > 0), key=lambda r: r.cost_usd, reverse=True
+    )[:3]
+    return {
+        "total_usd": round(sum(r.cost_usd or 0.0 for r in rows), 4),
+        "calls": len(rows),
+        "cached": sum(1 for r in rows if r.cached),
+        "by_kind": by_kind,
+        "top3": [{"kind": r.kind, "date": r.created_at.date().isoformat(),
+                  "cost": round(r.cost_usd, 4)} for r in top],
+    }
 
 
 async def log_report(

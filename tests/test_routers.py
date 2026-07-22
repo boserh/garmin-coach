@@ -498,6 +498,123 @@ def test_plan_view_links_completed_workout_to_activity(auth_client):
     assert "км факт" in view
 
 
+def test_plan_page_shows_weather_chip_and_conflict(auth_client, monkeypatch):
+    """ST-13: a stored location + a forecast covering the plan's next-7-days window renders
+    a compact weather chip next to the matching session, and flags a heavy session on an
+    extreme-weather day (same rule EP-13's daily job uses) as a conflict."""
+    import datetime as dt
+
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+    tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="faster_5k", goal_label="Швидше 5 км", target_date=None,
+                start_date=dt.date.today().isoformat(), days_per_week=3, intensity="moderate",
+                intake={}, summary="", workouts=[PlanWorkout(
+                    date=tomorrow, week=1, type="tempo", dist_km=6.0, description="темпова")])
+            u = await users.get_by_email(s, "t@example.com")
+            u.latitude, u.longitude = 50.06, 19.94
+            await s.commit()
+
+    anyio.run(seed)
+
+    forecast = [{
+        "date": tomorrow, "t_min_c": 24, "t_max_c": 35, "feels_max_c": 34,
+        "precip_mm": 0, "precip_prob_pct": 5, "wind_max_kmh": 10, "code": 0, "summary": "спекотно",
+    }]
+    with patch.object(plan_router.weather, "fetch_forecast_week", return_value=forecast):
+        view = auth_client.get("/plan").text
+
+    assert "🌡️34°" in view
+    assert "wx-conflict" in view   # tempo session on a 34° day → flagged, same as the job
+
+
+def test_plan_page_renders_without_chips_when_no_location(auth_client):
+    """No stored location → the page renders fine, just without any weather chips."""
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date="2026-06-02", week=1, type="easy", dist_km=4.0, description="легко")])
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+    assert "🌡️" not in view
+
+
+def test_plan_page_renders_without_chips_when_forecast_fails(auth_client):
+    """A stored location but a failed Open-Meteo fetch (None) → best-effort, no chips,
+    page still 200 (same live-fallback pattern as the strength accordion)."""
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date="2026-06-02", week=1, type="easy", dist_km=4.0, description="легко")])
+            u = await users.get_by_email(s, "t@example.com")
+            u.latitude, u.longitude = 50.06, 19.94
+            await s.commit()
+
+    anyio.run(seed)
+    with patch.object(plan_router.weather, "fetch_forecast_week", return_value=None):
+        r = auth_client.get("/plan")
+    assert r.status_code == 200
+    assert "🌡️" not in r.text
+
+
+def test_plan_readonly_view_has_no_weather_chips(auth_client):
+    """ST-13 AC: only the ACTIVE plan gets chips — an archived/read-only view never does,
+    even with a stored location and a forecast covering that (past) window."""
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="faster_5k", goal_label="Швидше 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="старий", workouts=[PlanWorkout(
+                    date="2026-06-02", week=1, type="easy", dist_km=4.0, description="легко")])
+            await repository.create_plan(   # archives the first
+                s, uid, goal="first_10k", goal_label="Перші 10 км", target_date=None,
+                start_date="2026-06-20", days_per_week=3, intensity="moderate", intake={},
+                summary="новий", workouts=[])
+            u = await users.get_by_email(s, "t@example.com")
+            u.latitude, u.longitude = 50.06, 19.94
+            await s.commit()
+            archived = await repository.list_plans(s, uid, status="archived")
+            return next(p.id for p in archived if p.summary == "старий")
+
+    archived_id = anyio.run(seed)
+    with patch.object(plan_router.weather, "fetch_forecast_week") as fetch:
+        view = auth_client.get(f"/plan/{archived_id}").text
+    fetch.assert_not_called()
+    assert "🌡️" not in view
+
+
 def test_plan_adjust_level_stored_from_form(auth_client):
     """ST-07: the form's adjust_level lands in intake; when omitted it defaults from
     the goal — a target_date means race prep (conservative), none means flexible."""
@@ -742,6 +859,39 @@ def test_settings_saves_encrypted_credentials(auth_client, crypto_key):
             assert crypto.decrypt(u.anthropic_key_enc) == "sk-ant-xyz"
             assert crypto.decrypt(u.garmin_email_enc) == "g@example.com"
             assert u.telegram_chat_id == 123456
+
+    anyio.run(check)
+
+
+def test_settings_saves_valid_timezone(auth_client, crypto_key):
+    from app.db.base import async_session_maker
+
+    r = auth_client.post(
+        "/settings", data={"timezone": "America/New_York"}, follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings?saved=1"
+
+    async def check():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            assert u.timezone == "America/New_York"
+
+    anyio.run(check)
+
+
+def test_settings_rejects_garbage_timezone(auth_client, crypto_key):
+    from app.db.base import async_session_maker
+
+    r = auth_client.post(
+        "/settings", data={"timezone": "Not/AZone"}, follow_redirects=False,
+    )
+    assert r.headers["location"] == "/settings?tz=fail"
+
+    async def check():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            assert u.timezone != "Not/AZone"   # rejected — left at whatever it was
 
     anyio.run(check)
 

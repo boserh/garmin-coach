@@ -249,7 +249,7 @@ async def test_health_hook_silent_when_not_actionable(session):
 def _fake_analyze(captured):
     def fake(payload, question="", deep=False, kind=None, previous_report=None,
              api_key=None, weather=None, plan_today=None, fitness=None, records=None,
-             norm=None, subjective=None, health_alerts=None):
+             norm=None, subjective=None, health_alerts=None, fueling=None):
         captured["health_alerts"] = health_alerts
         return "звіт", service.CallStats(kind=kind or "report", model="m")
     return fake

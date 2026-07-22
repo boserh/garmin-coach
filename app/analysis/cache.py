@@ -81,7 +81,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                records: Optional[list] = None,
                norm: Optional[dict] = None,
                subjective: Optional[dict] = None,
-               health_alerts: Optional[dict] = None) -> str:
+               health_alerts: Optional[dict] = None,
+               fueling: Optional[dict] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -97,6 +98,7 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "norm": norm,
         "subjective": subjective,
         "health_alerts": health_alerts,
+        "fueling": fueling,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

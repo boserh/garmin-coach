@@ -14,10 +14,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import weather
 from app.analysis.service import (
     ADJUST_LEVELS,
     AnalystError,
@@ -27,6 +29,7 @@ from app.analysis.service import (
     run_strength_preview,
 )
 from app.core.auth import current_user
+from app.core.config import settings
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.dependencies import get_session
@@ -276,6 +279,13 @@ ADJUST_LABELS = {
     "off": "вимкнена",
 }
 
+# ST-13: same "key session" set EP-13's daily weather job reacts to (bot.jobs.ADAPT_HEAVY_TYPES)
+# — duplicated here (small, primitive) rather than importing the bot package into a web router.
+_WEATHER_HEAVY_TYPES = {"tempo", "intervals", "long"}
+# How many days ahead the plan page shows weather chips for — matches fetch_forecast_week's
+# default window and keeps the "which days would the weather job flag" question consistent.
+_WEATHER_CHIP_DAYS = 7
+
 
 _MONTHS_UK = ["січ", "лют", "бер", "кві", "тра", "чер",
               "лип", "сер", "вер", "жов", "лис", "гру"]
@@ -431,6 +441,34 @@ async def _strength_details(session, user, workouts):
     return view, names
 
 
+async def _weather_chips(user: User, workouts) -> tuple:
+    """ST-13: compact per-date weather chips (feels-max/rain-prob/wind) for the plan's
+    next ``_WEATHER_CHIP_DAYS`` days, plus which of those dates the same rule EP-13's daily
+    ``weather_plan_job`` uses would flag as a conflict — so the page shows WHY a session
+    might get a move proposal, without itself calling Claude or proposing anything (that
+    stays the job's, single-proposal-at-a-time, territory). Best-effort: no stored location
+    or an Open-Meteo failure just means an empty page section, never a broken one — same
+    live-fallback pattern as ``_strength_details``. Returns ``({date: day}, {conflict_date})``."""
+    if user.latitude is None or user.longitude is None:
+        return {}, set()
+    forecast = await run_in_threadpool(weather.fetch_forecast_week, user.latitude, user.longitude)
+    if not forecast:
+        return {}, set()
+    by_date = {d["date"]: d for d in forecast if d.get("date")}
+    today = dt.date.today()
+    window_end = (today + dt.timedelta(days=_WEATHER_CHIP_DAYS - 1)).isoformat()
+    today_iso = today.isoformat()
+    sessions = [(w.date, w.type) for w in workouts
+                if w.date and today_iso <= w.date <= window_end]
+    conflicts = weather.find_weather_conflicts(
+        forecast, sessions, today=today, decision_days=_WEATHER_CHIP_DAYS - 1,
+        heavy_types=_WEATHER_HEAVY_TYPES, heat_feels_c=settings.WEATHER_HEAT_FEELS_C,
+        rain_prob_pct=settings.WEATHER_RAIN_PROB_PCT, wind_kmh=settings.WEATHER_WIND_KMH,
+    )
+    chips = {w.date: by_date[w.date] for w in workouts if w.date in by_date}
+    return chips, {c["date"] for c in conflicts}
+
+
 @router.get("/plan", response_class=HTMLResponse)
 async def plan_page(
     request: Request,
@@ -466,6 +504,7 @@ async def plan_page(
     strength_view, strength_names = await _strength_details(session, user, workouts)
     compliance = await repository.weekly_compliance(session, plan.id)
     anchor_pace = await repository.typical_run_pace(session, user.id)
+    weather_chips, weather_conflicts = await _weather_chips(user, workouts)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
@@ -474,6 +513,7 @@ async def plan_page(
          "compliance": compliance, "anchor_pace": anchor_pace,
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
+         "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
          "count": len(workouts), "readonly": False},
     )
 
@@ -511,6 +551,8 @@ async def plan_view(
          "strength_view": strength_view, "strength_names": strength_names,
          "compliance": compliance, "anchor_pace": anchor_pace,
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
+         # ST-13: only the ACTIVE plan gets weather chips — a past forecast means nothing.
+         "weather_chips": {}, "weather_conflicts": set(),
          "count": len(workouts), "readonly": True},
     )
 

@@ -4,6 +4,7 @@ job scaffold (eligible_users / for_each_user) added for CODE-04."""
 import datetime as dt
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app.db.models import User
 from app.db.users import eligible_users
@@ -11,9 +12,11 @@ from app.garmin.schemas import DailySummary, Payload
 from bot import jobs as jobs_module
 from bot.jobs import (
     ACTIVITY_FRESH_DAYS,
+    TZ,
     _activity_watch_for_user,
     _recovery_synced,
     for_each_user,
+    user_tz,
 )
 
 TODAY = "2026-06-24"
@@ -192,3 +195,57 @@ async def test_for_each_user_isolates_failures(session, monkeypatch):
 
     # u2 blew up but u1 and u3 still ran — one user's error never aborts the rest.
     assert seen == [u1.id, u2.id, u3.id]
+
+
+# --- ST-14: per-user timezone -----------------------------------------------
+
+def test_user_tz_reads_iana_string():
+    user = SimpleNamespace(timezone="America/New_York")
+    assert user_tz(user) == ZoneInfo("America/New_York")
+
+
+def test_user_tz_falls_back_on_garbage():
+    user = SimpleNamespace(timezone="Not/AZone")
+    assert user_tz(user) == TZ
+
+
+def test_user_tz_falls_back_on_missing():
+    user = SimpleNamespace(timezone=None)
+    assert user_tz(user) == TZ
+
+
+# 10:00 UTC ≈ noon in Warsaw (summer, UTC+2) but 03:00 in Los Angeles (summer, UTC-7) —
+# used to prove the morning-tick window check is evaluated in EACH user's own timezone,
+# not the process default, without depending on the real wall-clock time of the test run.
+_FIXED_UTC = dt.datetime(2026, 7, 22, 10, 0, tzinfo=dt.timezone.utc)
+
+
+class _FixedDateTime(dt.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return _FIXED_UTC if tz is None else _FIXED_UTC.astimezone(tz)
+
+
+async def _tick_entered_runtime(monkeypatch, user) -> bool:
+    monkeypatch.setattr(jobs_module.dt, "datetime", _FixedDateTime)
+    entered = False
+
+    @asynccontextmanager
+    async def fake_runtime(*a, **kw):
+        nonlocal entered
+        entered = True
+        yield None
+
+    monkeypatch.setattr(jobs_module, "user_garmin_runtime", fake_runtime)
+    await jobs_module._tick_for_user(_FakeCtx(), None, user)
+    return entered
+
+
+async def test_tick_runs_inside_users_local_window(monkeypatch):
+    warsaw_user = SimpleNamespace(id=1, timezone="Europe/Warsaw", telegram_chat_id=1)
+    assert await _tick_entered_runtime(monkeypatch, warsaw_user) is True
+
+
+async def test_tick_skips_outside_users_local_window(monkeypatch):
+    la_user = SimpleNamespace(id=2, timezone="America/Los_Angeles", telegram_chat_id=2)
+    assert await _tick_entered_runtime(monkeypatch, la_user) is False

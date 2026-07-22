@@ -115,6 +115,14 @@ def test_cache_key_varies_with_health_alerts():
     assert base != _cache_key(_DATA, "q", "claude-sonnet-4-6", health_alerts=alerts)
 
 
+def test_cache_key_varies_with_fueling():
+    # NF-11: the fueling advisory must key the cache (the README наскрізна pitfall).
+    base = _cache_key(_DATA, "q", "claude-sonnet-4-6")
+    fueling = {"duration_min": 70, "fluid_ml_h": 750, "carbs_g_h": None,
+               "hot": True, "notes": ["вода ~750 мл/год"]}
+    assert base != _cache_key(_DATA, "q", "claude-sonnet-4-6", fueling=fueling)
+
+
 def test_ask_cache_key_varies_with_question_and_reports():
     base = _ask_cache_key(_REPORTS, "чи бігти?", "claude-sonnet-4-6", [])
     assert base != _ask_cache_key(_REPORTS, "інше питання", "claude-sonnet-4-6", [])

@@ -146,6 +146,10 @@ Optional, with defaults:
 | `HEALTH_ALERTS` | `True` | EP-08: master on/off for proactive recovery-anomaly alerts in the morning tick |
 | `HEALTH_MIN_HISTORY_DAYS` | `7` | EP-08: cold-start gate — no alert until this much daily history |
 | `HEALTH_ALERT_COOLDOWN_DAYS` | `3` | EP-08: same alert kind at most once per this many days (per-rule cooldown) |
+| `FUELING_MIN_DURATION_MIN` | `45` | NF-11: below this estimated session duration, the fueling advisor stays silent |
+| `FUELING_HEAT_FEELS_C` | `28` | NF-11: feels-like max °C at/above → heat notes (electrolytes, coolest hourly slot) |
+| `SLEEP_NUDGE` | `True` | NF-16: master on/off for the evening sleep-debt nudge |
+| `SLEEP_NUDGE_HOUR` | `21` | NF-16: hour (Europe/Warsaw — the job's own schedule stays process-TZ in v1) the evening check runs |
 
 `CLAUDE_CACHE_FILE` is gone — the Claude dedup cache lives in the `llm_cache` table
 (PERF-02), shared by the bot and web processes.
@@ -156,10 +160,11 @@ Optional, with defaults:
 
 - **Users**: `users` table (login email + bcrypt hash, `is_admin`, encrypted
   Garmin/Claude creds + garth token, plaintext indexed `telegram_chat_id`, a
-  `weather_location`/`latitude`/`longitude` for the morning weather lookup, and the
-  per-user feature toggles `garmin_sync_enabled`/`plan_adapt_enabled`/`alerts_enabled`
-  — the last governs EP-08 health alerts). Web login is a signed cookie session
-  (`SessionMiddleware`, signed by `APP_SECRET_KEY`).
+  `weather_location`/`latitude`/`longitude` for the morning weather lookup, a `timezone`
+  (IANA string, default `Europe/Warsaw` — ST-14, drives per-user job windows/guard dates),
+  and the per-user feature toggles `garmin_sync_enabled`/`plan_adapt_enabled`/`alerts_enabled`
+  — the last governs EP-08 health alerts and NF-16's sleep nudge). Web login is a signed
+  cookie session (`SessionMiddleware`, signed by `APP_SECRET_KEY`).
 - **Secrets**: `app.core.crypto` — Fernet encrypt/decrypt for creds, bcrypt for
   passwords. `app.garmin.credentials.load_credentials` decrypts a user into a runtime
   `UserCredentials`.
@@ -430,8 +435,8 @@ app/
   dependencies.py      shared deps (get_session)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /sick, /test_*; _resolve_user, error handler
-  jobs.py              morning_job loops users (Europe/Warsaw window; per-user once-a-day guard)
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /sick, /test_*; _resolve_user, error handler
+  jobs.py              morning_job loops users (per-user timezone window, ST-14; per-user once-a-day guard); also weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
 ```
@@ -871,6 +876,81 @@ Python 3.9 baseline (the Pi/CI target), so this is meant to run from a separate 
 venv (wherever the MCP client lives), not necessarily on the Pi itself; the test module
 (`tests/test_mcp_server.py`) skips itself via `pytest.importorskip("mcp")` when the extra
 isn't installed, so CI (3.9, `.[dev]` only) stays green without it.
+
+**Per-user timezone (ST-14)**: `User.timezone` (IANA string, default `Europe/Warsaw`,
+migration `a3b4c5d6e7f8`) + a `/settings` field validated via `zoneinfo.ZoneInfo` on save
+(a bad string → `?tz=fail`, never a 500). `bot.jobs.user_tz(user)` is the shared reader —
+falls back to the process `TZ` on a corrupt/missing value so a bad zoneinfo string can
+never break a job. **Per-user checks** (not the job schedule) read it: `_tick_for_user`
+used to receive a `now`/`today` computed once for the whole batch in `morning_job`
+(so a single global 07-23 window check gated everyone); it now computes both itself from
+`user_tz(user)` and does its own window check, so a traveling user or a second user
+outside CET gets their own morning, not the process's. The once-a-day/week/month
+`bot_state` guard dates that key off "today" (`digest:<iso-week>`, `compare:<YYYY-MM>`,
+`insights:<YYYY-MM>`, the morning/injury/health/adapt/extend guards) inherit this
+automatically since they're computed from the same per-user `today`. **Deliberate v1
+scope**: the `run_daily`-scheduled jobs' own firing hour (digest hour, plan-sync hour,
+weather-plan hour, sleep-nudge hour, adapt-review hour) stays on the process TZ — repointing
+those per-user needs re-registering a `JobQueue` job per user, a bigger change reserved for
+when a user outside ~±2h of Europe/Warsaw actually shows up (documented in the ticket).
+
+**`/costs [YYYY-MM]` (ST-12)**: `repository.costs_for_month(session, user_id, start, end)`
+aggregates `report_logs` over a caller-supplied `[start, end)`: total $, a per-`kind`
+breakdown (`{cost, calls}`), total/cache-hit call counts, and the 3 priciest individual
+calls (a `cached=True` row counts toward `calls` — visible cache effectiveness — but never
+appears in the top-3, since its cost is ~$0). `bot/handlers.py::costs_cmd` is a pure DB read
+(no Garmin/Claude, like `/records`/`/compare`) that computes the month boundary in the
+user's OWN timezone (`bot.jobs.user_tz`, ST-14) rather than UTC — "this month" means their
+month. `/costs 2026-06` targets an explicit month; garbage input gets a format hint instead
+of a stack trace.
+
+**Weather chips on `/plan` (ST-13)**: `app/routers/plan.py::_weather_chips` is a best-effort
+helper (same live-fallback shape as `_strength_details`) that, given a stored location, pulls
+`weather.fetch_forecast_week` (one `run_in_threadpool` fetch per render, no cache in v1 —
+Open-Meteo is free and fast) and reuses the exact same pure `weather.find_weather_conflicts`
+that `weather_plan_job` (EP-13) uses to decide whether to propose a move. The plan page only
+**shows** why a session might get a move proposal (🌡️ feels-max / 🌧️ rain-prob / 💨 wind
+chips, a conflicting day highlighted via the `wx-conflict` CSS class) — it never itself calls
+Claude or proposes anything; that stays the job's one-proposal-at-a-time territory. Only the
+**active** plan (`GET /plan`) gets chips — the read-only `/plan/{id}` view (an archived plan)
+never does, since a past forecast means nothing. No location or a failed fetch → the page
+renders exactly as before, just without the chips section.
+
+**Heat/duration fueling advisor (NF-11)**: EP-13 already moves a key session off an
+extreme-weather day; it never said how to survive one that stays. `app/fueling.py` is a
+**pure-Python, zero-LLM** calculator: `estimate_minutes` derives a session's duration from
+its structured `steps` (a small self-contained recursive estimator — deliberately NOT
+imported from `app.routers.plan`'s near-identical one, since a web router shouldn't be a
+dependency of a core module), else `dist_km` at an anchor pace, else a rough per-`type`
+floor. `advise(session, forecast)` — called ONLY for **today's** session (the ST-03/EP-13
+proximity rule: no gel math for Friday) once it clears `FUELING_MIN_DURATION_MIN` — returns
+fluid (mL/h) past `FLUID_DURATION_MIN`, carbs (g/h) past `CARB_DURATION_MIN`, and, when
+`feels_max_c` is at/above `FUELING_HEAT_FEELS_C`, an electrolyte note plus the coolest
+hourly forecast slot. Wired into `run_analysis` (report/morning, not `/deep`) with **zero
+extra Claude/network calls**: it reuses the SAME `weather` dict ST-03 already fetched and
+the day's `plan_today` entry, folding a compact `fueling` snapshot into `user_content`
+**and `_cache_key`** (the README pitfall) only when there's something to say — a short/easy
+session, no forecast, or a cool short session all leave the context key simply absent (the
+`norm`/`records` pattern). `SYSTEM`'s new "ХАРЧУВАННЯ/ГІДРАТАЦІЯ" section tells the analyst
+to voice the ready numbers, not invent its own.
+
+**Evening sleep-debt nudge (NF-16)**: the whole product reacted only in the morning, once a
+bad night was already spent. `app/sleepnudge.py` is a **pure-Python, zero-LLM** detector,
+fired from a new evening job the night BEFORE a heavy session: `has_sleep_debt` reuses NF-01's
+`baselines.compute_baselines` as the threshold (sleep_h below the personal band on ≥2 of the
+last 3 nights) OR Garmin's own `sleep_need_h` (now carried in `repository.read_history`'s
+`extra` field) outpacing actual sleep by `NEED_GAP_H` — a signal even before there's enough
+history for a personal band, so a brand-new user isn't silent by default; `tomorrow_is_heavy`
+checks the active plan's next-day session type. **Both** conditions must hold — either alone
+stays silent (EP-13's "no conflict, no message" rule extended to a third detector) so this
+never nags before every tempo run. `bot/jobs.py::sleep_nudge_job` (`run_daily` at
+`SLEEP_NUDGE_HOUR`=21, Europe/Warsaw — the job's firing hour is process-TZ in v1, ST-14)
+loops via `for_each_user`; `_sleep_nudge_for_user` computes "today"/the once-a-evening
+`bot_state` guard (`sleep_nudge:<date>`) in the user's OWN timezone. Toggle: reuses
+`User.alerts_enabled` (the same wellness-push class as EP-08) plus the process-level
+`SLEEP_NUDGE` switch. **Deliberate v1 limitation**: no specific bedtime clock time — nothing
+currently stored gives a wake-time to count back from, so the nudge says "lie down earlier"
+without a number (the ticket itself names this fallback as acceptable).
 
 **Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
 and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
