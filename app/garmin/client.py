@@ -364,14 +364,25 @@ def fetch_exercise_summary(activity_id) -> dict:
 
 SERIES_TTL_S = 365 * 24 * 3600   # a completed run's per-point series is immutable
 
+# EP-10 phase 1: which metric Garmin descriptor keys to pull per sport bucket. Running
+# stays pace-first (min/km, the original shape); cycling swaps pace for speed (km/h) +
+# power (watts, when the device reports it) — the ticket's own framing ("вело: швидкість/
+# потужність/HR замість темпу"). Unrecognised sports fall back to the running shape.
+_SERIES_METRIC_KEYS = {
+    "running": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance"},
+    "cycling": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance",
+                "power": "directPower"},
+}
 
-def fetch_activity_series(activity_id, max_points: int = 150) -> list:
-    """Per-point pace + HR series for a run, for the detail-page chart.
 
-    Reads Garmin's ``/details`` metrics, locates the speed / HR / distance columns
-    by descriptor key (indices vary), converts m/s → min/km, and downsamples to
-    ``max_points``. Returns ``[{"d": dist_km, "p": pace_min_km, "hr": bpm}, ...]``
-    (None where a point lacks the value). Immutable → disk-cached like exercises."""
+def fetch_activity_series(activity_id, max_points: int = 150, sport: str = "running") -> list:
+    """Per-point series for one activity, for the detail-page chart / LLM segments.
+
+    Reads Garmin's ``/details`` metrics, locates the columns by descriptor key (indices
+    vary), and downsamples to ``max_points``. Shape depends on ``sport``:
+    running → ``[{"d": dist_km, "p": pace_min_km, "hr": bpm}, ...]`` (unchanged from v1);
+    cycling → ``[{"d": dist_km, "spd": speed_kmh, "pw": watts_or_None, "hr": bpm}, ...]``.
+    ``None`` where a point lacks the value. Immutable → disk-cached like exercises."""
     key = f"series:v1:{activity_id}"
     cached = _cache_get(key)
     if cached is not None:
@@ -382,10 +393,12 @@ def fetch_activity_series(activity_id, max_points: int = 150) -> list:
     )
     if not isinstance(d, dict) or "_error" in d:
         return []  # transient error — don't cache
+    keys = _SERIES_METRIC_KEYS.get(sport, _SERIES_METRIC_KEYS["running"])
     idx = {x.get("key"): x.get("metricsIndex") for x in (_g(d, "metricDescriptors") or [])}
-    i_speed = idx.get("directSpeed")
-    i_hr = idx.get("directHeartRate")
-    i_dist = idx.get("sumDistance")
+    i_speed = idx.get(keys["speed"])
+    i_hr = idx.get(keys["hr"])
+    i_dist = idx.get(keys["dist"])
+    i_power = idx.get(keys["power"]) if keys.get("power") else None
     pts = _g(d, "activityDetailMetrics") or []
     step = max(1, len(pts) // max_points)  # downsample if Garmin returned more
 
@@ -396,11 +409,17 @@ def fetch_activity_series(activity_id, max_points: int = 150) -> list:
     for p in pts[::step]:
         m = p.get("metrics") or []
         speed, hr, dist = val(m, i_speed), val(m, i_hr), val(m, i_dist)
-        series.append({
+        point = {
             "d": round(dist / 1000.0, 2) if dist is not None else None,
-            "p": round((1000.0 / speed) / 60.0, 2) if speed and speed > 0 else None,
             "hr": int(hr) if hr is not None else None,
-        })
+        }
+        if sport == "cycling":
+            point["spd"] = round(speed * 3.6, 1) if speed and speed > 0 else None
+            power = val(m, i_power)
+            point["pw"] = round(power) if power is not None else None
+        else:
+            point["p"] = round((1000.0 / speed) / 60.0, 2) if speed and speed > 0 else None
+        series.append(point)
     _cache_put(key, series, SERIES_TTL_S)
     return series
 

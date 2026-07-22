@@ -23,7 +23,7 @@ from app.core.auth import RequiresLogin
 from app.core.config import settings
 from app.db.base import dispose_db, init_db
 from app.garmin.mfa import MFARequired
-from app.routers import admin, auth, dashboard, health, history, me, plan, reports
+from app.routers import admin, auth, chat, dashboard, health, history, me, plan, reports
 from app.routers import settings as settings_router
 
 logger = logging.getLogger("api")
@@ -106,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(me.router)
     app.include_router(plan.router)
+    app.include_router(chat.router)
     app.include_router(health.router)
     app.include_router(reports.router)
     app.include_router(history.router)

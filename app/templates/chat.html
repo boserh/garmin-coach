@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Чат</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#090b0f">
+  <style>
+    .thread { display: flex; flex-direction: column; gap: .9rem; margin: 1.5rem 0 1.2rem; }
+    .turn { max-width: min(34rem, 100%); padding: .8rem 1.05rem; border-radius: 14px;
+            font-size: .92rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+    .turn.me { align-self: flex-end; background: linear-gradient(180deg,#8fb0ff,#6d92f2);
+               color: #0a1020; border-bottom-right-radius: 4px; }
+    .turn.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--line);
+                color: var(--ink); border-bottom-left-radius: 4px; }
+    .turn.bot.fail { border-color: rgba(247,118,142,.35); color: #f7a8b8; }
+    .turn .kind { display: block; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
+                  color: var(--faint); margin-bottom: .3rem; }
+    .turn.me .kind { color: rgba(10,16,32,.55); }
+    .empty { color: var(--muted); font-size: .9rem; margin: 1.5rem 0; }
+    .composer { display: flex; gap: .6rem; align-items: flex-end; margin-top: 1rem; flex-wrap: wrap; }
+    .composer textarea { min-height: 3.1rem; max-height: 10rem; resize: vertical; flex: 1 1 14rem; }
+    .composer .btn { margin-top: 0; white-space: nowrap; }
+    .pending { margin: 0 0 1.2rem; }
+    .pending .actions { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: .9rem; }
+    .pending .btn { margin-top: 0; }
+    .pending .btn.alt { background: linear-gradient(180deg,#8fe0c9,#5fc2a8); }
+    .pending .btn.cancel { background: var(--surface-2); color: var(--muted);
+                            border: 1px solid var(--line-2); box-shadow: none; }
+  </style>
+</head>
+<body>
+  {% set active = 'chat' %}
+  {% include "_nav.html" %}
+
+  <div class="wrap">
+    <p class="eyebrow">Чат</p>
+    <h1 class="title" style="font-size:1.7rem">Питай або кажи, що змінити в плані</h1>
+
+    {% if error %}
+      <div class="note" style="border-color:rgba(247,118,142,.35)"><span class="err">{{ error }}</span></div>
+    {% endif %}
+
+    {% if pending %}
+      <div class="note pending">
+        <b>⏳ Пропозиція для плану</b>
+        {% if pending.risky %}<div style="margin-top:.5rem">⚠️ {{ pending.summary }}</div>
+          {% if pending.alt_summary %}<div style="margin-top:.4rem">🛡 Безпечніше: {{ pending.alt_summary }}</div>{% endif %}
+        {% else %}
+          <div style="margin-top:.5rem">{{ pending.summary or "Є незастосовані зміни." }}</div>
+        {% endif %}
+        <form method="post" action="/chat/confirm" class="actions">
+          <button class="btn" type="submit" name="action" value="apply">
+            ✅ {% if pending.risky and pending.alt %}Як просив{% else %}Застосувати{% endif %}
+          </button>
+          {% if pending.risky and pending.alt %}
+            <button class="btn alt" type="submit" name="action" value="apply_alt">🛡 Пропоноване</button>
+          {% endif %}
+          <button class="btn cancel" type="submit" name="action" value="cancel">❌ Скасувати</button>
+        </form>
+      </div>
+    {% endif %}
+
+    {% if not history %}
+      <p class="empty">Ще нема повідомлень. Запитай щось про сон/тренування або напиши,
+        що змінити в плані (напр. «перенеси довгу на суботу»).</p>
+    {% else %}
+      <div class="thread">
+        {% for h in history %}
+          <div class="turn me">
+            <span class="kind">{{ "план" if h.kind != "ask" else "питання" }}</span>{{ h.question }}
+          </div>
+          <div class="turn bot{% if not h.ok %} fail{% endif %}">{{ h.answer }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <form method="post" action="/chat" class="composer">
+      <textarea name="message" placeholder="Напр.: як мій сон цього тижня? / перенеси довгу на суботу" required></textarea>
+      <button class="btn" type="submit">Надіслати</button>
+    </form>
+  </div>
+</body>
+</html>

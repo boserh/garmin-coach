@@ -85,16 +85,27 @@ def run_series(values, dists):
 
 
 def run_charts(activity_series):
-    """Pace + HR sparklines for a run's per-point series ([{d, p, hr}, ...]).
+    """Sparklines for an activity's per-point series ([{d, p, hr}, ...] for a run, or
+    EP-10's ``[{d, spd, pw, hr}, ...]`` for a ride — picked by which keys are present).
     Returns (charts, first_km, last_km) for the activity detail page. Each chart
-    carries a ``fmt`` hint (pace/hr) so the hover tooltip formats the value right."""
+    carries a ``fmt`` hint (pace/speed/power/hr) so the hover tooltip formats the
+    value right."""
     if not activity_series:
         return [], "", ""
     dists = [p.get("d") for p in activity_series]
-    defs = [
-        ("Темп, хв/км", "#6cb6ff", "pace", [p.get("p") for p in activity_series]),
-        ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in activity_series]),
-    ]
+    is_ride = any(p.get("spd") is not None or p.get("pw") is not None
+                  for p in activity_series)
+    if is_ride:
+        defs = [
+            ("Швидкість, км/год", "#6cb6ff", "speed", [p.get("spd") for p in activity_series]),
+            ("Потужність, Вт", "#f0b429", "power", [p.get("pw") for p in activity_series]),
+            ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in activity_series]),
+        ]
+    else:
+        defs = [
+            ("Темп, хв/км", "#6cb6ff", "pace", [p.get("p") for p in activity_series]),
+            ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in activity_series]),
+        ]
     charts = [{"label": lbl, "color": c, "fmt": fmt, "s": s}
               for lbl, c, fmt, vals in defs if (s := run_series(vals, dists))]
     valid = [d for d in dists if d is not None]

@@ -6,6 +6,7 @@ and portable across SQLite and Postgres (select-then-update, no dialect-specific
 ON CONFLICT).
 """
 import datetime as dt
+import json
 from typing import Dict, List, Optional
 
 from sqlalchemy import func, select
@@ -990,6 +991,38 @@ async def get_recent_asks(
     return [{"question": q, "answer": a} for q, a in rows]
 
 
+# EP-11: which ReportLog kinds render as a turn in the web chat transcript — the same
+# free-text engines the bot's /ask and /plan <text>/sick already log to. Deliberately not
+# "report"/"deep"/etc: those are their own dedicated surfaces, not chat turns.
+CHAT_KINDS = ("ask", "plan_edit", "sick")
+
+
+async def get_chat_history(session: AsyncSession, user_id: int, n: int = 30) -> List[dict]:
+    """The last ``n`` chat-shaped exchanges, oldest first, as [{kind, question, answer,
+    ok, created_at}, ...] for the web chat page. ``ReportLog`` is user-scoped, not
+    chat-scoped, so this is the exact same thread the bot's /ask and /plan already write
+    to — a question asked in Telegram shows up here too. A failed call (``ok=False``)
+    still renders as a turn, with ``answer`` from ``error`` instead of ``report_text``,
+    so a chat reload never silently drops a turn the user saw fail live."""
+    rows = (
+        await session.execute(
+            select(ReportLog)
+            .where(ReportLog.user_id == user_id, ReportLog.kind.in_(CHAT_KINDS))
+            .order_by(ReportLog.created_at.desc())
+            .limit(n)
+        )
+    ).scalars().all()
+    return [
+        {
+            "kind": r.kind, "question": r.question,
+            "answer": r.report_text if r.ok else (r.error or "Помилка."),
+            "ok": r.ok,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in reversed(rows)
+    ]
+
+
 async def month_cost(session: AsyncSession, user_id: int) -> float:
     """Sum of ``cost_usd`` for this user's Claude calls in the current calendar month
     (UTC) — the dashboard's "AI cost this month" tile (EP-04); reused later by EP-06's
@@ -1084,6 +1117,50 @@ async def set_state(session: AsyncSession, user_id: int, key: str, value: str) -
     else:
         session.add(BotState(user_id=user_id, key=key, value=value))
     await session.commit()
+
+
+# EP-11: the free-text "/plan <text>" edit and "/sick" proposals used to stash their
+# confirm-button ops in ``context.user_data["pending_plan"]`` — in-memory, per-process,
+# and Telegram-only, so a web chat turn could never see or confirm them (and a bot
+# restart silently dropped an unanswered proposal). This mirrors the DB-backed pattern
+# EP-02's adaptation proposals already use (``PENDING_ADAPT_KEY`` in bot/jobs.py) via the
+# same ``bot_state`` key/value store, just under its own key so an in-flight free-text
+# edit never collides with an outstanding adapt/weather/deload proposal. Single-use: a
+# pop clears it, so a stale button (already answered, or superseded by a newer proposal)
+# reads back nothing instead of re-applying an old edit.
+PENDING_PLAN_EDIT_KEY = "pending_plan_edit"
+
+
+async def set_pending_plan_edit(
+    session: AsyncSession, user_id: int, ops: list, alt: Optional[list] = None,
+    *, summary: Optional[str] = None, alt_summary: Optional[str] = None,
+    risky: bool = False,
+) -> None:
+    """``summary``/``alt_summary``/``risky`` are display-only extras (EP-11's web chat
+    re-renders the proposal text across page loads, unlike a Telegram message which
+    already has the text baked in) — the bot's confirm flow ignores them, reading only
+    ``ops``/``alt``, so old and new writers stay compatible either direction."""
+    await set_state(
+        session, user_id, PENDING_PLAN_EDIT_KEY,
+        json.dumps({"ops": ops, "alt": alt or [], "summary": summary,
+                    "alt_summary": alt_summary, "risky": bool(risky)}, ensure_ascii=False),
+    )
+
+
+async def get_pending_plan_edit(session: AsyncSession, user_id: int) -> Optional[dict]:
+    """Peek at this user's pending free-text plan edit without clearing it (for
+    re-rendering the confirm banner on every page load, e.g. the web chat's GET)."""
+    raw = await get_state(session, user_id, PENDING_PLAN_EDIT_KEY)
+    return json.loads(raw) if raw else None
+
+
+async def pop_pending_plan_edit(session: AsyncSession, user_id: int) -> Optional[dict]:
+    """Read this user's pending free-text plan edit and clear it (single-use)."""
+    raw = await get_state(session, user_id, PENDING_PLAN_EDIT_KEY)
+    if not raw:
+        return None
+    await set_state(session, user_id, PENDING_PLAN_EDIT_KEY, "")
+    return json.loads(raw)
 
 
 # ---------- TRAINING PLAN ----------

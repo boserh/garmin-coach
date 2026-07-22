@@ -784,7 +784,11 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         return
     ops = [op.model_dump() for op in edit.operations]
     alt = [op.model_dump() for op in (edit.alt_operations or [])]
-    ctx.user_data["pending_plan"] = {"ops": ops, "alt": alt}
+    async with async_session_maker() as session:
+        await repository.set_pending_plan_edit(
+            session, user.id, ops, alt,
+            summary=edit.summary, alt_summary=edit.alt_summary, risky=edit.risky,
+        )
 
     if edit.risky and alt:
         # risky request → keep what the user asked AND offer the coach's safer version,
@@ -843,7 +847,8 @@ async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(edit.summary or "Перебудовувати нічого.")
         return
     ops = [op.model_dump() for op in edit.operations]
-    ctx.user_data["pending_plan"] = {"ops": ops, "alt": []}
+    async with async_session_maker() as session:
+        await repository.set_pending_plan_edit(session, user.id, ops, [], summary=edit.summary)
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
         InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
@@ -871,21 +876,26 @@ def _ops_hint(ops: list) -> str:
 
 
 async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Confirm/reject a free-text ``/plan <text>``/``/sick`` proposal. Pending ops live
+    in ``bot_state`` (EP-11, ``repository.pop_pending_plan_edit``) rather than
+    ``context.user_data``, so a proposal shown in the bot can just as well be confirmed
+    from the web chat (and survives a bot restart) — mirrors ``adapt_callback``'s
+    already-DB-backed pattern for the EP-02/EP-13 proposals."""
     q = update.callback_query
     await q.answer()
-    pending = ctx.user_data.pop("pending_plan", None)
-    if q.data == "plan_cancel":
-        await q.edit_message_text("Скасовано. План без змін.")
-        return
-    # plan_apply → the literal request; plan_apply_alt → the safer counter-proposal.
-    ops_data = (pending or {}).get("alt" if q.data == "plan_apply_alt" else "ops")
-    if not ops_data:
-        await q.edit_message_text("Немає змін для застосування.")
-        return
     async with async_session_maker() as session:
         user = await users.get_by_chat_id(session, q.message.chat.id)
         if user is None or not (user.is_active and user.is_approved):
             await q.edit_message_text(_NOT_REGISTERED)
+            return
+        pending = await repository.pop_pending_plan_edit(session, user.id)
+        if q.data == "plan_cancel":
+            await q.edit_message_text("Скасовано. План без змін.")
+            return
+        # plan_apply → the literal request; plan_apply_alt → the safer counter-proposal.
+        ops_data = (pending or {}).get("alt" if q.data == "plan_apply_alt" else "ops")
+        if not ops_data:
+            await q.edit_message_text("Немає змін для застосування.")
             return
         plan_obj = await repository.get_active_plan(session, user.id)
         if plan_obj is None:

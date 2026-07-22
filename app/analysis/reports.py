@@ -62,6 +62,7 @@ from app.analysis.prompts import (
 )
 from app.core.config import settings
 from app.garmin.schemas import Payload
+from app.multisport import sport_bucket
 
 logger = logging.getLogger("claude")
 
@@ -641,25 +642,35 @@ async def run_ask(
 
 # ---------- SINGLE ACTIVITY ANALYSIS ----------
 
+#  EP-10 phase 1: a series point may carry pace (running, key "p") or speed/power
+#  (cycling, keys "spd"/"pw") — map each raw key to its segment-average output name so
+#  _segments works for either sport without the caller having to know which.
+_SEGMENT_AVG_KEYS = {
+    "p": "avg_pace", "hr": "avg_hr", "spd": "avg_speed_kmh", "pw": "avg_power_w",
+}
+
+
 def _segments(series: list, n: int = 6) -> list:
-    """Collapse a run's per-point series into ~n segments (avg pace + HR each) so the
-    LLM sees pacing and HR drift without the full point cloud."""
-    pts = [p for p in series if p.get("p") is not None or p.get("hr") is not None]
+    """Collapse an activity's per-point series into ~n segments (avg of whatever metrics
+    are present — pace/HR for a run, speed/power/HR for a ride) so the LLM sees pacing/
+    effort drift without the full point cloud."""
+    pts = [p for p in series if any(p.get(k) is not None for k in _SEGMENT_AVG_KEYS)]
     if not pts:
         return []
     size = max(1, len(pts) // n)
     segs = []
     for i in range(0, len(pts), size):
         chunk = pts[i:i + size]
-        paces = [c["p"] for c in chunk if c.get("p") is not None]
-        hrs = [c["hr"] for c in chunk if c.get("hr") is not None]
         ds = [c["d"] for c in chunk if c.get("d") is not None]
-        segs.append({
+        seg = {
             "from_km": round(ds[0], 2) if ds else None,
             "to_km": round(ds[-1], 2) if ds else None,
-            "avg_pace": round(sum(paces) / len(paces), 2) if paces else None,
-            "avg_hr": round(sum(hrs) / len(hrs)) if hrs else None,
-        })
+        }
+        for raw_key, out_key in _SEGMENT_AVG_KEYS.items():
+            vals = [c[raw_key] for c in chunk if c.get(raw_key) is not None]
+            if vals:
+                seg[out_key] = round(sum(vals) / len(vals), 2)
+        segs.append(seg)
     return segs
 
 
@@ -690,7 +701,13 @@ def activity_payload(activity, planned=None) -> dict:
     if activity.series:
         data["segments"] = _segments(activity.series)
         if activity.dist_km and activity.dur_min:
-            data["avg_pace"] = round(activity.dur_min / activity.dist_km, 2)
+            # EP-10 phase 1: a ride reads in km/h, a run in min/km — pick by sport bucket
+            # rather than sniffing the series shape, so a series-less-but-typed row still
+            # gets the right unit if that ever changes.
+            if sport_bucket(activity.type) == "bike":
+                data["avg_speed_kmh"] = round(activity.dist_km / (activity.dur_min / 60.0), 1)
+            else:
+                data["avg_pace"] = round(activity.dur_min / activity.dist_km, 2)
     # EP-12: the runner's subjective check-in (RPE + niggle). Part of the payload, so it
     # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
     if getattr(activity, "subjective", None):
