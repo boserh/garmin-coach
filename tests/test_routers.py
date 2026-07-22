@@ -763,6 +763,63 @@ def test_plan_season_stored_from_form(auth_client):
     clear_gen_state()
 
 
+def test_plan_cycling_stored_from_form(auth_client):
+    """EP-10 phase 3: the setup form's cycling fields land in intake["cycling"];
+    leaving the checkbox unticked (or no days picked) leaves intake unchanged."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+
+    def clear_gen_state():
+        async def run():
+            async with async_session_maker() as s:
+                await repository.set_state(s, uid, plan_router.PLAN_GEN_KEY, "")
+        anyio.run(run)
+
+    base = {"goal": "first_5k", "run_days": ["tue", "thu"], "long_run_day": "thu",
+            "intensity": "moderate"}
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        r = auth_client.post(
+            "/plan", data=dict(base, cycling_enabled="on",
+                               cycling_days=["sat", "tue"], cycling_avg_min="45"),
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    _uid, params = spawn.call_args.args
+    assert params["intake"]["cycling"] == {"days": ["tue", "sat"], "avg_min": 45}
+    clear_gen_state()
+
+    # checkbox unticked (form still posts the days, browser just wouldn't) → no intake key
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        auth_client.post(
+            "/plan", data=dict(base, cycling_days=["sat"]), follow_redirects=False)
+    _uid, params = spawn.call_args.args
+    assert "cycling" not in params["intake"]
+    clear_gen_state()
+
+
+def test_plan_cycling_shown_on_page(auth_client):
+    """A plan generated with a cycling intake shows the 🚴 badge on /plan."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-07-01", days_per_week=2, intensity="moderate",
+                intake={"cycling": {"days": ["tue", "sat"], "avg_min": 60}},
+                summary="s", workouts=[])
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+    assert "Вело-сесії" in view and "Вт" in view and "Сб" in view
+
+
 def test_plan_season_editable_on_page(auth_client):
     """NF-12: /plan/season sets/clears the active plan's seasonal accent without
     regenerating it, mirroring /plan/adjust-level."""

@@ -869,6 +869,69 @@ the series carries `spd`/`pw`, with matching hover-tooltip formatting in `detail
 activity's sport never changes) and existing tests are all unchanged. `tests/
 test_activity_series.py`.
 
+**Cycling sessions in the plan (EP-10 phase 3, cycling only — swimming out of scope by
+product decision)**: phase 1 made a ride's *analysis* sport-aware; phase 3 makes
+*generation* place real, dated `type="cycling"` sessions that push to the watch as actual
+cycling workouts — not the generic "cross" catch-all (which stays a rest-day placeholder,
+never structured). Opt-in on the `/plan` setup form: a "Додати вело-сесії" checkbox reveals
+a weekday picker (mirrors `run_days`) + a session-length field, parsed by
+`app.routers.plan._parse_cycling` into `intake["cycling"] = {"days": [...], "avg_min": N}`
+— unticked/no days picked → `None`, zero behaviour change (same opt-in shape as NF-12's
+`season`, but semantically different: `season` is a volume-accent-only budget signal with
+no dates; `cycling` actually places sessions). Wired into `run_plan_generation` and
+`run_plan_extension` (`app/analysis/plans.py`) as `context["cycling"]` — deliberately NOT
+into `run_plan_adaptation`'s context, since adaptation only moves/modifies/skips *existing*
+workouts (any type, `PlanOp.type` is already unconstrained) rather than generating new ones.
+`SYSTEM_PLAN` gained a conditional section: type="cycling" is allowed **only** when
+`cycling` is present in context, placed on `cycling.days` weekdays as its own session (never
+a run substitute); its `steps` use `kind="ride"` instead of `"run"` and **never**
+`pace_min_km` (a `hr_zone` 1-5 or no target — km/h has no "pace" equivalent), with a
+worked example appended to the schema block so the model doesn't have to improvise the
+shape. `PlanWorkout.type`/`PlanStep.kind` were already unconstrained strings — no schema
+migration needed.
+
+Three consumers had to learn about the new type, all confirmed safe or fixed:
+- **`app.garmin.workout_export.build_workout`** branches on `w.type=="cycling"` to emit
+  Garmin's real cycling `sportType` (`{sportTypeId: 2, sportTypeKey: "cycling"}`) instead of
+  running (1) — previously **every** pushed workout was hardcoded to running regardless of
+  type, so an unbranched push would have silently created a mislabeled running workout on
+  the watch. Step conversion itself needed no change: a cycling step's `hr_zone`/`dist_m`/
+  `dur_s` already goes through the same generic `_exec_step` path easy/long running steps
+  use (no `pace_min_km` present → `_TARGET_HR_ZONE` or `no.target`, never `pace.zone`).
+  `_TYPE_MARK` gained its own 🚴 (the old `"cross"` catch-all — a rest-day placeholder, not a
+  real session — was repointed to 🔀 so it no longer visually implies "cycling").
+- **`app.garmin.plan_sync`**: no change needed — `_SKIP_TYPES = {"rest","cross","strength"}`
+  never listed cycling, so a `type="cycling"` workout was already `_pushable` (it flows into
+  `push_workout`'s generic `build_workout` branch); only the docstrings were updated to spell
+  this out for the next reader.
+- **`app.garmin.matching` (EP-01)**: previously only matched running and strength types — a
+  cycling session would have sat `planned` forever even after the ride synced. `_match_runs`/
+  a hand-rolled third copy were unified into one shared `_match_distance_based(...,
+  plan_types, act_substrs, with_pace)` engine (CODE-06-style: identical distance-delta
+  scoring, only `with_pace` toggles whether `match_info` carries the pace comparison — a
+  cycling `PlanStep` never sets one). Cycling activities are identified via
+  `multisport.BIKE_NEEDLES` (extracted from NF-05's `sport_bucket` — Garmin's cycling
+  `activityType` strings vary too much for a single substring like running's `"run"`, e.g.
+  `"road_biking"`/`"virtual_ride"` don't contain `"cycl"`).
+
+Web rendering: `plan.py`'s step-label maps (`_STEP_KIND`, `_fmt_step`'s inline `kinds`) and
+`plan.html`/`dashboard.html`'s `DOT`/`TLABEL` type-badge maps gained a `"cycling"`/`"ride"`
+entry (🚴, same blue as the phase-1 speed/power chart color) so a cycling session renders
+with a real label instead of falling back to the raw English string. The `~NN хв` duration
+estimate next to a workout's distance (`plan.html`, `est_min` filter) is suppressed for
+`type="cycling"` — it's derived from the user's *running* pace anchor
+(`repository.typical_run_pace`) and would be nonsense for a ride; no cycling-pace anchor
+exists (documented v1 limitation, not wired). EP-13's weather chips/move-proposals and
+NF-11's fueling advisor stay running/tempo/intervals/long-only by deliberate choice (both
+key off a shared "heavy session types" set that also drives *live automated* job behavior,
+e.g. NF-09's deload proposals — widening it to cycling is a real product decision about
+what the weather/deload job should act on, out of scope for this pass). NF-14's stepmatch
+needed no change: a cycling step's `kind="ride"` is outside `_WORKING_KINDS =
+{"run","tempo","interval"}`, so `match()` already returns `None` for an all-cycling session
+(same as an all-HR-zone easy run today) — confirmed by reading, not by adding a redundant
+test. `tests/test_workout_export.py`, `tests/test_matching.py`, `tests/
+test_cycling_intake.py`, `tests/test_routers.py::test_plan_cycling_*`.
+
 **Compare-past-self (NF-06)**: "am I fitter than a year ago?" — the deep GDPR-backfilled history
 made visible. `app/compare.py` is the **pure-Python** part: `window_pair(today, weeks, years_back)`
 picks the current `weeks`-long window and the **same calendar span** N years ago (Feb-29-safe),

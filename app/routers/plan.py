@@ -91,7 +91,7 @@ def _fmt_dist(dm: float) -> str:
 def _fmt_step(s: dict) -> str:
     """Render one structured workout step as a compact human label, e.g.
     'розминка 1.5 км', 'біг 3 хв @ 5:15–5:24/км', '5× (…)'."""
-    kinds = {"warmup": "розминка", "run": "біг", "recovery": "відновлення",
+    kinds = {"warmup": "розминка", "run": "біг", "ride": "вело", "recovery": "відновлення",
              "cooldown": "заминка", "repeat": "повтор"}
     if not isinstance(s, dict):
         return ""
@@ -206,7 +206,7 @@ def _dm(iso: str) -> str:
         return iso
 
 
-_STEP_KIND = {"warmup": "Розминка", "run": "Біг", "recovery": "Відновлення",
+_STEP_KIND = {"warmup": "Розминка", "run": "Біг", "ride": "Вело", "recovery": "Відновлення",
               "cooldown": "Заминка", "rest": "Пауза"}
 
 
@@ -249,6 +249,7 @@ templates.env.filters["step_pace"] = _step_pace
 templates.env.filters["exlabel"] = lambda cat, ex="": _exercises.label(cat or "", ex or "")
 templates.env.filters["pace_fmt"] = _pace  # decimal min/km → "m:ss"
 templates.env.filters["est_min"] = _est_minutes  # steps → approx whole minutes
+templates.env.filters["wdlabel"] = lambda slug: WEEKDAYS.get(slug, slug)  # weekday slug → label
 
 logger = logging.getLogger("plan")
 
@@ -298,6 +299,23 @@ def _parse_season(sport: str, sessions: str, avg_min: str) -> Optional[dict]:
             return default
 
     return {"sport": sport, "sessions_per_week": _int(sessions, 3), "avg_min": _int(avg_min, 90)}
+
+
+def _parse_cycling(enabled: str, days: list, avg_min: str) -> Optional[dict]:
+    """Form fields -> ``intake["cycling"]`` (EP-10 phase 3): real, dated cycling sessions
+    in the generated plan — unlike ``season`` above (a volume-accent-only signal), this
+    tells ``SYSTEM_PLAN`` to actually place ``type="cycling"`` workouts. Unchecked/no
+    days picked -> None, same opt-in/zero-behaviour-change-when-unset shape as season."""
+    if not enabled:
+        return None
+    days = [d for d in WEEKDAYS if d in days]  # normalise to Mon→Sun order
+    if not days:
+        return None
+    try:
+        avg = int(avg_min)
+    except (TypeError, ValueError):
+        avg = 60
+    return {"days": days, "avg_min": avg}
 
 # ST-13: same "key session" set EP-13's daily weather job reacts to (bot.jobs.ADAPT_HEAVY_TYPES)
 # — duplicated here (small, primitive) rather than importing the bot package into a web router.
@@ -555,6 +573,7 @@ async def plan_page(
          "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
          "race_pack": race_pack,
          "season": (plan.intake or {}).get("season"), "season_sports": SEASON_SPORTS,
+         "cycling": (plan.intake or {}).get("cycling"),
          "count": len(workouts), "readonly": False},
     )
 
@@ -650,6 +669,9 @@ async def plan_create(
     season_sport: str = Form(""),       # NF-12: kite/tennis/bike/other, "" = no accent
     season_sessions: str = Form(""),
     season_avg_min: str = Form(""),
+    cycling_enabled: str = Form(""),    # EP-10 phase 3: checkbox — real cycling sessions
+    cycling_days: list[str] = Form(default=[]),
+    cycling_avg_min: str = Form(""),
     sync_garmin: str = Form(""),   # checkbox: push this plan to the Garmin calendar
     strength_enabled: str = Form(""),      # checkbox: add strength sessions
     strength_mon: str = Form(""),          # per-weekday: workout id, "custom", or "" (none)
@@ -690,6 +712,9 @@ async def plan_create(
     season = _parse_season(season_sport, season_sessions, season_avg_min)
     if season:
         intake["season"] = season
+    cycling = _parse_cycling(cycling_enabled, cycling_days, cycling_avg_min)
+    if cycling:
+        intake["cycling"] = cycling
     if strength_enabled:
         picks = {"mon": strength_mon, "tue": strength_tue, "wed": strength_wed,
                  "thu": strength_thu, "fri": strength_fri, "sat": strength_sat,

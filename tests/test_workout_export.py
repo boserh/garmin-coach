@@ -62,6 +62,45 @@ def test_pace_target_maps_fast_slow_to_speed():
     assert round(step["targetValueTwo"], 5) == 2.32558     # slow bound (lower m/s)
 
 
+# ---------- EP-10 phase 3: cycling sessions ----------
+
+def test_cycling_workout_uses_cycling_sport_type():
+    payload = wx.build_workout(_w(type="cycling", dist_km=40.0, steps=None))
+    assert payload["sportType"] == {"sportTypeId": 2, "sportTypeKey": "cycling",
+                                    "displayOrder": 2}
+    assert payload["workoutSegments"][0]["sportType"]["sportTypeKey"] == "cycling"
+
+
+def test_cycling_fallback_step_has_no_pace_target():
+    payload = wx.build_workout(_w(type="cycling", dist_km=40.0, steps=None))
+    step = payload["workoutSegments"][0]["workoutSteps"][0]
+    assert step["endCondition"]["conditionTypeKey"] == "distance"
+    assert step["endConditionValue"] == 40000.0
+    assert step["targetType"]["workoutTargetTypeKey"] == "no.target"
+
+
+def test_cycling_step_with_hr_zone_target():
+    w = _w(type="cycling", steps=[
+        {"kind": "warmup", "dur_s": 600},
+        {"kind": "ride", "dur_s": 3600, "hr_zone": 2, "note": "легка вело"},
+    ])
+    steps = wx.build_workout(w)["workoutSegments"][0]["workoutSteps"]
+    assert steps[0]["stepType"]["stepTypeKey"] == "warmup"
+    ride = steps[1]
+    assert ride["stepType"]["stepTypeKey"] == "interval"     # unmapped kind → default
+    assert ride["targetType"]["workoutTargetTypeKey"] == "heart.rate.zone"
+    assert ride["zoneNumber"] == 2
+
+
+def test_running_workout_still_uses_running_sport_type():
+    payload = wx.build_workout(_w(type="easy", dist_km=5.0, steps=None))
+    assert payload["sportType"]["sportTypeKey"] == "running"
+
+
+def test_name_marker_cycling():
+    assert wx.workout_name(_w(week=2, type="cycling", dist_km=40.0)) == "🚴 Cycling 40km · W2"
+
+
 def test_hr_zone_target_for_easy_step():
     # easy/recovery running targets a heart-rate zone, not a pace range
     w = _w(type="easy", steps=[{"kind": "run", "dist_m": 4000, "hr_zone": 2}])

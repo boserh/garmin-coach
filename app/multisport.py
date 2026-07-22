@@ -29,13 +29,19 @@ from typing import Iterable, List, Optional
 # *relative* cross-sport budget (we compare sessions to each other, not to an absolute scale).
 DEFAULT_HR_MAX = 190
 
+# Substrings identifying a cycling activityType ("cycling", "road_biking",
+# "mountain_biking", "virtual_ride", …) — exported so other modules needing "is this a
+# bike activity" (EP-01's plan/actual matching, EP-10 phase 1's series gate) share this
+# ONE list instead of each hand-rolling their own.
+BIKE_NEEDLES = ("bik", "cycl", "ride")
+
 # Coarse sport buckets from Garmin's free-text ``activityType``. Order matters: the first
 # keyword found in the (lowercased) type string wins, so "trail_running" → run, "lap_swimming"
 # → swim. Everything unmatched (kite, tennis, hiking, strength, …) collapses to "other" — the
 # label the LLM reads as "non-run cross-training load".
 _BUCKETS = (
     ("run", ("run",)),
-    ("bike", ("bik", "cycl", "ride")),
+    ("bike", BIKE_NEEDLES),
     ("swim", ("swim",)),
     ("strength", ("strength", "training", "gym", "weight")),
 )
