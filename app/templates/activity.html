@@ -60,6 +60,7 @@
       {% if a.rpe %}<div class="bigstat"><div class="v">{{ a.rpe }}/10</div><div class="k">RPE</div></div>{% endif %}
       {% if a.pain %}<div class="bigstat"><div class="v">🩹</div><div class="k">{{ a.pain if a.pain is string else 'біль' }}</div></div>{% endif %}
     </div>
+    {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
 
     {% if analysis %}
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">💬 Розбір</h2>

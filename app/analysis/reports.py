@@ -116,6 +116,7 @@ def analyze_with_stats(
     records: Optional[list] = None,
     norm: Optional[dict] = None,
     subjective: Optional[dict] = None,
+    health_alerts: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -154,6 +155,8 @@ def analyze_with_stats(
         user_content["norm"] = norm
     if subjective:
         user_content["subjective"] = subjective
+    if health_alerts:
+        user_content["health_alerts"] = health_alerts
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -250,6 +253,7 @@ async def run_analysis(
     records = None
     norm = None
     subjective = None
+    health_alerts = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -286,12 +290,22 @@ async def run_analysis(
             subj_runs = await repository.recent_subjective_runs(
                 session, user_id, days=subjective_mod.WINDOW_DAYS)
             subjective = subjective_mod.summarize(subj_runs)
+            # Proactive health alerts (ST-10, future extension of EP-08): reuse the SAME
+            # 90-day history slice `norm` was just built from (no second DB read) and only
+            # surface an actionable report — calibrating/none stay silent, same as the alert
+            # DM itself. The report only *aligns* with an already-sent alert, never a second
+            # warning channel of its own.
+            from app import health
+            health_report = health.detect(
+                history, min_history_days=settings.HEALTH_MIN_HISTORY_DAYS)
+            if health_report.actionable:
+                health_alerts = health.to_context(health_report)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
-                           subjective)
+                           subjective, health_alerts)
     cached = await llm_cache.get(session, cache_key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -300,7 +314,7 @@ async def run_analysis(
         try:
             text, stats = await _run_claude(
                 analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
-                weather, plan_today, fitness, records, norm, subjective
+                weather, plan_today, fitness, records, norm, subjective, health_alerts
             )
         except AnalystError as e:
             await repository.log_report(
@@ -661,6 +675,10 @@ def activity_payload(activity, planned=None) -> dict:
     # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
     if getattr(activity, "subjective", None):
         data["subjective"] = activity.subjective
+    # NF-14: step-level plan-vs-actual (app.stepmatch) — whether the runner actually hit
+    # the planned pace inside each structured interval, not just "the session happened".
+    if getattr(activity, "step_match", None):
+        data["step_match"] = activity.step_match
     if planned is not None:
         data["planned"] = _planned_payload(planned)
     return data
@@ -805,6 +823,7 @@ async def run_digest(
     plan = await repository.get_active_plan(session, user_id)
     compliance = None
     goal = None
+    goal_projection = None
     if plan is not None:
         compliance = _recent_compliance(
             await repository.weekly_compliance(session, plan.id), weeks=DIGEST_COMPLIANCE_WEEKS
@@ -816,6 +835,16 @@ async def run_digest(
             "days_to_target": _days_to_target(plan.target_date, today),
             "summary": plan.summary,
         }.items() if v is not None}
+        # NF-10: a quantified read on the same question ("чи на треку до цілі") — a
+        # weekly-median trend of Garmin's own race-time prediction (or VO2max for the
+        # open-ended goal), projected to target_date when that's not too far out.
+        from app import goal as goal_mod
+        metric_key, _label, higher_better = goal_mod.metric_for_goal(plan.goal)
+        fitness_history = await repository.read_fitness_history(session, user_id)
+        goal_projection = goal_mod.project(
+            fitness_history, metric_key=metric_key, higher_better=higher_better,
+            target_date=plan.target_date,
+        )
 
     # Nothing worth saying for a brand-new user with no runs, no metrics and no plan.
     if not weekly_volume and not fitness and plan is None:
@@ -832,6 +861,7 @@ async def run_digest(
         "fitness": fitness or None,
         "multisport": multisport,
         "goal": goal,
+        "goal_projection": goal_projection,
         "records": month_records,
         "has_plan": plan is not None,
     }

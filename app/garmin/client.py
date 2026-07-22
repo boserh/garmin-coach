@@ -391,6 +391,42 @@ def fetch_activity_series(activity_id, max_points: int = 150) -> list:
     return series
 
 
+SPLITS_TTL_S = 365 * 24 * 3600   # a completed run's laps are immutable, like the series
+
+
+def fetch_activity_splits(activity_id) -> list:
+    """This run's lap/split breakdown — one row per structured-workout step actually
+    executed on the watch (warmup, each work/recovery interval, cooldown), for NF-14
+    step-level plan-vs-actual matching. Returns ``[{"dist_m", "dur_s", "pace_min_km"},
+    ...]`` in lap order (``pace_min_km`` is ``None`` when the lap has no usable speed or
+    distance/duration). Immutable once the activity is complete → disk-cached like the
+    series/exercises."""
+    key = f"splits:v1:{activity_id}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    d = _safe(_api, f"/activity-service/activity/{activity_id}/splits")
+    if not isinstance(d, dict) or "_error" in d:
+        return []  # transient error — don't cache
+    laps = []
+    for lap in (_g(d, "lapDTOs") or []):
+        dist = lap.get("distance")
+        dur = lap.get("duration") or lap.get("movingDuration")
+        speed = lap.get("averageSpeed")
+        pace = None
+        if speed and speed > 0:
+            pace = round((1000.0 / speed) / 60.0, 3)
+        elif dist and dur and dist > 0:
+            pace = round((dur / 60.0) / (dist / 1000.0), 3)
+        laps.append({
+            "dist_m": round(dist, 1) if dist is not None else None,
+            "dur_s": round(dur, 1) if dur is not None else None,
+            "pace_min_km": pace,
+        })
+    _cache_put(key, laps, SPLITS_TTL_S)
+    return laps
+
+
 def fetch_workout_full(workout_id) -> dict:
     """The full raw workout DTO — for cloning a saved template (Day 1/Day 2) into our
     own copy. Returns {} on error."""

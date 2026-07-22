@@ -86,3 +86,67 @@ def test_activity_payload_run_vs_strength():
     )
     p2 = activity_payload(strength)
     assert "segments" not in p2 and p2["exercises"]
+
+
+def test_activity_payload_includes_step_match_when_present():
+    from types import SimpleNamespace
+
+    from app.analysis.service import activity_payload
+
+    run = SimpleNamespace(
+        type="running", date="2026-06-24", dur_min=30.0, dist_km=5.0,
+        avg_hr=140, max_hr=155, load=80.0, exercises=None, series=None,
+        step_match={"steps_hit": 6, "steps_total": 8, "misses": []},
+    )
+    p = activity_payload(run)
+    assert p["step_match"] == {"steps_hit": 6, "steps_total": 8, "misses": []}
+
+
+def test_activity_payload_omits_step_match_when_absent():
+    from types import SimpleNamespace
+
+    from app.analysis.service import activity_payload
+
+    run = SimpleNamespace(
+        type="running", date="2026-06-24", dur_min=30.0, dist_km=5.0,
+        avg_hr=140, max_hr=155, load=80.0, exercises=None, series=None,
+    )
+    p = activity_payload(run)
+    assert "step_match" not in p
+
+
+# ---------- fetch_activity_splits (NF-14) ----------
+
+_SPLITS = {
+    "lapDTOs": [
+        {"distance": 1000.0, "duration": 300.0, "averageSpeed": 3.333333},  # 5:00/km
+        {"distance": 400.0, "duration": 88.0, "averageSpeed": 4.545455},    # ~3:40/km
+        {"distance": 200.0, "duration": 60.0},                              # no speed field
+    ],
+}
+
+
+def test_fetch_activity_splits_parses_lap_dtos():
+    with patch.object(client, "_api", return_value=_SPLITS), \
+         patch.object(client, "_cache_get", return_value=None), \
+         patch.object(client, "_cache_put"):
+        laps = client.fetch_activity_splits(999)
+    assert len(laps) == 3
+    assert laps[0]["dist_m"] == 1000.0
+    assert laps[0]["pace_min_km"] == round((1000.0 / 3.333333) / 60.0, 3)
+    # third lap has no averageSpeed — falls back to distance/duration
+    assert laps[2]["pace_min_km"] == round((60.0 / 60.0) / (200.0 / 1000.0), 3)
+
+
+def test_fetch_activity_splits_empty_on_error():
+    with patch.object(client, "_api", return_value={"_error": "boom"}), \
+         patch.object(client, "_cache_get", return_value=None):
+        assert client.fetch_activity_splits(999) == []
+
+
+def test_fetch_activity_splits_uses_cache():
+    with patch.object(client, "_cache_get", return_value=[{"dist_m": 1.0}]), \
+         patch.object(client, "_api") as api:
+        laps = client.fetch_activity_splits(999)
+    assert laps == [{"dist_m": 1.0}]
+    api.assert_not_called()

@@ -307,6 +307,38 @@ async def recent_records(
     )
 
 
+FITNESS_TREND_KEYS = ("race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s", "vo2max")
+
+
+async def read_fitness_history(
+    session: AsyncSession, user_id: int, days: int = 120
+) -> List[dict]:
+    """Daily fitness-trend readings (race-time predictions + VO2max) over the last
+    ``days`` days, oldest first — one row per day that carries at least one of
+    ``FITNESS_TREND_KEYS``. Unlike :func:`get_recent_extra` (which coalesces to a single
+    latest snapshot), this keeps the raw per-day series so NF-10's goal projection can
+    fit a trend across weeks."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    rows = (
+        await session.execute(
+            select(DailyMetric.date, DailyMetric.extra).where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.extra.is_not(None),
+                DailyMetric.date >= cutoff,
+            ).order_by(DailyMetric.date)
+        )
+    ).all()
+    out = []
+    for date, ex in rows:
+        if not isinstance(ex, dict):
+            continue
+        row = {k: ex[k] for k in FITNESS_TREND_KEYS if ex.get(k) is not None}
+        if row:
+            row["date"] = date
+            out.append(row)
+    return out
+
+
 async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) -> dict:
     """Merge the last ``days`` days of ``extra`` into one dict — the most recent non-null
     value wins per key. Garmin metrics refresh at different cadences (race predictions &
@@ -1135,6 +1167,48 @@ async def weekly_compliance(
                     and (w.type or "").lower() in subjective_mod.EASY_TYPES):
                 b["overreached"] += 1
     return buckets
+
+
+STEP_MATCH_DAYS = 30   # how far back the adaptation context looks for step-level results
+
+
+async def recent_step_match(
+    session: AsyncSession, plan_id: int, days: int = STEP_MATCH_DAYS
+) -> List[dict]:
+    """This plan's recent completed sessions' step-level plan-vs-actual results (NF-14) —
+    ``[{date, steps_hit, steps_total}]``, oldest first. Only workouts matched to an
+    activity that actually has a ``step_match`` (i.e. pushed with structure and scored)
+    contribute a row; everything else is silently skipped."""
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    workouts = (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id == plan_id,
+                PlannedWorkout.date >= cutoff,
+                PlannedWorkout.completed_activity_id.is_not(None),
+            ).order_by(PlannedWorkout.date)
+        )
+    ).scalars().all()
+    ids = [w.completed_activity_id for w in workouts]
+    if not ids:
+        return []
+    rows = (
+        await session.execute(
+            select(ActivityRecord.id, ActivityRecord.date, ActivityRecord.step_match).where(
+                ActivityRecord.id.in_(ids), ActivityRecord.step_match.is_not(None)
+            )
+        )
+    ).all()
+    by_id = {aid: (date, sm) for aid, date, sm in rows if isinstance(sm, dict)}
+    out = []
+    for w in workouts:
+        hit = by_id.get(w.completed_activity_id)
+        if not hit:
+            continue
+        date, sm = hit
+        out.append({"date": date, "steps_hit": sm.get("steps_hit"),
+                    "steps_total": sm.get("steps_total")})
+    return out
 
 
 async def list_pushed_workouts(session: AsyncSession, user_id: int) -> List[PlannedWorkout]:

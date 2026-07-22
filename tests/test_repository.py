@@ -304,6 +304,29 @@ async def test_get_recent_extra_coalesces_newest_per_key(session):
     assert "endurance_score" not in merged     # 40 days ago → outside the window
 
 
+async def test_read_fitness_history_keeps_per_day_series(session):
+    import datetime as dt
+    today = dt.date.today()
+    d1 = (today - dt.timedelta(days=10)).isoformat()
+    d2 = (today - dt.timedelta(days=3)).isoformat()
+    d_stale = (today - dt.timedelta(days=200)).isoformat()
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d1, has_data=True, extra={"race_5k_s": 1620, "vo2max": 45}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d2, has_data=True, extra={"race_5k_s": 1600}))
+    # a day with no fitness-trend keys at all contributes no row
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=today.isoformat(), has_data=True, extra={"readiness_score": 70}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=d_stale, has_data=True, extra={"race_5k_s": 2000}))
+    await session.commit()
+
+    rows = await repository.read_fitness_history(session, U1, days=120)
+    assert [r["date"] for r in rows] == [d1, d2]   # oldest first, stale day excluded
+    assert rows[0] == {"date": d1, "race_5k_s": 1620, "vo2max": 45}
+    assert rows[1] == {"date": d2, "race_5k_s": 1600}
+
+
 async def test_weekly_run_volume_groups_by_iso_week(session):
     import collections
     import datetime as dt
@@ -569,3 +592,53 @@ async def test_month_cost_sums_current_month_only(session):
     row.created_at = this_month_start - dt.timedelta(days=1)
     await session.commit()
     assert await repository.month_cost(session, U1) == 0.01
+
+
+# ---------- recent_step_match (NF-14) ----------
+
+async def test_recent_step_match_only_includes_scored_matches(session):
+    plan = TrainingPlan(user_id=U1, goal="g", status="active",
+                        start_date="2026-06-01", target_date="2026-09-01")
+    session.add(plan)
+    await session.flush()
+
+    scored = ActivityRecord(id=101, user_id=U1, activity_id=9101, date="2026-07-05",
+                            type="running", dist_km=8.0, dur_min=40.0,
+                            step_match={"steps_hit": 6, "steps_total": 8, "misses": []})
+    unscored = ActivityRecord(id=102, user_id=U1, activity_id=9102, date="2026-07-08",
+                              type="running", dist_km=5.0, dur_min=25.0)
+    session.add_all([scored, unscored])
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-07-05", week=1,
+                               type="tempo", status="done", completed_activity_id=101))
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-07-08", week=1,
+                               type="easy", status="done", completed_activity_id=102))
+    await session.commit()
+
+    rows = await repository.recent_step_match(session, plan.id)
+    assert rows == [{"date": "2026-07-05", "steps_hit": 6, "steps_total": 8}]
+
+
+async def test_recent_step_match_respects_days_window(session):
+    plan = TrainingPlan(user_id=U1, goal="g", status="active",
+                        start_date="2026-01-01", target_date="2026-09-01")
+    session.add(plan)
+    await session.flush()
+
+    old = ActivityRecord(id=201, user_id=U1, activity_id=9201, date="2026-01-05",
+                         type="running", dist_km=8.0, dur_min=40.0,
+                         step_match={"steps_hit": 4, "steps_total": 8, "misses": []})
+    session.add(old)
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-01-05", week=1,
+                               type="tempo", status="done", completed_activity_id=201))
+    await session.commit()
+
+    assert await repository.recent_step_match(session, plan.id, days=30) == []
+
+
+async def test_recent_step_match_empty_without_matches(session):
+    plan = TrainingPlan(user_id=U1, goal="g", status="active",
+                        start_date="2026-06-01", target_date="2026-09-01")
+    session.add(plan)
+    await session.flush()
+    await session.commit()
+    assert await repository.recent_step_match(session, plan.id) == []

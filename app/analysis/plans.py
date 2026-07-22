@@ -632,6 +632,7 @@ def plan_adapt_with_stats(
 async def run_plan_adaptation(
     session, *, user_id: int, api_key: Optional[str] = None,
     trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
+    risk: Optional[dict] = None,
 ):
     """Look at the active plan's upcoming window, compliance (EP-01) and recovery/load
     signals; propose a correction (empty ``operations`` if the plan is fine). Does NOT
@@ -642,11 +643,16 @@ async def run_plan_adaptation(
     adaptation is disabled for this plan). Logs ``ReportLog(kind="adapt")`` on every
     real call (even a no-op) so adaptation cost is tracked. ``trigger`` picks the
     prompt framing ("weekly" review of the next ``window_days`` vs a "morning" one-off
-    nudge, called with ``window_days=0`` so only today's session is in scope);
+    nudge, called with ``window_days=0`` so only today's session is in scope, or
+    "deload" — NF-09, an already-confirmed injury/health risk signal turned into a
+    concrete correction, called with ``risk`` set);
     ``window_days`` also bounds which operation dates are kept — anything the model
     proposes outside ``today..today+window_days`` is dropped. The plan's adjust level
     (ST-07) further bounds *what* the kept operations may do — see
-    :func:`_filter_ops_to_level`.
+    :func:`_filter_ops_to_level`. ``risk`` (NF-09, optional) is the pre-computed
+    ``{"injury": injury.to_context(...), "health": health.to_context(...)["alerts"]}``
+    slice from the zero-LLM detectors — folded into the prompt as already-confirmed
+    evidence, not re-derived here.
     """
     from app.garmin import repository
 
@@ -673,6 +679,11 @@ async def run_plan_adaptation(
     from app import subjective as subjective_mod
     subj_runs = await repository.recent_subjective_runs(
         session, user_id, days=subjective_mod.WINDOW_DAYS)
+    # Step-level plan-vs-actual (NF-14): a low hit-rate on structured sessions is a
+    # calibration signal (targets are set too fast/slow), not the same thing as a missed
+    # or partial session — feed it alongside compliance, not instead of it.
+    from app import stepmatch
+    step_match = stepmatch.aggregate(await repository.recent_step_match(session, plan.id))
     context = {
         "today": today.isoformat(),
         "trigger": trigger,
@@ -686,6 +697,8 @@ async def run_plan_adaptation(
         "fitness": fitness or None,
         "multisport": multisport,
         "subjective": subjective_mod.summarize(subj_runs),
+        "step_match": step_match,
+        "risk": risk or None,
     }
     try:
         edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)

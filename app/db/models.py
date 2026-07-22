@@ -144,6 +144,11 @@ class ActivityRecord(Base):
     # runner's felt effort + any niggle, captured via inline buttons after auto-analysis
     # (re-tap overwrites). Null until answered; silence is a valid non-answer.
     subjective: Mapped[Optional[dict]] = mapped_column(JSON)
+    # NF-14: step-level plan-vs-actual — {steps_hit, steps_total, misses:[{step,planned,
+    # actual}]} from app.stepmatch, computed once the run is matched to a session we
+    # pushed with structured steps. Null when there's nothing structured to compare
+    # (free run, no match, or the session predates the feature).
+    step_match: Mapped[Optional[dict]] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

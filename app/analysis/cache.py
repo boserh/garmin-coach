@@ -80,7 +80,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                fitness: Optional[dict] = None,
                records: Optional[list] = None,
                norm: Optional[dict] = None,
-               subjective: Optional[dict] = None) -> str:
+               subjective: Optional[dict] = None,
+               health_alerts: Optional[dict] = None) -> str:
     material = {
         "today": dt.date.today().isoformat(),
         "daily": data.get("daily"),
@@ -95,6 +96,7 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "records": records,
         "norm": norm,
         "subjective": subjective,
+        "health_alerts": health_alerts,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -138,6 +140,7 @@ def _digest_cache_key(context: dict, model: str) -> str:
         "fitness": context.get("fitness"),
         "multisport": context.get("multisport"),
         "goal": context.get("goal"),
+        "goal_projection": context.get("goal_projection"),
         "records": context.get("records"),
         "model": model,
         "digest": True,

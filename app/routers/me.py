@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import stepmatch
 from app.charts import run_charts as _run_charts
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
@@ -654,6 +655,7 @@ async def me_row(
             "exercises": obj.exercises,
             "rpe": (obj.subjective or {}).get("rpe"),
             "pain": (obj.subjective or {}).get("note") or (obj.subjective or {}).get("pain"),
+            "step_badge": stepmatch.badge(obj.step_match),
         }
         strain = None
         if obj.load:

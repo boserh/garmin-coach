@@ -106,6 +106,41 @@ async def test_digest_shortened_without_plan_still_sends(session):
     # no plan → the context carries no compliance/goal
     ctx = m.call_args.args[0]
     assert ctx["has_plan"] is False and ctx["compliance"] is None and ctx["goal"] is None
+    assert ctx["goal_projection"] is None
+
+
+# ---------- goal_projection (NF-10) ----------
+
+async def test_digest_context_carries_goal_projection(session):
+    from app.db.models import DailyMetric, TrainingPlan
+
+    plan = TrainingPlan(user_id=U1, goal="first_5k", status="active",
+                        start_date="2026-06-01", target_date="2026-09-01")
+    session.add(plan)
+    d0 = dt.date.today()
+    for i, secs in enumerate([1650, 1640, 1630]):
+        session.add(DailyMetric(
+            user_id=U1, date=(d0 - dt.timedelta(weeks=(2 - i))).isoformat(),
+            extra={"race_5k_s": secs}))
+    await session.commit()
+
+    stats = CallStats(kind="digest", model=service.MODEL_DIGEST)
+    with patch.object(reports, "digest_with_stats", return_value=("текст", stats)) as m:
+        await run_digest(session, user_id=U1)
+
+    ctx = m.call_args.args[0]
+    assert ctx["goal_projection"] is not None
+    assert ctx["goal_projection"]["metric"] == "race_5k_s"
+    assert ctx["goal_projection"]["current"] == 1630
+
+
+async def test_digest_goal_projection_enters_cache_key(session):
+    from app.analysis.cache import _digest_cache_key
+
+    base = _digest_cache_key({"iso_week": "2026-W28"}, "m")
+    with_proj = _digest_cache_key(
+        {"iso_week": "2026-W28", "goal_projection": {"current": 1600}}, "m")
+    assert base != with_proj
 
 
 # ---------- job hook: once-a-week guard ----------
