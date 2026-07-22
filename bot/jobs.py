@@ -65,7 +65,7 @@ ACTIVITY_WATCH_END_HOUR = 23
 # backfill (which doesn't go through build_payload_cached anyway) and never a huge
 # first-ever fetch for a long-idle user.
 ACTIVITY_FRESH_DAYS = 2
-CHECK_INTERVAL_MIN = 20
+CHECK_INTERVAL_MIN = 5
 MORNING_STATE_KEY = "morning_sent_date"
 MFA_NOTIFIED_PREFIX = "mfa_notified:"
 
