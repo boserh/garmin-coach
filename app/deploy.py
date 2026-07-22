@@ -4,13 +4,22 @@ Pure subprocess orchestration — no DB, no Claude. Triggered only from the bot
 (``bot.handlers.deploy``/``deploy_callback``), admin-only, behind an explicit
 confirm button and the ``DEPLOY_ENABLED`` master switch.
 
-Restarting ``garmin-bot.service`` restarts the very process running this code, so
-``restart_services`` shells out to ``scripts/restart_services.sh`` via passwordless
-sudo (see ``deploy/sudoers-garmin-deploy``) rather than calling systemctl directly —
-that keeps the sudoers grant to one fixed script path instead of pattern-matching a
-systemctl command line, and the script uses ``--no-block`` so the call returns as
-soon as the restart job is queued instead of waiting on a process that's about to
-be killed.
+Restarting ``garmin-bot.service`` restarts the very process running this code — and
+that's a sharper problem than it sounds. A direct ``sudo scripts/restart_services.sh``
+child lives in the SAME cgroup as ``garmin-bot.service`` (sudo doesn't move it), so the
+instant ``systemctl restart`` queues the stop job, systemd's default
+``KillMode=control-group`` sends SIGTERM to every process in that cgroup — including
+the very child that just asked for the restart. ``--no-block`` only shrinks the race
+window, it doesn't close it: observed in practice as an intermittent, spurious
+``returncode == -15`` (SIGTERM) with an empty pipe, reported as a false "restart
+failed" even though the restart had, in fact, just fired.
+
+``restart_services`` instead runs the script inside a **transient systemd unit**
+(``sudo systemd-run --unit=garmin-deploy-restart --collect ...``) rather than as a
+direct child. `systemd-run` only opens a short D-Bus round trip to register that unit
+and exits — the script itself then runs as a child of PID1 in its OWN cgroup, so it's
+never touched by garmin-bot.service's kill. That closes the race structurally instead
+of special-casing signal-based return codes.
 """
 import asyncio
 import logging
@@ -21,6 +30,7 @@ logger = logging.getLogger("deploy")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESTART_SCRIPT = REPO_ROOT / "scripts" / "restart_services.sh"
+RESTART_UNIT = "garmin-deploy-restart"
 
 
 @dataclass
@@ -54,4 +64,8 @@ async def git_pull() -> CommandResult:
 
 
 async def restart_services() -> CommandResult:
-    return await _run("sudo", str(RESTART_SCRIPT))
+    # --collect: systemd forgets the transient unit once it exits, instead of piling up
+    # a "garmin-deploy-restart" entry in `systemctl list-units` after every deploy.
+    return await _run(
+        "sudo", "systemd-run", f"--unit={RESTART_UNIT}", "--collect", str(RESTART_SCRIPT)
+    )

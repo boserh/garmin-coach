@@ -43,7 +43,10 @@ async def test_git_pull_failure(monkeypatch):
     assert "fatal" in result.output
 
 
-async def test_restart_services_uses_sudo_and_fixed_script(monkeypatch):
+async def test_restart_services_uses_systemd_run_transient_unit(monkeypatch):
+    """Regression guard for the cgroup-kill race (returncode -15, empty output) seen in
+    production: the restart must run via systemd-run (its own cgroup), not as a direct
+    sudo child of this process (garmin-bot.service's cgroup)."""
     seen = {}
 
     async def fake_exec(*args, **kwargs):
@@ -53,7 +56,10 @@ async def test_restart_services_uses_sudo_and_fixed_script(monkeypatch):
 
     result = await deploy.restart_services()
     assert result.ok is True
-    assert seen["args"] == ("sudo", str(deploy.RESTART_SCRIPT))
+    assert seen["args"] == (
+        "sudo", "systemd-run", f"--unit={deploy.RESTART_UNIT}", "--collect",
+        str(deploy.RESTART_SCRIPT),
+    )
 
 
 # --- bot handlers: /deploy + deploy:yes/no callback ---------------------------
@@ -190,6 +196,7 @@ async def test_deploy_callback_yes_runs_pull_then_restart(_single_session, monke
     joined = "\n".join(r[0] for r in q.message.replies)
     assert "Updating abc..def" in joined
     assert "Перезапускаю" in joined
+    assert "Рестарт запущено" in joined
 
 
 async def test_deploy_callback_yes_stops_on_pull_failure(_single_session, monkeypatch):
@@ -220,9 +227,11 @@ async def test_deploy_callback_yes_stops_on_pull_failure(_single_session, monkey
 async def test_deploy_callback_restart_failure_with_empty_output_shows_code(
     _single_session, monkeypatch,
 ):
-    """A denied sudo call can come back with an empty pipe (the rejection lands in the
-    syslog auth log, not this process' stdout/stderr) — the reply must still say
-    something diagnostic (the return code), never just the bare header."""
+    """A killed/denied call can come back with an empty pipe — e.g. returncode -15
+    (SIGTERM), the signature of the cgroup-kill race this module works around, or a
+    sudo rejection that lands in the syslog auth log rather than this process'
+    stdout/stderr — the reply must still say something diagnostic (the return code),
+    never just the bare header."""
     from bot import handlers as h
 
     user = await _mk_user(_single_session, is_admin=True)
@@ -232,7 +241,7 @@ async def test_deploy_callback_restart_failure_with_empty_output_shows_code(
         return deploy.CommandResult(ok=True, output="Already up to date.")
 
     async def fake_restart():
-        return deploy.CommandResult(ok=False, output="", returncode=1)
+        return deploy.CommandResult(ok=False, output="", returncode=-15)
 
     monkeypatch.setattr(h.deploy_ops, "git_pull", fake_pull)
     monkeypatch.setattr(h.deploy_ops, "restart_services", fake_restart)
@@ -241,5 +250,5 @@ async def test_deploy_callback_restart_failure_with_empty_output_shows_code(
 
     last = q.message.replies[-1][0]
     assert "не вдався" in last
-    assert "код 1" in last
+    assert "код -15" in last
     assert last.strip().endswith(":") is False   # never a bare, content-less header

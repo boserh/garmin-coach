@@ -1,12 +1,21 @@
 # OPS-03 · lets the `pi` user restart the garmin-coach services without a password,
 # triggered from Telegram via /deploy (see app/deploy.py). Grants exactly ONE fixed
-# script, not a systemctl pattern — the script's content (not sudo args) decides what
-# gets restarted.
+# command line, not a systemctl/systemd-run pattern — the script's content (not the
+# sudo args) decides what gets restarted.
+#
+# Why systemd-run and not a direct `sudo scripts/restart_services.sh`: a direct child
+# of the bot process lives in garmin-bot.service's own cgroup, so the instant
+# `systemctl restart` queues the stop job, systemd kills that whole cgroup — including
+# the child that just asked for the restart — before it can reliably report back.
+# systemd-run instead registers a transient unit and returns immediately; the actual
+# restart runs as a child of PID1 in its own cgroup, immune to garmin-bot's own kill.
 #
 # Install:
 #   sudo cp deploy/sudoers-garmin-deploy /etc/sudoers.d/garmin-deploy
 #   sudo chmod 440 /etc/sudoers.d/garmin-deploy
 #   sudo visudo -c
 #
-# Adjust the path below if the repo isn't checked out at /home/pi/garmin_bot.
-pi ALL=(root) NOPASSWD: /home/pi/garmin_bot/scripts/restart_services.sh
+# Adjust the script path below to match your checkout (e.g. /home/pi/garmin_bot or
+# /home/<user>/projects/garmin-coach) — it must match app.deploy.RESTART_SCRIPT
+# exactly, and /usr/bin/systemd-run must match `which systemd-run` on your host.
+pi ALL=(root) NOPASSWD: /usr/bin/systemd-run --unit=garmin-deploy-restart --collect /home/pi/garmin_bot/scripts/restart_services.sh
