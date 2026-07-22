@@ -93,6 +93,10 @@ def main() -> None:
     app.add_handler(CommandHandler("test_off", handlers.test_off))
     app.add_handler(CommandHandler("test_morning", handlers.test_morning))
     app.add_handler(CommandHandler("test_digest", handlers.test_digest))
+    # OPS-03: admin-only remote deploy (git pull + restart). Hidden — not in the "/"
+    # command menu or /help — same treatment as the test_* debug commands.
+    app.add_handler(CommandHandler("deploy", handlers.deploy))
+    app.add_handler(CallbackQueryHandler(handlers.deploy_callback, pattern=r"^deploy:"))
     app.add_error_handler(handlers.on_error)
 
     # First check runs shortly after startup, then every CHECK_INTERVAL_MIN.

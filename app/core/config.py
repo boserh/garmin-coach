@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     HEALTH_MIN_HISTORY_DAYS: int = 7      # no alert until at least a week of history (cold-start)
     HEALTH_ALERT_COOLDOWN_DAYS: int = 3   # same alert kind at most once per this many days
 
+    # --- Remote deploy from Telegram (OPS-03) ---
+    # Master off-switch for the admin-only /deploy bot command (app.deploy: git pull +
+    # systemctl restart via scripts/restart_services.sh). Off by default — flip it on
+    # only once the sudoers grant (deploy/sudoers-garmin-deploy) is installed.
+    DEPLOY_ENABLED: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

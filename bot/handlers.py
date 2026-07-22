@@ -15,6 +15,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
+from app import deploy as deploy_ops
 from app import records, weather
 from app.analysis import delivery
 from app.analysis.service import (
@@ -998,6 +999,60 @@ async def test_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if user is None:
             return
         await force_digest_for_user(ctx, session, user)
+
+
+async def deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin-only (OPS-03): propose a git pull + service restart, confirmed via inline
+    buttons since the restart kills the very process handling this update."""
+    logger.info("CMD /deploy")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        if not user.is_admin:
+            await update.message.reply_text("Ця команда лише для адмінів.")
+            return
+    if not settings.DEPLOY_ENABLED:
+        await update.message.reply_text(
+            "Деплой з бота вимкнений (DEPLOY_ENABLED=false у .env)."
+        )
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Так, деплой", callback_data="deploy:yes"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="deploy:no"),
+    ]])
+    await update.message.reply_text(
+        "🚀 Задеплоїти зараз? git pull + перезапуск garmin-bot і garmin-web.",
+        reply_markup=kb,
+    )
+
+
+async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "deploy:no":
+        await q.edit_message_text("Скасовано.")
+        return
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        if not user.is_admin:
+            await q.edit_message_text("Ця команда лише для адмінів.")
+            return
+    await q.edit_message_text("⏳ git pull…")
+    pull = await deploy_ops.git_pull()
+    if not pull.ok:
+        await q.message.reply_text(f"❌ git pull провалився:\n{pull.output[-1500:]}")
+        return
+    await q.message.reply_text(f"📥 {pull.output[-1500:] or '(без змін)'}")
+    await q.message.reply_text("🔄 Перезапускаю сервіси…")
+    restart = await deploy_ops.restart_services()
+    if not restart.ok:
+        await q.message.reply_text(f"❌ Перезапуск не вдався:\n{restart.output[-1500:]}")
+    # No success message beyond this: garmin-bot restarts within moments of the queued
+    # systemctl job, and this process is what's being replaced.
 
 
 # ---------- ERROR HANDLER ----------
