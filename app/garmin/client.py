@@ -20,6 +20,15 @@ from app.garmin.providers import get_provider
 logger = logging.getLogger("garmin")
 
 
+class GarminRateLimited(Exception):
+    """Raised once ``GARMIN_RETRIES`` backoff retries are exhausted and Garmin is
+    still answering 429 — i.e. it's actively throttling/blocking us, not a one-off
+    blip. Unlike every other Garmin error, ``_safe`` deliberately does NOT swallow
+    this one into an ``{"_error": ...}`` dict — it re-raises so it can propagate all
+    the way up to ``bot/jobs.py``, which catches this specific type to DM the user
+    instead of silently logging a per-field fetch failure."""
+
+
 # ---------- HELPERS ----------
 
 def _safe(fn, *a, **kw):
@@ -30,6 +39,8 @@ def _safe(fn, *a, **kw):
         dt_ms = (_time.perf_counter() - t0) * 1000
         logger.info(f"GARMIN OK  {label}  {dt_ms:.0f}ms")
         return r
+    except GarminRateLimited:
+        raise
     except Exception as e:
         dt_ms = (_time.perf_counter() - t0) * 1000
         logger.warning(f"GARMIN ERR {label}  {dt_ms:.0f}ms  {type(e).__name__}: {e}")
@@ -91,17 +102,19 @@ def _is_rate_limited(exc: Exception) -> bool:
 
 
 def _api(path: str, **kwargs):
-    """Throttled connectapi call with exponential backoff on 429 (PERF-05). After
-    ``GARMIN_RETRIES`` are exhausted the original exception propagates, so callers
-    keep their current behaviour (``_safe`` logs + returns ``{"_error": ...}``;
-    write calls surface the error)."""
+    """Throttled connectapi call with exponential backoff on 429 (PERF-05). Once
+    ``GARMIN_RETRIES`` are exhausted, a genuine rate-limit raises ``GarminRateLimited``
+    (chained from the original exception) so callers can tell "Garmin is blocking us"
+    apart from any other failure; any non-429 exception still propagates unchanged."""
     attempts = max(0, settings.GARMIN_RETRIES)
     for attempt in range(attempts + 1):
         _limiter.acquire()
         try:
             return get_provider().connectapi(path, **kwargs)
         except Exception as exc:
-            if attempt < attempts and _is_rate_limited(exc):
+            if not _is_rate_limited(exc):
+                raise
+            if attempt < attempts:
                 backoff = 2.0 ** attempt
                 logger.warning(
                     f"GARMIN 429 {path} — backoff {backoff:.0f}s "
@@ -109,7 +122,8 @@ def _api(path: str, **kwargs):
                 )
                 _time.sleep(backoff)
                 continue
-            raise
+            logger.error(f"GARMIN 429 {path} — retries exhausted, Garmin is blocking requests")
+            raise GarminRateLimited(path) from exc
 
 
 # ---------- DISK CACHE (stable, ID-keyed, immutable assets) ----------

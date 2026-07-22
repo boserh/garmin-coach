@@ -42,11 +42,13 @@ from app.db.base import async_session_maker
 from app.db.models import User
 from app.db.users import eligible_users
 from app.garmin import matching, plan_sync, repository, service
+from app.garmin.client import GarminRateLimited
 from app.garmin.credentials import load_credentials
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
 from bot.handlers import (
     CHECKIN_PROMPT,
+    GARMIN_RATE_LIMITED_MSG,
     MFA_REQUIRED_MSG,
     PENDING_ADAPT_KEY,
     PLAN_EXTEND_SNOOZE_KEY,
@@ -68,6 +70,7 @@ ACTIVITY_FRESH_DAYS = 2
 CHECK_INTERVAL_MIN = 5
 MORNING_STATE_KEY = "morning_sent_date"
 MFA_NOTIFIED_PREFIX = "mfa_notified:"
+RATE_LIMIT_NOTIFIED_PREFIX = "garmin_ratelimited:"
 
 # A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
 # stale ones). Kept out of the morning report — different concern. Scheduled via
@@ -544,6 +547,17 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # Open-ended plans: ask (✅/❌) whether to add the next block when the plan is
             # about to run out. Confirm-only — generation happens on the ✅ tap, not here.
             await _extend_nudge_for_user(ctx, session, user, today)
+    except GarminRateLimited:
+        # Garmin kept answering 429 through every backoff retry — it's actively
+        # throttling/blocking us, not a one-off blip. DM once/day per user so the
+        # tighter CHECK_INTERVAL_MIN cadence can't turn this into a spam loop; the
+        # next tick just tries again (no separate un-guard needed, "today" rolls over).
+        guard_key = RATE_LIMIT_NOTIFIED_PREFIX + today
+        if await repository.get_state(session, user.id, guard_key) != "1":
+            await repository.set_state(session, user.id, guard_key, "1")
+            if user.telegram_chat_id:
+                await ctx.bot.send_message(user.telegram_chat_id, GARMIN_RATE_LIMITED_MSG)
+        logger.warning(f"TICK Garmin rate-limited user={user.id}")
     except MFARequired:
         # A different process (this one) can't finish the login Garmin is asking
         # about — just point the user at /settings once/day, don't spam every tick.

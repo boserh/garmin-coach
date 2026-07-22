@@ -116,17 +116,23 @@ def test_api_retries_on_429_then_succeeds(monkeypatch):
 
 
 def test_api_reraises_after_retries_exhausted(monkeypatch):
+    """Once GARMIN_RETRIES are exhausted on a genuine 429, ``_api`` raises
+    ``GarminRateLimited`` (chained from the original error) rather than the raw
+    exception, so callers like bot/jobs.py can DM the user instead of just logging."""
     monkeypatch.setattr(client, "_time", _FakeClock())
     monkeypatch.setattr(client, "_limiter", client._RateLimiter(rps=0))
     monkeypatch.setattr(client.settings, "GARMIN_RETRIES", 1)
 
+    original = _HTTP429()
+
     class P:
         def connectapi(self, path, **kw):
-            raise _HTTP429()
+            raise original
 
     monkeypatch.setattr(client, "get_provider", lambda: P())
-    with pytest.raises(_HTTP429):
+    with pytest.raises(client.GarminRateLimited) as exc_info:
         client._api("/x")
+    assert exc_info.value.__cause__ is original
 
 
 def test_api_does_not_retry_non_429(monkeypatch):
