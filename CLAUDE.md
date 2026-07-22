@@ -437,6 +437,7 @@ app/
     reports.py         GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py         GET /history?days=N — trends from DB, login, per-user
     plan.py            GET/POST /plan — training-plan setup form + view, login, per-user
+    chat.py            GET/POST /chat, POST /chat/confirm — web chat over run_ask/run_plan_edit (EP-11)
     admin.py           /ui DB browser — admin only
   dependencies.py      shared deps (get_session)
 bot/
@@ -485,6 +486,10 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   (archive active), `POST /plan/adjust-level` (ST-07), `POST /plan/season` (EP-05 NF-12:
   seasonal accent, without regeneration), `GET /plan/archive` (list archived), `GET /plan/{id}`
   (read-only view of a past plan). Login; current user.
+- `GET/POST /chat` + `POST /chat/confirm` — EP-11: web chat over the same `run_ask`/
+  `run_plan_edit` engines as the bot; a plan-edit proposal's ✅/🛡/❌ confirm state lives in
+  `bot_state`, shared with the Telegram flow. No streaming yet (deliberate v1 scope — see
+  CLAUDE.md's EP-11 section). Login; current user.
 - `GET /me/export` — NF-13: a streamed ZIP of everything this account owns (daily_metrics/
   activities JSON+CSV, personal_records/plans/report_logs JSON) — pure DB read scoped to
   `user.id`; the `users` row is never touched, so credentials/tokens can't leak by
@@ -839,6 +844,31 @@ run volume when `non_run_pct` is high. Not in the daily report (matches the tick
 digest scope). The seasonal-accent intake (kite-season ⇒ less run volume) is a documented future
 extension. `tests/test_multisport.py`.
 
+**Multisport activity analysis (EP-10 phase 1)**: everything used to be run-centric by
+construction — `fetch_activity_series` only ever pulled pace, `_segments`/`activity_payload`
+only ever spoke min/km, so a ride's `/activity` analysis had no series and no sport-aware
+language. Phase 1 (analysis only — phases 2–4 stay future work; phase 2's load-budget slice
+already shipped separately as NF-05) generalises the run-only path to cycling: `client.
+fetch_activity_series(activity_id, sport=)` now takes a sport bucket and reads different
+Garmin `/details` descriptor keys per sport — running (default, unchanged shape)
+`{d, p, hr}`; cycling `{d, spd, pw, hr}` (speed km/h from `directSpeed`, power watts from
+`directPower` when the device reports it — `None` otherwise, never guessed). `app.garmin.
+service._activity_rows` reuses NF-05's `multisport.sport_bucket` (rather than a second
+keyword list) to decide whether/how to fetch series: `run` → `sport="running"`, `bike` →
+`sport="cycling"`; swim and other buckets get no series in this phase (the ticket's own
+pitfall note: Garmin's pool/open-water swim metrics are specific enough — SWOLF, pool
+length — to deserve their own pass, not a bolt-on). `reports._segments` collapses whichever
+keys are present into per-segment averages (`avg_pace`/`avg_hr` for a run, `avg_speed_kmh`/
+`avg_power_w`/`avg_hr` for a ride) instead of hard-coding pace+HR; `activity_payload` picks
+`avg_speed_kmh` vs `avg_pace` by `sport_bucket(activity.type)`, not by sniffing the series
+shape. `SYSTEM_ACTIVITY` gained a short cycling-specific data section + an instruction not
+to convert `avg_speed_kmh` into a pace. The web detail-page chart (`app.charts.run_charts`,
+shared by `/ui` and `/me` since EP-04) picks a speed/power pair of sparklines over pace when
+the series carries `spd`/`pw`, with matching hover-tooltip formatting in `detail.html`
+(`fmt="speed"|"power"`). Running behaviour, cache keys (`series:v1:<id>`, stable — a given
+activity's sport never changes) and existing tests are all unchanged. `tests/
+test_activity_series.py`.
+
 **Compare-past-self (NF-06)**: "am I fitter than a year ago?" — the deep GDPR-backfilled history
 made visible. `app/compare.py` is the **pure-Python** part: `window_pair(today, weeks, years_back)`
 picks the current `weeks`-long window and the **same calendar span** N years ago (Feb-29-safe),
@@ -923,6 +953,51 @@ Python 3.9 baseline (the Pi/CI target), so this is meant to run from a separate 
 venv (wherever the MCP client lives), not necessarily on the Pi itself; the test module
 (`tests/test_mcp_server.py`) skips itself via `pytest.importorskip("mcp")` when the extra
 isn't installed, so CI (3.9, `.[dev]` only) stays green without it.
+
+**Web chat with the coach (EP-11)**: `GET/POST /chat` (`app/routers/chat.py`) — one input
+box in the web UI, backed by the exact same engines as the bot's `/ask` and `/plan <text>`
+(`run_ask` from EP-09, `run_plan_edit`), not a parallel implementation. A tiny keyword
+heuristic (`_looks_like_plan_edit` — imperative verbs like "перенеси"/"додай"/"заміни") picks
+the engine per message; a miss just falls through to `run_ask`, which can still answer a
+question ABOUT the plan via its own `get_training_plan` tool, so there's no dead end. Chat
+history needs no new table: `repository.get_chat_history` reads straight off `ReportLog`
+(`kind in ("ask", "plan_edit", "sick")`) — user-scoped, not chat-scoped, so a question asked
+in Telegram already shows up in the web transcript and vice versa, for free.
+
+**Shared DB-backed pending-plan-edit state** (the AC this epic actually turned on): the
+free-text `/plan <text>`/`/sick` confirm flow used to stash its ✅/❌ ops in Telegram's
+`context.user_data["pending_plan"]` — in-memory, per-process, Telegram-only, and gone on a
+bot restart (unlike EP-02's adaptation proposals, which already lived in `bot_state` via
+`PENDING_ADAPT_KEY` for exactly this reason — they can be sent by a background job, not a
+live chat turn). `repository.set_pending_plan_edit`/`get_pending_plan_edit`/
+`pop_pending_plan_edit` generalise that same `bot_state` pattern under its own key
+(`PENDING_PLAN_EDIT_KEY`, so an in-flight free-text edit never collides with an outstanding
+adapt/weather/deload proposal) — `set` stores `{ops, alt, summary, alt_summary, risky}`
+(the display extras are new: a Telegram message already has its text baked in, but the web
+page has to re-render the proposal on every GET, across reloads); `pop` is single-use (a
+stale button reads back nothing); `get` peeks without clearing, for re-rendering. `bot.
+handlers._plan_edit`/`sick`/`plan_callback` now read/write through these helpers instead of
+`context.user_data`, so a proposal shown in the bot can be confirmed from the web chat and
+vice versa, and survives a bot restart — `plan_callback` itself is otherwise unchanged
+(same apply + best-effort Garmin resync). `POST /chat/confirm` on the web side mirrors
+`plan_callback` almost line for line: pop the pending ops, `repository.apply_plan_ops`,
+best-effort `plan_sync.resync_workouts` if `garmin_sync_enabled`. HTML buttons (not JS) —
+✅ apply / 🛡 take-the-safer-suggestion (when `risky` + an alt exists) / ❌ cancel, same
+three-way shape as the bot's risky-edit buttons.
+
+**Deliberate v1 scope, documented not silently dropped**: responses are NOT token-streamed.
+The ticket's SSE AC would mean moving the Anthropic client off the dedicated sync
+threadpool PERF-04b deliberately chose (see the Concurrency section above) onto
+`AsyncAnthropic` — a materially larger, separate change than this router, so it's left for
+a follow-up. Every turn is a plain POST + full-page reload; there is no JS-only fast path to
+degrade *from*, so the "still works without JS" AC holds by construction rather than by a
+progressive-enhancement fork (contrast EP-04/ST-05's hover-JS additions, which do have one).
+`load_credentials` (not `user_runtime`) is used for the `/ask`/edit calls themselves — pure
+DB + Claude, no MFA risk, same as the bot's `/ask`/`/compare`; only the confirm step's
+Garmin resync binds `user_runtime`, same MFA exposure the bot's `plan_callback` already had.
+`/sick`'s medical-safe framing stays bot-only (not wired into the chat router) — a
+documented, deliberate exclusion, not a gap. `tests/test_chat.py` +
+`tests/test_repository.py::test_pending_plan_edit_*`/`test_get_chat_history_*`.
 
 **Per-user timezone (ST-14)**: `User.timezone` (IANA string, default `Europe/Warsaw`,
 migration `a3b4c5d6e7f8`) + a `/settings` field validated via `zoneinfo.ZoneInfo` on save

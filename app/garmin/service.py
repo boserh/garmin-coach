@@ -23,6 +23,7 @@ from app.garmin import client
 from app.garmin.client import _g
 from app.garmin.providers import get_provider
 from app.garmin.schemas import Activity, DailySummary, Payload, PlannedRun
+from app.multisport import sport_bucket
 
 logger = logging.getLogger("garmin")
 
@@ -261,7 +262,14 @@ def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
                 row["exercises"] = ex
             time.sleep(0.3)
         elif "run" in (row["type"] or "") and a.get("activityId"):
-            sr = client.fetch_activity_series(a["activityId"])
+            sr = client.fetch_activity_series(a["activityId"], sport="running")
+            if sr:
+                row["series"] = sr
+            time.sleep(0.3)
+        # EP-10 phase 1: cycling gets the same series treatment (speed/power, not pace) —
+        # reuse NF-05's sport bucket rather than hand-rolling a second keyword list.
+        elif sport_bucket(row["type"]) == "bike" and a.get("activityId"):
+            sr = client.fetch_activity_series(a["activityId"], sport="cycling")
             if sr:
                 row["series"] = sr
             time.sleep(0.3)

@@ -14,6 +14,7 @@
   <a href="/dashboard"{% if active == 'dashboard' %} class="active"{% endif %}>Дашборд</a>
   <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
   <a href="/plan"{% if active == 'plan' %} class="active"{% endif %}>Програма</a>
+  <a href="/chat"{% if active == 'chat' %} class="active"{% endif %}>Чат</a>
   <a href="/settings"{% if active == 'settings' %} class="active"{% endif %}>Налаштування</a>
   <a href="/info"{% if active == 'info' %} class="active"{% endif %}>Інфо</a>
   {% if user and user.is_admin %}

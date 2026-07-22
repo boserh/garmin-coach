@@ -1,7 +1,7 @@
 """Run pace/HR series: Garmin /details parsing + the detail-page charts helper."""
 from unittest.mock import patch
 
-from app.garmin import client
+from app.garmin import client, service
 from app.routers.admin import _run_charts
 
 _DETAILS = {
@@ -35,6 +35,47 @@ def test_fetch_activity_series_empty_on_error():
         assert client.fetch_activity_series(123) == []
 
 
+# ---------- EP-10 phase 1: cycling series (speed/power instead of pace) ----------
+
+_RIDE_DETAILS = {
+    "metricDescriptors": [
+        {"key": "directSpeed", "metricsIndex": 0},
+        {"key": "directHeartRate", "metricsIndex": 1},
+        {"key": "sumDistance", "metricsIndex": 2},
+        {"key": "directPower", "metricsIndex": 3},
+    ],
+    "activityDetailMetrics": [
+        {"metrics": [10.0, 140.0, 1000.0, 200.0]},   # 10 m/s = 36 km/h
+        {"metrics": [0.0, 120.0, 2000.0, 0.0]},       # stopped → speed 0 → spd None
+        {"metrics": [8.0, 150.0, 3000.0, 180.0]},     # 8 m/s = 28.8 km/h
+    ],
+}
+
+
+def test_fetch_activity_series_cycling_uses_speed_and_power():
+    with patch.object(client, "_api", return_value=_RIDE_DETAILS), \
+         patch.object(client, "_cache_get", return_value=None), \
+         patch.object(client, "_cache_put"):
+        s = client.fetch_activity_series(456, sport="cycling")
+    assert s[0] == {"d": 1.0, "hr": 140, "spd": 36.0, "pw": 200}
+    assert s[1]["spd"] is None and s[1]["pw"] == 0
+    assert s[2] == {"d": 3.0, "hr": 150, "spd": 28.8, "pw": 180}
+    assert "p" not in s[0]
+
+
+def test_fetch_activity_series_cycling_missing_power_descriptor():
+    details = {
+        "metricDescriptors": [d for d in _RIDE_DETAILS["metricDescriptors"]
+                               if d["key"] != "directPower"],
+        "activityDetailMetrics": _RIDE_DETAILS["activityDetailMetrics"],
+    }
+    with patch.object(client, "_api", return_value=details), \
+         patch.object(client, "_cache_get", return_value=None), \
+         patch.object(client, "_cache_put"):
+        s = client.fetch_activity_series(789, sport="cycling")
+    assert all(p["pw"] is None for p in s)
+
+
 def test_run_charts_builds_pace_and_hr():
     series = [
         {"d": 0.0, "p": 7.0, "hr": 120},
@@ -52,6 +93,20 @@ def test_run_charts_empty():
     assert _run_charts([]) == ([], "", "")
 
 
+def test_run_charts_builds_speed_and_power_for_a_ride():
+    series = [
+        {"d": 0.0, "spd": 30.0, "pw": 180, "hr": 130},
+        {"d": 5.0, "spd": 35.0, "pw": 210, "hr": 145},
+        {"d": 10.0, "spd": 28.0, "pw": 160, "hr": 150},
+    ]
+    charts, first, last = _run_charts(series)
+    labels = [c["label"] for c in charts]
+    assert labels == ["Швидкість, км/год", "Потужність, Вт", "Пульс"]
+    assert first == "0.0 км" and last == "10.0 км"
+    fmts = {c["label"]: c["fmt"] for c in charts}
+    assert fmts["Швидкість, км/год"] == "speed" and fmts["Потужність, Вт"] == "power"
+
+
 def test_segments_capture_pace_and_hr_drift():
     from app.analysis.service import _segments
 
@@ -62,6 +117,17 @@ def test_segments_capture_pace_and_hr_drift():
     assert all(s["avg_pace"] is not None and s["avg_hr"] is not None for s in segs)
     assert segs[0]["avg_pace"] > segs[-1]["avg_pace"]   # negative split captured
     assert segs[0]["avg_hr"] < segs[-1]["avg_hr"]       # HR drift captured
+
+
+def test_segments_capture_speed_and_power_for_a_ride():
+    from app.analysis.service import _segments
+
+    series = [{"d": i * 1.0, "spd": 25.0 + i, "pw": 150 + i * 2, "hr": 130 + i}
+              for i in range(12)]
+    segs = _segments(series, n=4)
+    assert all("avg_speed_kmh" in s and "avg_power_w" in s and "avg_hr" in s for s in segs)
+    assert "avg_pace" not in segs[0]
+    assert segs[0]["avg_speed_kmh"] < segs[-1]["avg_speed_kmh"]
 
 
 def test_activity_payload_run_vs_strength():
@@ -86,6 +152,25 @@ def test_activity_payload_run_vs_strength():
     )
     p2 = activity_payload(strength)
     assert "segments" not in p2 and p2["exercises"]
+
+
+def test_activity_payload_cycling_uses_speed_not_pace():
+    from types import SimpleNamespace
+
+    from app.analysis.service import activity_payload
+
+    ride = SimpleNamespace(
+        type="cycling", date="2026-06-24", dur_min=60.0, dist_km=30.0,
+        avg_hr=140, max_hr=165, load=90.0, exercises=None,
+        series=[{"d": 0.0, "spd": 28.0, "pw": 180, "hr": 130},
+                {"d": 15.0, "spd": 32.0, "pw": 200, "hr": 145},
+                {"d": 30.0, "spd": 30.0, "pw": 190, "hr": 150}],
+    )
+    p = activity_payload(ride)
+    assert p["type"] == "cycling" and "segments" in p
+    assert p["avg_speed_kmh"] == 30.0     # 30 km / 1h
+    assert "avg_pace" not in p
+    assert all("avg_speed_kmh" in s for s in p["segments"])
 
 
 def test_activity_payload_includes_step_match_when_present():
@@ -150,3 +235,26 @@ def test_fetch_activity_splits_uses_cache():
         laps = client.fetch_activity_splits(999)
     assert laps == [{"dist_m": 1.0}]
     api.assert_not_called()
+
+
+# ---------- EP-10 phase 1: _activity_rows fetches series for cycling too ----------
+
+def test_activity_rows_fetches_series_for_cycling_and_running_not_others():
+    acts = [
+        {"activityId": 1, "activityType": {"typeKey": "running"},
+         "startTimeLocal": "2026-06-24 08:00:00", "duration": 1800, "distance": 5000},
+        {"activityId": 2, "activityType": {"typeKey": "road_biking"},
+         "startTimeLocal": "2026-06-24 09:00:00", "duration": 3600, "distance": 30000},
+        {"activityId": 3, "activityType": {"typeKey": "swimming"},
+         "startTimeLocal": "2026-06-24 10:00:00", "duration": 1200, "distance": 1000},
+    ]
+    with patch.object(client, "fetch_activities", return_value=acts), \
+         patch.object(client, "fetch_activity_series") as fetch_series, \
+         patch("time.sleep"):
+        fetch_series.side_effect = lambda aid, sport="running": [{"d": 1.0, "hr": 140}]
+        rows = service._activity_rows(limit=10)
+    by_id = {aid: row for aid, row in rows}
+    assert "series" in by_id[1] and "series" in by_id[2]
+    assert "series" not in by_id[3]
+    kwargs_by_call = {c.args[0]: c.kwargs.get("sport") for c in fetch_series.call_args_list}
+    assert kwargs_by_call[1] == "running" and kwargs_by_call[2] == "cycling"

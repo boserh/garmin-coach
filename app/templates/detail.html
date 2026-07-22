@@ -101,8 +101,11 @@
         guide.style.left = x + 'px'; guide.style.display = 'block';
         tip.style.left = Math.min(Math.max(x, 28), r.width - 28) + 'px';
         tip.style.display = 'block';
-        tip.textContent = (fmt === 'pace' ? pace(best.v) : Math.round(best.v) + ' уд')
-                          + (best.d != null ? ' · ' + best.d.toFixed(2) + ' км' : '');
+        var val = fmt === 'pace' ? pace(best.v)
+                 : fmt === 'speed' ? best.v.toFixed(1) + ' км/год'
+                 : fmt === 'power' ? Math.round(best.v) + ' Вт'
+                 : Math.round(best.v) + ' уд';
+        tip.textContent = val + (best.d != null ? ' · ' + best.d.toFixed(2) + ' км' : '');
       }
       wrap.addEventListener('mousemove', show);
       wrap.addEventListener('mouseleave', function () {

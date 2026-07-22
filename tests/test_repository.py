@@ -254,6 +254,92 @@ async def test_state_is_per_user(session):
     assert await repository.get_state(session, U1, "missing") is None
 
 
+# ---------- pending plan edit (EP-11: shared bot/web confirm state) ----------
+
+_NO_EXTRAS = {"summary": None, "alt_summary": None, "risky": False}
+
+
+async def test_pending_plan_edit_round_trips_and_is_single_use(session):
+    ops = [{"action": "move", "date": "2026-07-01", "new_date": "2026-07-02"}]
+    alt = [{"action": "modify", "date": "2026-07-01", "dist_km": 5.0}]
+    await repository.set_pending_plan_edit(session, U1, ops, alt)
+
+    got = await repository.pop_pending_plan_edit(session, U1)
+    assert got == {"ops": ops, "alt": alt, **_NO_EXTRAS}
+
+    # single-use: a second pop finds nothing
+    assert await repository.pop_pending_plan_edit(session, U1) is None
+
+
+async def test_pending_plan_edit_is_per_user(session):
+    await repository.set_pending_plan_edit(session, U1, [{"action": "skip"}], [])
+    assert await repository.pop_pending_plan_edit(session, U2) is None
+    got = await repository.pop_pending_plan_edit(session, U1)
+    assert got == {"ops": [{"action": "skip"}], "alt": [], **_NO_EXTRAS}
+
+
+async def test_pending_plan_edit_defaults_alt_to_empty_list(session):
+    await repository.set_pending_plan_edit(session, U1, [{"action": "skip"}])
+    got = await repository.pop_pending_plan_edit(session, U1)
+    assert got == {"ops": [{"action": "skip"}], "alt": [], **_NO_EXTRAS}
+
+
+async def test_pending_plan_edit_stores_summary_and_risky(session):
+    ops = [{"action": "modify", "date": "2026-07-01", "dist_km": 15.0}]
+    await repository.set_pending_plan_edit(
+        session, U1, ops, [{"action": "modify", "date": "2026-07-01", "dist_km": 10.0}],
+        summary="Збільшити довгу до 15 км", alt_summary="Краще 10 км", risky=True,
+    )
+    got = await repository.get_pending_plan_edit(session, U1)
+    assert got["summary"] == "Збільшити довгу до 15 км"
+    assert got["alt_summary"] == "Краще 10 км"
+    assert got["risky"] is True
+    # peek doesn't clear it
+    assert await repository.get_pending_plan_edit(session, U1) is not None
+    popped = await repository.pop_pending_plan_edit(session, U1)
+    assert popped["risky"] is True
+    assert await repository.get_pending_plan_edit(session, U1) is None
+
+
+# ---------- chat history (EP-11: shared bot/web transcript) ----------
+
+async def test_get_chat_history_reads_ask_and_plan_edit_oldest_first(session):
+    await repository.log_report(
+        session, user_id=U1, kind="ask", model="claude-sonnet-5", ok=True,
+        question="як мій сон?", report_text="Сон непоганий.",
+    )
+    await repository.log_report(
+        session, user_id=U1, kind="plan_edit", model="claude-sonnet-5", ok=True,
+        question="перенеси довгу на суботу", report_text="Переніс довгу на суботу.",
+    )
+    # a different kind never shows up in the chat thread
+    await repository.log_report(
+        session, user_id=U1, kind="report", model="claude-sonnet-5", ok=True,
+        report_text="Щоденний звіт.",
+    )
+    # another user's turns never leak in
+    await repository.log_report(
+        session, user_id=U2, kind="ask", model="claude-sonnet-5", ok=True,
+        question="інше питання", report_text="Інша відповідь.",
+    )
+
+    hist = await repository.get_chat_history(session, U1)
+    assert [h["kind"] for h in hist] == ["ask", "plan_edit"]
+    assert hist[0]["question"] == "як мій сон?" and hist[0]["answer"] == "Сон непоганий."
+    assert hist[1]["answer"] == "Переніс довгу на суботу."
+
+
+async def test_get_chat_history_renders_error_for_failed_turn(session):
+    await repository.log_report(
+        session, user_id=U1, kind="ask", model="claude-sonnet-5", ok=False,
+        question="чому падає?", error="AnalystError: щось пішло не так",
+    )
+    hist = await repository.get_chat_history(session, U1)
+    assert len(hist) == 1
+    assert hist[0]["ok"] is False
+    assert hist[0]["answer"] == "AnalystError: щось пішло не так"
+
+
 async def test_read_history_orders_oldest_first(session):
     import datetime as dt
     today = dt.date.today()
