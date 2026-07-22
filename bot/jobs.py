@@ -14,12 +14,13 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.concurrency import run_in_threadpool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from app import records, stepmatch, weather
+from app import baselines, records, sleepnudge, stepmatch, weather
 from app.analysis import delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
@@ -120,6 +121,18 @@ _MORNING_Q = "Короткий ранковий звіт: відновлення
 _MORNING_STALE = "⚠️ Дані за сьогодні ще не синканулись, звіт за останній доступний день.\n\n"
 
 
+def user_tz(user: User) -> ZoneInfo:
+    """ST-14: this user's own IANA timezone (validated on save in /settings), falling back
+    to the process default (Europe/Warsaw) on a corrupt/missing value so a bad zoneinfo
+    string can never break a job. Per-user checks (the morning window, once-a-day/week/
+    month bot_state guard dates) read this instead of the hardcoded process TZ; the
+    run_daily-scheduled jobs themselves stay on the process TZ in v1 (see CLAUDE.md)."""
+    try:
+        return ZoneInfo(user.timezone or "Europe/Warsaw")
+    except (ZoneInfoNotFoundError, ValueError):
+        return TZ
+
+
 async def for_each_user(worker, *, with_chat: bool, label: str) -> None:
     """Shared scaffold for the per-user scheduled jobs: open a session, select the
     eligible (active + approved [+ chat id]) recipients, and run ``worker(session, user)``
@@ -196,7 +209,7 @@ async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.dat
 async def force_morning_for_user(ctx, session, user: User) -> None:
     """Send the morning report on demand, bypassing the time window + once-a-day guard
     (and leaving the guard untouched, so the real morning still fires). For /test_morning."""
-    now = dt.datetime.now(TZ)
+    now = dt.datetime.now(user_tz(user))
     today = now.date().isoformat()
     async with user_runtime(session, user) as creds:
         if not creds.has_garmin:
@@ -460,7 +473,15 @@ async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
         return
 
 
-async def _tick_for_user(ctx, session, user: User, now: dt.datetime, today: str) -> None:
+async def _tick_for_user(ctx, session, user: User) -> None:
+    # ST-14: window + "today" are per-user (their own timezone), not the process TZ — a
+    # traveling user or a second user outside Europe/Warsaw gets their own morning, and
+    # the once-a-day/week/month bot_state guard dates below key off their local date.
+    now = dt.datetime.now(user_tz(user))
+    today = now.date().isoformat()
+    if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
+        logger.debug(f"TICK skip user={user.id}: outside window (hour={now.hour})")
+        return
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
             if creds is None:
@@ -762,6 +783,48 @@ async def weather_plan_job(ctx: ContextTypes.DEFAULT_TYPE):
     await for_each_user(worker, with_chat=True, label="WEATHER")
 
 
+# NF-16 evening sleep nudge: once-a-evening guard keyed by the user's own local date
+# (bot_state key sleep_nudge:<date>, ST-14) — a re-tick within the same evening stays quiet.
+SLEEP_NUDGE_GUARD_PREFIX = "sleep_nudge:"
+
+
+async def _sleep_nudge_for_user(ctx, session, user: User, today: str) -> None:
+    """NF-16: a once-a-evening, zero-LLM heads-up when tomorrow's plan holds a key session
+    (tempo/intervals/long) AND recent sleep shows a debt signal (``app.sleepnudge`` — reuses
+    NF-01's own personal band, plus Garmin's own sleep_need vs actual gap). Either condition
+    alone stays silent (EP-13's "no conflict, no message" rule) — never "before every tempo
+    run". Pure DB read, zero Garmin/Claude calls (today's data is already synced by evening).
+    Reuses ``User.alerts_enabled`` as the per-user off-switch (same wellness-push class as
+    EP-08's health alerts) plus the process-level ``SLEEP_NUDGE`` toggle."""
+    if not settings.SLEEP_NUDGE or not user.alerts_enabled or not user.telegram_chat_id:
+        return
+    guard_key = SLEEP_NUDGE_GUARD_PREFIX + today
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    tomorrow = (dt.date.fromisoformat(today) + dt.timedelta(days=1)).isoformat()
+    ws = await repository.upcoming_plan_workouts(session, user.id, days=2)
+    if not sleepnudge.tomorrow_is_heavy([w.type for w in ws if w.date == tomorrow]):
+        return
+    history = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)
+    if not sleepnudge.has_sleep_debt(history):
+        return
+    await repository.set_state(session, user.id, guard_key, "1")
+    await ctx.bot.send_message(user.telegram_chat_id, sleepnudge.NUDGE_TEXT)
+    logger.info(f"SLEEP_NUDGE sent user={user.id}")
+
+
+async def sleep_nudge_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Evening check (NF-16): a heads-up before a heavy session on a sleep-debt night.
+    Silent when there's no conflict of the two conditions. Scheduled by run_daily at
+    ``SLEEP_NUDGE_HOUR`` (process TZ in v1 — see ``_sleep_nudge_for_user``'s per-user guard
+    date, ST-14); the job's own firing hour is the one piece that stays global."""
+    async def worker(session, user):
+        today = dt.datetime.now(user_tz(user)).date().isoformat()
+        await _sleep_nudge_for_user(ctx, session, user, today)
+
+    await for_each_user(worker, with_chat=True, label="SLEEP_NUDGE")
+
+
 async def _deliver_digest(ctx, session, user: User, creds, *, force: bool = False) -> bool:
     """Build + send the weekly digest for one user. Returns True if a message was sent.
     Reads only from the DB (no Garmin fetch). Does NOT touch the once-a-week guard —
@@ -786,7 +849,8 @@ async def _monthly_compare_for_user(ctx, session, user: User, creds) -> None:
     week rather than burning the month."""
     if not user.telegram_chat_id:
         return
-    guard_key = COMPARE_GUARD_PREFIX + dt.datetime.now(TZ).strftime("%Y-%m")
+    local_today = dt.datetime.now(user_tz(user)).date()
+    guard_key = COMPARE_GUARD_PREFIX + local_today.strftime("%Y-%m")
     if await repository.get_state(session, user.id, guard_key) == "1":
         return
     try:
@@ -800,7 +864,7 @@ async def _monthly_compare_for_user(ctx, session, user: User, creds) -> None:
         return   # not enough history a year back — retry next week, don't set the guard
     from app import compare as compare_mod
 
-    cur_s, cur_e, past_s, past_e = compare_mod.window_pair(dt.date.today(), COMPARE_WEEKS)
+    cur_s, cur_e, past_s, past_e = compare_mod.window_pair(local_today, COMPARE_WEEKS)
     header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_s, cur_e)}) проти себе рік тому "
               f"({compare_mod.fmt_range(past_s, past_e)}):\n\n")
     await ctx.bot.send_message(user.telegram_chat_id, header + text)
@@ -815,7 +879,7 @@ async def _monthly_insights_for_user(ctx, session, user: User, creds) -> None:
     (so it retries next week) and any failure is silent — it never breaks the digest send."""
     if not user.telegram_chat_id:
         return
-    guard_key = INSIGHTS_GUARD_PREFIX + dt.datetime.now(TZ).strftime("%Y-%m")
+    guard_key = INSIGHTS_GUARD_PREFIX + dt.datetime.now(user_tz(user)).strftime("%Y-%m")
     if await repository.get_state(session, user.id, guard_key) == "1":
         return
     try:
@@ -834,7 +898,7 @@ async def _digest_for_user(ctx, session, user: User) -> None:
     """Scheduled weekly digest for one user, guarded to once per ISO week via bot_state."""
     if not user.telegram_chat_id:
         return
-    guard_key = DIGEST_GUARD_PREFIX + dt.datetime.now(TZ).strftime("%G-W%V")
+    guard_key = DIGEST_GUARD_PREFIX + dt.datetime.now(user_tz(user)).strftime("%G-W%V")
     if await repository.get_state(session, user.id, guard_key) == "1":
         logger.debug(f"DIGEST skip user={user.id}: already sent this week")
         return
@@ -936,16 +1000,11 @@ async def _extend_nudge_for_user(ctx, session, user: User, today: str) -> None:
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Per-tick entry point: fetch once per user (07:00-23:00), run activity watch,
-    and — within the narrower 07-12 window — the morning report. See module docstring."""
-    now = dt.datetime.now(TZ)
-    today = now.date().isoformat()
-
-    if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
-        logger.debug(f"TICK skip: outside window (hour={now.hour})")
-        return
-
+    """Per-tick entry point: fetch once per user (07:00-23:00 in EACH user's own timezone,
+    ST-14), run activity watch, and — within the narrower 07-12 window — the morning
+    report. See module docstring. Runs every CHECK_INTERVAL_MIN regardless of the process's
+    own clock; ``_tick_for_user`` is what enforces the (per-user) window."""
     async def worker(session, user):
-        await _tick_for_user(ctx, session, user, now, today)
+        await _tick_for_user(ctx, session, user)
 
     await for_each_user(worker, with_chat=True, label="MORNING")

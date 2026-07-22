@@ -23,6 +23,7 @@ from bot.jobs import (
     morning_job,
     plan_adapt_job,
     plan_sync_job,
+    sleep_nudge_job,
     weather_plan_job,
     weekly_digest_job,
 )
@@ -48,6 +49,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("activity", "Розбір активності, напр. /activity 5"),
         BotCommand("checkin", "Оцінити останнє тренування (RPE + чи боліло)"),
         BotCommand("records", "Особисті рекорди"),
+        BotCommand("costs", "Витрати на Claude за місяць"),
         BotCommand("risk", "Травматичний радар (сигнали перевантаження)"),
         BotCommand("health", "Алерти відновлення (HRV, сон, стрес)"),
         BotCommand("plan", "Програма; /plan <текст> щоб змінити, напр. додай біг сьогодні"),
@@ -74,6 +76,7 @@ def main() -> None:
     app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("checkin", handlers.checkin))
     app.add_handler(CommandHandler("records", handlers.records_cmd))
+    app.add_handler(CommandHandler("costs", handlers.costs_cmd))
     app.add_handler(CommandHandler("goal", handlers.goal_cmd))
     app.add_handler(CommandHandler("compare", handlers.compare))
     app.add_handler(CommandHandler("wrapped", handlers.wrapped))
@@ -124,6 +127,11 @@ def main() -> None:
     app.job_queue.run_daily(
         weather_plan_job,
         time=time(hour=settings.WEATHER_PLAN_HOUR, tzinfo=handlers.TZ),
+    )
+    # NF-16 evening sleep-debt nudge: heads-up before a heavy session on a poor-sleep night.
+    app.job_queue.run_daily(
+        sleep_nudge_job,
+        time=time(hour=settings.SLEEP_NUDGE_HOUR, tzinfo=handlers.TZ),
     )
     # Open-ended plans are topped up from the morning tick (_extend_nudge_for_user): a
     # confirm-only ✅/❌ prompt, so no separate scheduled job here.

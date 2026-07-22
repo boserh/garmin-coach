@@ -66,9 +66,11 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "garmin_sync_enabled": user.garmin_sync_enabled,
             "plan_adapt_enabled": user.plan_adapt_enabled,
             "alerts_enabled": user.alerts_enabled,
+            "timezone": user.timezone,
             "saved": request.query_params.get("saved") == "1",
             "geo": request.query_params.get("geo"),
             "pw": request.query_params.get("pw"),
+            "tz": request.query_params.get("tz"),
             "garmin": request.query_params.get("garmin"),
             "garmin_mfa_pending": mfa.has_pending(user.id),
             "bot_username": settings.TELEGRAM_BOT_USERNAME,
@@ -129,10 +131,20 @@ async def settings_save(
     garmin_sync: str = Form(""),   # checkbox: "on" when ticked, absent otherwise
     plan_adapt: str = Form(""),    # checkbox: "on" when ticked, absent otherwise
     alerts: str = Form(""),        # checkbox: "on" when ticked, absent otherwise (EP-08)
+    timezone: str = Form("Europe/Warsaw"),   # ST-14: IANA tz, validated below
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
     # current_user and this route share the request session, so `user` is editable here.
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    tz_name = timezone.strip() or "Europe/Warsaw"
+    try:
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return RedirectResponse("/settings?tz=fail", status_code=303)
+    user.timezone = tz_name
+
     garmin_email = garmin_email.strip()
     if garmin_email:
         if garmin_email != _safe_decrypt(user.garmin_email_enc):

@@ -78,6 +78,14 @@ class User(Base):
     # the user's personal baseline). Off → the morning tick's health check skips this user.
     alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # ST-14: this user's own IANA timezone (validated via zoneinfo.ZoneInfo on save).
+    # Per-user checks in bot/jobs.py (the morning window, once-a-day/week/month bot_state
+    # guard dates) read this instead of the hardcoded Europe/Warsaw — a traveling user or a
+    # second user outside CET gets their morning report in THEIR morning, not the process's.
+    # The run_daily-scheduled jobs themselves (weekly digest hour, plan-sync hour, ...) stay
+    # on the process timezone in v1 — see CLAUDE.md ST-14 notes.
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Warsaw")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

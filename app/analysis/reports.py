@@ -117,6 +117,7 @@ def analyze_with_stats(
     norm: Optional[dict] = None,
     subjective: Optional[dict] = None,
     health_alerts: Optional[dict] = None,
+    fueling: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -157,6 +158,8 @@ def analyze_with_stats(
         user_content["subjective"] = subjective
     if health_alerts:
         user_content["health_alerts"] = health_alerts
+    if fueling:
+        user_content["fueling"] = fueling
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -254,6 +257,7 @@ async def run_analysis(
     norm = None
     subjective = None
     health_alerts = None
+    fueling = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -300,12 +304,25 @@ async def run_analysis(
                 history, min_history_days=settings.HEALTH_MIN_HISTORY_DAYS)
             if health_report.actionable:
                 health_alerts = health.to_context(health_report)
+            # Heat/duration fueling advisor (NF-11): only for TODAY's session (the ST-03
+            # proximity rule — no gel math for Friday) and only when we have today's
+            # forecast already (no extra network call). Zero-LLM; the analyst just narrates.
+            today_iso = dt.date.today().isoformat()
+            today_session = next((s for s in plan_today or [] if s.get("date") == today_iso),
+                                  None)
+            if weather and today_session:
+                from app import fueling as fueling_mod
+                anchor_pace = await repository.typical_run_pace(session, user_id)
+                fueling = fueling_mod.advise(
+                    today_session, weather, heat_feels_c=settings.FUELING_HEAT_FEELS_C,
+                    min_duration_min=settings.FUELING_MIN_DURATION_MIN, anchor_pace=anchor_pace,
+                )
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
-                           subjective, health_alerts)
+                           subjective, health_alerts, fueling)
     cached = await llm_cache.get(session, cache_key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {model}")
@@ -314,7 +331,7 @@ async def run_analysis(
         try:
             text, stats = await _run_claude(
                 analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
-                weather, plan_today, fitness, records, norm, subjective, health_alerts
+                weather, plan_today, fitness, records, norm, subjective, health_alerts, fueling
             )
         except AnalystError as e:
             await repository.log_report(

@@ -594,6 +594,51 @@ async def test_month_cost_sums_current_month_only(session):
     assert await repository.month_cost(session, U1) == 0.01
 
 
+# ---------- costs_for_month (ST-12) ----------
+
+def _this_month_bounds_utc():
+    start = dt.datetime.now(dt.timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0)
+    end = dt.datetime(
+        start.year + (start.month == 12), (start.month % 12) + 1, 1, tzinfo=dt.timezone.utc)
+    return start, end
+
+
+async def test_costs_for_month_aggregates_by_kind_and_top3(session):
+    start, end = _this_month_bounds_utc()
+
+    await repository.log_report(session, user_id=U1, kind="report", model="m", cost_usd=0.01)
+    await repository.log_report(session, user_id=U1, kind="report", model="m", cost_usd=0.02)
+    await repository.log_report(session, user_id=U1, kind="deep", model="m", cost_usd=0.05)
+    await repository.log_report(
+        session, user_id=U1, kind="report", model="m", cost_usd=0.0, cached=True)
+    # a different user and a call outside the window never count
+    await repository.log_report(session, user_id=U2, kind="report", model="m", cost_usd=9.0)
+    await repository.log_report(session, user_id=U1, kind="report", model="m", cost_usd=1.0)
+    outside = (await session.execute(
+        select(ReportLog).where(ReportLog.user_id == U1, ReportLog.cost_usd == 1.0)
+    )).scalar_one()
+    outside.created_at = start - dt.timedelta(days=1)
+    await session.commit()
+
+    agg = await repository.costs_for_month(session, U1, start, end)
+    assert agg["total_usd"] == 0.08
+    assert agg["calls"] == 4
+    assert agg["cached"] == 1
+    assert agg["by_kind"]["report"] == {"cost": 0.03, "calls": 3}
+    assert agg["by_kind"]["deep"] == {"cost": 0.05, "calls": 1}
+    assert agg["top3"][0]["kind"] == "deep"
+    assert agg["top3"][0]["cost"] == 0.05
+    # the cached (cost=0) row never appears in top3
+    assert all(t["cost"] > 0 for t in agg["top3"])
+
+
+async def test_costs_for_month_empty_when_no_calls(session):
+    start, end = _this_month_bounds_utc()
+    agg = await repository.costs_for_month(session, U1, start, end)
+    assert agg == {"total_usd": 0.0, "calls": 0, "cached": 0, "by_kind": {}, "top3": []}
+
+
 # ---------- recent_step_match (NF-14) ----------
 
 async def test_recent_step_match_only_includes_scored_matches(session):

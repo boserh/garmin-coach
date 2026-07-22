@@ -66,6 +66,12 @@
         <div class="when">
           <div class="dd">{{ w.date|dm }}</div>
           <div class="dw">{{ w.date|dow }}</div>
+          {% set wx = (weather_chips or {}).get(w.date) %}
+          {% if wx %}
+          <div class="wx-chip {{ 'wx-conflict' if w.date in (weather_conflicts or []) else '' }}">
+            🌡️{{ wx.feels_max_c }}°{% if wx.precip_prob_pct is not none %} 🌧️{{ wx.precip_prob_pct }}%{% endif %}{% if wx.wind_max_kmh is not none %} 💨{{ wx.wind_max_kmh }}{% endif %}
+          </div>
+          {% endif %}
         </div>
         <div class="main">
           <div class="kind">

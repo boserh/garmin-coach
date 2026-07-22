@@ -8,6 +8,7 @@ global identity; a chat is authorised by mapping its chat_id to a registered use
 import datetime as dt
 import json
 import logging
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -71,7 +72,8 @@ HELP_TEXT = (
     "/activities — останні активності\n"
     "/activity <id> — розбір конкретної активності\n"
     "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
-    "/records — особисті рекорди\n\n"
+    "/records — особисті рекорди\n"
+    "/costs [YYYY-MM] — витрати на Claude за місяць\n\n"
     "🩺 Здоров'я\n"
     "/risk — травматичний радар (сигнали перевантаження)\n"
     "/health — алерти відновлення (HRV, сон, стрес)\n\n"
@@ -227,6 +229,83 @@ async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
     lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
+
+
+_COST_KIND_UK = {
+    "report": "щоденний звіт", "morning": "ранковий звіт", "deep": "глибокий аналіз",
+    "ask": "/ask", "activity": "активність", "plan": "план", "digest": "дайджест",
+    "compare": "порівняння", "wrapped": "wrapped", "insights": "інсайти",
+    "injury": "травма-радар", "health": "health-алерт", "weather": "погода",
+    "sick": "sick", "strength": "силова",
+}
+
+
+def _parse_month_arg(arg: Optional[str], tz) -> "tuple | None":
+    """``arg`` is ``YYYY-MM`` or empty (→ the current month in ``tz``). ``None`` on
+    garbage input, so the caller can show a format hint instead of guessing."""
+    if not arg:
+        now = dt.datetime.now(tz)
+        return now.year, now.month
+    try:
+        d = dt.datetime.strptime(arg, "%Y-%m")
+    except ValueError:
+        return None
+    return d.year, d.month
+
+
+def _month_bounds_utc(year: int, month: int, tz) -> "tuple[dt.datetime, dt.datetime]":
+    """[start, end) of the calendar month in ``tz``, converted to UTC for the query."""
+    start_local = dt.datetime(year, month, 1, tzinfo=tz)
+    if month == 12:
+        end_local = dt.datetime(year + 1, 1, 1, tzinfo=tz)
+    else:
+        end_local = dt.datetime(year, month + 1, 1, tzinfo=tz)
+    return start_local.astimezone(dt.timezone.utc), end_local.astimezone(dt.timezone.utc)
+
+
+def _format_costs(agg: dict, year: int, month: int) -> str:
+    label = f"{year}-{month:02d}"
+    if agg["calls"] == 0:
+        return f"💰 Витрати за {label}: викликів не було."
+    lines = [f"💰 Витрати за {label}: ${agg['total_usd']:.2f}",
+             f"Викликів: {agg['calls']} (з кешу: {agg['cached']})"]
+    if agg["by_kind"]:
+        lines.append("")
+        lines.append("По типах:")
+        for kind, b in sorted(agg["by_kind"].items(), key=lambda kv: kv[1]["cost"], reverse=True):
+            lines.append(f"• {_COST_KIND_UK.get(kind, kind)}: ${b['cost']:.2f} ({b['calls']})")
+    if agg["top3"]:
+        lines.append("")
+        lines.append("Найдорожчі виклики:")
+        for t in agg["top3"]:
+            label = _COST_KIND_UK.get(t["kind"], t["kind"])
+            lines.append(f"• {t['date']} {label}: ${t['cost']:.4f}")
+    return "\n".join(lines)
+
+
+async def costs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/costs [YYYY-MM] — this month's (or a named month's) Claude spend (ST-12): total $,
+    breakdown by kind, call count, cache-hit share, top-3 priciest calls. Pure DB read
+    (`repository.costs_for_month`), no Garmin/Claude — like /records and /compare."""
+    from bot.jobs import user_tz
+
+    arg = ctx.args[0] if ctx.args else None
+    logger.info(f"CMD /costs {arg or ''}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        tz = user_tz(user)
+        parsed = _parse_month_arg(arg, tz)
+        if parsed is None:
+            await update.message.reply_text(
+                "Невірний формат місяця. Приклад: /costs 2026-06 (без аргументу — поточний)."
+            )
+            return
+        year, month = parsed
+        start, end = _month_bounds_utc(year, month, tz)
+        agg = await repository.costs_for_month(session, user.id, start, end)
+    await update.message.reply_text(_format_costs(agg, year, month))
 
 
 async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

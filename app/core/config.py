@@ -110,6 +110,22 @@ class Settings(BaseSettings):
     WEATHER_RAIN_PROB_PCT: float = 70    # precip probability % at/above → rain conflict
     WEATHER_WIND_KMH: float = 40         # max wind km/h at/above → wind conflict
 
+    # --- Heat/duration fueling advisor (NF-11) ---
+    # A pure-Python calculator (app.fueling) folds fluid/carb/electrolyte guidance into the
+    # morning report's context for TODAY's key session (tempo/intervals/long) only — no
+    # extra Claude call, rides inside the existing daily report. Silent (no context key) for
+    # a short/easy session or a cool day short enough not to need it.
+    FUELING_MIN_DURATION_MIN: int = 45   # below this estimated duration, stay silent
+    FUELING_HEAT_FEELS_C: float = 28     # feels-like max °C at/above → heat notes
+
+    # --- Evening sleep-debt nudge (NF-16) ---
+    # A pure-Python, zero-LLM check (app.sleepnudge) the evening before a heavy session:
+    # only nudges when BOTH tomorrow is a key session AND recent sleep shows a debt signal.
+    # Process-level on/off; per-user opt-out reuses User.alerts_enabled (same wellness-push
+    # class as EP-08). The job's own run_daily hour stays on the process TZ in v1 (ST-14).
+    SLEEP_NUDGE: bool = True
+    SLEEP_NUDGE_HOUR: int = 21
+
     # --- Injury-risk radar (NF-04) ---
     # A pure-Python detector combines load-side signals (ACWR trend, repeated pain, RPE/pace
     # divergence, HRV/RHR drift) into a severity score; on a high score the morning tick sends

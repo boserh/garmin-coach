@@ -60,6 +60,13 @@
         урахуванням спеки/дощу/вітру). Порожнє — без погоди.
         {% if geo == "fail" %}<span class="err">Не вдалось знайти це місто — перевір назву.</span>{% endif %}</div>
 
+      <label for="timezone">Таймзона</label>
+      <input id="timezone" name="timezone" type="text" autocomplete="off"
+             value="{{ timezone }}" placeholder="напр. Europe/Warsaw, America/New_York">
+      <div class="hint">IANA-назва твоєї таймзони. Визначає ранкове вікно звіту й дати
+        добових перевірок (дайджест, алерти) — за замовчуванням Europe/Warsaw.
+        {% if tz == "fail" %}<span class="err">Невірна назва таймзони — перевір написання.</span>{% endif %}</div>
+
       <label class="check">
         <input type="checkbox" name="garmin_sync" {% if garmin_sync_enabled %}checked{% endif %}>
         Синхронізувати програму з Garmin-календарем

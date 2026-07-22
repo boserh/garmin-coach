@@ -76,7 +76,7 @@ def fake_analyze(monkeypatch):
 
     def fake(payload, question="", deep=False, kind=None, previous_report=None,
              api_key=None, weather=None, plan_today=None, fitness=None, records=None,
-             norm=None, subjective=None, health_alerts=None):
+             norm=None, subjective=None, health_alerts=None, fueling=None):
         calls.append(question)
         return "свіжий звіт", service.CallStats(kind=kind or "report", model="m",
                                                 input_tokens=10, output_tokens=5)
