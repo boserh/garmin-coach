@@ -13,8 +13,11 @@ soon as the restart job is queued instead of waiting on a process that's about t
 be killed.
 """
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger("deploy")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESTART_SCRIPT = REPO_ROOT / "scripts" / "restart_services.sh"
@@ -24,6 +27,7 @@ RESTART_SCRIPT = REPO_ROOT / "scripts" / "restart_services.sh"
 class CommandResult:
     ok: bool
     output: str
+    returncode: "int | None" = None
 
 
 async def _run(*args: str, cwd: "Path | None" = None) -> CommandResult:
@@ -35,7 +39,12 @@ async def _run(*args: str, cwd: "Path | None" = None) -> CommandResult:
     )
     stdout, _ = await proc.communicate()
     text = stdout.decode("utf-8", errors="replace").strip()
-    return CommandResult(ok=proc.returncode == 0, output=text)
+    result = CommandResult(ok=proc.returncode == 0, output=text, returncode=proc.returncode)
+    # Logged server-side (journalctl -u garmin-bot) regardless of what makes it into the
+    # Telegram reply — a denied sudo call can produce an empty/near-empty pipe (e.g. the
+    # rejection goes to the syslog auth log, not to this process' stdout/stderr).
+    logger.info(f"DEPLOY {' '.join(args)} → code={proc.returncode} output={text!r}")
+    return result
 
 
 async def git_pull() -> CommandResult:

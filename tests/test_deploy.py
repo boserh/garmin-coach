@@ -215,3 +215,31 @@ async def test_deploy_callback_yes_stops_on_pull_failure(_single_session, monkey
 
     assert calls == ["pull"]                # restart never runs after a failed pull
     assert "провалився" in q.message.replies[-1][0]
+
+
+async def test_deploy_callback_restart_failure_with_empty_output_shows_code(
+    _single_session, monkeypatch,
+):
+    """A denied sudo call can come back with an empty pipe (the rejection lands in the
+    syslog auth log, not this process' stdout/stderr) — the reply must still say
+    something diagnostic (the return code), never just the bare header."""
+    from bot import handlers as h
+
+    user = await _mk_user(_single_session, is_admin=True)
+    q = _FakeQuery("deploy:yes", user.telegram_chat_id)
+
+    async def fake_pull():
+        return deploy.CommandResult(ok=True, output="Already up to date.")
+
+    async def fake_restart():
+        return deploy.CommandResult(ok=False, output="", returncode=1)
+
+    monkeypatch.setattr(h.deploy_ops, "git_pull", fake_pull)
+    monkeypatch.setattr(h.deploy_ops, "restart_services", fake_restart)
+
+    await h.deploy_callback(SimpleNamespace(callback_query=q), None)
+
+    last = q.message.replies[-1][0]
+    assert "не вдався" in last
+    assert "код 1" in last
+    assert last.strip().endswith(":") is False   # never a bare, content-less header
