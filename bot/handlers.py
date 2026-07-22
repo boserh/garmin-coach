@@ -1027,6 +1027,14 @@ async def deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _fmt_deploy_failure(label: str, result: "deploy_ops.CommandResult") -> str:
+    # A denied sudo call can produce an empty pipe (the rejection goes to the syslog
+    # auth log, not this process' stdout/stderr) — always show the return code so the
+    # message never looks silently truncated. See journalctl -t sudo on the host.
+    body = result.output[-1500:] or "(порожній вивід — див. `journalctl -t sudo` на хості)"
+    return f"❌ {label} (код {result.returncode}):\n{body}"
+
+
 async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1044,13 +1052,13 @@ async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("⏳ git pull…")
     pull = await deploy_ops.git_pull()
     if not pull.ok:
-        await q.message.reply_text(f"❌ git pull провалився:\n{pull.output[-1500:]}")
+        await q.message.reply_text(_fmt_deploy_failure("git pull провалився", pull))
         return
     await q.message.reply_text(f"📥 {pull.output[-1500:] or '(без змін)'}")
     await q.message.reply_text("🔄 Перезапускаю сервіси…")
     restart = await deploy_ops.restart_services()
     if not restart.ok:
-        await q.message.reply_text(f"❌ Перезапуск не вдався:\n{restart.output[-1500:]}")
+        await q.message.reply_text(_fmt_deploy_failure("Перезапуск не вдався", restart))
     # No success message beyond this: garmin-bot restarts within moments of the queued
     # systemctl job, and this process is what's being replaced.
 
