@@ -249,3 +249,44 @@ async def test_tick_runs_inside_users_local_window(monkeypatch):
 async def test_tick_skips_outside_users_local_window(monkeypatch):
     la_user = SimpleNamespace(id=2, timezone="America/Los_Angeles", telegram_chat_id=2)
     assert await _tick_entered_runtime(monkeypatch, la_user) is False
+
+
+# --- Garmin rate-limit notification -----------------------------------------
+
+async def test_tick_notifies_once_on_garmin_rate_limit(monkeypatch):
+    """When Garmin keeps 429ing through every backoff retry, _api raises
+    GarminRateLimited — the tick should DM the user once (not every 5-minute tick,
+    now that CHECK_INTERVAL_MIN is tighter) and stay silent on a same-day repeat."""
+    from app.garmin.client import GarminRateLimited
+
+    user = SimpleNamespace(id=9, timezone="Europe/Warsaw", telegram_chat_id=9)
+    monkeypatch.setattr(jobs_module.dt, "datetime", _FixedDateTime)
+
+    @asynccontextmanager
+    async def fake_runtime(*a, **kw):
+        raise GarminRateLimited("/x")
+        yield  # pragma: no cover — unreachable, keeps this a generator
+
+    monkeypatch.setattr(jobs_module, "user_garmin_runtime", fake_runtime)
+
+    state = {}
+
+    async def fake_get_state(session, user_id, key):
+        return state.get((user_id, key))
+
+    async def fake_set_state(session, user_id, key, value):
+        state[(user_id, key)] = value
+
+    monkeypatch.setattr(jobs_module.repository, "get_state", fake_get_state)
+    monkeypatch.setattr(jobs_module.repository, "set_state", fake_set_state)
+
+    ctx = _FakeCtx()
+    await jobs_module._tick_for_user(ctx, None, user)
+    assert len(ctx.bot.sent) == 1
+    chat_id, text = ctx.bot.sent[0]
+    assert chat_id == 9
+    assert "Garmin" in text
+
+    # A second tick the same day must not resend the DM.
+    await jobs_module._tick_for_user(ctx, None, user)
+    assert len(ctx.bot.sent) == 1
