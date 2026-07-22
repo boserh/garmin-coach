@@ -1,12 +1,16 @@
 """Per-user data view — a logged-in user browses their own metrics, activities and
 reports (scoped to their user_id). Mirrors the admin /ui browser but never spans
 other users, and excludes the users / bot_state tables."""
+import csv
 import datetime as dt
+import io
+import json
 import math
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +19,15 @@ from app import stepmatch
 from app.charts import run_charts as _run_charts
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
-from app.db.models import ActivityRecord, DailyMetric, ReportLog, User
+from app.db.models import (
+    ActivityRecord,
+    DailyMetric,
+    PersonalRecord,
+    PlannedWorkout,
+    ReportLog,
+    TrainingPlan,
+    User,
+)
 from app.dependencies import get_session
 from app.garmin import repository
 from app.routers.admin import INDEX_COLS
@@ -514,6 +526,125 @@ async def _report_cards(session, user_id, limit, offset):
             "preview": ((r.report_text or r.question or r.error or "").strip()[:140]),
         })
     return out
+
+
+# ---- NF-13: GET /me/export — a streamed ZIP of everything this account owns ----
+# Column lists are explicit (not `__table__.columns`) so a future secret-bearing column
+# on one of these models can never leak into an export by accident.
+_EXPORT_DAILY_COLS = [
+    "id", "date", "sleep_score", "sleep_h", "deep_h", "rem_h", "light_h", "awake_h",
+    "hrv_avg", "hrv_status", "stress_avg", "stress_max", "bb_charged", "bb_drained",
+    "extra", "created_at", "updated_at",
+]
+_EXPORT_DAILY_CSV_COLS = [c for c in _EXPORT_DAILY_COLS if c != "extra"]
+
+_EXPORT_ACTIVITY_COLS = [
+    "id", "activity_id", "date", "type", "dur_min", "dist_km", "avg_hr", "max_hr", "load",
+    "exercises", "series", "analysis", "subjective", "step_match", "created_at",
+]
+_EXPORT_ACTIVITY_CSV_COLS = [
+    c for c in _EXPORT_ACTIVITY_COLS
+    if c not in ("exercises", "series", "subjective", "step_match")
+]
+
+_EXPORT_RECORD_COLS = ["id", "kind", "value", "previous_value", "activity_id", "date", "created_at"]
+
+_EXPORT_REPORT_COLS = [
+    "id", "created_at", "kind", "model", "input_tokens", "output_tokens", "cost_usd",
+    "ok", "cached", "error", "question", "report_text", "tool_rounds",
+]
+
+_EXPORT_PLAN_COLS = [
+    "id", "goal", "goal_label", "target_date", "start_date", "days_per_week",
+    "intensity", "intake", "summary", "status", "created_at",
+]
+
+_EXPORT_WORKOUT_COLS = [
+    "id", "date", "week", "type", "dist_km", "description", "steps",
+    "garmin_workout_id", "garmin_schedule_id", "garmin_template_id", "exercise_edits",
+    "strength_plan", "strength_snapshot", "completed_activity_id", "match_info",
+    "status", "created_at", "updated_at",
+]
+
+
+def _export_row(obj, cols: list) -> dict:
+    out = {}
+    for c in cols:
+        v = getattr(obj, c)
+        out[c] = v.isoformat() if isinstance(v, dt.datetime) else v
+    return out
+
+
+def _export_csv(rows: list, cols: list) -> bytes:
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow(r)
+    return buf.getvalue().encode("utf-8")
+
+
+@router.get("/me/export")
+async def me_export(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """NF-13: a streamed ZIP of everything this account owns — full-fidelity JSON (extra/
+    series/steps/subjective, nothing flattened away) plus flat CSV twins of the two tabular
+    tables for Excel/Sheets. Pure DB read scoped to ``user.id``; the ``users`` row itself is
+    never read, so credentials/garth token/password hash can't leak by construction. This is
+    portability, not disaster recovery — OPS-02's DB backup stays the restore mechanism."""
+    daily = (await session.execute(
+        select(DailyMetric).where(DailyMetric.user_id == user.id).order_by(DailyMetric.date)
+    )).scalars().all()
+    activities = (await session.execute(
+        select(ActivityRecord).where(ActivityRecord.user_id == user.id)
+        .order_by(ActivityRecord.date)
+    )).scalars().all()
+    records = (await session.execute(
+        select(PersonalRecord).where(PersonalRecord.user_id == user.id)
+        .order_by(PersonalRecord.date)
+    )).scalars().all()
+    plans = (await session.execute(
+        select(TrainingPlan).where(TrainingPlan.user_id == user.id).order_by(TrainingPlan.id)
+    )).scalars().all()
+    reports = (await session.execute(
+        select(ReportLog).where(ReportLog.user_id == user.id).order_by(ReportLog.created_at)
+    )).scalars().all()
+
+    daily_rows = [_export_row(m, _EXPORT_DAILY_COLS) for m in daily]
+    activity_rows = [_export_row(a, _EXPORT_ACTIVITY_COLS) for a in activities]
+    record_rows = [_export_row(r, _EXPORT_RECORD_COLS) for r in records]
+    report_rows = [_export_row(r, _EXPORT_REPORT_COLS) for r in reports]
+
+    plan_rows = []
+    for p in plans:
+        workouts = (await session.execute(
+            select(PlannedWorkout).where(PlannedWorkout.plan_id == p.id)
+            .order_by(PlannedWorkout.date)
+        )).scalars().all()
+        plan_rows.append({
+            **_export_row(p, _EXPORT_PLAN_COLS),
+            "workouts": [_export_row(w, _EXPORT_WORKOUT_COLS) for w in workouts],
+        })
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("daily_metrics.json", json.dumps(daily_rows, ensure_ascii=False, indent=2))
+        zf.writestr("daily_metrics.csv", _export_csv(daily_rows, _EXPORT_DAILY_CSV_COLS))
+        zf.writestr("activities.json", json.dumps(activity_rows, ensure_ascii=False, indent=2))
+        zf.writestr("activities.csv", _export_csv(activity_rows, _EXPORT_ACTIVITY_CSV_COLS))
+        zf.writestr("personal_records.json",
+                    json.dumps(record_rows, ensure_ascii=False, indent=2))
+        zf.writestr("plans.json", json.dumps(plan_rows, ensure_ascii=False, indent=2))
+        zf.writestr("report_logs.json", json.dumps(report_rows, ensure_ascii=False, indent=2))
+    buf.seek(0)
+
+    fname = f"garmin-coach-export-{dt.date.today().isoformat()}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.get("/me", response_class=HTMLResponse)

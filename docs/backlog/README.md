@@ -11,8 +11,9 @@
 EP-12 (RPE-тренд/болі в адаптацію+дайджест+звіт), EP-08 (проактивні health-алерти),
 CODE-01 (розбити analysis-сервіс) і ST-09 (реальні вправи силової в звіті) —
 ✅ зроблено (див. Done). З 🟡 medium далі закрито **EP-09** (`/ask` над усією
-історією), **NF-03** (режим хвороба/подорож), **NF-08** (особистий MCP-сервер) і
-**EP-04** (веб-дашборд). Наступний — EP-05. Frozen-тікети — ⚪.
+історією), **NF-03** (режим хвороба/подорож), **NF-08** (особистий MCP-сервер),
+**EP-04** (веб-дашборд) і **EP-05** (race pack — фаза 0+1, фаза 2 лишається за
+GAP-модулем/EP-15). Frozen-тікети — ⚪.
 
 **Поповнення 2026-07-21 (BA-аналіз):** NF-09…NF-16 + ST-10…ST-14 — здебільшого
 «монетизація» вже задокументованих у коді future extensions і замикання наявних
@@ -20,8 +21,11 @@ CODE-01 (розбити analysis-сервіс) і ST-09 (реальні впра
 NF-14 (по-кроковий план/факт) → NF-10 → NF-11 (поки спека) → NF-16 →
 решта як філери. **NF-09, ST-10, ST-11, NF-14, NF-10 — перша п'ятірка партії
 закрита** (2026-07-21, див. Done). **Друга п'ятірка — ST-14, ST-12, ST-13, NF-11,
-NF-16 — закрита** (2026-07-22, див. Done). Немає відкритих — решта NF-09…NF-16/
-ST-10…ST-14 або закрита, або філер за запитом (NF-12/NF-13/NF-15).
+NF-16 — закрита** (2026-07-22, див. Done). **Третя п'ятірка — NF-12, NF-13,
+NF-15, EP-05 (фаза 0+1) — закрита** (2026-07-22, див. Done; NF-15 позначена
+нижче як потребуюча live-звірки — recon зроблено desk-only, без реального
+Garmin-акаунту в сесії). Немає відкритих — решта NF-09…NF-16/ST-10…ST-14
+закрита.
 
 ## Сторі покращення (S/M)
 
@@ -31,7 +35,6 @@ ST-10…ST-14 або закрита, або філер за запитом (NF-1
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [EP-05](EP-05-race-pack.md) | 🟡 medium | Race pack — підготовка до перегонів | L | фаза 0: типізувати `target_date`; GAP-модуль спільний з EP-15 |
 | [EP-11](EP-11-web-coach-chat.md) | 🟢 low | Веб-чат з тренером | L | EP-09 бажано |
 | [EP-10](EP-10-multisport.md) | 🟢 low | Мультиспорт: вело/плавання у планах і аналізі (фаза навантаження вже в NF-05) | XL | фаза 2 (навантаження) → NF-05 |
 | [EP-15](EP-15-elevation-gap.md) | 🟢 low | Рельєф і grade-adjusted pace (GAP) | M–L | GAP-модуль реюзабельний (його чекає EP-05 фаза 2) |
@@ -45,13 +48,9 @@ ST-10…ST-14 або закрита, або філер за запитом (NF-1
 
 ### Нові фічі — BA-аналіз 2026-07-21
 
-NF-09/NF-14/NF-10/NF-11/NF-16 закрито (див. Done).
-
-| ID | Пріор. | Назва | Оцінка | Залежності |
-| --- | --- | --- | --- | --- |
-| [NF-12](NF-12-seasonal-multisport-intake.md) | 🟢 low | Сезонний мультиспорт-intake («кайт-сезон», future extension NF-05) | M | NF-05 ✅; intake спільний з EP-16 |
-| [NF-13](NF-13-user-data-export.md) | 🟢 low | Експорт власних даних (`/me/export`) | S–M | —; сировина для NF-08 |
-| [NF-15](NF-15-shoe-mileage-tracker.md) | 🟢 low | Пробіг кросівок і нагадування про заміну | M | розвідка gear-endpoint'ів; опційний вхід у NF-04 |
+Немає відкритих — NF-09/NF-14/NF-10/NF-11/NF-16/NF-12/NF-13/NF-15 закрито (див. Done).
+NF-15's gear-endpoint recon у Done-записі — desk-only (без live Garmin-акаунту в сесії);
+позначено там явно як таке, що потребує підтвердження на реальному акаунті.
 
 ## Перфоманс
 
@@ -117,6 +116,10 @@ EP-10 (аналіз вело) і ST-05 — за запитом/філери.
 
 | ID | Назва | Де реалізовано |
 | --- | --- | --- |
+| [EP-05](EP-05-race-pack.md) | Race pack — пейсинг/харчування/чекліст до старту (фаза 0+1; фаза 2 GAP лишається за EP-15) | `app/race.py` — `GOAL_DISTANCE_KM` типізує target-дистанцію по цілі (сиблінг `app.goal.GOAL_METRIC`, який дає prediction-метрику; `TrainingPlan.target_date` вже був типізований ISO-рядок, фаза 0 виявилась майже безкоштовною), `has_target`/`build_context`. `run_race_plan` (`app/analysis/reports.py`, зразок `run_compare`/`run_wrapped`) збирає контекст у Python (fitness-знімок, `recent_sessions` — вже вирішений тейпер плану, прогноз на день старту лише в межах `WEATHER_WINDOW_DAYS`=7 через EP-13's `fetch_forecast_week`) і наративізує ОДНИМ Opus-викликом (`SYSTEM_RACE`, `MODEL_RACE`): цільовий/запасний темп, розбивка по дистанції, харчування по хвилинах (≥half), чекліст, погодна нотатка. Дедуп-кеш (`_race_cache_key`), `ReportLog(kind="race")`. Команда **`/race`** + щоденний автотригер (`bot/jobs.py::_race_pack_for_user`, з `plan_sync_job` — не 20-хв тік) рівно за `race.TRIGGER_DAYS`=7 днів до старту, гард **по плану** (`bot_state race_pack_sent:<plan_id>`, не по даті — пропущений тік не губить тригер). `/plan` показує останній pack як блок, поки до старту ≤`race.PLAN_BLOCK_DAYS`=14 (новий `repository.get_last_report_of_kind` — узагальнення `get_last_report` на довільний `kind`). `tests/test_race.py` |
+| [NF-15](NF-15-shoe-mileage-tracker.md) | Пробіг кросівок і нагадування про заміну | `app/gear.py` — чистий (нуль LLM) модуль. **Recon-нотатка**: тікет сам вимагає live-звірку shape gear-endpoint'ів ДО коду як блокер — у цій сесії не було live Garmin-акаунту, тож recon desk-only (community `python-garminconnect`: `get_gear`/`get_gear_stats` — `/gear-service/gear/filterGear?userProfilePk=`, `/gear-service/gear/stats/{uuid}`; **нема** activity→gear link ендпоінта взагалі) — числа вважати попередніми до підтвердження на реальному акаунті. Звідси два свідомі відхилення від дизайну тікета: (1) пробіг береться напряму з Garmin-власної `stats`-суми пари (вже показується в Connect UI як lifetime-дистанція), а не сумою наших `ActivityRecord` за `gear_id` — без міграційної колонки й бекфіл-CLI; (2) кожен парсер (`parse_item`/`parse_mileage_km`/`parse_last_used`) захисний проти непідтвердженого shape — раз логує `GEAR ... shape unrecognised` і повертає «нема даних», а не вгадує (хибне попередження неможливе, лише заниження). `bot/jobs.py::_gear_check_for_user` — з ЩОДЕННОЇ `plan_sync_job` (не 20-хв тік), оновлює ростер+пробіг у `bot_state`-JSON (`gear.STATE_KEY`), команда **`/gear`** — чистий DB-рід після цього. Поріг `GEAR_WEAR_KM`=700 (`0` вимикає) → одна DM на пару, гард зберігає пробіг НА МОМЕНТ попередження (`gear.WARN_PREFIX+gear_id`), щоб `gear.should_rewarn` міг нагадати знову за кожні `GEAR_REWARN_KM`=150 понад поріг. Пара в відставці — тиша; `gear.dominance_note` — чесність «лише одна пара насправді ведеться» з підводних каменів тікета. `tests/test_gear.py` |
+| [NF-13](NF-13-user-data-export.md) | Експорт власних даних (`/me/export`) | `app/routers/me.py::me_export` — стрімить ZIP: `daily_metrics`/`activities` JSON (повна точність — `extra`/`series`/`subjective`/`steps` не зрізані) **і** плоскі CSV-дублікати без JSON-колонок, `personal_records.json`, `plans.json` (план + `PlannedWorkout`и зі `steps`), `report_logs.json`. Явні per-модельні білі списки колонок (не `__table__.columns`) — запобіжник: рядок `users` цим роутом взагалі НЕ читається, тож креди/garth-токен/пароль-хеш не можуть просочитись за конструкцією, а не завдяки уважному фільтруванню. Зареєстровано ДО параметризованого `GET /me/{table}` (той самий роутер), щоб літеральний шлях вигравав першим. Чистий DB-рід по `user.id`, нуль Garmin/Claude; лінк з `/me` («⬇️ Експорт даних»). Свідомо НЕ заміна OPS-02 (та бекап — механізм відновлення, це — переносимість). `tests/test_routers.py` (ізоляція між юзерами, grep по сирих байтах ZIP на відсутність секретів, порожня історія — все одно валідний ZIP) |
+| [NF-12](NF-12-seasonal-multisport-intake.md) | Сезонний мультиспорт-intake («кайт-сезон») | `intake["season"]` (`{sport, sessions_per_week, avg_min}`, опційний блок на setup-формі `/plan` — кайт/теніс/вело/інше) — заявлений НАПЕРЕД сезонний акцент, на відміну від NF-05's `multisport` (факт минулих тижнів постфактум); їдуть окремими ключами контексту, щоб `SYSTEM_PLAN`/`SYSTEM_PLAN_ADAPT` розрізняли намір і факт — ADAPT-промпт прямо каже не «повертати» обсяг, який генерація свідомо прибрала під сезон, лише тому що compliance виглядає скромно. Підключено в `run_plan_generation`, `run_plan_extension` і `run_plan_adaptation` (`app/analysis/plans.py`) як `context["season"] = intake.get("season")` — жодна з трьох не кешується, тож без змін у cache-key. Без прив'язки до днів тижня в v1 (кайт-дні плавають) — лише тижневий бюджет. Зміна акценту без регенерації — **`POST /plan/season`** (за зразком ST-07's `/plan/adjust-level`; порожній `season_sport` прибирає ключ). `tests/test_season.py` + `test_routers.py::test_plan_season_*` |
 | [NF-16](NF-16-evening-sleep-nudge.md) | Вечірній sleep-nudge перед важкою сесією | `app/sleepnudge.py` — чистий (нуль LLM) детектор: `has_sleep_debt` реюзає NF-01's `baselines.compute_baselines` як поріг (сон нижче персонального коридору ≥2 з останніх 3 ночей) **або** Garmin-власний `sleep_need_h` (з `extra`) помітно вищий за фактичний сон — сигнал навіть до того, як назбирається історія на персональний коридор; `tomorrow_is_heavy` — чи завтрашня сесія з активного плану tempo/intervals/long. Обидві умови нарізно → тиша (правило EP-13 «нуль конфлікту ⇒ нуль повідомлень»). `repository.read_history` тепер віддає й сирий `extra` (потрібен `sleep_need_h`). Вечірня джоба `bot/jobs.py::sleep_nudge_job` (`run_daily` о `SLEEP_NUDGE_HOUR`=21 Europe/Warsaw — розклад лишається процесний у v1; `_sleep_nudge_for_user` рахує «сьогодні»/гард per-user через ST-14's `user_tz`), гард `bot_state` `sleep_nudge:<date>` раз/вечір, тумблер — реюз `User.alerts_enabled` (той самий wellness-push клас, що EP-08) + процесний `SLEEP_NUDGE`. Без конкретного часу відбою (немає wake-time у сирих даних) — свідоме обмеження v1, текст лише «лягай раніше». `tests/test_sleep_nudge.py` |
 | [NF-11](NF-11-heat-fueling-advisor.md) | Гідрація/харчування для ключових сесій у спеку | `app/fueling.py` — чистий (нуль LLM) калькулятор: `estimate_minutes` оцінює тривалість сесії зі structured `steps` (рекурсивно, як `app/routers/plan.py`'s оцінювач, свідомо не імпортований — веб-роутер не має бути залежністю) → `dist_km` за anchor-pace → грубий фолбек за типом; `advise(session, forecast)` — лише для СЬОГОДНІШНЬОЇ важкої сесії (tempo/intervals/long), досить довгої (`FUELING_MIN_DURATION_MIN`): рідина/вуглеводи за порогами тривалості, у спеку (`FUELING_HEAT_FEELS_C`) — ще й електроліти + найпрохолодніший hourly-слот. Подача — **без нового Claude-виклику**: `run_analysis` фільтрує `plan_today` до сьогоднішньої дати, бере вже наявний `weather` (ST-03, жодного нового фетчу) і кладе компактний `fueling`-знімок у `user_content` **і в `_cache_key`** (наскрізна пастка); секція в `SYSTEM` каже озвучити цифри, не перераховувати. Тихо за замовчуванням: нема сесії/форкасту/сесія легка/закоротка → ключа просто немає. `tests/test_fueling.py` |
 | [ST-13](ST-13-weather-chips-on-plan-page.md) | Прогноз погоди у веб-в'ю `/plan` | `app/routers/plan.py::_weather_chips` — best-effort (як `_strength_details`): за стored локацією тягне `weather.fetch_forecast_week` (`run_in_threadpool`, один фетч на рендер, без кешу v1) і той самий чистий `find_weather_conflicts`, що й `weather_plan_job` (EP-13) — сторінка лише ПОКАЗУЄ, чому джоба могла б запропонувати перенос, сама нічого не пропонує (жодного Claude-виклику з веб-сторінки). Чіпи (🌡️ feels-max / 🌧️ prob / 💨 вітер) рендеряться в `plan.html` біля дати; конфліктний день підсвічений класом `wx-conflict`. Лише АКТИВНИЙ план (`GET /plan`) — read-only `/plan/{id}` свідомо без чіпів (минулий прогноз не потрібен). Нема локації/форкаст впав → сторінка рендериться без чіпів. `tests/test_routers.py::test_plan_page_shows_weather_chip_and_conflict` + 3 суміжні |

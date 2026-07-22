@@ -182,6 +182,25 @@ def _wrapped_cache_key(context: dict, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _race_cache_key(context: dict, model: str) -> str:
+    """Key the race pack on the target + fitness snapshot + upcoming (taper) sessions +
+    weather — not on ``today`` alone, so a same-day repeat (a manual ``/race`` right after
+    the auto-send) is a cache hit (the README pitfall: all Claude context must key the
+    dedup cache)."""
+    material = {
+        "goal": context.get("goal"),
+        "target_date": context.get("target_date"),
+        "target_dist_km": context.get("target_dist_km"),
+        "fitness": context.get("fitness"),
+        "recent_sessions": context.get("recent_sessions"),
+        "weather": context.get("weather"),
+        "model": model,
+        "race": True,
+    }
+    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _compare_cache_key(context: dict, model: str) -> str:
     """Key the comparison on the two assembled windows + framing (not ``today`` alone), so a
     repeat within the same day/data is a cache hit — the README pitfall (all Claude context

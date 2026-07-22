@@ -265,6 +265,7 @@ async def run_plan_generation(
         "weekly_volume": weekly_volume or None,
         "fitness": fitness or None,
         "multisport": multisport,
+        "season": (intake or {}).get("season") or None,
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
@@ -346,6 +347,7 @@ async def run_plan_extension(
         "recent_runs": recent_runs, "recovery": recovery[-14:],
         "weekly_volume": weekly_volume or None,
         "fitness": fitness or None, "multisport": multisport,
+        "season": intake.get("season") or None,
     }
     logger.info(f"PLAN extend user={user_id} plan={plan.id} {new_start}..{block_end}")
     try:
@@ -696,6 +698,7 @@ async def run_plan_adaptation(
         "compliance": compliance or None,
         "fitness": fitness or None,
         "multisport": multisport,
+        "season": (plan.intake or {}).get("season") or None,
         "subjective": subjective_mod.summarize(subj_runs),
         "step_match": step_match,
         "risk": risk or None,

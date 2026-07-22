@@ -151,6 +151,8 @@ Optional, with defaults:
 | `DEPLOY_ENABLED` | `False` | OPS-03: master on/off for the admin-only `/deploy` bot command (git pull + service restart) |
 | `SLEEP_NUDGE` | `True` | NF-16: master on/off for the evening sleep-debt nudge |
 | `SLEEP_NUDGE_HOUR` | `21` | NF-16: hour (Europe/Warsaw — the job's own schedule stays process-TZ in v1) the evening check runs |
+| `GEAR_WEAR_KM` | `700` | NF-15: mileage threshold that triggers a "replace your shoes" DM once per pair; `0` disables the DM (roster/mileage still refresh) |
+| `GEAR_REWARN_KM` | `150` | NF-15: re-warn a pair still in rotation every this many further km past the first warning |
 
 `CLAUDE_CACHE_FILE` is gone — the Claude dedup cache lives in the `llm_cache` table
 (PERF-02), shared by the bot and web processes.
@@ -422,6 +424,8 @@ app/
   charts.py            inline-SVG chart helpers (series/trend_series/run_series/run_charts) — shared by admin/me/dashboard (EP-04)
   mcp_server.py        NF-08: personal read-only MCP server (stdio) over the same /ask tools
   deploy.py            OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
+  race.py              EP-05: race-pack target/distance mapping + narration-context builder
+  gear.py              NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     prompts.py         SYSTEM + SYSTEM_ASK_TOOLS prompts
@@ -437,7 +441,7 @@ app/
   dependencies.py      shared deps (get_session)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /sick, /deploy (OPS-03, admin), /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /deploy (OPS-03, admin), /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (per-user timezone window, ST-14; per-user once-a-day guard); also weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -478,8 +482,14 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /deep?q=...` — deep analysis (Opus). Login; current user.
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB. Login; current user.
 - `GET/POST /plan` — training-plan setup form (no active plan) / plan view; `POST /plan/archive`
-  (archive active), `GET /plan/archive` (list archived), `GET /plan/{id}` (read-only view of
-  a past plan). Login; current user.
+  (archive active), `POST /plan/adjust-level` (ST-07), `POST /plan/season` (EP-05 NF-12:
+  seasonal accent, without regeneration), `GET /plan/archive` (list archived), `GET /plan/{id}`
+  (read-only view of a past plan). Login; current user.
+- `GET /me/export` — NF-13: a streamed ZIP of everything this account owns (daily_metrics/
+  activities JSON+CSV, personal_records/plans/report_logs JSON) — pure DB read scoped to
+  `user.id`; the `users` row is never touched, so credentials/tokens can't leak by
+  construction. Not a substitute for OPS-02's DB backup (portability, not disaster recovery).
+  Login; current user; linked from `/me`.
 - `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save).
 - `GET /admin/users` — list/create users (admin only).
 - `GET /ui` + `GET /ui/{table}` + `/ui/{table}/{id}` — raw DB browser (whitelisted
@@ -976,9 +986,90 @@ loops via `for_each_user`; `_sleep_nudge_for_user` computes "today"/the once-a-e
 currently stored gives a wake-time to count back from, so the nudge says "lie down earlier"
 without a number (the ticket itself names this fallback as acceptable).
 
-**Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`
-and **training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
-cost is fine) use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
+**Race pack (EP-05)**: `TrainingPlan.target_date` was already a typed ISO string (phase 0
+turned out to be nearly free) — what was missing was a typed **target distance**:
+`app/race.py::GOAL_DISTANCE_KM` maps a race goal (`first_5k`/`faster_5k`/`first_10k`/
+`first_half`) to a km number, sibling to `app.goal.GOAL_METRIC` (which maps a goal to the
+Garmin *prediction* metric, not a fixed distance) — the open-ended `general` goal has
+neither (`race.has_target(plan)` gates everything on both being present). `run_race_plan`
+(`app/analysis/reports.py`, mirrors `run_compare`/`run_wrapped`'s shape) assembles the
+context in Python — a fitness snapshot (`get_recent_extra`), the plan's own upcoming
+sessions through race day (`recent_sessions` — the ALREADY-DECIDED taper; the model is told
+to reference it, never propose a different one), and the target date's forecast (reusing
+EP-13's `fetch_forecast_week`, only within `race.WEATHER_WINDOW_DAYS`=7) — and narrates ONE
+Opus call (`SYSTEM_RACE`, `MODEL_RACE`) into target/backup pace, a distance-appropriate
+splits/negative-split breakdown, fueling by minute (≥half only), a pre-race checklist, and a
+weather note when relevant. Dedup-cached (`_race_cache_key`) and `ReportLog(kind="race")`.
+Surfaced two ways: the **`/race`** bot command (on demand) and the **daily**
+`plan_sync_job` auto-trigger (`bot/jobs.py::_race_pack_for_user` — not the 20-min tick; a
+live weather/Opus call doesn't need that cadence), which fires exactly `race.TRIGGER_DAYS`
+(7) days before `target_date`, guarded **per-plan** (`bot_state` `race_pack_sent:<plan_id>`)
+rather than per-date so a missed tick can't lose the trigger and a fresh plan/target
+naturally re-arms it. `/plan` shows the last generated pack as a standing block while the
+race is within `race.PLAN_BLOCK_DAYS`=14 (`repository.get_last_report_of_kind` — a new
+generalisation of `get_last_report` to an arbitrary `kind`) — the block only ever reads the
+last report, it never itself calls Claude. `tests/test_race.py`.
+
+**User data export (NF-13)**: `GET /me/export` (`app/routers/me.py::me_export`) streams a
+ZIP of everything an account owns — `daily_metrics`/`activities` as JSON (full fidelity:
+`extra`/`series`/`subjective`/`steps` intact) **and** flat CSV twins for Excel/Sheets,
+`personal_records.json`, `plans.json` (plan + its `PlannedWorkout`s incl. `steps`), and
+`report_logs.json`. Explicit per-model column allowlists (not `__table__.columns`) are the
+safety net: the `users` row is **never read** by this route at all, so credentials/garth
+token/password hash can't leak by construction, not by careful filtering. Registered
+**before** the parameterised `GET /me/{table}` route (same router) so the literal path wins
+first. Pure DB read scoped to `user.id`, zero Garmin/Claude calls — linked from `/me` as
+"⬇️ Експорт даних". Deliberately not a disaster-recovery mechanism (that's OPS-02's DB
+backup) — this is portability. `tests/test_routers.py` (cross-user isolation, no-secrets
+grep over the raw ZIP bytes, empty-history still a valid ZIP).
+
+**Shoe mileage tracker (NF-15)**: `app/gear.py` is a **pure-Python, zero-LLM** module —
+unusually for this codebase, its ticket's own AC #1 flags live endpoint verification as **a
+blocker, not a detail**, and this session had no live Garmin account to verify against (see
+the module's own docstring and `app/garmin/client.py`'s GEAR section for the full recon
+trail: the community `python-garminconnect` library exposes `get_gear`/`get_gear_stats`
+[`/gear-service/gear/filterGear?userProfilePk=`, `/gear-service/gear/stats/{uuid}`] but
+**no** activity→gear link endpoint at all). Two deliberate deviations from the ticket's
+original design follow from that gap: (1) mileage comes straight from Garmin's own
+per-gear `stats` total (already shown as a shoe's lifetime distance in the Connect UI)
+instead of summing our own `ActivityRecord` rows by a `gear_id` we'd have to backfill and
+could easily get wrong — no migration column, no backfill CLI; (2) every parse
+(`gear.parse_item`/`parse_mileage_km`/`parse_last_used`) is defensive against an
+unconfirmed shape — logs once (`GEAR ... shape unrecognised`) and returns "no data" rather
+than guessing, so a wrong field name can only under-report, never send a false warning.
+**Not yet independently live-verified** — treat the numbers as provisional until confirmed
+against a real account. `bot/jobs.py::_gear_check_for_user` runs from the **daily**
+`plan_sync_job` (not the 20-min tick — a live gear fetch isn't cheap enough for that
+cadence), refreshes the roster+mileage into a `bot_state` JSON blob (`gear.STATE_KEY`) so
+the **`/gear`** command is a plain DB read afterwards, and warns once per pair past
+`GEAR_WEAR_KM` (700, `0` disables) via `bot_state` `gear.WARN_PREFIX + gear_id` — storing
+the mileage AT the warning (not just a flag) so `gear.should_rewarn` can nudge again every
+further `GEAR_REWARN_KM` (150) instead of nagging daily or going silent forever. Retired
+gear never warns; `gear.dominance_note` flags the "only one pair actually tracked" honesty
+case from the ticket's own pitfall. `tests/test_gear.py`.
+
+**Seasonal multisport intake (NF-12)**: NF-05 made cross-sport load *visible* after the
+fact ("last week was heavy on kite — ease off running"); generation itself stayed
+run-centric. `intake["season"]` (`{sport, sessions_per_week, avg_min}`, picked on the
+`/plan` setup form — kite/tennis/bike/other, entirely optional) is a **declared-ahead**
+seasonal accent, not a fact like NF-05's `multisport` — the two ride as separate context
+keys (`season` vs `multisport`) so `SYSTEM_PLAN`/`SYSTEM_PLAN_ADAPT` can tell "planned
+intent" from "measured load" apart; the ADAPT prompt explicitly says not to "give back" the
+volume generation already reserved for a stated season just because compliance looks
+lighter than usual. Wired into `run_plan_generation`, `run_plan_extension` and
+`run_plan_adaptation` (`app/analysis/plans.py` — all three already had `intake`/`plan.intake`
+in scope) as `context["season"] = intake.get("season")`; neither generation nor adaptation
+is dedup-cached, so no cache-key wiring needed. No day-of-week binding in v1 (a kite day
+floats with the wind) — pure weekly budget, matching the ticket's own scope note. Changing
+the accent doesn't require regeneration: **`POST /plan/season`** (mirrors ST-07's
+`/plan/adjust-level`) reassigns `plan.intake` directly; an empty `season_sport` clears the
+key entirely (`app/routers/plan.py::_parse_season`). `tests/test_season.py` +
+`test_routers.py::test_plan_season_*`.
+
+**Models**: `/report` + morning + `/ask` + `/activity` + weekly digest use `claude-sonnet-5`; `/deep`,
+**training-plan generation** (`MODEL_PLAN_GEN` — reasoning-heavy + infrequent, so the
+cost is fine) and the **race pack** (`MODEL_RACE`, EP-05 — a rare, once-per-race synthesis)
+use `claude-opus-4-8`. Plan **edits** (`/plan <text>` → ops) stay on Sonnet
 (`MODEL_PLAN`) — small and mechanical. Plan generation also accepts a **Fable** engine via
 the setup-form toggle (see the strength/plan section). Every call is logged to `ReportLog`
 (tokens, cost, ok/error). `PRICES` (Anthropic list prices, $/1M in/out): Sonnet 5 **intro**

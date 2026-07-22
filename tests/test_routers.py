@@ -535,6 +535,60 @@ def test_plan_page_shows_weather_chip_and_conflict(auth_client, monkeypatch):
     assert "wx-conflict" in view   # tempo session on a 34° day → flagged, same as the job
 
 
+def test_plan_page_shows_race_pack_block_when_close(auth_client):
+    """EP-05: a target race within race.PLAN_BLOCK_DAYS + a previously logged race-pack
+    report renders the standing block; a report_logs row from a DIFFERENT kind never does."""
+    import datetime as dt
+
+    from app.db.models import ReportLog
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+    target = (dt.date.today() + dt.timedelta(days=6)).isoformat()
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_10k", goal_label="Перші 10 км", target_date=target,
+                start_date="2026-06-01", days_per_week=3, intensity="moderate", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date=target, week=1, type="race", dist_km=10.0, description="старт")])
+            s.add(ReportLog(user_id=uid, kind="race", model="claude-opus-4-8", ok=True,
+                            report_text="⏱ цільовий темп 5:00/км"))
+            await s.commit()
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+    assert "Race pack" in view
+    assert "5:00/км" in view
+
+
+def test_plan_page_no_race_pack_without_target(auth_client):
+    """An open-ended (general) plan has no race distance/date → no race-pack block, even
+    if a race report happens to exist in the log."""
+    from app.db.models import ReportLog
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="general", goal_label="Персональний тренер", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="moderate", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date="2026-06-02", week=1, type="easy", dist_km=5.0, description="легко")])
+            s.add(ReportLog(user_id=uid, kind="race", model="claude-opus-4-8", ok=True,
+                            report_text="стороннiй race pack"))
+            await s.commit()
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+    assert "Race pack" not in view
+
+
 def test_plan_page_renders_without_chips_when_no_location(auth_client):
     """No stored location → the page renders fine, just without any weather chips."""
     from app.garmin import repository
@@ -673,6 +727,77 @@ def test_plan_adjust_level_editable_on_page(auth_client):
     assert "вимкнена" in auth_client.get("/plan").text
 
 
+def test_plan_season_stored_from_form(auth_client):
+    """NF-12: the setup form's season fields land in intake["season"]; omitting the sport
+    leaves the plan's intake exactly as before (opt-in, zero-change default)."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+
+    def clear_gen_state():
+        async def run():
+            async with async_session_maker() as s:
+                await repository.set_state(s, uid, plan_router.PLAN_GEN_KEY, "")
+        anyio.run(run)
+
+    base = {"goal": "first_5k", "run_days": ["tue", "thu"], "long_run_day": "thu",
+            "intensity": "moderate"}
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        r = auth_client.post(
+            "/plan", data=dict(base, season_sport="kite", season_sessions="4",
+                               season_avg_min="120"),
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    _uid, params = spawn.call_args.args
+    assert params["intake"]["season"] == {
+        "sport": "kite", "sessions_per_week": 4, "avg_min": 120}
+    clear_gen_state()
+
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        auth_client.post("/plan", data=base, follow_redirects=False)
+    _uid, params = spawn.call_args.args
+    assert "season" not in params["intake"]
+    clear_gen_state()
+
+
+def test_plan_season_editable_on_page(auth_client):
+    """NF-12: /plan/season sets/clears the active plan's seasonal accent without
+    regenerating it, mirroring /plan/adjust-level."""
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-07-01", days_per_week=2, intensity="moderate",
+                intake={}, summary="s", workouts=[])
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+    assert 'value="kite"' in view
+    assert 'value="tennis" selected' not in view
+
+    r = auth_client.post(
+        "/plan/season", data={"season_sport": "tennis", "season_sessions": "2",
+                              "season_avg_min": "60"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/plan"
+    view = auth_client.get("/plan").text
+    assert 'value="tennis" selected' in view
+
+    # clearing (empty sport) removes the accent again
+    auth_client.post("/plan/season", data={"season_sport": ""})
+    view = auth_client.get("/plan").text
+    assert 'value="tennis" selected' not in view
+
+
 def test_info_requires_login(client):
     assert client.get("/info", follow_redirects=False).status_code == 303
 
@@ -736,6 +861,63 @@ def test_me_row_isolation(client):
     assert client.get(f"/me/report_logs/{_report_id(aid)}").status_code == 200
     # alice cannot open bob's row
     assert client.get(f"/me/report_logs/{_report_id(bid)}").status_code == 404
+
+
+def test_me_index_links_to_export(client):
+    _seed_two_users_with_data()
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    assert "/me/export" in client.get("/me").text
+
+
+def test_me_export_requires_login(client):
+    assert client.get("/me/export", follow_redirects=False).status_code == 303
+
+
+def test_me_export_zip_scoped_to_own_user_no_secrets(client):
+    """NF-13 AC: the ZIP contains only the logged-in user's rows, no secrets anywhere
+    (users table is never touched), and every JSON file parses."""
+    import json
+    import zipfile
+    from io import BytesIO
+
+    aid, bid = _seed_two_users_with_data()
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+
+    r = client.get("/me/export")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+
+    zf = zipfile.ZipFile(BytesIO(r.content))
+    names = set(zf.namelist())
+    assert names == {
+        "daily_metrics.json", "daily_metrics.csv", "activities.json", "activities.csv",
+        "personal_records.json", "plans.json", "report_logs.json",
+    }
+
+    daily = json.loads(zf.read("daily_metrics.json"))
+    assert all(d["hrv_avg"] == 55 for d in daily) and len(daily) >= 1  # only alice's own row(s)
+    reports = json.loads(zf.read("report_logs.json"))
+    assert reports and all(r["report_text"] == "alice report" for r in reports)
+
+    raw = zf.read("daily_metrics.json") + zf.read("report_logs.json")
+    for secret in (b"garth_token", b"password_hash", b"anthropic_key", b"bob report"):
+        assert secret not in raw
+
+
+def test_me_export_empty_history_is_valid_zip(client):
+    _seed_user(email="fresh@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "fresh@example.com", "password": "pw"})
+
+    import json
+    import zipfile
+    from io import BytesIO
+
+    r = client.get("/me/export")
+    assert r.status_code == 200
+    zf = zipfile.ZipFile(BytesIO(r.content))
+    assert json.loads(zf.read("daily_metrics.json")) == []
+    assert json.loads(zf.read("activities.json")) == []
+    assert json.loads(zf.read("plans.json")) == []
 
 
 def test_admin_deactivate_and_reactivate(auth_client):
