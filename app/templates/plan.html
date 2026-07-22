@@ -69,7 +69,7 @@
           {% set wx = (weather_chips or {}).get(w.date) %}
           {% if wx %}
           <div class="wx-chip {{ 'wx-conflict' if w.date in (weather_conflicts or []) else '' }}">
-            🌡️{{ wx.feels_max_c }}°{% if wx.precip_prob_pct is not none %} 🌧️{{ wx.precip_prob_pct }}%{% endif %}{% if wx.wind_max_kmh is not none %} 💨{{ wx.wind_max_kmh }}{% endif %}
+            <span>🌡️{{ wx.feels_max_c }}°</span>{% if wx.precip_prob_pct is not none %}<span>🌧️{{ wx.precip_prob_pct }}%</span>{% endif %}{% if wx.wind_max_kmh is not none %}<span>💨{{ wx.wind_max_kmh }}</span>{% endif %}
           </div>
           {% endif %}
         </div>
