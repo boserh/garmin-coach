@@ -148,6 +148,7 @@ Optional, with defaults:
 | `HEALTH_ALERT_COOLDOWN_DAYS` | `3` | EP-08: same alert kind at most once per this many days (per-rule cooldown) |
 | `FUELING_MIN_DURATION_MIN` | `45` | NF-11: below this estimated session duration, the fueling advisor stays silent |
 | `FUELING_HEAT_FEELS_C` | `28` | NF-11: feels-like max °C at/above → heat notes (electrolytes, coolest hourly slot) |
+| `DEPLOY_ENABLED` | `False` | OPS-03: master on/off for the admin-only `/deploy` bot command (git pull + service restart) |
 | `SLEEP_NUDGE` | `True` | NF-16: master on/off for the evening sleep-debt nudge |
 | `SLEEP_NUDGE_HOUR` | `21` | NF-16: hour (Europe/Warsaw — the job's own schedule stays process-TZ in v1) the evening check runs |
 
@@ -420,6 +421,7 @@ app/
   weather.py           Open-Meteo geocode (settings) + today's forecast (morning report)
   charts.py            inline-SVG chart helpers (series/trend_series/run_series/run_charts) — shared by admin/me/dashboard (EP-04)
   mcp_server.py        NF-08: personal read-only MCP server (stdio) over the same /ask tools
+  deploy.py            OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     prompts.py         SYSTEM + SYSTEM_ASK_TOOLS prompts
@@ -435,7 +437,7 @@ app/
   dependencies.py      shared deps (get_session)
 bot/
   main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /sick, /test_*; _resolve_user, error handler
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /compare, /wrapped, /insights, /risk, /health, /plan (+edit), /sick, /deploy (OPS-03, admin), /test_*; _resolve_user, error handler
   jobs.py              morning_job loops users (per-user timezone window, ST-14; per-user once-a-day guard); also weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -549,6 +551,28 @@ flag — comparing against the current issue date means a fresh re-login (new is
 the stored guard stop matching and silently re-arms both thresholds, no explicit reset needed.
 Best-effort: a missing/undecodable token blob is a silent skip, never a tick failure.
 `tests/test_token_expiry.py`.
+
+**Remote deploy from Telegram (OPS-03)**: the admin-only **`/deploy`** bot command — `git pull`
+then restart the systemd services — for pushing code to the Pi without SSHing in. `app/deploy.py`
+is the pure subprocess layer (no DB, no Claude): `git_pull()` runs `git pull --ff-only` in the repo
+root (a diverged history fails loudly instead of silently creating an unwanted merge commit —
+SSH in and sort it out by hand), `restart_services()` shells out via passwordless sudo to the
+**fixed** `scripts/restart_services.sh`, which itself runs
+`systemctl restart --no-block garmin-bot.service garmin-web.service`. Two deliberate choices
+here: (1) the sudoers grant (`deploy/sudoers-garmin-deploy`) whitelists that one script **path**,
+not a `systemctl restart <args>` pattern — the script's fixed contents decide what gets restarted,
+not whatever a caller passes; (2) `--no-block` — `garmin-bot.service` is the process running this
+code, so a restart normally means "kill the process issuing the restart call" and a blocking
+`systemctl restart` would hang forever waiting on a job that requires this exact process to die
+first; `--no-block` just queues the job and returns, so the reply about "restarting…" gets sent
+before the process disappears.
+`bot/handlers.py::deploy`/`deploy_callback`: `/deploy` checks `user.is_admin` (re-checked again in
+the callback — defense in depth for a button tap) and the process-level `DEPLOY_ENABLED` master
+switch (off by default — flip it on only once the sudoers file is installed), then asks for an
+explicit ✅/❌ confirm (the same inline-button pattern as plan edits) before doing anything — a
+mistyped `/deploy` should never silently restart production. On ✅: `git pull` runs first and its
+output is shown; a failed pull (merge conflict, network) stops there and `restart_services` is
+never called. `tests/test_deploy.py`.
 
 **HRV is the primary recovery signal** — `hrv_status = BALANCED` means recovered; a drop is
 the main stress indicator. (The dedicated resting-HR endpoint 403s via garth, but RHR comes

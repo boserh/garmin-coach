@@ -1,0 +1,12 @@
+# OPS-03 · lets the `pi` user restart the garmin-coach services without a password,
+# triggered from Telegram via /deploy (see app/deploy.py). Grants exactly ONE fixed
+# script, not a systemctl pattern — the script's content (not sudo args) decides what
+# gets restarted.
+#
+# Install:
+#   sudo cp deploy/sudoers-garmin-deploy /etc/sudoers.d/garmin-deploy
+#   sudo chmod 440 /etc/sudoers.d/garmin-deploy
+#   sudo visudo -c
+#
+# Adjust the path below if the repo isn't checked out at /home/pi/garmin_bot.
+pi ALL=(root) NOPASSWD: /home/pi/garmin_bot/scripts/restart_services.sh
