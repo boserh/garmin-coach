@@ -517,3 +517,76 @@ def fetch_workout_detail(workout_id) -> dict:
     }
     _cache_put(key, result, WORKOUT_TTL_S)
     return result
+
+
+# ---------- GEAR (NF-15) ----------
+# NB the gear endpoints below are the two methods the community `python-garminconnect`
+# library exposes (get_gear / get_gear_stats) — this codebase has no live-verified recon
+# against a real account yet (the ticket's own AC #1 flags this as a blocker, not a
+# detail: docs/backlog/NF-15-shoe-mileage-tracker.md). There is also no documented
+# activity→gear link endpoint in that reference library, so — deliberately deviating from
+# the ticket's original "sum our own activities' distance per gear_id" design — mileage
+# comes straight from Garmin's own per-gear ``stats`` total (which the Connect UI already
+# shows as a shoe's lifetime distance), never from an ActivityRecord column we'd have to
+# backfill and could easily get wrong. Every parse is defensive (``app.gear``): an
+# unrecognised shape is logged once and treated as "no gear data" rather than guessed at.
+GEAR_TTL_S = 7 * 24 * 3600         # a gear list barely changes day to day, like workout:v2
+GEAR_STATS_TTL_S = 24 * 3600       # a shoe's total distance grows with every run — refresh daily
+
+_unmapped_gear: set = set()
+
+
+def _profile_pk():
+    """The numeric Garmin profile id the gear endpoints key on (``userProfilePk``) — NOT
+    the username/displayName strings used elsewhere in this module. Never changes for a
+    given account, so it's disk-cached like an immutable id (no point re-fetching
+    ``socialProfile`` on every gear sync). Best-effort: returns None (never raises) on a
+    fetch failure or an unrecognised shape, logging the latter once."""
+    key = "gear_profile_pk:v1"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    prof = _safe(_api, "/userprofile-service/socialProfile")
+    if not isinstance(prof, dict) or "_error" in prof:
+        return None
+    for pk_key in ("id", "profileId"):
+        v = prof.get(pk_key)
+        if v is not None:
+            pk = str(v)
+            _cache_put(key, pk, EXERCISE_TTL_S)
+            return pk
+    if "profile_pk" not in _unmapped_gear:
+        _unmapped_gear.add("profile_pk")
+        logger.warning(f"GEAR socialProfile has no id/profileId key: {sorted(prof)[:20]}")
+    return None
+
+
+def fetch_gear() -> list:
+    """The user's saved Garmin gear (shoes/other equipment) — best-effort, [] on any
+    failure or when the profile id can't be resolved (never breaks the sync tick). 7-day
+    disk cache, keyed on the profile id (a gear ROSTER rarely changes day to day)."""
+    pk = _profile_pk()
+    if pk is None:
+        return []
+    key = f"gear:v1:{pk}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    r = _safe(_api, "/gear-service/gear/filterGear", params={"userProfilePk": pk})
+    items = r if isinstance(r, list) else []
+    _cache_put(key, items, GEAR_TTL_S)
+    return items
+
+
+def fetch_gear_stats(gear_uuid: str) -> dict:
+    """Aggregate stats for one gear item (Garmin computes the lifetime total itself —
+    see the module note above). Returns {} on error; short cache since it grows with
+    every logged activity, unlike the roster itself."""
+    key = f"gear_stats:v1:{gear_uuid}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    d = _safe(_api, f"/gear-service/gear/stats/{gear_uuid}")
+    stats = d if isinstance(d, dict) and "_error" not in d else {}
+    _cache_put(key, stats, GEAR_STATS_TTL_S)
+    return stats

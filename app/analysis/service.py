@@ -32,6 +32,7 @@ from app.analysis.cache import (  # noqa: F401
     _compare_cache_key,
     _digest_cache_key,
     _insights_cache_key,
+    _race_cache_key,
     _wrapped_cache_key,
 )
 from app.analysis.client import (  # noqa: F401
@@ -48,6 +49,7 @@ from app.analysis.client import (  # noqa: F401
     MODEL_PLAN,
     MODEL_PLAN_GEN,
     MODEL_PLAN_GEN_ALT,
+    MODEL_RACE,
     MODEL_WRAPPED,
     OPUS_4_8,
     PLAN_GEN_MODELS,
@@ -128,6 +130,7 @@ from app.analysis.reports import (  # noqa: F401
     health_with_stats,
     injury_with_stats,
     insights_with_stats,
+    race_plan_with_stats,
     run_activity_analysis,
     run_analysis,
     run_ask,
@@ -137,6 +140,7 @@ from app.analysis.reports import (  # noqa: F401
     run_health_alert,
     run_injury_check,
     run_insights,
+    run_race_plan,
     run_wrapped,
     wrapped_with_stats,
 )

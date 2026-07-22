@@ -20,7 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from app import baselines, records, sleepnudge, stepmatch, weather
+from app import baselines, gear, race, records, sleepnudge, stepmatch, weather
 from app.analysis import delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
@@ -34,6 +34,7 @@ from app.analysis.service import (
     run_injury_check,
     run_insights,
     run_plan_adaptation,
+    run_race_plan,
     run_weather_plan_check,
 )
 from app.core.config import settings
@@ -41,6 +42,7 @@ from app.db.base import async_session_maker
 from app.db.models import User
 from app.db.users import eligible_users
 from app.garmin import matching, plan_sync, repository, service
+from app.garmin.credentials import load_credentials
 from app.garmin.mfa import MFARequired
 from app.garmin.runtime import user_runtime
 from bot.handlers import (
@@ -951,10 +953,102 @@ async def _sync_for_user(session, user: User) -> None:
         await plan_sync.sync_plan_to_garmin(session, user.id)
 
 
+RACE_PACK_GUARD_PREFIX = "race_pack_sent:"
+
+
+async def _race_pack_for_user(ctx, session, user: User) -> None:
+    """EP-05: send the race pack exactly once, ``race.TRIGGER_DAYS`` before the active
+    plan's target date. Pure DB read + weather + one Opus call (no Garmin fetch needed,
+    unlike most other jobs here) — guarded per-plan (not per-date), so a fresh plan/target
+    date naturally re-arms it and a missed tick never loses the trigger."""
+    if not user.telegram_chat_id:
+        return
+    plan = await repository.get_active_plan(session, user.id)
+    if not race.has_target(plan):
+        return
+    today = dt.datetime.now(user_tz(user)).date()
+    if race.days_to_target(plan.target_date, today) != race.TRIGGER_DAYS:
+        return
+    guard_key = RACE_PACK_GUARD_PREFIX + str(plan.id)
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return
+    try:
+        text = await run_race_plan(session, user_id=user.id, api_key=creds.anthropic_key)
+    except AnalystError:
+        logger.exception(f"RACE pack failed user={user.id}")
+        return
+    await repository.set_state(session, user.id, guard_key, "1")
+    if not text:
+        return
+    await ctx.bot.send_message(
+        user.telegram_chat_id,
+        f"🏁 Race pack — твій старт за {race.TRIGGER_DAYS} дн.:\n\n" + text,
+    )
+    logger.info(f"RACE pack sent user={user.id} plan={plan.id}")
+
+
+async def _sync_gear_roster(session, user: User) -> list:
+    """Refresh this user's gear roster + Garmin's own per-gear mileage (NF-15) into a
+    ``gear.STATE_KEY`` bot_state JSON blob, so ``/gear`` reads it back without a live
+    fetch. Best-effort: an unparseable/missing gear item is just dropped by
+    ``gear.parse_item`` (logged once), never a broken sync."""
+    from app.garmin import client
+
+    raw_items = await run_in_threadpool(client.fetch_gear)
+    pairs = []
+    for raw in raw_items:
+        item = gear.parse_item(raw)
+        if item is None:
+            continue
+        stats = await run_in_threadpool(client.fetch_gear_stats, item["gear_id"])
+        item["mileage_km"] = gear.parse_mileage_km(stats)
+        item["last_used"] = gear.parse_last_used(stats)
+        pairs.append(item)
+    await repository.set_state(session, user.id, gear.STATE_KEY, json.dumps(pairs))
+    return pairs
+
+
+async def _gear_check_for_user(ctx, session, user: User) -> None:
+    """NF-15: refresh the gear roster/mileage and warn once (then every
+    ``settings.GEAR_REWARN_KM`` further) per pair past ``settings.GEAR_WEAR_KM``. Runs
+    from the daily ``plan_sync_job`` rather than every 20-min tick — a live gear fetch
+    isn't cheap enough to repeat that often, and mileage barely moves within a day."""
+    async with user_garmin_runtime(session, user, skip_label="GEAR") as creds:
+        if creds is None:
+            return
+        try:
+            pairs = await _sync_gear_roster(session, user)
+        except Exception:
+            logger.exception(f"GEAR sync failed user={user.id}")
+            return
+    if not user.telegram_chat_id:
+        return
+    for pair in gear.worn(pairs, settings.GEAR_WEAR_KM):
+        guard_key = gear.WARN_PREFIX + pair["gear_id"]
+        last = await repository.get_state(session, user.id, guard_key)
+        last_km = float(last) if last else None
+        if not gear.should_rewarn(pair["mileage_km"], last_km, settings.GEAR_REWARN_KM):
+            continue
+        await repository.set_state(session, user.id, guard_key, str(pair["mileage_km"]))
+        await ctx.bot.send_message(user.telegram_chat_id, gear.warn_text(pair))
+        logger.info(f"GEAR warn user={user.id} gear={pair['gear_id']} km={pair['mileage_km']}")
+
+
 async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Once-a-day per-user Garmin calendar sync (separate from the morning report);
-    scheduled by run_daily, so no further time guard is needed."""
-    await for_each_user(_sync_for_user, with_chat=False, label="PLAN sync")
+    scheduled by run_daily, so no further time guard is needed. Also carries the EP-05
+    race-pack auto-trigger and NF-15's gear-mileage refresh — different daily concerns,
+    but this job already runs once/day for every user, the cheapest place to hang more
+    once-a-day checks."""
+    async def worker(session, user):
+        await _sync_for_user(session, user)
+        await _race_pack_for_user(ctx, session, user)
+        await _gear_check_for_user(ctx, session, user)
+
+    await for_each_user(worker, with_chat=False, label="PLAN sync")
 
 
 async def _extend_nudge_for_user(ctx, session, user: User, today: str) -> None:

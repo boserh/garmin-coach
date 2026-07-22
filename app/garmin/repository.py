@@ -918,6 +918,30 @@ async def get_last_report(session: AsyncSession, user_id: int):
     return text, (created.date().isoformat() if created else None)
 
 
+async def get_last_report_of_kind(session: AsyncSession, user_id: int, kind: str):
+    """This user's most recent successful report of a given ``kind``, as
+    (text, date_iso), or None. A generalisation of :func:`get_last_report` (pinned to
+    report/morning) — EP-05 uses this to show the last generated race pack on ``/plan``
+    without regenerating it."""
+    row = (
+        await session.execute(
+            select(ReportLog.report_text, ReportLog.created_at)
+            .where(
+                ReportLog.user_id == user_id,
+                ReportLog.report_text.is_not(None),
+                ReportLog.ok.is_(True),
+                ReportLog.kind == kind,
+            )
+            .order_by(ReportLog.created_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None
+    text, created = row
+    return text, (created.date().isoformat() if created else None)
+
+
 async def get_recent_reports(
     session: AsyncSession, user_id: int, n: int = 3
 ) -> List[dict]:

@@ -149,6 +149,14 @@ class Settings(BaseSettings):
     # only once the sudoers grant (deploy/sudoers-garmin-deploy) is installed.
     DEPLOY_ENABLED: bool = False
 
+    # --- Shoe mileage tracker (NF-15) ---
+    # A pure-Python, zero-LLM tracker (app.gear): the morning tick refreshes the gear roster
+    # + Garmin's own per-gear lifetime mileage (no local activity-gear linking — see the
+    # module docstring for why) and warns once per pair past the wear threshold, again every
+    # GEAR_REWARN_KM further. 0 disables the DM entirely (roster/mileage still refresh).
+    GEAR_WEAR_KM: float = 700
+    GEAR_REWARN_KM: float = 150
+
 
 @lru_cache
 def get_settings() -> Settings:

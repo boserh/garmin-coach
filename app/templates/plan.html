@@ -43,6 +43,13 @@
       {% endif %}
     </div>
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
+    {% if race_pack %}
+      <div class="summary race-pack">
+        <b>🏁 Race pack</b> — {{ race_pack.date }}
+        {% if race_pack.days_left is not none %}<span class="sep">·</span>старт за {{ race_pack.days_left }} дн.{% endif %}
+        <div style="white-space:pre-wrap;margin-top:.5rem">{{ race_pack.text }}</div>
+      </div>
+    {% endif %}
 
     {% for week_no, week_range, iso_week, items in weeks %}
       {% set cb = (compliance or {}).get(iso_week) %}
@@ -159,6 +166,22 @@
             <option value="{{ slug }}" {{ 'selected' if slug == adjust_level else '' }}>{{ lbl }}</option>
             {% endfor %}
           </select>
+          <button class="arch" type="submit">Зберегти</button>
+        </form>
+      </div>
+      <div>
+        <form class="inline" method="post" action="/plan/season">
+          <label for="season_sport">Сезонний акцент:</label>
+          <select id="season_sport" name="season_sport">
+            <option value="">— нема —</option>
+            {% for slug, lbl in season_sports.items() %}
+            <option value="{{ slug }}" {{ 'selected' if season and slug == season.sport else '' }}>{{ lbl }}</option>
+            {% endfor %}
+          </select>
+          <input name="season_sessions" type="number" min="1" max="14" style="width:4rem"
+                 value="{{ season.sessions_per_week if season else 3 }}" title="сесій/тиждень">
+          <input name="season_avg_min" type="number" min="10" max="600" style="width:5rem"
+                 value="{{ season.avg_min if season else 90 }}" title="хвилин/сесію">
           <button class="arch" type="submit">Зберегти</button>
         </form>
       </div>

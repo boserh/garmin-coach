@@ -74,7 +74,8 @@ HELP_TEXT = (
     "/activity <id> — розбір конкретної активності\n"
     "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
     "/records — особисті рекорди\n"
-    "/costs [YYYY-MM] — витрати на Claude за місяць\n\n"
+    "/costs [YYYY-MM] — витрати на Claude за місяць\n"
+    "/gear — спорядження (кросівки) з пробігом\n\n"
     "🩺 Здоров'я\n"
     "/risk — травматичний радар (сигнали перевантаження)\n"
     "/health — алерти відновлення (HRV, сон, стрес)\n\n"
@@ -82,7 +83,8 @@ HELP_TEXT = (
     "/plan — переглянути програму\n"
     "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n"
     "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n"
-    "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n\n"
+    "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n"
+    "/race — race pack: пейсинг/харчування/чекліст до цільового старту (Opus)\n\n"
     "/help — цей список"
 )
 
@@ -339,6 +341,71 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(goal_mod.summary(proj, label=label))
+
+
+async def race_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/race — a pre-race pack: pacing/fueling/checklist synthesis for the active plan's
+    target race (EP-05). Pure DB read + one Opus call; no Garmin fetch, so no MFA risk."""
+    from app import race as race_mod
+    from app.analysis.service import run_race_plan
+    from app.garmin.credentials import load_credentials
+
+    logger.info("CMD /race")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        plan = await repository.get_active_plan(session, user.id)
+        if not race_mod.has_target(plan):
+            await update.message.reply_text(
+                "Немає активного плану з цільовим стартом (дата + дистанція) — "
+                "race pack рахується лише під конкретний забіг. Постав ціль на /plan."
+            )
+            return
+        await update.message.reply_text("Складаю race pack…")
+        creds = load_credentials(user)
+        try:
+            text = await run_race_plan(session, user_id=user.id, api_key=creds.anthropic_key)
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            await update.message.reply_text(str(e))
+            return
+    if not text:
+        await update.message.reply_text(
+            "Немає активного плану з цільовим стартом (дата + дистанція)."
+        )
+        return
+    days_left = race_mod.days_to_target(plan.target_date)
+    left = f"за {days_left} дн." if days_left and days_left > 0 else "уже скоро"
+    header = f"🏁 Race pack — {plan.goal_label or plan.goal} ({left}):\n\n"
+    await update.message.reply_text(header + text)
+
+
+async def gear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/gear — this user's tracked gear (shoes/equipment) with mileage + last-used date
+    (NF-15). Pure DB read of the roster the daily plan_sync_job last refreshed — no live
+    Garmin fetch here, so it's instant."""
+    from app import gear as gear_mod
+
+    logger.info("CMD /gear")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        raw = await repository.get_state(session, user.id, gear_mod.STATE_KEY)
+    pairs = json.loads(raw) if raw else []
+    if not pairs:
+        await update.message.reply_text(
+            "Ще немає даних про спорядження — з'являться після наступного щоденного "
+            "синку (або в Garmin Connect не ведеться gear на пробіжки)."
+        )
+        return
+    lines = [gear_mod.summary_line(p) for p in pairs]
+    text = "👟 Твоє спорядження:\n\n" + "\n".join(lines)
+    note = gear_mod.dominance_note(pairs)
+    if note:
+        text += "\n\n" + note
+    await update.message.reply_text(text)
 
 
 async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

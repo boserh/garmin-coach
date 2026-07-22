@@ -23,6 +23,7 @@ from app.analysis.cache import (
     _compare_cache_key,
     _digest_cache_key,
     _insights_cache_key,
+    _race_cache_key,
     _wrapped_cache_key,
 )
 from app.analysis.client import (
@@ -35,6 +36,7 @@ from app.analysis.client import (
     MODEL_HEALTH,
     MODEL_INJURY,
     MODEL_INSIGHTS,
+    MODEL_RACE,
     MODEL_WRAPPED,
     PRICES,
     AnalystError,
@@ -55,6 +57,7 @@ from app.analysis.prompts import (
     SYSTEM_HEALTH,
     SYSTEM_INJURY,
     SYSTEM_INSIGHTS,
+    SYSTEM_RACE,
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
@@ -1011,6 +1014,79 @@ async def run_wrapped(
         input_tokens=stats_.input_tokens, output_tokens=stats_.output_tokens,
         cost_usd=stats_.cost_usd, ok=True, cached=stats_.cached,
         question=f"wrapped:{period}", report_text=text,
+    )
+    return text
+
+
+# ---------- RACE PACK (EP-05) ----------
+
+def race_plan_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate a pre-race pacing/fueling/checklist synthesis (Opus). Returns (text, stats);
+    raises AnalystError on API failure. The dedup cache is checked in :func:`run_race_plan`."""
+    return _complete(MODEL_RACE, SYSTEM_RACE, context, "race", api_key, max_tokens=1600)
+
+
+async def run_race_plan(
+    session, *, user_id: int, api_key: Optional[str] = None,
+) -> Optional[str]:
+    """Assemble the active plan's race-day context (EP-05: target/fitness/taper sessions/
+    weather) and narrate a race pack via one Opus call. Caches + logs
+    (``ReportLog(kind="race")``) and returns the text. Returns ``None`` when there's no
+    active plan with both a target date and a race distance (no plan, or an open-ended
+    ``general`` plan) — the caller shows a friendly explanation, not an error."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app import race as race_mod
+    from app import weather as weather_mod
+    from app.db import llm_cache
+    from app.db.models import User
+    from app.garmin import repository
+
+    plan = await repository.get_active_plan(session, user_id)
+    if not race_mod.has_target(plan):
+        return None
+
+    workouts = await repository.list_workouts(session, plan.id, upcoming_only=True)
+    recent_sessions = [
+        {"date": w.date, "type": w.type, "dist_km": w.dist_km, "description": w.description}
+        for w in workouts if w.date <= plan.target_date
+    ]
+    fitness = _build_fitness_snapshot(await repository.get_recent_extra(session, user_id))
+
+    forecast_day = None
+    days_left = race_mod.days_to_target(plan.target_date)
+    if days_left is not None and 0 <= days_left <= race_mod.WEATHER_WINDOW_DAYS:
+        user = await session.get(User, user_id)
+        if user is not None and user.latitude is not None and user.longitude is not None:
+            week = await run_in_threadpool(
+                weather_mod.fetch_forecast_week, user.latitude, user.longitude)
+            if week:
+                forecast_day = next(
+                    (d for d in week if d.get("date") == plan.target_date), None)
+
+    context = race_mod.build_context(plan, fitness, recent_sessions, forecast_day)
+    key = _race_cache_key(context, MODEL_RACE)
+    cached = await llm_cache.get(session, key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {MODEL_RACE} (race)")
+        text, stats = cached, CallStats(kind="race", model=MODEL_RACE, cached=True)
+    else:
+        try:
+            text, stats = await _run_claude(race_plan_with_stats, context, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind="race", model=MODEL_RACE, ok=False,
+                question=f"race:{plan.id}", error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"race:{plan.id}", report_text=text,
     )
     return text
 

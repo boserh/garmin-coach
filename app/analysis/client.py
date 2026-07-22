@@ -49,6 +49,7 @@ MODEL_HEALTH = SONNET_5      # health-alert advisory (EP-08): narrate recovery a
 MODEL_PLAN_GEN = OPUS_4_8    # plan generation default: reasoning-heavy + rare → Opus
 MODEL_PLAN_GEN_ALT = FABLE_5 # alternative plan-gen engine (form toggle)
 MODEL_PLAN = SONNET_5        # plan edits (/plan <text>): small, mechanical → Sonnet
+MODEL_RACE = OPUS_4_8        # race pack (EP-05): reasoning-heavy synthesis, once per race
 
 # Which models the plan-setup form may pick from, keyed by the form's short slug.
 PLAN_GEN_MODELS = {"opus": MODEL_PLAN_GEN, "fable": MODEL_PLAN_GEN_ALT}

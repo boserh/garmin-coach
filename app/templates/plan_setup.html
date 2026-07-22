@@ -99,6 +99,23 @@
       <label for="notes">Нотатки (необовʼязково)</label>
       <textarea id="notes" name="notes" rows="3" placeholder="травми, обмеження, дні які зайняті тощо"></textarea>
 
+      <label for="season_sport">Сезонний акцент (необовʼязково)</label>
+      <div class="hint">Регулярно займаєшся ще чимось у цей період (кайт, теніс, вело)?
+        План закладе під це менший біговий обсяг заздалегідь, а не постфактум.</div>
+      <select id="season_sport" name="season_sport">
+        <option value="">— нема —</option>
+        <option value="kite">Кайт</option>
+        <option value="tennis">Теніс</option>
+        <option value="bike">Вело</option>
+        <option value="other">Інше</option>
+      </select>
+      <div id="season_opts" style="display:none;margin-top:.5rem">
+        <label for="season_sessions">Сесій/тиждень (орієнтовно)</label>
+        <input id="season_sessions" name="season_sessions" type="number" min="1" max="14" value="3">
+        <label for="season_avg_min">Тривалість сесії, хв (орієнтовно)</label>
+        <input id="season_avg_min" name="season_avg_min" type="number" min="10" max="600" value="90">
+      </div>
+
       <label class="check">
         <input type="checkbox" name="strength_enabled" id="strength_enabled">
         Додати силові тренування
@@ -208,6 +225,14 @@
     if (se && so) {
       se.addEventListener('change', function () {
         so.style.display = se.checked ? 'block' : 'none';
+      });
+    }
+
+    var seasonSel = document.getElementById('season_sport');
+    var seasonOpts = document.getElementById('season_opts');
+    if (seasonSel && seasonOpts) {
+      seasonSel.addEventListener('change', function () {
+        seasonOpts.style.display = seasonSel.value ? 'block' : 'none';
       });
     }
 
