@@ -23,11 +23,15 @@ from app.garmin.providers import get_provider
 
 logger = logging.getLogger("garmin")
 
-# rest/cross sessions aren't runs — don't push them to the watch.
+# rest/cross sessions carry no structure — don't push them to the watch. "strength" is
+# excluded here too: it only becomes pushable via garmin_template_id/strength_plan below,
+# never by falling into workout_export.build_workout's run/cycling branch.
 _SKIP_TYPES = {"rest", "cross", "strength"}
 
 
 def _runnable(w) -> bool:
+    """A type that builds from ``steps`` via ``workout_export.build_workout`` — a run OR
+    (EP-10 phase 3) a cycling session; the sport itself is picked inside ``build_workout``."""
     return (w.type or "").lower() not in _SKIP_TYPES
 
 

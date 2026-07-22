@@ -4,13 +4,18 @@ Runs after every Garmin sync (``bot.jobs._tick_for_user``) and is idempotent —
 it only touches workouts whose status is still ``planned``. Manual ``skipped``
 statuses are never overwritten.
 
-Matching rules — runs
----------------------
+Matching rules — runs and cycling (EP-10 phase 3)
+--------------------------------------------------
 * Run-type workouts (easy / long / tempo / intervals / race) are matched against
-  running activities. Rest and cross sessions are ignored.
-* Candidate activities: running ``ActivityRecord`` rows within ±1 day of the
-  planned date that are not yet linked to another session (``completed_activity_id``
-  already set on a different workout).
+  running activities; ``cycling`` workouts against cycling activities (same engine,
+  ``_match_distance_based``, parametrized by plan-type set + activity substrings — a
+  cycling match just skips the pace fields, since a cycling ``PlanStep`` never carries
+  ``pace_min_km``). Rest and cross sessions are ignored.
+* Candidate activities: ``ActivityRecord`` rows of the matching sport within ±1 day of
+  the planned date that are not yet linked to another session (``completed_activity_id``
+  already set on a different workout). Cycling activity types are identified via
+  ``multisport.BIKE_NEEDLES`` (not a bare "run"-style substring — Garmin's cycling
+  types vary too much: "road_biking", "virtual_ride", …).
 * Scoring: exact-date match is preferred; ties broken by closest distance.
 * Outcome:
   - |Δdist| ≤ DIST_PARTIAL_THRESH of the planned km → ``done``
@@ -28,11 +33,12 @@ import datetime as dt
 import logging
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ActivityRecord, PlannedWorkout, WorkoutStatus
 from app.garmin import repository
+from app.multisport import BIKE_NEEDLES
 
 logger = logging.getLogger("matching")
 
@@ -45,9 +51,17 @@ _PLAN_RUN_TYPES = {"easy", "long", "tempo", "intervals", "race"}
 # Workout types matched against strength activities (presence-only, no distance).
 _PLAN_STRENGTH_TYPES = {"strength"}
 
-# Activity type substrings that identify a running / strength activity.
-_ACT_RUN_SUBSTR = "run"
-_ACT_STRENGTH_SUBSTR = "strength"
+# EP-10 phase 3: workout types matched against cycling activities, same dist-delta scoring
+# as running.
+_PLAN_CYCLING_TYPES = {"cycling"}
+
+# Activity type substrings that identify a running / strength / cycling activity. Cycling
+# reuses NF-05's ``multisport.BIKE_NEEDLES`` — a single source for "is this a bike
+# activity" rather than a second hand-rolled keyword list (running's "run" substring
+# alone would miss "road_biking"/"virtual_ride"/etc, which don't contain "run").
+_ACT_RUN_SUBSTR = ("run",)
+_ACT_STRENGTH_SUBSTR = ("strength",)
+_ACT_CYCLING_SUBSTR = BIKE_NEEDLES
 
 
 def _extract_target_pace(w: PlannedWorkout) -> Optional[float]:
@@ -78,15 +92,16 @@ def _extract_target_pace(w: PlannedWorkout) -> Optional[float]:
 
 
 async def _get_unlinked_activities(
-    session: AsyncSession, user_id: int, date_from: str, date_to: str, type_substr: str
+    session: AsyncSession, user_id: int, date_from: str, date_to: str,
+    type_substrs: tuple,
 ) -> list:
-    """Activities of a given type substring for this user in [date_from, date_to] that
-    haven't been linked to a planned workout yet."""
+    """Activities matching ANY of ``type_substrs`` for this user in [date_from, date_to]
+    that haven't been linked to a planned workout yet."""
     rows = (
         await session.execute(
             select(ActivityRecord).where(
                 ActivityRecord.user_id == user_id,
-                ActivityRecord.type.contains(type_substr),
+                or_(*(ActivityRecord.type.contains(s) for s in type_substrs)),
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= date_from,
                 ActivityRecord.date <= date_to,
@@ -123,23 +138,40 @@ async def match_activities(session: AsyncSession, user_id: int) -> dict:
 
     today_s = dt.date.today().isoformat()
 
-    done, partial, missed = await _match_runs(session, plan, user_id, today_s)
+    done, partial, missed = await _match_distance_based(
+        session, plan, user_id, today_s,
+        plan_types=_PLAN_RUN_TYPES, act_substrs=_ACT_RUN_SUBSTR, with_pace=True,
+    )
+    c_done, c_partial, c_missed = await _match_distance_based(
+        session, plan, user_id, today_s,
+        plan_types=_PLAN_CYCLING_TYPES, act_substrs=_ACT_CYCLING_SUBSTR, with_pace=False,
+    )
     s_done, s_missed = await _match_strength(session, plan, user_id, today_s)
 
     await session.commit()
-    return {"done": done + s_done, "partial": partial, "missed": missed + s_missed}
+    return {
+        "done": done + c_done + s_done,
+        "partial": partial + c_partial,
+        "missed": missed + c_missed + s_missed,
+    }
 
 
-async def _match_runs(
-    session: AsyncSession, plan, user_id: int, today_s: str
+async def _match_distance_based(
+    session: AsyncSession, plan, user_id: int, today_s: str, *,
+    plan_types: set, act_substrs: tuple, with_pace: bool,
 ) -> tuple[int, int, int]:
-    """Match run-type workouts against running activities. Returns (done, partial, missed).
-    Mutates workouts in place; the caller commits."""
-    # Only run-type workouts that are still in planned state and have passed (≤ today).
+    """Shared engine (CODE-06-style) for run and cycling matching — both score a
+    candidate activity within ±1 day by distance delta; only running's ``match_info``
+    carries a pace comparison (``with_pace``), since a cycling ``PlanStep`` never sets
+    ``pace_min_km`` — ``_extract_target_pace`` would just return ``None`` for it anyway,
+    but skipping the pace keys entirely keeps a cycling match's context honest.
+    Returns (done, partial, missed). Mutates workouts in place; the caller commits."""
+    # Only workouts of this plan-type set that are still in planned state and have
+    # passed (≤ today).
     workouts = [
         w for w in await repository.list_workouts(session, plan.id)
         if w.status == WorkoutStatus.PLANNED
-        and (w.type or "").lower() in _PLAN_RUN_TYPES
+        and (w.type or "").lower() in plan_types
         and w.date <= today_s
         and w.date >= (plan.start_date or "")
     ]
@@ -152,7 +184,7 @@ async def _match_runs(
     range_to = (dt.date.fromisoformat(max_date) + dt.timedelta(days=1)).isoformat()
 
     activities = await _get_unlinked_activities(
-        session, user_id, range_from, range_to, _ACT_RUN_SUBSTR)
+        session, user_id, range_from, range_to, act_substrs)
 
     used_ids: set = set()
     done = partial = missed = 0
@@ -190,19 +222,22 @@ async def _match_runs(
         else:
             delta_pct = 0.0
 
-        # Actual pace in min/km (None when duration or distance is missing).
-        actual_pace: Optional[float] = None
-        if best.dur_min and best.dist_km and best.dist_km > 0:
-            actual_pace = best.dur_min / best.dist_km
-
-        w.completed_activity_id = best.id
-        w.match_info = {
+        match_info = {
             "dist_delta_km": round(actual_dist - plan_dist, 2),
             "actual_dist_km": best.dist_km,
             "activity_date": best.date,
-            "actual_pace_minkm": round(actual_pace, 2) if actual_pace is not None else None,
-            "plan_pace_minkm": _extract_target_pace(w),
         }
+        if with_pace:
+            # Actual pace in min/km (None when duration or distance is missing).
+            actual_pace: Optional[float] = None
+            if best.dur_min and best.dist_km and best.dist_km > 0:
+                actual_pace = best.dur_min / best.dist_km
+            match_info["actual_pace_minkm"] = (
+                round(actual_pace, 2) if actual_pace is not None else None)
+            match_info["plan_pace_minkm"] = _extract_target_pace(w)
+
+        w.completed_activity_id = best.id
+        w.match_info = match_info
 
         if delta_pct > DIST_PARTIAL_THRESH:
             w.status = WorkoutStatus.PARTIAL

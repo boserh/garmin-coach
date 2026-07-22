@@ -117,6 +117,23 @@
       </div>
 
       <label class="check">
+        <input type="checkbox" name="cycling_enabled" id="cycling_enabled">
+        Додати вело-сесії в програму
+      </label>
+      <div class="hint">На відміну від сезонного акценту вище — це РЕАЛЬНІ вело-тренування
+        з датами, які пушаться на годинник (не просто менший біговий обсяг).</div>
+      <div id="cycling_opts" style="display:none;margin-top:.5rem">
+        <label>Дні вело</label>
+        <div class="days">
+          {% for slug, lbl in weekdays.items() %}
+            <label class="day"><input type="checkbox" name="cycling_days" value="{{ slug }}"> {{ lbl }}</label>
+          {% endfor %}
+        </div>
+        <label for="cycling_avg_min">Тривалість сесії, хв (орієнтовно)</label>
+        <input id="cycling_avg_min" name="cycling_avg_min" type="number" min="15" max="480" value="60">
+      </div>
+
+      <label class="check">
         <input type="checkbox" name="strength_enabled" id="strength_enabled">
         Додати силові тренування
       </label>
@@ -233,6 +250,14 @@
     if (seasonSel && seasonOpts) {
       seasonSel.addEventListener('change', function () {
         seasonOpts.style.display = seasonSel.value ? 'block' : 'none';
+      });
+    }
+
+    var ce = document.getElementById('cycling_enabled');
+    var co = document.getElementById('cycling_opts');
+    if (ce && co) {
+      ce.addEventListener('change', function () {
+        co.style.display = ce.checked ? 'block' : 'none';
       });
     }
 

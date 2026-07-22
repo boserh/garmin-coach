@@ -21,6 +21,8 @@ import re
 from typing import List, Optional
 
 _RUN_SPORT = {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1}
+# EP-10 phase 3: a real (not "cross" catch-all) cycling session.
+_CYCLING_SPORT = {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2}
 
 
 def clean_workout_name(name) -> str:
@@ -135,7 +137,8 @@ _TYPE_MARK = {
     "intervals": "⚡",
     "race": "🏁",
     "rest": "😴",
-    "cross": "🚴",
+    "cross": "🔀",
+    "cycling": "🚴",  # EP-10 phase 3: a real cycling session, distinct from "cross"
 }
 
 
@@ -326,18 +329,25 @@ def build_workout(w) -> dict:
     """Build the Garmin create-workout payload from a ``PlannedWorkout``.
 
     Uses the structured ``steps`` when present; otherwise falls back to a single
-    distance step of ``dist_km`` with no pace target (a plain easy run)."""
+    distance step of ``dist_km`` with no pace target (a plain easy run/ride).
+    EP-10 phase 3: ``type="cycling"`` gets a real cycling ``sportType`` (2) instead of
+    running (1) — everything else (step conversion, HR-zone targets, no-target fallback)
+    is sport-agnostic already, since a cycling ``PlanStep`` carries ``hr_zone``/
+    ``dist_m``/``dur_s`` like an easy/long run does, never ``pace_min_km``."""
+    is_cycling = (w.type or "").lower() == "cycling"
+    sport = _CYCLING_SPORT if is_cycling else _RUN_SPORT
     steps: Optional[List[dict]] = w.steps
     if not steps:
+        kind = "ride" if is_cycling else "run"
         dist_m = (w.dist_km or 0) * 1000
-        steps = [{"kind": "run", "dist_m": dist_m}] if dist_m else [{"kind": "run"}]
+        steps = [{"kind": kind, "dist_m": dist_m}] if dist_m else [{"kind": kind}]
     return {
         "workoutName": workout_name(w),
         "description": w.description or None,
-        "sportType": dict(_RUN_SPORT),
+        "sportType": dict(sport),
         "workoutSegments": [{
             "segmentOrder": 1,
-            "sportType": dict(_RUN_SPORT),
+            "sportType": dict(sport),
             "workoutSteps": _build_steps(steps),
         }],
     }
