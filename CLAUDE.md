@@ -556,23 +556,36 @@ Best-effort: a missing/undecodable token blob is a silent skip, never a tick fai
 then restart the systemd services — for pushing code to the Pi without SSHing in. `app/deploy.py`
 is the pure subprocess layer (no DB, no Claude): `git_pull()` runs `git pull --ff-only` in the repo
 root (a diverged history fails loudly instead of silently creating an unwanted merge commit —
-SSH in and sort it out by hand), `restart_services()` shells out via passwordless sudo to the
-**fixed** `scripts/restart_services.sh`, which itself runs
-`systemctl restart --no-block garmin-bot.service garmin-web.service`. Two deliberate choices
-here: (1) the sudoers grant (`deploy/sudoers-garmin-deploy`) whitelists that one script **path**,
-not a `systemctl restart <args>` pattern — the script's fixed contents decide what gets restarted,
-not whatever a caller passes; (2) `--no-block` — `garmin-bot.service` is the process running this
-code, so a restart normally means "kill the process issuing the restart call" and a blocking
-`systemctl restart` would hang forever waiting on a job that requires this exact process to die
-first; `--no-block` just queues the job and returns, so the reply about "restarting…" gets sent
-before the process disappears.
+SSH in and sort it out by hand), `restart_services()` shells out via passwordless sudo to a
+**transient systemd unit** running the **fixed** `scripts/restart_services.sh`, which itself runs
+`systemctl restart --no-block garmin-bot.service garmin-web.service`.
+**The cgroup-kill race** (found in production, not in review): an early version ran the script as
+a *direct* `sudo` child — but that child lives in `garmin-bot.service`'s own cgroup, and the instant
+`systemctl restart` queues the stop job, systemd's default `KillMode=control-group` SIGTERMs every
+process in that cgroup, including the very child that just asked for the restart. `--no-block`
+only shrinks that window, it doesn't close it — observed as an intermittent
+`returncode == -15` (SIGTERM) with an empty output pipe, reported to the admin as a false "restart
+failed" even though the restart had, in fact, just fired. The fix: `restart_services()` wraps the
+script in `sudo systemd-run --unit=garmin-deploy-restart --collect ...` — `systemd-run` only opens
+a short D-Bus round trip to register the transient unit and exits; the script then runs as a child
+of PID1 in its **own** cgroup, never touched by garmin-bot's kill, so the confirmation this process
+sends back is no longer racing its own death. Two deliberate choices survive from the original
+design: (1) the sudoers grant (`deploy/sudoers-garmin-deploy`) whitelists that one fixed command
+line, not a `systemctl`/`systemd-run` pattern — the script's contents decide what gets restarted,
+not whatever a caller passes; (2) every `git_pull`/`restart_services` call is logged server-side
+(`logger.info`, `"deploy"` logger — `journalctl -u garmin-bot`) with its return code and output
+regardless of what reaches Telegram, since a killed/denied subprocess can come back with an empty
+pipe and the chat message alone isn't enough to diagnose it after the fact.
 `bot/handlers.py::deploy`/`deploy_callback`: `/deploy` checks `user.is_admin` (re-checked again in
 the callback — defense in depth for a button tap) and the process-level `DEPLOY_ENABLED` master
 switch (off by default — flip it on only once the sudoers file is installed), then asks for an
 explicit ✅/❌ confirm (the same inline-button pattern as plan edits) before doing anything — a
 mistyped `/deploy` should never silently restart production. On ✅: `git pull` runs first and its
 output is shown; a failed pull (merge conflict, network) stops there and `restart_services` is
-never called. `tests/test_deploy.py`.
+never called; a restart failure always shows the return code (never a bare, content-less
+message); a successful one now gets an explicit "✅ Рестарт запущено" instead of trailing off in
+silence — the confirmation is reliable precisely because it no longer races its own process being
+killed. `tests/test_deploy.py`.
 
 **HRV is the primary recovery signal** — `hrv_status = BALANCED` means recovered; a drop is
 the main stress indicator. (The dedicated resting-HR endpoint 403s via garth, but RHR comes

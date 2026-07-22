@@ -1059,8 +1059,12 @@ async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     restart = await deploy_ops.restart_services()
     if not restart.ok:
         await q.message.reply_text(_fmt_deploy_failure("Перезапуск не вдався", restart))
-    # No success message beyond this: garmin-bot restarts within moments of the queued
-    # systemctl job, and this process is what's being replaced.
+        return
+    # restart_services runs the actual systemctl call inside its own transient systemd
+    # unit (app.deploy docstring), so — unlike a direct child of this process — this
+    # confirmation is NOT racing garmin-bot's own restart: it reliably means the job was
+    # queued, not a guess made before this process might get killed.
+    await q.message.reply_text("✅ Рестарт запущено.")
 
 
 # ---------- ERROR HANDLER ----------
