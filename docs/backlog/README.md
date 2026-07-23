@@ -31,9 +31,12 @@ Garmin-акаунту в сесії). Немає відкритих — решт
 usability наявного функціоналу з фокусом на керування даними (**ST-15…ST-21**),
 спостережуваність і надійність (**OPS-04…OPS-09**), нові продуктові фічі
 (**NF-17…NF-22**). Повний аналіз (інвентаризація по коду, сценарні болі,
-RICE-таблиця, топ-5, «не робити зараз», розбіжності README↔код):
+RICE-таблиця, топ-5, «не робити зараз», розбіжності README↔код, §7 пост-PR ревізія):
 [BA-AUDIT-2026-07-23.md](BA-AUDIT-2026-07-23.md). Рекомендований старт партії:
-NF-17 → OPS-07 → OPS-05 → ST-18 → NF-19 (далі ST-15 як розблоковувач ST-16/ST-19).
+NF-17 → OPS-05 → ST-18 → NF-19 → OPS-04 (далі ST-15 як розблоковувач ST-16/ST-19).
+Пост-PR звірка з кодом знизила OPS-07 (наявний stale-звіт уже покриває кейс) і
+NF-18 (вузька диференціація від NF-09) та виправила опис OPS-09 (функція не
+«мовчазна» — вже повертає `{pushed, removed}`) — деталі в §7.
 
 **2026-07-22 (EP-11 + EP-10 фази 1/3):** **EP-11** (веб-чат з тренером) закрито —
 `GET/POST /chat` над `run_ask`/`run_plan_edit`, pending-стан підтвердження плану
@@ -88,7 +91,7 @@ NF-15's gear-endpoint recon у Done-записі — desk-only (без live Garm
 | [NF-19](NF-19-aerobic-efficiency-trend.md) | 🟠 high | Тренд аеробної ефективності (pace@HR, GAP-чесний) | M | EP-15 ✅ |
 | [NF-20](NF-20-forward-load-forecast.md) | 🟡 medium | Прогноз навантаження вперед (ACWR по плану) | M | NF-05 ✅, NF-11 ✅ |
 | [NF-21](NF-21-sleep-timing-bedtime.md) | 🟡 medium | Час сну (відбій/підйом) → конкретний bedtime у nudge | M | NF-16 ✅; ⚠️ верифікація полів DTO — перший AC |
-| [NF-18](NF-18-auto-sickness-trigger.md) | 🟢 low | Автотригер «схоже, захворів» → /sick-пропозиція | M | NF-03 ✅, EP-08 ✅, NF-09 ✅ |
+| [NF-18](NF-18-auto-sickness-trigger.md) | ⚪ lowest | Автотригер хвороби (пропуски+аномалії; тригер перевизначено §7 для диф. від NF-09) | M | NF-03 ✅, EP-08 ✅, NF-09 ✅ |
 | [NF-22](NF-22-race-week-countdown.md) | 🟢 low | Race-week countdown (T-3 чекліст, T-1 бріф) | S | EP-05 ✅; синергія NF-17/NF-21 |
 
 ## Перфоманс
@@ -104,12 +107,12 @@ NF-15's gear-endpoint recon у Done-записі — desk-only (без live Garm
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [OPS-07](OPS-07-morning-report-watchdog.md) | 🔴 highest | Watchdog «ранковий звіт сьогодні не пішов» | S | м'яка на OPS-04 |
 | [OPS-05](OPS-05-garmin-error-visibility.md) | 🟠 high | Видимість помилок Garmin API (лічильники + збої) | M | — |
 | [OPS-04](OPS-04-job-run-log.md) | 🟠 high | Журнал фонових джобів (job_runs) | M | — |
 | [OPS-08](OPS-08-backup-freshness-monitoring.md) | 🟡 medium | Моніторинг свіжості бекапів БД | S | OPS-02 ✅ |
 | [OPS-09](OPS-09-calendar-push-audit.md) | 🟡 medium | Аудит пушів у Garmin-календар + «Синк зараз» | M | — |
 | [OPS-06](OPS-06-cache-metrics-page.md) | 🟢 low | Метрики кешів (hit-rate, розміри) | S | ST-20 (та сама сторінка) |
+| [OPS-07](OPS-07-morning-report-watchdog.md) | ⚪ lowest | Watchdog жорсткого Garmin-збою о deadline (пере-скоуплено §7; кандидат злиття в OPS-05) | S | OPS-05 |
 
 Обидві сторі первісного розділу зроблено (2026-07) — див. Done (SEC-01, OPS-02).
 Операційну частину OPS-02 на Pi також завершено: systemd-таймер увімкнено,
