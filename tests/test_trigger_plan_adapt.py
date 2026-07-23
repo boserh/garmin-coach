@@ -71,9 +71,10 @@ async def _seed_plan(session, user_id, *, workouts):
 
 
 async def test_no_such_user(_cli_session, capsys):
-    rc = await cli._trigger_plan_adapt("nobody@x.com")
-    assert rc == 1
-    assert "not found" in capsys.readouterr().out
+    # A4: the shared cli_user preamble raises _UserNotFound for an unknown email; main()'s
+    # _run wrapper turns that into the uniform "User <email> not found." message + exit 1.
+    with pytest.raises(cli._UserNotFound):
+        await cli._trigger_plan_adapt("nobody@x.com")
 
 
 async def test_no_telegram_chat_id(_cli_session, key, capsys):

@@ -9,6 +9,7 @@ Garmin/Claude/Telegram credentials from the existing ``.env``::
 """
 import argparse
 import asyncio
+import contextlib
 import getpass
 import pathlib
 import sys
@@ -19,6 +20,60 @@ from app.core.config import settings
 from app.core.crypto import encrypt, hash_password
 from app.db import users
 from app.db.base import async_session_maker, init_db
+
+
+class _UserNotFound(Exception):
+    """Raised by ``cli_user`` when ``--email`` resolves to no user; ``_run`` in ``main``
+    turns it into the uniform 'User <email> not found.' message + exit code 1, so no
+    command needs to repeat that check."""
+
+    def __init__(self, email: str):
+        self.email = email
+
+
+@contextlib.asynccontextmanager
+async def cli_user(email: str, *, garmin: bool = False):
+    """Shared CLI preamble (A4): init the DB, open a session, resolve the user by ``email``
+    (raising :class:`_UserNotFound` when missing), and yield ``(session, user)``. With
+    ``garmin=True`` it also binds the user's Garmin runtime and logs in **up front** — only
+    for commands that always need a live session (e.g. ``list-workouts``); commands that defer
+    the login past a 'nothing to do' / ``--dry-run`` check keep ``garmin=False`` and use
+    :func:`garmin_login` mid-body instead, so a no-op or dry run never touches Garmin."""
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            raise _UserNotFound(email)
+        if garmin:
+            async with garmin_login(session, user):
+                yield session, user
+        else:
+            yield session, user
+
+
+@contextlib.asynccontextmanager
+async def garmin_login(session, user):
+    """The deferred Garmin login several commands run *after* their 'is there work / dry-run'
+    checks (so a no-op or ``--dry-run`` never logs in): bind the user's runtime and perform the
+    login. Factored out as the single place the future OPS-01 auth migration has to patch."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    async with user_runtime(session, user):
+        await run_in_threadpool(get_provider().login)
+        yield
+
+
+def _run(coro) -> int:
+    """Run a command coroutine, turning :class:`_UserNotFound` into the uniform message +
+    exit 1 so every command's dispatch shares one not-found path."""
+    try:
+        return asyncio.run(coro)
+    except _UserNotFound as e:
+        print(f"User {e.email} not found.")
+        return 1
 
 
 async def _import_garth_token(email: str, path: str) -> int:
@@ -33,12 +88,7 @@ async def _import_garth_token(email: str, path: str) -> int:
     except Exception as e:
         print(f"Failed to read garth token: {e}")
         return 1
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         user.garth_token_enc = encrypt(token)
         await session.commit()
         print(f"Garth token imported for {email}.")
@@ -49,12 +99,7 @@ async def _import_fit_series(email: str, path: str, since: str) -> int:
     """Backfill runs' pace/HR series from the export's FIT files (offline, no API)."""
     from app.garmin.export_import import import_fit_series
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         stats = await import_fit_series(session, user.id, path, since=since)
     if stats.get("error"):
         print(stats["error"])
@@ -67,12 +112,7 @@ async def _import_export(email: str, path: str, overwrite: bool, since: str) -> 
     """Backfill daily_metrics from a Garmin GDPR export folder (offline, no API)."""
     from app.garmin.export_import import import_export
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         stats = await import_export(session, user.id, path, overwrite=overwrite, since=since)
     print(f"Inserted {stats['inserted']} new day(s); filled {stats['filled']} existing; "
           f"{stats['unchanged']} unchanged ({stats['parsed']} parsed).")
@@ -91,15 +131,8 @@ async def _backfill_series(email: str, since: str) -> int:
 
     from app.db.models import ActivityRecord
     from app.garmin import client
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         # JSON None is stored as JSON `null` (not SQL NULL), so filter in Python.
         stmt = select(ActivityRecord).where(
             ActivityRecord.user_id == user.id,
@@ -114,8 +147,7 @@ async def _backfill_series(email: str, since: str) -> int:
             return 0
         print(f"Backfilling {len(rows)} run(s) for {email}...")
         done = 0
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             for r in rows:
                 sr = await run_in_threadpool(client.fetch_activity_series, r.activity_id)
                 if sr:
@@ -139,17 +171,9 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
 
     from app.db.models import DailyMetric
     from app.garmin import client
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
     from app.garmin.service import _auto_activities
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
-
+    async with cli_user(email) as (session, user):
         stmt = select(DailyMetric).where(DailyMetric.user_id == user.id)
         if since:
             stmt = stmt.where(DailyMetric.date >= since)
@@ -162,8 +186,7 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
 
         print(f"Backfilling auto_activities for {len(rows)} day(s)...")
         done = 0
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             for r in rows:
                 date_obj = dt.date.fromisoformat(r.date[:10])
                 events = await run_in_threadpool(client.fetch_daily_events, date_obj)
@@ -187,12 +210,7 @@ async def _backfill_records(email: str) -> int:
     importing years of history; the daily tick keeps it current afterwards."""
     from app import records
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         before = len(await records.current_records(session, user.id))
         new = await records.detect_records(session, user.id)
         await session.commit()
@@ -219,15 +237,8 @@ async def _backfill_strength_snapshots(email: str) -> int:
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client, repository, workout_export
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
         if plan is None:
             print("No active plan for this user.")
@@ -243,8 +254,7 @@ async def _backfill_strength_snapshots(email: str) -> int:
             return 0
 
         print(f"Backfilling {len(todo)} strength snapshot(s) for {email}...")
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             cache: dict = {}
             for w in todo:
                 tid = w.garmin_template_id
@@ -281,18 +291,9 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
     the payloads without writing to Garmin."""
     import datetime as dt
 
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import plan_sync, repository, workout_export
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
         if plan is None:
             print("No active plan for this user.")
@@ -320,8 +321,7 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
                     print(f"  {w.date}  {payload['workoutName']}  ({n} step(s))")
             return 0
 
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             done = 0
             for w in todo:
                 wid = await plan_sync.push_workout(session, w)
@@ -338,18 +338,9 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     clear the stored ids (so a later push re-creates them fresh). ``--date`` limits it to
     one session. Only touches workouts we created (by saved ``garmin_workout_id``) — never
     your manual/Runna workouts."""
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import plan_sync, repository
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
         if plan is None:
             print("No active plan for this user.")
@@ -359,8 +350,7 @@ async def _unpush_plan(email: str, date: str = None) -> int:
             print("Nothing pushed for this plan.")
             return 0
         print(f"Removing {len(pushed)} pushed workout(s) for {email}...")
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             for w in pushed:
                 wid = w.garmin_workout_id
                 if await plan_sync.remove_workout(session, w):
@@ -387,12 +377,7 @@ async def _trigger_plan_adapt(email: str) -> int:
     from app.garmin.credentials import load_credentials
     from bot.jobs import _send_adapt_proposal
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         if not user.telegram_chat_id:
             print("User has no telegram_chat_id — nowhere to send a proposal.")
             return 1
@@ -430,18 +415,9 @@ async def _list_workouts(email: str) -> int:
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
-            rows = await run_in_threadpool(client.fetch_workouts)
+    async with cli_user(email, garmin=True) as (session, user):
+        rows = await run_in_threadpool(client.fetch_workouts)
     if not rows:
         print("No saved workouts found.")
         return 0
@@ -598,35 +574,37 @@ def main(argv=None) -> int:
     )
 
     args = parser.parse_args(argv)
+    # _run wraps asyncio.run to turn a _UserNotFound from cli_user into the uniform
+    # "User <email> not found." + exit 1 (create-user / token-expiry never raise it).
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
         if not password:
             parser.error("password must not be empty")
-        return asyncio.run(_create_user(args.email, password, args.admin, args.seed_env))
+        return _run(_create_user(args.email, password, args.admin, args.seed_env))
     if args.cmd == "import-garth-token":
-        return asyncio.run(_import_garth_token(args.email, args.path))
+        return _run(_import_garth_token(args.email, args.path))
     if args.cmd == "backfill-series":
-        return asyncio.run(_backfill_series(args.email, args.since))
+        return _run(_backfill_series(args.email, args.since))
     if args.cmd == "backfill-auto-activities":
-        return asyncio.run(_backfill_auto_activities(args.email, args.since))
+        return _run(_backfill_auto_activities(args.email, args.since))
     if args.cmd == "import-export":
-        return asyncio.run(_import_export(args.email, args.path, args.overwrite, args.since))
+        return _run(_import_export(args.email, args.path, args.overwrite, args.since))
     if args.cmd == "import-fit-series":
-        return asyncio.run(_import_fit_series(args.email, args.path, args.since))
+        return _run(_import_fit_series(args.email, args.path, args.since))
     if args.cmd == "push-plan":
-        return asyncio.run(_push_plan(args.email, args.days, args.dry_run, args.date))
+        return _run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
-        return asyncio.run(_unpush_plan(args.email, args.date))
+        return _run(_unpush_plan(args.email, args.date))
     if args.cmd == "trigger-plan-adapt":
-        return asyncio.run(_trigger_plan_adapt(args.email))
+        return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":
-        return asyncio.run(_list_workouts(args.email))
+        return _run(_list_workouts(args.email))
     if args.cmd == "backfill-records":
-        return asyncio.run(_backfill_records(args.email))
+        return _run(_backfill_records(args.email))
     if args.cmd == "backfill-strength-snapshots":
-        return asyncio.run(_backfill_strength_snapshots(args.email))
+        return _run(_backfill_strength_snapshots(args.email))
     if args.cmd == "token-expiry":
-        return asyncio.run(_token_expiry())
+        return _run(_token_expiry())
     return 0
 
 
