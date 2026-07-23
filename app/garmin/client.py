@@ -11,7 +11,6 @@ import logging
 import os
 import threading
 import time as _time
-from collections import Counter
 
 from app.core.config import settings
 from app.garmin.exercise_names import EXERCISE_NAMES
@@ -311,17 +310,25 @@ def _exercise_name(code: str) -> str:
 
 
 def fetch_exercise_summary(activity_id, force: bool = False) -> dict:
-    """Specific exercises and how many active sets done in a strength workout. ``force=True``
-    bypasses the disk cache and refetches (overwriting it) — for a manual resync (ST-15/ST-16)
-    of an activity whose exercises were edited in Garmin, since the cache otherwise treats a
-    completed activity's sets as immutable."""
-    key = f"exercise:v2:{activity_id}"
+    """Per-exercise breakdown of a strength workout — set count plus the reps and weight of
+    each set (Garmin's own per-set data, shown in Connect's "Overview").
+
+    Shape: ``{"active_sets": int, "sets": {<name>: {"count": int, "reps": [int|None, ...],
+    "weight_kg": [float|None, ...]}}}`` — ``reps``/``weight_kg`` are per active set, in order
+    (``None`` where Garmin has none: a time-based hold has no reps, a bodyweight move no
+    weight). Garmin stores set weight in grams → kg here.
+
+    ``force=True`` bypasses the disk cache and refetches (overwriting it) — for a manual resync
+    (ST-15/ST-16) of an activity whose exercises were edited in Garmin, since the cache
+    otherwise treats a completed activity's sets as immutable. Cache key is ``v3`` (``v2`` held
+    set counts only), so pre-existing cached entries are re-fetched rather than mis-parsed."""
+    key = f"exercise:v3:{activity_id}"
     raw = None if force else _cache_get(key)
     if raw is None:
         d = _safe(_api, f"/activity-service/activity/{activity_id}/exerciseSets")
         if isinstance(d, dict) and "_error" in d:
             return {}  # transient error — don't cache
-        sets = Counter()
+        by_code: dict = {}       # name code → {"count", "reps": [...], "weight_kg": [...]}
         total_active = 0
         for s in (_g(d, "exerciseSets") or []):
             if s.get("setType") != "ACTIVE":
@@ -330,18 +337,34 @@ def fetch_exercise_summary(activity_id, force: bool = False) -> dict:
             cat = ex.get("category")
             if cat in (None, "RUN", "UNKNOWN"):
                 continue  # skip the warm-up jog / unrecognized sets
+            code = ex.get("name") or cat
             total_active += 1
-            sets[ex.get("name") or cat] += 1
-        raw = {} if not sets else {"active_sets": total_active,
-                                   "sets": dict(sets.most_common())}
+            entry = by_code.setdefault(code, {"count": 0, "reps": [], "weight_kg": []})
+            entry["count"] += 1
+            reps = s.get("repetitionCount")
+            entry["reps"].append(int(reps) if isinstance(reps, (int, float)) and reps else None)
+            w = s.get("weight")
+            entry["weight_kg"].append(
+                round(w / 1000.0, 1) if isinstance(w, (int, float)) and w else None)
+        # Keep the "most sets first" ordering the old Counter.most_common gave.
+        ordered = sorted(by_code.items(), key=lambda kv: kv[1]["count"], reverse=True)
+        raw = {} if not by_code else {"active_sets": total_active,
+                                      "sets": {c: info for c, info in ordered}}
         _cache_put(key, raw, EXERCISE_TTL_S)
     if not raw:
         return {}
-    # Map raw name codes → readable names at return time (sum on collisions).
+    # Map raw name codes → readable names at return time (merge on collisions).
     named: dict = {}
-    for code, n in raw["sets"].items():
+    for code, info in raw["sets"].items():
         label = _exercise_name(code)
-        named[label] = named.get(label, 0) + n
+        cur = named.get(label)
+        if cur is None:
+            named[label] = {"count": info["count"], "reps": list(info["reps"]),
+                            "weight_kg": list(info["weight_kg"])}
+        else:
+            cur["count"] += info["count"]
+            cur["reps"] += info["reps"]
+            cur["weight_kg"] += info["weight_kg"]
     return {"active_sets": raw["active_sets"], "sets": named}
 
 

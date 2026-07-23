@@ -180,19 +180,24 @@ async def test_resync_days_overwrites_stale_row(session):
     assert m.extra and m.extra.get("resting_hr") == 48   # extra rewritten too
 
 
-def test_fetch_exercise_summary_force_bypasses_cache(monkeypatch):
+def test_fetch_exercise_summary_force_bypasses_cache_and_parses_reps_weight(monkeypatch):
     """The bug this fixes: resync of an edited strength activity returned the cached (pre-edit)
-    exercises. ``force=True`` must ignore the immutable-asset cache and refetch."""
+    exercises. ``force=True`` must ignore the immutable-asset cache and refetch — and the fresh
+    result must carry per-set reps + weight (grams→kg), not just a set count."""
     calls = {"n": 0}
-    monkeypatch.setattr(client, "_cache_get",
-                        lambda k: {"active_sets": 1, "sets": {"OLD": 1}})
+    monkeypatch.setattr(client, "_cache_get", lambda k: {
+        "active_sets": 1, "sets": {"OLD": {"count": 1, "reps": [10], "weight_kg": [20.0]}}})
     monkeypatch.setattr(client, "_cache_put", lambda k, v, ttl: None)
 
     class P:
         def connectapi(self, path, **kwargs):
             calls["n"] += 1
             return {"exerciseSets": [
-                {"setType": "ACTIVE", "exercises": [{"category": "SQUAT", "name": "SQUAT"}]},
+                {"setType": "ACTIVE", "repetitionCount": 12, "weight": 22000.0,
+                 "exercises": [{"category": "SQUAT", "name": "SQUAT"}]},
+                {"setType": "REST"},
+                {"setType": "ACTIVE", "repetitionCount": 12, "weight": 22000.0,
+                 "exercises": [{"category": "SQUAT", "name": "SQUAT"}]},
             ]}
 
     monkeypatch.setattr(client, "get_provider", lambda: P())
@@ -200,9 +205,13 @@ def test_fetch_exercise_summary_force_bypasses_cache(monkeypatch):
     # Default: the cached (stale) value is returned, no Garmin call.
     cached = client.fetch_exercise_summary(111)
     assert calls["n"] == 0 and "old" in cached["sets"]
-    # force=True: cache ignored, a fresh fetch happens.
-    client.fetch_exercise_summary(111, force=True)
+    # force=True: cache ignored, a fresh fetch happens with reps + weight captured.
+    fresh = client.fetch_exercise_summary(111, force=True)
     assert calls["n"] == 1
+    squat = next(iter(fresh["sets"].values()))
+    assert squat["count"] == 2
+    assert squat["reps"] == [12, 12]
+    assert squat["weight_kg"] == [22.0, 22.0]   # grams → kg
 
 
 async def test_resync_days_empty_range_is_noop(session):

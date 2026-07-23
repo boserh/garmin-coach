@@ -199,6 +199,43 @@ def _pace_str(dist_km, dur_min):
     return fmt.pace(dur_min / dist_km)   # seconds per km → M:SS
 
 
+def _fmt_num(v):
+    """22.0 → '22', 22.5 → '22.5' — drop a trailing .0 so weights read cleanly."""
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def _summ(vals):
+    """Summarise a per-set list (reps or weights) to a single value or a lo–hi range,
+    ignoring None entries. None when there's nothing to show."""
+    xs = [v for v in vals if v is not None]
+    if not xs:
+        return None
+    lo, hi = min(xs), max(xs)
+    return _fmt_num(lo) if lo == hi else f"{_fmt_num(lo)}–{_fmt_num(hi)}"
+
+
+def _exercise_rows(exercises):
+    """Format a stored ``exercises`` dict into display rows ``[{name, detail}]`` — set count,
+    reps and weight per exercise. Handles the current per-set shape ({count, reps[],
+    weight_kg[]}) and the legacy shape (a bare set-count int), so activities synced before
+    reps/weight were captured still render (they show just the count until resynced)."""
+    if not exercises:
+        return []
+    out = []
+    for name, info in (exercises.get("sets") or {}).items():
+        if isinstance(info, dict):
+            count = info.get("count") or 0
+            reps = _summ(info.get("reps") or [])
+            wv = info.get("weight_kg") or []
+            weight = (_summ(wv) + " кг") if any(v is not None for v in wv) else "власна вага"
+            head = f"{count}×{reps}" if reps else f"{count} підх."
+            detail = " · ".join(p for p in (head, weight) if p)
+        else:
+            detail = str(info)   # legacy: bare set count
+        out.append({"name": name, "detail": detail})
+    return out
+
+
 def _spark(series, n: int = 48):
     """A pace sparkline (SVG points) from a run's series; faster = higher. None if too short."""
     vals = [p.get("p") for p in (series or []) if p.get("p")]
@@ -848,6 +885,7 @@ async def me_row(
             "avg_hr": obj.avg_hr, "max_hr": obj.max_hr, "load": obj.load,
             "pace": _pace_str(obj.dist_km, obj.dur_min) if runwalk else None,
             "exercises": obj.exercises,
+            "exercise_rows": _exercise_rows(obj.exercises),
             "rpe": (obj.subjective or {}).get("rpe"),
             "pain": (obj.subjective or {}).get("note") or (obj.subjective or {}).get("pain"),
             "step_badge": stepmatch.badge(obj.step_match),
