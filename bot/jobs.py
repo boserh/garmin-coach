@@ -319,7 +319,35 @@ def _within_guard(last: Optional[str], today: str, days: int) -> bool:
         return False
 
 
-async def _injury_check_for_user(ctx, session, user: User, creds, today: str) -> None:
+class _RiskCache:
+    """Per-tick memo for the two risk detectors (D1). ``_deload``/``_injury``/``_health``
+    each need ``build_injury_assessment`` and/or ``build_health_alerts``, and all three can
+    run in one 20-min tick — each detector is its own set of ~90-day history reads
+    (read_load_history / recent_subjective_runs / read_history / count_daily_metrics). This
+    computes each at most once per tick and shares it, WITHOUT changing any guard: the compute
+    still happens lazily, the first time a hook actually reaches the point of needing it, so a
+    disabled feature or an active per-day guard still costs nothing. A hook called on its own
+    (the tests) just gets a fresh single-use cache and behaves exactly as before."""
+
+    def __init__(self, session, user_id: int):
+        self._session = session
+        self._user_id = user_id
+        self._injury = None
+        self._health = None
+
+    async def injury(self):
+        if self._injury is None:
+            self._injury = await build_injury_assessment(self._session, user_id=self._user_id)
+        return self._injury
+
+    async def health(self):
+        if self._health is None:
+            self._health = await build_health_alerts(self._session, user_id=self._user_id)
+        return self._health
+
+
+async def _injury_check_for_user(ctx, session, user: User, creds, today: str,
+                                 *, risk: "_RiskCache | None" = None) -> None:
     """Injury-risk radar (NF-04): run the pure detector; if it's an actionable warning and we
     haven't warned in the last INJURY_GUARD_DAYS, narrate + DM one advisory. Best-effort and
     LLM-optional (the detector is zero-LLM; run_injury_check falls back to a deterministic
@@ -329,8 +357,9 @@ async def _injury_check_for_user(ctx, session, user: User, creds, today: str) ->
     last = await repository.get_state(session, user.id, INJURY_WARNED_KEY)
     if _within_guard(last, today, settings.INJURY_GUARD_DAYS):
         return
+    risk = risk or _RiskCache(session, user.id)
     try:
-        assessment = await build_injury_assessment(session, user_id=user.id)
+        assessment = await risk.injury()
         if not assessment.actionable:
             return
         text = await run_injury_check(
@@ -345,7 +374,8 @@ async def _injury_check_for_user(ctx, session, user: User, creds, today: str) ->
         logger.exception(f"INJURY check failed user={user.id}")
 
 
-async def _health_check_for_user(ctx, session, user: User, creds, today: str) -> bool:
+async def _health_check_for_user(ctx, session, user: User, creds, today: str,
+                                 *, risk: "_RiskCache | None" = None) -> bool:
     """Proactive health alerts (EP-08): run the pure recovery-anomaly detector; DM one advisory
     for any *newly* actionable alert kind we haven't sent in the last HEALTH_ALERT_COOLDOWN_DAYS.
     Per-rule cooldown (key ``alert:<kind>``) so a persistent drift isn't re-flagged daily, but a
@@ -356,8 +386,9 @@ async def _health_check_for_user(ctx, session, user: User, creds, today: str) ->
     if (not settings.HEALTH_ALERTS or not user.alerts_enabled
             or not user.telegram_chat_id or not creds.anthropic_key):
         return False
+    risk = risk or _RiskCache(session, user.id)
     try:
-        report = await build_health_alerts(session, user_id=user.id)
+        report = await risk.health()
         if not report.actionable:
             return False
         # Fire only for alert kinds not on cooldown; if every kind is still cooling, stay silent.
@@ -381,7 +412,8 @@ async def _health_check_for_user(ctx, session, user: User, creds, today: str) ->
         return False
 
 
-async def _deload_check_for_user(ctx, session, user: User, creds, today: str) -> bool:
+async def _deload_check_for_user(ctx, session, user: User, creds, today: str,
+                                 *, risk: "_RiskCache | None" = None) -> bool:
     """NF-09: when the injury radar (NF-04) or the health-alert detector (EP-08) already
     has an actionable signal AND a heavy session (tempo/intervals/long) sits within
     DELOAD_HEAVY_WINDOW_DAYS, turn the warning into a concrete ✅/❌ deload proposal via the
@@ -403,9 +435,10 @@ async def _deload_check_for_user(ctx, session, user: User, creds, today: str) ->
     if not any((w.type or "").lower() in ADAPT_HEAVY_TYPES for w in ws):
         return False
 
+    risk = risk or _RiskCache(session, user.id)
     try:
-        assessment = await build_injury_assessment(session, user_id=user.id)
-        health_report = await build_health_alerts(session, user_id=user.id)
+        assessment = await risk.injury()
+        health_report = await risk.health()
         if not assessment.actionable and not health_report.actionable:
             return False
 
@@ -515,14 +548,19 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # Celebrate any new personal record (EP-14) — after the activity recap.
             await _records_check_for_user(ctx, session, user)
 
+            # D1: one memo shared across all three risk hooks — the injury/health detectors
+            # (each a set of ~90-day reads) get computed at most once per tick instead of up
+            # to 3×, with every guard below unchanged.
+            risk = _RiskCache(session, user.id)
+
             # NF-09 auto-deload: try turning an actionable injury/health signal into a
             # concrete ✅/❌ correction FIRST — that proposal IS the day's one risk
             # touchpoint, so the plain advisories below are skipped when it fires.
-            deload_sent = await _deload_check_for_user(ctx, session, user, creds, today)
+            deload_sent = await _deload_check_for_user(ctx, session, user, creds, today, risk=risk)
 
             if not deload_sent:
                 # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack up.
-                await _injury_check_for_user(ctx, session, user, creds, today)
+                await _injury_check_for_user(ctx, session, user, creds, today, risk=risk)
 
                 # Proactive health alerts (EP-08) — recovery anomalies vs the personal
                 # baseline. Skip when an injury advisory already went out today: at most one
@@ -530,7 +568,7 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                 injury_sent = (
                     await repository.get_state(session, user.id, INJURY_WARNED_KEY) == today)
                 if not injury_sent:
-                    await _health_check_for_user(ctx, session, user, creds, today)
+                    await _health_check_for_user(ctx, session, user, creds, today, risk=risk)
 
             if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
                 return
