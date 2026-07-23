@@ -139,7 +139,6 @@ Optional, with defaults:
 | `LOG_FILE` | `bot.log` | Log file path |
 | `LOG_LEVEL` | `INFO` | Root level (`DEBUG` shows skip-reason logs) |
 | `GARMIN_CACHE_DIR` | `garmin_cache` | Per-key disk cache for immutable Garmin assets (PERF-02) |
-| `GARMIN_CACHE_FILE` | `garmin_cache.json` | Legacy single-file cache — seeded into `GARMIN_CACHE_DIR` once, then renamed `.migrated` |
 | `INJURY_RADAR` | `True` | NF-04: master on/off for the injury-risk advisory in the morning tick |
 | `INJURY_MIN_HISTORY_DAYS` | `14` | NF-04: quiet calibration — no warnings until this much daily history |
 | `INJURY_GUARD_DAYS` | `5` | NF-04: at most one injury advisory per this many days |
@@ -1522,9 +1521,9 @@ morning nudge itself is free, and there's no scheduled auto-generation.
   ID-keyed assets only — `exercise:v2:<id>` (365d), `workout:v2:<id>` (7d; name + coach
   description + steps), and `series:v1:<id>` (365d; a run's per-point pace/HR from
   `/details`, downsampled). One JSON file per key (atomic replace, cross-process safe)
-  fronted by an in-process memo; the legacy single `garmin_cache.json` is split into
-  per-key files once at import, then renamed `.migrated`. Day-level caching moved to
-  the DB.
+  fronted by an in-process memo. (The one-time `garmin_cache.json` → per-key + `.migrated`
+  seed was removed once every deployment had migrated — C1; git history keeps it.)
+  Day-level caching moved to the DB.
 - **DB day-level cache** (`DailyMetric`): past days served from the DB; today refetched.
 
 ## Concurrency & rate limiting (PERF-04b / PERF-05)

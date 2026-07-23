@@ -71,8 +71,6 @@ class Settings(BaseSettings):
     # the Claude dedup cache in the llm_cache table) ---
     # Per-key files under this directory (PERF-02 — cross-process safe).
     GARMIN_CACHE_DIR: str = "garmin_cache"
-    # The legacy single-file cache: seeded into GARMIN_CACHE_DIR once, then renamed.
-    GARMIN_CACHE_FILE: str = "garmin_cache.json"
 
     # --- Open-ended "keep improving" plan (rolling blocks) ---
     # The `general` goal has no target race: generation lays a block of PLAN_BLOCK_WEEKS
