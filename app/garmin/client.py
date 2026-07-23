@@ -135,8 +135,9 @@ def _api(path: str, **kwargs):
 # and independent, and both processes read the same directory. Keys are
 # "<kind>:<id>"; file payloads are [data, expires_at]. An in-process memo fronts
 # the file reads (fine for these assets: immutable or slow-changing).
+# (The one-time garmin_cache.json → per-key-file + .migrated seed was removed once
+# every deployment had migrated — C1; git history keeps it if it's ever needed.)
 GARMIN_CACHE_DIR = settings.GARMIN_CACHE_DIR
-GARMIN_CACHE_FILE = settings.GARMIN_CACHE_FILE  # legacy single-file cache (seed source)
 EXERCISE_TTL_S = 365 * 24 * 3600   # a completed activity's sets are immutable
 WORKOUT_TTL_S = 7 * 24 * 3600      # a planned workout can be edited; refresh weekly
 
@@ -152,37 +153,6 @@ def _write_entry(path: str, entry: list) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(entry, f, ensure_ascii=False)
     os.replace(tmp, path)
-
-
-def _seed_legacy_cache() -> None:
-    """One-time migration: split the old single-file cache into per-key files (its
-    series/exercise entries carry year-long TTLs — re-fetching hundreds of them
-    from Garmin risks a 429), then rename it so this never runs again."""
-    try:
-        with open(GARMIN_CACHE_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return
-    except Exception as e:
-        logger.warning(f"GCACHE seed read failed: {e}")
-        return
-    now = _time.time()
-    n = 0
-    try:
-        os.makedirs(GARMIN_CACHE_DIR, exist_ok=True)
-        for k, v in raw.items():
-            path = _key_path(k)
-            if isinstance(v, list) and len(v) == 2 and v[1] > now \
-                    and not os.path.exists(path):
-                _write_entry(path, v)
-                n += 1
-        os.replace(GARMIN_CACHE_FILE, GARMIN_CACHE_FILE + ".migrated")
-        logger.info(f"GCACHE seeded {n} entries from {GARMIN_CACHE_FILE}")
-    except Exception as e:
-        logger.warning(f"GCACHE seed failed: {e}")
-
-
-_seed_legacy_cache()
 
 
 def _cache_get(key: str):

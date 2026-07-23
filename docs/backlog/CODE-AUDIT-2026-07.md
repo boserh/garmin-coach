@@ -19,8 +19,11 @@
 > and then call the higher-level tick/job entrypoints, so a package split needs those
 > ~15 test files' patch targets re-pointed at the new submodules (the "separate PR"
 > the Suggested-order note below already calls for). **C1's** legacy
-> `garmin_cache.json → .migrated` removal stays gated on confirming the Pi is already
-> `.migrated` (unverifiable from here).
+> `garmin_cache.json → .migrated` seed is now **removed** too — the Pi was confirmed
+> already `.migrated` (`garmin_cache.json.migrated` present, the original gone, the
+> `garmin_cache/` per-key dir populated), so the one-time seed was pure dead weight
+> (`_seed_legacy_cache` + its call + the `GARMIN_CACHE_FILE` setting + its two tests;
+> git history keeps it). Only **B2** remains open.
 
 ## TL;DR
 
