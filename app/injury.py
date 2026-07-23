@@ -26,6 +26,8 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from app.statutil import mean
+
 WINDOW_DAYS = 14          # signals look at roughly the last two weeks
 
 # ACWR (acute:chronic load, %). 80–130 is the optimal band; sustained above HIGH is the
@@ -119,10 +121,6 @@ def _pain_signal(runs: List[dict]) -> Optional[Signal]:
     )
 
 
-def _mean(xs: List[float]) -> float:
-    return sum(xs) / len(xs)
-
-
 def _rpe_signal(runs: List[dict]) -> Optional[Signal]:
     rated = [r for r in runs
              if isinstance(r.get("rpe"), (int, float))
@@ -131,8 +129,8 @@ def _rpe_signal(runs: List[dict]) -> Optional[Signal]:
         return None
     mid = len(rated) // 2
     early, late = rated[:mid], rated[mid:]
-    rpe_early, rpe_late = _mean([r["rpe"] for r in early]), _mean([r["rpe"] for r in late])
-    pace_early, pace_late = _mean([r["pace"] for r in early]), _mean([r["pace"] for r in late])
+    rpe_early, rpe_late = mean([r["rpe"] for r in early]), mean([r["rpe"] for r in late])
+    pace_early, pace_late = mean([r["pace"] for r in early]), mean([r["pace"] for r in late])
     if rpe_late - rpe_early < RPE_RISE:
         return None
     # Pace "stable" = not meaningfully easier (a slower pace would explain higher RPE away).

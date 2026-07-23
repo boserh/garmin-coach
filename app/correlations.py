@@ -19,6 +19,8 @@ import datetime as dt
 import math
 from typing import List, Optional
 
+from app.statutil import mean
+
 # Gates against small-N false positives.
 MIN_SAMPLES = 30       # paired observations required before a pair is even considered
 R_THRESHOLD = 0.35     # minimum |Pearson r| — a weak wisp isn't worth surfacing
@@ -48,17 +50,13 @@ _PAIRS = [
 ]
 
 
-def _mean(xs: List[float]) -> float:
-    return sum(xs) / len(xs)
-
-
 def pearson(xs: List[float], ys: List[float]) -> Optional[float]:
     """Pearson correlation of two equal-length samples, or None when it's undefined
     (fewer than 2 points, or a constant series → zero variance)."""
     n = len(xs)
     if n < 2 or n != len(ys):
         return None
-    mx, my = _mean(xs), _mean(ys)
+    mx, my = mean(xs), mean(ys)
     sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     sxx = sum((x - mx) ** 2 for x in xs)
     syy = sum((y - my) ** 2 for y in ys)

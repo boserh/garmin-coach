@@ -129,89 +129,53 @@ def _activity_cache_key(data: dict, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _digest_cache_key(context: dict, model: str) -> str:
-    """Key the weekly digest on the ISO week + the computed data slice (not ``today``),
-    so a repeat within the same week/data is a cache hit — see the README pitfall: every
-    piece of Claude context must be in the key."""
-    material = {
-        "iso_week": context.get("iso_week"),
-        "week": context.get("week"),
-        "weekly_volume": context.get("weekly_volume"),
-        "compliance": context.get("compliance"),
-        "recovery": context.get("recovery"),
-        "fitness": context.get("fitness"),
-        "multisport": context.get("multisport"),
-        "goal": context.get("goal"),
-        "goal_projection": context.get("goal_projection"),
-        "records": context.get("records"),
-        "model": model,
-        "digest": True,
-    }
+def _context_cache_key(kind: str, context: dict, model: str, fields: tuple) -> str:
+    """Generic dedup-cache key for a context-driven narration (A2): pick ``fields`` from
+    ``context``, add the model and a ``{kind: True}`` marker, sha256 the JSON. Replaces the
+    five near-identical ``_digest/_insights/_wrapped/_race/_compare`` key builders that all
+    had this exact shape.
+
+    The README pitfall lives here: **every piece of Claude context must be in the key**, so
+    each caller's ``fields`` must list every context field the model actually reads. The
+    volatile ``generated``/``today`` values are deliberately excluded so a same-day/same-week
+    repeat over identical data is a cache hit rather than a paid re-run. ``sort_keys`` makes
+    the field order irrelevant, so this yields the same hash the hand-written builders did.
+    """
+    material = {f: context.get(f) for f in fields}
+    material["model"] = model
+    material[kind] = True
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+# Per-narration field lists — the exact context each model reads (see _context_cache_key).
+_DIGEST_KEY_FIELDS = (
+    "iso_week", "week", "weekly_volume", "compliance", "recovery",
+    "fitness", "multisport", "goal", "goal_projection", "records",
+)
+_INSIGHTS_KEY_FIELDS = ("window_days", "findings")
+_WRAPPED_KEY_FIELDS = ("period", "start", "end", "stats", "records")
+_RACE_KEY_FIELDS = (
+    "goal", "target_date", "target_dist_km", "fitness", "recent_sessions", "weather",
+)
+_COMPARE_KEY_FIELDS = ("weeks", "years_back", "current", "past")
+
+
+def _digest_cache_key(context: dict, model: str) -> str:
+    return _context_cache_key("digest", context, model, _DIGEST_KEY_FIELDS)
 
 
 def _insights_cache_key(context: dict, model: str) -> str:
-    """Key a correlation insight (NF-02) on the found associations + window (all Claude
-    context must key the dedup cache — the README pitfall). The findings are already the
-    distilled, order-stable result, so the same significant set within the TTL is a hit."""
-    material = {
-        "window_days": context.get("window_days"),
-        "findings": context.get("findings"),
-        "model": model,
-        "insights": True,
-    }
-    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return _context_cache_key("insights", context, model, _INSIGHTS_KEY_FIELDS)
 
 
 def _wrapped_cache_key(context: dict, model: str) -> str:
-    """Key a Wrapped review (NF-07) on the period + its assembled stats + records, so a
-    repeat within the same day/data is a cache hit (all Claude context must key the cache —
-    the README pitfall). The window date-range lives inside the context."""
-    material = {
-        "period": context.get("period"),
-        "start": context.get("start"),
-        "end": context.get("end"),
-        "stats": context.get("stats"),
-        "records": context.get("records"),
-        "model": model,
-        "wrapped": True,
-    }
-    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return _context_cache_key("wrapped", context, model, _WRAPPED_KEY_FIELDS)
 
 
 def _race_cache_key(context: dict, model: str) -> str:
-    """Key the race pack on the target + fitness snapshot + upcoming (taper) sessions +
-    weather — not on ``today`` alone, so a same-day repeat (a manual ``/race`` right after
-    the auto-send) is a cache hit (the README pitfall: all Claude context must key the
-    dedup cache)."""
-    material = {
-        "goal": context.get("goal"),
-        "target_date": context.get("target_date"),
-        "target_dist_km": context.get("target_dist_km"),
-        "fitness": context.get("fitness"),
-        "recent_sessions": context.get("recent_sessions"),
-        "weather": context.get("weather"),
-        "model": model,
-        "race": True,
-    }
-    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return _context_cache_key("race", context, model, _RACE_KEY_FIELDS)
 
 
 def _compare_cache_key(context: dict, model: str) -> str:
-    """Key the comparison on the two assembled windows + framing (not ``today`` alone), so a
-    repeat within the same day/data is a cache hit — the README pitfall (all Claude context
-    must key the dedup cache). The window date-ranges are inside current/past, so they key it."""
-    material = {
-        "weeks": context.get("weeks"),
-        "years_back": context.get("years_back"),
-        "current": context.get("current"),
-        "past": context.get("past"),
-        "model": model,
-        "compare": True,
-    }
-    blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return _context_cache_key("compare", context, model, _COMPARE_KEY_FIELDS)

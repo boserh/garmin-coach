@@ -31,7 +31,6 @@ PRICES = {
     "claude-opus-4-8":   (5.0, 25.0),   # 4.8 dropped to $5/$25 (was $15/$75 on Opus 4.1)
     "claude-fable-5":    (10.0, 50.0),  # newer flagship — 2× Opus 4.8
 }
-SONNET_4_6 = "claude-sonnet-4-6"
 SONNET_5 = "claude-sonnet-5"
 OPUS_4_8 = "claude-opus-4-8"
 FABLE_5 = "claude-fable-5"

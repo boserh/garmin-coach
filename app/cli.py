@@ -9,9 +9,9 @@ Garmin/Claude/Telegram credentials from the existing ``.env``::
 """
 import argparse
 import asyncio
+import contextlib
 import getpass
 import pathlib
-import re
 import sys
 
 from sqlalchemy import text
@@ -20,6 +20,60 @@ from app.core.config import settings
 from app.core.crypto import encrypt, hash_password
 from app.db import users
 from app.db.base import async_session_maker, init_db
+
+
+class _UserNotFound(Exception):
+    """Raised by ``cli_user`` when ``--email`` resolves to no user; ``_run`` in ``main``
+    turns it into the uniform 'User <email> not found.' message + exit code 1, so no
+    command needs to repeat that check."""
+
+    def __init__(self, email: str):
+        self.email = email
+
+
+@contextlib.asynccontextmanager
+async def cli_user(email: str, *, garmin: bool = False):
+    """Shared CLI preamble (A4): init the DB, open a session, resolve the user by ``email``
+    (raising :class:`_UserNotFound` when missing), and yield ``(session, user)``. With
+    ``garmin=True`` it also binds the user's Garmin runtime and logs in **up front** — only
+    for commands that always need a live session (e.g. ``list-workouts``); commands that defer
+    the login past a 'nothing to do' / ``--dry-run`` check keep ``garmin=False`` and use
+    :func:`garmin_login` mid-body instead, so a no-op or dry run never touches Garmin."""
+    await init_db()
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, email)
+        if user is None:
+            raise _UserNotFound(email)
+        if garmin:
+            async with garmin_login(session, user):
+                yield session, user
+        else:
+            yield session, user
+
+
+@contextlib.asynccontextmanager
+async def garmin_login(session, user):
+    """The deferred Garmin login several commands run *after* their 'is there work / dry-run'
+    checks (so a no-op or ``--dry-run`` never logs in): bind the user's runtime and perform the
+    login. Factored out as the single place the future OPS-01 auth migration has to patch."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin.providers import get_provider
+    from app.garmin.runtime import user_runtime
+
+    async with user_runtime(session, user):
+        await run_in_threadpool(get_provider().login)
+        yield
+
+
+def _run(coro) -> int:
+    """Run a command coroutine, turning :class:`_UserNotFound` into the uniform message +
+    exit 1 so every command's dispatch shares one not-found path."""
+    try:
+        return asyncio.run(coro)
+    except _UserNotFound as e:
+        print(f"User {e.email} not found.")
+        return 1
 
 
 async def _import_garth_token(email: str, path: str) -> int:
@@ -34,12 +88,7 @@ async def _import_garth_token(email: str, path: str) -> int:
     except Exception as e:
         print(f"Failed to read garth token: {e}")
         return 1
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         user.garth_token_enc = encrypt(token)
         await session.commit()
         print(f"Garth token imported for {email}.")
@@ -50,12 +99,7 @@ async def _import_fit_series(email: str, path: str, since: str) -> int:
     """Backfill runs' pace/HR series from the export's FIT files (offline, no API)."""
     from app.garmin.export_import import import_fit_series
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         stats = await import_fit_series(session, user.id, path, since=since)
     if stats.get("error"):
         print(stats["error"])
@@ -68,12 +112,7 @@ async def _import_export(email: str, path: str, overwrite: bool, since: str) -> 
     """Backfill daily_metrics from a Garmin GDPR export folder (offline, no API)."""
     from app.garmin.export_import import import_export
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         stats = await import_export(session, user.id, path, overwrite=overwrite, since=since)
     print(f"Inserted {stats['inserted']} new day(s); filled {stats['filled']} existing; "
           f"{stats['unchanged']} unchanged ({stats['parsed']} parsed).")
@@ -92,15 +131,8 @@ async def _backfill_series(email: str, since: str) -> int:
 
     from app.db.models import ActivityRecord
     from app.garmin import client
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         # JSON None is stored as JSON `null` (not SQL NULL), so filter in Python.
         stmt = select(ActivityRecord).where(
             ActivityRecord.user_id == user.id,
@@ -115,8 +147,7 @@ async def _backfill_series(email: str, since: str) -> int:
             return 0
         print(f"Backfilling {len(rows)} run(s) for {email}...")
         done = 0
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             for r in rows:
                 sr = await run_in_threadpool(client.fetch_activity_series, r.activity_id)
                 if sr:
@@ -140,17 +171,9 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
 
     from app.db.models import DailyMetric
     from app.garmin import client
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
     from app.garmin.service import _auto_activities
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
-
+    async with cli_user(email) as (session, user):
         stmt = select(DailyMetric).where(DailyMetric.user_id == user.id)
         if since:
             stmt = stmt.where(DailyMetric.date >= since)
@@ -163,8 +186,7 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
 
         print(f"Backfilling auto_activities for {len(rows)} day(s)...")
         done = 0
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             for r in rows:
                 date_obj = dt.date.fromisoformat(r.date[:10])
                 events = await run_in_threadpool(client.fetch_daily_events, date_obj)
@@ -188,12 +210,7 @@ async def _backfill_records(email: str) -> int:
     importing years of history; the daily tick keeps it current afterwards."""
     from app import records
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         before = len(await records.current_records(session, user.id))
         new = await records.detect_records(session, user.id)
         await session.commit()
@@ -220,15 +237,8 @@ async def _backfill_strength_snapshots(email: str) -> int:
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client, repository, workout_export
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
         if plan is None:
             print("No active plan for this user.")
@@ -244,8 +254,7 @@ async def _backfill_strength_snapshots(email: str) -> int:
             return 0
 
         print(f"Backfilling {len(todo)} strength snapshot(s) for {email}...")
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             cache: dict = {}
             for w in todo:
                 tid = w.garmin_template_id
@@ -282,18 +291,9 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
     the payloads without writing to Garmin."""
     import datetime as dt
 
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import plan_sync, repository, workout_export
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
         if plan is None:
             print("No active plan for this user.")
@@ -321,8 +321,7 @@ async def _push_plan(email: str, days: int, dry_run: bool, date: str = None) -> 
                     print(f"  {w.date}  {payload['workoutName']}  ({n} step(s))")
             return 0
 
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             done = 0
             for w in todo:
                 wid = await plan_sync.push_workout(session, w)
@@ -339,18 +338,9 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     clear the stored ids (so a later push re-creates them fresh). ``--date`` limits it to
     one session. Only touches workouts we created (by saved ``garmin_workout_id``) — never
     your manual/Runna workouts."""
-    from fastapi.concurrency import run_in_threadpool
-
     from app.garmin import plan_sync, repository
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
         if plan is None:
             print("No active plan for this user.")
@@ -360,8 +350,7 @@ async def _unpush_plan(email: str, date: str = None) -> int:
             print("Nothing pushed for this plan.")
             return 0
         print(f"Removing {len(pushed)} pushed workout(s) for {email}...")
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
+        async with garmin_login(session, user):
             for w in pushed:
                 wid = w.garmin_workout_id
                 if await plan_sync.remove_workout(session, w):
@@ -388,12 +377,7 @@ async def _trigger_plan_adapt(email: str) -> int:
     from app.garmin.credentials import load_credentials
     from bot.jobs import _send_adapt_proposal
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
+    async with cli_user(email) as (session, user):
         if not user.telegram_chat_id:
             print("User has no telegram_chat_id — nowhere to send a proposal.")
             return 1
@@ -425,303 +409,15 @@ async def _trigger_plan_adapt(email: str) -> int:
     return 0
 
 
-def _pace_hint(pace) -> str:
-    """[fast, slow] decimal min/km → 'орієнтовно 6:45–7:00/км' — the text stashed in a
-    step's ``note`` when its pace target is replaced by an HR zone, so the range is still
-    visible on the watch (as the step description) instead of vanishing."""
-    def fmt(dec):
-        total = round(dec * 60)
-        return f"{total // 60}:{total % 60:02d}"
-    return f"орієнтовно {fmt(pace[0])}–{fmt(pace[1])}/км"
-
-
-def _convert_easy_steps(steps, zone: int):
-    """Return ``(new_steps, n_changed)``: every ``run`` step that carries a pace range is
-    rewritten to target a heart-rate zone instead (drops ``pace_min_km``, sets ``hr_zone``,
-    and — unless the step already has a ``note`` — stashes the old pace range as text via
-    ``_pace_hint`` so it still shows on the watch as the step's description). Recurses into
-    ``repeat`` groups; leaves warmup/cooldown/recovery/no-target steps alone. Pure — builds a
-    fresh list (JSON columns need a reassignment to be marked dirty)."""
-    out, changed = [], 0
-    for s in steps or []:
-        if not isinstance(s, dict):
-            out.append(s)
-            continue
-        s = dict(s)
-        if s.get("kind") == "repeat":
-            s["steps"], c = _convert_easy_steps(s.get("steps"), zone)
-            changed += c
-        elif s.get("kind") == "run" and s.get("pace_min_km") is not None:
-            pace = s.pop("pace_min_km", None)
-            s["hr_zone"] = zone
-            if not s.get("note") and isinstance(pace, (list, tuple)) and len(pace) == 2:
-                s["note"] = _pace_hint(pace)
-            changed += 1
-        out.append(s)
-    return out, changed
-
-
-# A pace range like "4:50–5:10" (en/em dash or hyphen) inside a workout description.
-_PACE_RANGE_RE = re.compile(r"(\d):([0-5]\d)\s*[–—-]\s*(\d):([0-5]\d)")
-
-# A "stride"/acceleration is a SHORT fast rep; anything longer is a real interval, not a
-# stride, and is left alone.
-_STRIDE_MAX_M = 400
-
-
-def _parse_pace_ranges(text: str):
-    """All 'm:ss–m:ss' pace ranges in the text as (fast, slow) decimal min/km tuples."""
-    out = []
-    for m in _PACE_RANGE_RE.finditer(text or ""):
-        a = int(m.group(1)) + int(m.group(2)) / 60
-        b = int(m.group(3)) + int(m.group(4)) / 60
-        out.append((min(a, b), max(a, b)))
-    return out
-
-
-def _stride_pace_from_desc(desc: str):
-    """The stride pace target [fast, slow] parsed from a description, or None. A description
-    with strides names TWO paces — the easy running pace and the (faster) stride pace, e.g.
-    'легкий 2.4 км у темпі 6:55–7:20/км, потім 4 прискорення (темп ~4:50–5:10/км)'. We take
-    the FASTEST range, but only when there's a clear easy-vs-fast gap (≥0.75 min/km) — so a
-    plain easy run with one pace range is never mistaken for having strides."""
-    ranges = _parse_pace_ranges(desc)
-    if len(ranges) < 2:
-        return None
-    fastest = min(ranges, key=lambda r: r[0])
-    slowest = max(ranges, key=lambda r: r[1])
-    if slowest[1] - fastest[0] < 0.75:
-        return None
-    return [round(fastest[0], 3), round(fastest[1], 3)]
-
-
-def _strides_to_pace(steps, pace, *, in_repeat: bool = False):
-    """Return ``(new_steps, n_changed)``: every SHORT ``run`` step inside a ``repeat`` group
-    that currently targets an HR zone (a mis-classified stride) is rewritten to target
-    ``pace`` instead (drops ``hr_zone``/``note``, sets ``pace_min_km``). HR lags too much to
-    govern a 100 m stride — it needs a pace. Only touches run steps nested in a repeat (the
-    stride signature); the steady easy leg and warmup/cooldown are left alone. Pure — builds
-    a fresh list (JSON columns need reassignment to be marked dirty)."""
-    out, changed = [], 0
-    for s in steps or []:
-        if not isinstance(s, dict):
-            out.append(s)
-            continue
-        s = dict(s)
-        if s.get("kind") == "repeat":
-            s["steps"], c = _strides_to_pace(s.get("steps"), pace, in_repeat=True)
-            changed += c
-        elif (in_repeat and s.get("kind") == "run" and s.get("hr_zone") is not None
-              and s.get("pace_min_km") is None
-              and isinstance(s.get("dist_m"), (int, float)) and s["dist_m"] <= _STRIDE_MAX_M):
-            s.pop("hr_zone", None)
-            s.pop("note", None)  # the note carried the easy hint; pace is now explicit
-            s["pace_min_km"] = list(pace)
-            changed += 1
-        out.append(s)
-    return out, changed
-
-
-async def _fix_stride_paces(email: str, dry_run: bool, no_sync: bool) -> int:
-    """One-off data fix: give the active plan's strides/accelerations a PACE target instead of
-    the HR zone they were mis-generated with (before the SYSTEM_PLAN fix). The stride pace is
-    parsed from each session's own description (the faster of its two pace ranges); sessions
-    without a clear stride pace are skipped and reported (never guessed). Then re-push the
-    upcoming in-window sessions to Garmin (``plan_sync.resync_workouts``). ``--dry-run``
-    previews without writing; ``--no-sync`` updates the DB but leaves the watch untouched."""
-    import datetime as dt
-
-    from app.garmin import plan_sync, repository
-    from app.garmin.runtime import user_runtime
-
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
-        plan = await repository.get_active_plan(session, user.id)
-        if plan is None:
-            print("No active plan for this user.")
-            return 1
-
-        today = dt.date.today().isoformat()
-        end = (dt.date.today() + dt.timedelta(days=14)).isoformat()
-
-        changed = []    # (workout, n, new_steps, pace) — need a DB rewrite
-        skipped = []    # (workout,) — had strides on HR zone but no parseable stride pace
-        to_sync = []    # touched upcoming in-window sessions to mirror to Garmin
-        for w in await repository.list_workouts(session, plan.id):
-            pace = _stride_pace_from_desc(w.description or "")
-            if pace is None:
-                # flag a session that HAS stride-shaped steps but no pace we could recover
-                probe, n = _strides_to_pace(w.steps, [0, 0])
-                if n:
-                    skipped.append(w)
-                continue
-            new_steps, n = _strides_to_pace(w.steps, pace)
-            if n:
-                changed.append((w, n, new_steps, pace))
-                if w.status == "planned" and today <= w.date <= end:
-                    to_sync.append(w)
-
-        if not changed and not skipped:
-            print("Nothing to do — no strides on HR zones in this plan.")
-            return 0
-
-        for w, n, _new, pace in changed:
-            print(f"  {'[dry-run] ' if dry_run else ''}{w.date}  {w.type:9s} "
-                  f"{n} stride(s) → {_pace_hint(pace)}")
-        for w in skipped:
-            print(f"  [skip] {w.date}  {w.type:9s} strides on HR zone but no stride pace in "
-                  "description — fix by hand or regenerate")
-
-        if dry_run:
-            print(f"[dry-run] would rewrite {len(changed)} session(s) and re-sync "
-                  f"{len(to_sync)} in-window one(s) to Garmin. No writes made.")
-            return 0
-
-        if not changed:
-            print("No sessions rewritten.")
-            return 0
-
-        for w, _n, new_steps, _pace in changed:
-            w.steps = new_steps
-        await session.commit()
-        print(f"DB updated: {len(changed)} session(s) now give strides a pace.")
-
-        if no_sync:
-            print(f"--no-sync: Garmin calendar left untouched ({len(to_sync)} in-window "
-                  "session(s) not re-synced).")
-            return 0
-        if not to_sync:
-            print("No upcoming in-window sessions to re-sync to Garmin.")
-            return 0
-        async with user_runtime(session, user):
-            res = await plan_sync.resync_workouts(session, user.id, to_sync)
-        print(f"Garmin re-synced: +{res['pushed']} pushed, -{res['removed']} removed.")
-    return 0
-
-
-async def _convert_easy_hr(email: str, easy_zone: int, recovery_zone: int, long_zone: int,
-                           dry_run: bool, no_sync: bool) -> int:
-    """One-off migration: rewrite the active plan's easy/recovery/long run steps from a pace
-    range to a heart-rate-zone target (easy → ``--easy-zone``, recovery → ``--recovery-zone``,
-    long → ``--long-zone``), stashing the old pace range as the step's ``note`` (shows on the
-    watch as the step description), then re-push the upcoming in-window sessions to Garmin
-    (drop the old pace-based copy, push the HR-zone one via ``plan_sync.resync_workouts``).
-    Past/out-of-window sessions get the DB rewrite only. ``--dry-run`` previews (incl. the
-    built Garmin target) without writing; ``--no-sync`` updates the DB but leaves the watch
-    untouched.
-
-    NB the ``heart.rate.zone`` DTO is not yet verified field-for-field against a real saved
-    Garmin workout — dry-run it first and eyeball the target before a live push."""
-    import datetime as dt
-
-    from app.garmin import plan_sync, repository, workout_export
-    from app.garmin.runtime import user_runtime
-
-    zones = {"easy": easy_zone, "recovery": recovery_zone, "long": long_zone}
-
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
-        plan = await repository.get_active_plan(session, user.id)
-        if plan is None:
-            print("No active plan for this user.")
-            return 1
-
-        today = dt.date.today().isoformat()
-        end = (dt.date.today() + dt.timedelta(days=14)).isoformat()
-
-        changed = []   # (workout, n_steps_changed, new_steps) — need a DB rewrite this run
-        to_sync = []   # easy/recovery/long sessions we mirror to Garmin (upcoming, in-window)
-        for w in await repository.list_workouts(session, plan.id):
-            zone = zones.get((w.type or "").lower())
-            if zone is None:
-                continue
-            new_steps, n = _convert_easy_steps(w.steps, zone)
-            if n:
-                changed.append((w, n, new_steps))
-            # re-sync independently of a DB change this run: a plan already converted with
-            # --no-sync has nothing to rewrite but still needs its Garmin copy refreshed.
-            # Only upcoming in-window planned sessions — never strip past/completed ones.
-            if w.status == "planned" and today <= w.date <= end:
-                to_sync.append(w)
-
-        if not changed and not to_sync:
-            print("Nothing to do — no easy/recovery/long sessions to convert or re-sync.")
-            return 0
-
-        if changed:
-            print(f"{'[dry-run] ' if dry_run else ''}Converting {len(changed)} easy/recovery/long "
-                  f"session(s) for {email} (easy→zone {easy_zone}, recovery→zone {recovery_zone}, "
-                  f"long→zone {long_zone}):")
-            for w, n, new_steps in changed:
-                zone = zones[(w.type or "").lower()]
-                print(f"  {w.date}  {w.type:9s} {n} step(s) → пульс зона {zone}")
-        else:
-            print("DB already on HR zones — nothing to rewrite.")
-
-        if dry_run:
-            # show the built Garmin target for the first still-upcoming session
-            sample = next((c for c in changed if c[0].date >= today), None) or (
-                (changed[0] if changed else None))
-            if sample:
-                w, _, new_steps = sample
-                w.steps = new_steps  # in-memory only; session is never committed on dry-run
-                payload = workout_export.build_workout(w)
-                targets = [st.get("targetType", {}).get("workoutTargetTypeKey")
-                           for st in payload["workoutSegments"][0]["workoutSteps"]]
-                print(f"\n[dry-run] sample push payload for {w.date} ({w.type}): "
-                      f"targets={targets}")
-            print(f"[dry-run] would re-sync {len(to_sync)} in-window session(s) to Garmin. "
-                  "No DB or Garmin writes made.")
-            return 0
-
-        if changed:
-            for w, _, new_steps in changed:
-                w.steps = new_steps
-            await session.commit()
-            print(f"DB updated: {len(changed)} session(s) now target HR zones.")
-
-        if no_sync:
-            print(f"--no-sync: Garmin calendar left untouched ({len(to_sync)} in-window "
-                  "session(s) not re-synced — run again without --no-sync to push them).")
-            return 0
-
-        if not to_sync:
-            print("No upcoming in-window sessions to re-sync to Garmin.")
-            return 0
-
-        async with user_runtime(session, user):
-            res = await plan_sync.resync_workouts(session, user.id, to_sync)
-        print(f"Garmin re-synced: +{res['pushed']} pushed, -{res['removed']} removed "
-              "(upcoming in-window sessions only).")
-    return 0
-
-
 async def _list_workouts(email: str) -> int:
     """Print the user's saved Garmin workouts (id · sport · name) — to find the strength
     routines (Day 1 / Day 2) to reference in the plan."""
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client
-    from app.garmin.providers import get_provider
-    from app.garmin.runtime import user_runtime
 
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            print(f"User {email} not found.")
-            return 1
-        async with user_runtime(session, user):
-            await run_in_threadpool(get_provider().login)
-            rows = await run_in_threadpool(client.fetch_workouts)
+    async with cli_user(email, garmin=True) as (session, user):
+        rows = await run_in_threadpool(client.fetch_workouts)
     if not rows:
         print("No saved workouts found.")
         return 0
@@ -860,28 +556,6 @@ def main(argv=None) -> int:
              "(real Claude call — sends the usual ✅/❌ proposal to Telegram if it has one)")
     tpa.add_argument("--email", required=True)
 
-    ceh = sub.add_parser(
-        "convert-easy-hr",
-        help="Rewrite active-plan easy/recovery/long runs from pace to HR-zone + re-push to Garmin")
-    ceh.add_argument("--email", required=True)
-    ceh.add_argument("--easy-zone", type=int, default=2, help="HR zone for easy runs (default 2)")
-    ceh.add_argument("--recovery-zone", type=int, default=2,
-                     help="HR zone for recovery runs (default 2)")
-    ceh.add_argument("--long-zone", type=int, default=2, help="HR zone for long runs (default 2)")
-    ceh.add_argument("--dry-run", action="store_true",
-                     help="preview the conversion + sample Garmin target, don't write")
-    ceh.add_argument("--no-sync", action="store_true",
-                     help="update the DB only, leave the Garmin calendar untouched")
-
-    fsp = sub.add_parser(
-        "fix-stride-paces",
-        help="Give active-plan strides a pace target (not HR zone) + re-push to Garmin")
-    fsp.add_argument("--email", required=True)
-    fsp.add_argument("--dry-run", action="store_true",
-                     help="preview which strides get which pace, don't write")
-    fsp.add_argument("--no-sync", action="store_true",
-                     help="update the DB only, leave the Garmin calendar untouched")
-
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
@@ -900,41 +574,37 @@ def main(argv=None) -> int:
     )
 
     args = parser.parse_args(argv)
+    # _run wraps asyncio.run to turn a _UserNotFound from cli_user into the uniform
+    # "User <email> not found." + exit 1 (create-user / token-expiry never raise it).
     if args.cmd == "create-user":
         password = args.password or getpass.getpass("Password: ")
         if not password:
             parser.error("password must not be empty")
-        return asyncio.run(_create_user(args.email, password, args.admin, args.seed_env))
+        return _run(_create_user(args.email, password, args.admin, args.seed_env))
     if args.cmd == "import-garth-token":
-        return asyncio.run(_import_garth_token(args.email, args.path))
+        return _run(_import_garth_token(args.email, args.path))
     if args.cmd == "backfill-series":
-        return asyncio.run(_backfill_series(args.email, args.since))
+        return _run(_backfill_series(args.email, args.since))
     if args.cmd == "backfill-auto-activities":
-        return asyncio.run(_backfill_auto_activities(args.email, args.since))
+        return _run(_backfill_auto_activities(args.email, args.since))
     if args.cmd == "import-export":
-        return asyncio.run(_import_export(args.email, args.path, args.overwrite, args.since))
+        return _run(_import_export(args.email, args.path, args.overwrite, args.since))
     if args.cmd == "import-fit-series":
-        return asyncio.run(_import_fit_series(args.email, args.path, args.since))
+        return _run(_import_fit_series(args.email, args.path, args.since))
     if args.cmd == "push-plan":
-        return asyncio.run(_push_plan(args.email, args.days, args.dry_run, args.date))
+        return _run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
-        return asyncio.run(_unpush_plan(args.email, args.date))
+        return _run(_unpush_plan(args.email, args.date))
     if args.cmd == "trigger-plan-adapt":
-        return asyncio.run(_trigger_plan_adapt(args.email))
-    if args.cmd == "convert-easy-hr":
-        return asyncio.run(_convert_easy_hr(
-            args.email, args.easy_zone, args.recovery_zone, args.long_zone,
-            args.dry_run, args.no_sync))
-    if args.cmd == "fix-stride-paces":
-        return asyncio.run(_fix_stride_paces(args.email, args.dry_run, args.no_sync))
+        return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":
-        return asyncio.run(_list_workouts(args.email))
+        return _run(_list_workouts(args.email))
     if args.cmd == "backfill-records":
-        return asyncio.run(_backfill_records(args.email))
+        return _run(_backfill_records(args.email))
     if args.cmd == "backfill-strength-snapshots":
-        return asyncio.run(_backfill_strength_snapshots(args.email))
+        return _run(_backfill_strength_snapshots(args.email))
     if args.cmd == "token-expiry":
-        return asyncio.run(_token_expiry())
+        return _run(_token_expiry())
     return 0
 
 

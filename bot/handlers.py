@@ -6,6 +6,7 @@ matched user's runtime context (their Garmin provider + Claude key). The bot is 
 global identity; a chat is authorised by mapping its chat_id to a registered user.
 """
 import datetime as dt
+import functools
 import json
 import logging
 from typing import Optional
@@ -107,6 +108,36 @@ async def _resolve_user(update: Update, session) -> "User | None":
     return user
 
 
+def bot_command(_func=None, *, creds: Optional[str] = None):
+    """Wrap a Telegram command handler with the shared preamble (A3): open a DB session,
+    resolve the caller to a registered user (``_resolve_user`` replies + the wrapper returns
+    on an unknown/inactive chat), and invoke the handler as ``func(update, ctx, session,
+    user)``. With ``creds="load"`` it also decrypts the user's credentials
+    (``load_credentials`` — pure DB, no Garmin/MFA) and passes them as a fifth argument.
+
+    The handler body runs inside the session context — a reply therefore fires with the
+    session still open, which is benign for the single-process SQLite bot and avoids
+    detached-instance access on ORM rows the body reads after its fetch. Handlers that need a
+    bound Garmin runtime (``report``/``deep``/``activity``/``_plan_edit``) keep their explicit
+    ``async with user_runtime`` and are deliberately NOT decorated: user_runtime's
+    persist-token-on-exit commit makes a generic wrapper subtle enough to keep at the call
+    site. ``@bot_command`` and ``@bot_command(creds=...)`` are both supported."""
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            async with async_session_maker() as session:
+                user = await _resolve_user(update, session)
+                if user is None:
+                    return
+                if creds == "load":
+                    from app.garmin.credentials import load_credentials
+                    return await func(update, ctx, session, user, load_credentials(user))
+                return await func(update, ctx, session, user)
+        return wrapper
+
+    return decorator(_func) if _func is not None else decorator
+
+
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/help — static list of commands. No DB/user lookup: useful even before registration."""
     logger.info("CMD /help")
@@ -190,13 +221,10 @@ async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-async def activities(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def activities(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     logger.info("CMD /activities")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        rows = await repository.list_activities(session, user.id, n=5)
+    rows = await repository.list_activities(session, user.id, n=5)
     if not rows:
         await update.message.reply_text(
             "Немає збережених активностей. Зроби /report, щоб синканути дані."
@@ -216,14 +244,11 @@ async def activities(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """/records — the user's current personal bests (EP-14). Pure DB read, no LLM/Garmin."""
     logger.info("CMD /records")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        rows = await repository.current_records(session, user.id)
+    rows = await repository.current_records(session, user.id)
     if not rows:
         await update.message.reply_text(
             "Поки без рекордів 🏅 Вони зʼявляться, коли назбирається історія пробіжок — "
@@ -290,7 +315,8 @@ def _format_costs(agg: dict, year: int, month: int) -> str:
     return "\n".join(lines)
 
 
-async def costs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def costs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """/costs [YYYY-MM] — this month's (or a named month's) Claude spend (ST-12): total $,
     breakdown by kind, call count, cache-hit share, top-3 priciest calls. Pure DB read
     (`repository.costs_for_month`), no Garmin/Claude — like /records and /compare."""
@@ -298,46 +324,39 @@ async def costs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     arg = ctx.args[0] if ctx.args else None
     logger.info(f"CMD /costs {arg or ''}")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        tz = user_tz(user)
-        parsed = _parse_month_arg(arg, tz)
-        if parsed is None:
-            await update.message.reply_text(
-                "Невірний формат місяця. Приклад: /costs 2026-06 (без аргументу — поточний)."
-            )
-            return
-        year, month = parsed
-        start, end = _month_bounds_utc(year, month, tz)
-        agg = await repository.costs_for_month(session, user.id, start, end)
+    tz = user_tz(user)
+    parsed = _parse_month_arg(arg, tz)
+    if parsed is None:
+        await update.message.reply_text(
+            "Невірний формат місяця. Приклад: /costs 2026-06 (без аргументу — поточний)."
+        )
+        return
+    year, month = parsed
+    start, end = _month_bounds_utc(year, month, tz)
+    agg = await repository.costs_for_month(session, user.id, start, end)
     await update.message.reply_text(_format_costs(agg, year, month))
 
 
-async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """/goal — quantified progress toward the active plan's target (NF-10): Garmin's own
     race-time-prediction trend (or VO2max for the open-ended goal), projected forward.
     Pure DB read, zero Claude calls in the minimal version — no Garmin fetch, no MFA risk."""
     from app import goal as goal_mod
 
     logger.info("CMD /goal")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        plan = await repository.get_active_plan(session, user.id)
-        if plan is None:
-            await update.message.reply_text(
-                "Спершу створи план на /plan — /goal рахує прогрес відносно нього."
-            )
-            return
-        metric_key, label, higher_better = goal_mod.metric_for_goal(plan.goal)
-        history = await repository.read_fitness_history(session, user.id)
-        proj = goal_mod.project(
-            history, metric_key=metric_key, higher_better=higher_better,
-            target_date=plan.target_date,
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None:
+        await update.message.reply_text(
+            "Спершу створи план на /plan — /goal рахує прогрес відносно нього."
         )
+        return
+    metric_key, label, higher_better = goal_mod.metric_for_goal(plan.goal)
+    history = await repository.read_fitness_history(session, user.id)
+    proj = goal_mod.project(
+        history, metric_key=metric_key, higher_better=higher_better,
+        target_date=plan.target_date,
+    )
     if proj is None:
         await update.message.reply_text(
             "Замало даних для тренду — потрібно кілька тижнів історії з прогнозами "
@@ -347,33 +366,28 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(goal_mod.summary(proj, label=label))
 
 
-async def race_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command(creds="load")
+async def race_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user, creds):
     """/race — a pre-race pack: pacing/fueling/checklist synthesis for the active plan's
     target race (EP-05). Pure DB read + one Opus call; no Garmin fetch, so no MFA risk."""
     from app import race as race_mod
     from app.analysis.service import run_race_plan
-    from app.garmin.credentials import load_credentials
 
     logger.info("CMD /race")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        plan = await repository.get_active_plan(session, user.id)
-        if not race_mod.has_target(plan):
-            await update.message.reply_text(
-                "Немає активного плану з цільовим стартом (дата + дистанція) — "
-                "race pack рахується лише під конкретний забіг. Постав ціль на /plan."
-            )
-            return
-        await update.message.reply_text("Складаю race pack…")
-        creds = load_credentials(user)
-        try:
-            text = await run_race_plan(session, user_id=user.id, api_key=creds.anthropic_key)
-        except AnalystError as e:
-            logger.error(f"ANALYST {e}")
-            await update.message.reply_text(str(e))
-            return
+    plan = await repository.get_active_plan(session, user.id)
+    if not race_mod.has_target(plan):
+        await update.message.reply_text(
+            "Немає активного плану з цільовим стартом (дата + дистанція) — "
+            "race pack рахується лише під конкретний забіг. Постав ціль на /plan."
+        )
+        return
+    await update.message.reply_text("Складаю race pack…")
+    try:
+        text = await run_race_plan(session, user_id=user.id, api_key=creds.anthropic_key)
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        await update.message.reply_text(str(e))
+        return
     if not text:
         await update.message.reply_text(
             "Немає активного плану з цільовим стартом (дата + дистанція)."
@@ -385,18 +399,15 @@ async def race_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(header + text)
 
 
-async def gear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def gear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """/gear — this user's tracked gear (shoes/equipment) with mileage + last-used date
     (NF-15). Pure DB read of the roster the daily plan_sync_job last refreshed — no live
     Garmin fetch here, so it's instant."""
     from app import gear as gear_mod
 
     logger.info("CMD /gear")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        raw = await repository.get_state(session, user.id, gear_mod.STATE_KEY)
+    raw = await repository.get_state(session, user.id, gear_mod.STATE_KEY)
     pairs = json.loads(raw) if raw else []
     if not pairs:
         await update.message.reply_text(
@@ -412,29 +423,24 @@ async def gear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command(creds="load")
+async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user, creds):
     """/compare [тижнів] — compare current fitness with the same span a year ago (NF-06).
     Pure DB read + one Sonnet call; no Garmin fetch, so no MFA risk."""
     from app import compare as compare_mod
     from app.analysis.service import run_compare
-    from app.garmin.credentials import load_credentials
 
     weeks = compare_mod.parse_period(ctx.args)
     logger.info(f"CMD /compare {weeks}w")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        await update.message.reply_text("Порівнюю тебе з тобою рік тому…")
-        creds = load_credentials(user)
-        try:
-            text = await run_compare(
-                session, user_id=user.id, weeks=weeks, api_key=creds.anthropic_key
-            )
-        except AnalystError as e:
-            logger.error(f"ANALYST {e}")
-            await update.message.reply_text(str(e))
-            return
+    await update.message.reply_text("Порівнюю тебе з тобою рік тому…")
+    try:
+        text = await run_compare(
+            session, user_id=user.id, weeks=weeks, api_key=creds.anthropic_key
+        )
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        await update.message.reply_text(str(e))
+        return
     if not text:
         await update.message.reply_text(
             "Замало історії для порівняння — треба дані і за цей період, і за той самий "
@@ -448,31 +454,26 @@ async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(header + text)
 
 
-async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command(creds="load")
+async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user, creds):
     """/wrapped [рік|квартал] — a celebratory season recap (NF-07). Pure DB read + one Opus
     call; no Garmin fetch, so no MFA risk."""
     from app import wrapped as wrapped_mod
     from app.analysis.service import run_wrapped
-    from app.garmin.credentials import load_credentials
 
     period = wrapped_mod.parse_period(ctx.args)
     logger.info(f"CMD /wrapped {period}")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        await update.message.reply_text(
-            f"Збираю твій підсумок ({wrapped_mod.label(period)})… це трохи коштує, тому раз "
-            "на сезон 🙂")
-        creds = load_credentials(user)
-        try:
-            text = await run_wrapped(
-                session, user_id=user.id, period=period, api_key=creds.anthropic_key
-            )
-        except AnalystError as e:
-            logger.error(f"ANALYST {e}")
-            await update.message.reply_text(str(e))
-            return
+    await update.message.reply_text(
+        f"Збираю твій підсумок ({wrapped_mod.label(period)})… це трохи коштує, тому раз "
+        "на сезон 🙂")
+    try:
+        text = await run_wrapped(
+            session, user_id=user.id, period=period, api_key=creds.anthropic_key
+        )
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        await update.message.reply_text(str(e))
+        return
     if not text:
         await update.message.reply_text(
             "Замало історії для підсумку — назбирай кілька пробіжок (або зроби бекфіл "
@@ -484,25 +485,20 @@ async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(header + text)
 
 
-async def insights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command(creds="load")
+async def insights(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user, creds):
     """/insights — personal correlation findings (NF-02): "what actually affects you". Pure
     DB read + one Sonnet call only when there's a significant pattern; no Garmin, no MFA."""
     from app.analysis.service import run_insights
-    from app.garmin.credentials import load_credentials
 
     logger.info("CMD /insights")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        await update.message.reply_text("Шукаю закономірності у твоїх даних…")
-        creds = load_credentials(user)
-        try:
-            text = await run_insights(session, user_id=user.id, api_key=creds.anthropic_key)
-        except AnalystError as e:
-            logger.error(f"ANALYST {e}")
-            await update.message.reply_text(str(e))
-            return
+    await update.message.reply_text("Шукаю закономірності у твоїх даних…")
+    try:
+        text = await run_insights(session, user_id=user.id, api_key=creds.anthropic_key)
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        await update.message.reply_text(str(e))
+        return
     if not text:
         await update.message.reply_text(
             "Поки що не бачу статистично надійних закономірностей — треба більше історії "
@@ -512,18 +508,15 @@ async def insights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔎 Що на тебе впливає:\n\n" + text)
 
 
-async def risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """/risk — the injury-radar signals right now (NF-04). Pure DB read, no LLM/Garmin: the
     detector is zero-LLM, so this is instant and free."""
     from app import injury
     from app.analysis.service import build_injury_assessment
 
     logger.info("CMD /risk")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        a = await build_injury_assessment(session, user_id=user.id)
+    a = await build_injury_assessment(session, user_id=user.id)
     if a.level == "calibrating":
         await update.message.reply_text(
             f"🩺 Травматичний радар ще калібрується — треба ≥{settings.INJURY_MIN_HISTORY_DAYS} "
@@ -539,18 +532,15 @@ async def risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(injury.summary(a))
 
 
-async def health(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def health(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """/health — proactive recovery alerts right now (EP-08). Pure DB read, no LLM/Garmin:
     the detector is zero-LLM (personal-baseline anomalies), so this is instant and free."""
     from app import health as health_mod
     from app.analysis.service import build_health_alerts
 
     logger.info("CMD /health")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        report = await build_health_alerts(session, user_id=user.id)
+    report = await build_health_alerts(session, user_id=user.id)
     if report.level == "calibrating":
         await update.message.reply_text(
             f"🩺 Алерти відновлення ще калібруються — треба ≥{settings.HEALTH_MIN_HISTORY_DAYS} "
@@ -687,42 +677,39 @@ async def checkin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(_ci_render(q.message.text, status), reply_markup=kb)
 
 
-async def checkin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@bot_command
+async def checkin(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
     """Manual post-run check-in for the last activity (if the buttons were ignored).
     ``/checkin`` → show the RPE keyboard; ``/checkin 7`` → set RPE; ``/checkin 7 коліно``
     or ``/checkin коліно`` → also record a niggle note."""
     logger.info("CMD /checkin")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        act = await repository.get_last_activity(session, user.id)
-        if act is None:
-            await update.message.reply_text(
-                "Немає активностей для оцінки. Зроби /report, щоб синканути дані."
-            )
-            return
+    act = await repository.get_last_activity(session, user.id)
+    if act is None:
+        await update.message.reply_text(
+            "Немає активностей для оцінки. Зроби /report, щоб синканути дані."
+        )
+        return
 
-        args = ctx.args or []
-        rpe, note = None, None
-        if args and args[0].isdigit() and 1 <= int(args[0]) <= 10:
-            rpe = int(args[0])
-            note = " ".join(args[1:]).strip() or None
-        elif args:
-            note = " ".join(args).strip()
+    args = ctx.args or []
+    rpe, note = None, None
+    if args and args[0].isdigit() and 1 <= int(args[0]) <= 10:
+        rpe = int(args[0])
+        note = " ".join(args[1:]).strip() or None
+    elif args:
+        note = " ".join(args).strip()
 
-        if rpe is None and note is None:   # no args → offer the buttons
-            head = f"{act.type or 'активність'}"
-            if act.dist_km:
-                head += f" · {act.dist_km:.1f} км"
-            await update.message.reply_text(
-                f"Як пройшло? {head} ({act.date})\n\n{CHECKIN_PROMPT}",
-                reply_markup=checkin_keyboard(act.id),
-            )
-            return
+    if rpe is None and note is None:   # no args → offer the buttons
+        head = f"{act.type or 'активність'}"
+        if act.dist_km:
+            head += f" · {act.dist_km:.1f} км"
+        await update.message.reply_text(
+            f"Як пройшло? {head} ({act.date})\n\n{CHECKIN_PROMPT}",
+            reply_markup=checkin_keyboard(act.id),
+        )
+        return
 
-        await repository.set_subjective(session, user.id, act.id, rpe=rpe, note=note)
-        await session.commit()
+    await repository.set_subjective(session, user.id, act.id, rpe=rpe, note=note)
+    await session.commit()
     bits = []
     if rpe is not None:
         bits.append(f"RPE {rpe}/10")
