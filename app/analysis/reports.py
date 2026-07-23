@@ -67,6 +67,47 @@ from app.multisport import sport_bucket
 
 logger = logging.getLogger("claude")
 
+
+async def _run_cached_narration(
+    session, *, user_id: Optional[int], kind: str, model: str, context: dict,
+    cache_key: str, with_stats_fn, question: str, api_key: Optional[str] = None,
+) -> str:
+    """Shared engine for the cached ``run_*`` narrations (A1).
+
+    Every one of ``run_compare``/``run_wrapped``/``run_race_plan``/``run_insights``/
+    ``run_digest``/``run_activity_analysis`` had this exact block copied verbatim: check the
+    dedup cache, on a miss run ``with_stats_fn(context, api_key)`` on the Claude pool
+    (logging an error ReportLog + re-raising on ``AnalystError``), store the text, then log
+    the success ReportLog and return the text. The per-report differences (context assembly,
+    ``has_signal`` gating, the ``cache_key``/``question`` strings) stay in the thin wrappers;
+    only this mechanical tail is centralised. ``*_with_stats`` signatures are untouched — the
+    tests monkeypatch them (the CODE-06 lesson)."""
+    from app.db import llm_cache
+    from app.garmin import repository
+
+    cached = await llm_cache.get(session, cache_key)
+    if cached is not None:
+        logger.info(f"CLAUDE CACHE HIT  {model} ({kind})")
+        text, stats = cached, CallStats(kind=kind, model=model, cached=True)
+    else:
+        try:
+            text, stats = await _run_claude(with_stats_fn, context, api_key)
+        except AnalystError as e:
+            await repository.log_report(
+                session, user_id=user_id, kind=kind, model=model, ok=False,
+                question=question, error=str(e)[:512],
+            )
+            raise
+        await llm_cache.put(session, cache_key, text, CACHE_TTL_S)
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=question, report_text=text,
+    )
+    return text
+
+
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 30  # include /ask exchanges from the last N minutes as a conversation thread
 RECORDS_CONTEXT_DAYS = 3  # mention a personal record set within the last N days (EP-14)
@@ -791,35 +832,18 @@ async def run_activity_analysis(
 ) -> str:
     """Analyze one activity, store the text on the row (``analysis``) for the web detail
     page, log a ReportLog (kind="activity"), and return the text."""
-    from app.db import llm_cache
     from app.garmin import repository
 
     planned = await repository.get_workout_for_activity(session, user_id, activity.id) \
         if user_id is not None else None
     data = activity_payload(activity, planned)
     q = f"activity #{activity.id} ({activity.type})"
-    key = _activity_cache_key(data, MODEL_ACTIVITY)
-    cached = await llm_cache.get(session, key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {MODEL_ACTIVITY} (activity)")
-        text, stats = cached, CallStats(kind="activity", model=MODEL_ACTIVITY, cached=True)
-    else:
-        try:
-            text, stats = await _run_claude(analyze_activity_with_stats, data, api_key)
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, ok=False,
-                question=q, error=str(e)[:512],
-            )
-            raise
-        await llm_cache.put(session, key, text, CACHE_TTL_S)
-    activity.analysis = text
-    await repository.log_report(
-        session, user_id=user_id, kind=stats.kind, model=stats.model,
-        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
-        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
-        question=q, report_text=text,
+    text = await _run_cached_narration(
+        session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, context=data,
+        cache_key=_activity_cache_key(data, MODEL_ACTIVITY),
+        with_stats_fn=analyze_activity_with_stats, question=q, api_key=api_key,
     )
+    activity.analysis = text
     return text
 
 
@@ -865,7 +889,6 @@ async def run_digest(
     (``ReportLog(kind="digest")``), and return the text. Returns ``None`` (nothing to
     send) for a user with no history and no plan. Numbers are computed here; the LLM
     only interprets them (EP-07)."""
-    from app.db import llm_cache
     from app.garmin import repository
 
     today = dt.date.today()
@@ -929,28 +952,11 @@ async def run_digest(
         "has_plan": plan is not None,
     }
 
-    key = _digest_cache_key(context, MODEL_DIGEST)
-    cached = await llm_cache.get(session, key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {MODEL_DIGEST} (digest)")
-        text, stats = cached, CallStats(kind="digest", model=MODEL_DIGEST, cached=True)
-    else:
-        try:
-            text, stats = await _run_claude(digest_with_stats, context, api_key)
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind="digest", model=MODEL_DIGEST, ok=False,
-                question=f"digest:{this_week}", error=str(e)[:512],
-            )
-            raise
-        await llm_cache.put(session, key, text, CACHE_TTL_S)
-    await repository.log_report(
-        session, user_id=user_id, kind=stats.kind, model=stats.model,
-        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
-        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
-        question=f"digest:{this_week}", report_text=text,
+    return await _run_cached_narration(
+        session, user_id=user_id, kind="digest", model=MODEL_DIGEST, context=context,
+        cache_key=_digest_cache_key(context, MODEL_DIGEST),
+        with_stats_fn=digest_with_stats, question=f"digest:{this_week}", api_key=api_key,
     )
-    return text
 
 
 # ---------- COMPARE PAST SELF (NF-06) ----------
@@ -973,7 +979,6 @@ async def run_compare(
     enough in BOTH windows to compare (a new user, or no history a year back) — the caller
     turns that into a friendly "not enough history yet" message."""
     from app import compare as compare_mod
-    from app.db import llm_cache
     from app.garmin import repository
 
     today = dt.date.today()
@@ -985,28 +990,12 @@ async def run_compare(
         return None
 
     context = compare_mod.build_context(weeks, years_back, current, past)
-    key = _compare_cache_key(context, MODEL_COMPARE)
-    cached = await llm_cache.get(session, key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {MODEL_COMPARE} (compare)")
-        text, stats = cached, CallStats(kind="compare", model=MODEL_COMPARE, cached=True)
-    else:
-        try:
-            text, stats = await _run_claude(compare_with_stats, context, api_key)
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind="compare", model=MODEL_COMPARE, ok=False,
-                question=f"compare:{weeks}w/{years_back}y", error=str(e)[:512],
-            )
-            raise
-        await llm_cache.put(session, key, text, CACHE_TTL_S)
-    await repository.log_report(
-        session, user_id=user_id, kind=stats.kind, model=stats.model,
-        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
-        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
-        question=f"compare:{weeks}w/{years_back}y", report_text=text,
+    return await _run_cached_narration(
+        session, user_id=user_id, kind="compare", model=MODEL_COMPARE, context=context,
+        cache_key=_compare_cache_key(context, MODEL_COMPARE),
+        with_stats_fn=compare_with_stats,
+        question=f"compare:{weeks}w/{years_back}y", api_key=api_key,
     )
-    return text
 
 
 # ---------- WRAPPED — QUARTERLY/YEARLY REVIEW (NF-07) ----------
@@ -1026,7 +1015,6 @@ async def run_wrapped(
     Caches + logs (``ReportLog(kind="wrapped")``) and returns the text. Returns ``None`` when
     the window is too empty to recap (a new user) — the caller shows a friendly message."""
     from app import wrapped as wrapped_mod
-    from app.db import llm_cache
     from app.garmin import repository
 
     start, end = wrapped_mod.period_window(dt.date.today(), period)
@@ -1036,29 +1024,11 @@ async def run_wrapped(
         return None
     records = await repository.records_in_range(session, user_id, start, end)
     context = wrapped_mod.build_context(period, start, end, stats, records)
-
-    key = _wrapped_cache_key(context, MODEL_WRAPPED)
-    cached = await llm_cache.get(session, key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {MODEL_WRAPPED} (wrapped)")
-        text, stats_ = cached, CallStats(kind="wrapped", model=MODEL_WRAPPED, cached=True)
-    else:
-        try:
-            text, stats_ = await _run_claude(wrapped_with_stats, context, api_key)
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind="wrapped", model=MODEL_WRAPPED, ok=False,
-                question=f"wrapped:{period}", error=str(e)[:512],
-            )
-            raise
-        await llm_cache.put(session, key, text, CACHE_TTL_S)
-    await repository.log_report(
-        session, user_id=user_id, kind=stats_.kind, model=stats_.model,
-        input_tokens=stats_.input_tokens, output_tokens=stats_.output_tokens,
-        cost_usd=stats_.cost_usd, ok=True, cached=stats_.cached,
-        question=f"wrapped:{period}", report_text=text,
+    return await _run_cached_narration(
+        session, user_id=user_id, kind="wrapped", model=MODEL_WRAPPED, context=context,
+        cache_key=_wrapped_cache_key(context, MODEL_WRAPPED),
+        with_stats_fn=wrapped_with_stats, question=f"wrapped:{period}", api_key=api_key,
     )
-    return text
 
 
 # ---------- RACE PACK (EP-05) ----------
@@ -1083,7 +1053,6 @@ async def run_race_plan(
 
     from app import race as race_mod
     from app import weather as weather_mod
-    from app.db import llm_cache
     from app.db.models import User
     from app.garmin import repository
 
@@ -1110,28 +1079,11 @@ async def run_race_plan(
                     (d for d in week if d.get("date") == plan.target_date), None)
 
     context = race_mod.build_context(plan, fitness, recent_sessions, forecast_day)
-    key = _race_cache_key(context, MODEL_RACE)
-    cached = await llm_cache.get(session, key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {MODEL_RACE} (race)")
-        text, stats = cached, CallStats(kind="race", model=MODEL_RACE, cached=True)
-    else:
-        try:
-            text, stats = await _run_claude(race_plan_with_stats, context, api_key)
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind="race", model=MODEL_RACE, ok=False,
-                question=f"race:{plan.id}", error=str(e)[:512],
-            )
-            raise
-        await llm_cache.put(session, key, text, CACHE_TTL_S)
-    await repository.log_report(
-        session, user_id=user_id, kind=stats.kind, model=stats.model,
-        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
-        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
-        question=f"race:{plan.id}", report_text=text,
+    return await _run_cached_narration(
+        session, user_id=user_id, kind="race", model=MODEL_RACE, context=context,
+        cache_key=_race_cache_key(context, MODEL_RACE),
+        with_stats_fn=race_plan_with_stats, question=f"race:{plan.id}", api_key=api_key,
     )
-    return text
 
 
 # ---------- CORRELATION INSIGHTS (NF-02) ----------
@@ -1157,7 +1109,6 @@ async def run_insights(
     (the honest "not enough data" path) — the caller shows a friendly message and never
     spends a Claude call in that case."""
     from app import correlations
-    from app.db import llm_cache
     from app.garmin import repository
 
     history = await repository.read_history(session, user_id, days=INSIGHTS_WINDOW_DAYS)
@@ -1166,29 +1117,12 @@ async def run_insights(
         logger.info(f"INSIGHTS skip user={user_id}: no significant correlations")
         return None
     context = correlations.build_context(findings, INSIGHTS_WINDOW_DAYS)
-
-    key = _insights_cache_key(context, MODEL_INSIGHTS)
-    cached = await llm_cache.get(session, key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {MODEL_INSIGHTS} (insights)")
-        text, stats = cached, CallStats(kind="insights", model=MODEL_INSIGHTS, cached=True)
-    else:
-        try:
-            text, stats = await _run_claude(insights_with_stats, context, api_key)
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind="insights", model=MODEL_INSIGHTS, ok=False,
-                question=f"insights:{len(findings)}", error=str(e)[:512],
-            )
-            raise
-        await llm_cache.put(session, key, text, CACHE_TTL_S)
-    await repository.log_report(
-        session, user_id=user_id, kind=stats.kind, model=stats.model,
-        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
-        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
-        question=f"insights:{len(findings)}", report_text=text,
+    return await _run_cached_narration(
+        session, user_id=user_id, kind="insights", model=MODEL_INSIGHTS, context=context,
+        cache_key=_insights_cache_key(context, MODEL_INSIGHTS),
+        with_stats_fn=insights_with_stats,
+        question=f"insights:{len(findings)}", api_key=api_key,
     )
-    return text
 
 
 # ---------- INJURY-RISK RADAR (NF-04) ----------
