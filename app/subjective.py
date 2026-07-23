@@ -21,6 +21,8 @@ check-in (silence is not a signal).
 """
 from typing import List, Optional
 
+from app.statutil import mean
+
 WINDOW_DAYS = 14        # look back roughly two weeks, matching the injury radar's window
 RECENT_N = 6            # how many recent check-ins to hand the LLM verbatim
 PAIN_REPEAT = 2         # same body part reported this many times → a recurring niggle
@@ -56,10 +58,6 @@ def recurring_pain(runs: List[dict]) -> Optional[dict]:
     return {"part": part, "count": count}
 
 
-def _mean(xs: List[float]) -> float:
-    return sum(xs) / len(xs)
-
-
 def rpe_rising(runs: List[dict]) -> bool:
     """True when average RPE rose by ``RPE_RISE``+ from the earlier half of rated runs to the
     later half while typical pace stayed within ``PACE_STABLE_PCT`` — harder effort for the
@@ -71,10 +69,10 @@ def rpe_rising(runs: List[dict]) -> bool:
         return False
     mid = len(rated) // 2
     early, late = rated[:mid], rated[mid:]
-    if _mean([r["rpe"] for r in late]) - _mean([r["rpe"] for r in early]) < RPE_RISE:
+    if mean([r["rpe"] for r in late]) - mean([r["rpe"] for r in early]) < RPE_RISE:
         return False
-    pace_early = _mean([r["pace"] for r in early])
-    pace_late = _mean([r["pace"] for r in late])
+    pace_early = mean([r["pace"] for r in early])
+    pace_late = mean([r["pace"] for r in late])
     if pace_early <= 0:
         return False
     return abs(pace_late - pace_early) / pace_early <= PACE_STABLE_PCT
@@ -98,7 +96,7 @@ def summarize(runs: List[dict], *, limit: int = RECENT_N) -> Optional[dict]:
     rpes = [r["rpe"] for r in checked if isinstance(r.get("rpe"), (int, float))]
     out: dict = {
         "n": len(checked),
-        "avg_rpe": round(_mean(rpes), 1) if rpes else None,
+        "avg_rpe": round(mean(rpes), 1) if rpes else None,
         "rpe_rising": rpe_rising(runs),
         "recent": [
             {k: v for k, v in {

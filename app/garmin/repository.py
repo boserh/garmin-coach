@@ -24,6 +24,8 @@ from app.db.models import (
 )
 from app.garmin import exercises
 from app.garmin.schemas import DailySummary, Payload
+from app.statutil import avg as _avg
+from app.statutil import median as _median
 
 _DAILY_FIELDS = (
     "sleep_score", "sleep_h", "deep_h", "rem_h", "light_h", "awake_h",
@@ -602,19 +604,6 @@ async def weekly_activity_load(
     acts = [{"date": d, "type": t, "dur_min": dm, "avg_hr": hr}
             for d, t, dm, hr in rows]
     return multisport.weekly_load(acts)
-
-
-def _avg(xs: List[float]) -> Optional[float]:
-    return round(sum(xs) / len(xs), 1) if xs else None
-
-
-def _median(xs: List[float]) -> Optional[float]:
-    if not xs:
-        return None
-    s = sorted(xs)
-    n = len(s)
-    mid = n // 2
-    return round(s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2, 2)
 
 
 async def window_stats(
