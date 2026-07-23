@@ -78,6 +78,7 @@ HELP_TEXT = (
     "/activities — останні активності\n"
     "/activity <id> — розбір конкретної активності\n"
     "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
+    "/resync [дата [дата]] — пересинкувати дані з Garmin (без аргументів — вчора+сьогодні)\n"
     "/records — особисті рекорди\n"
     "/costs [YYYY-MM] — витрати на Claude за місяць\n"
     "/gear — спорядження (кросівки) з пробігом\n\n"
@@ -716,6 +717,56 @@ async def checkin(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user)
     if note:
         bits.append(f"🩹 {note}")
     await update.message.reply_text("✅ Записав: " + ", ".join(bits) + ".")
+
+
+# ---------- MANUAL RESYNC (ST-15) ----------
+
+def _parse_resync_args(args, today: "dt.date"):
+    """Parse ``/resync`` args into an inclusive ascending date list. No args → yesterday +
+    today. Returns ``(dates, error)`` — ``error`` is ``"format"``/``"range"`` or None. A
+    reversed range is swapped; a span above ``service.MAX_RESYNC_DAYS`` is rejected."""
+    if not args:
+        return [today - dt.timedelta(days=1), today], None
+    try:
+        start = dt.date.fromisoformat(args[0])
+        end = dt.date.fromisoformat(args[1]) if len(args) > 1 else start
+    except (ValueError, TypeError):
+        return None, "format"
+    if end < start:
+        start, end = end, start
+    span = (end - start).days + 1
+    if span > service.MAX_RESYNC_DAYS:
+        return None, "range"
+    return [start + dt.timedelta(days=i) for i in range(span)], None
+
+
+async def resync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/resync [YYYY-MM-DD [YYYY-MM-DD]] — ST-15: force-refetch daily_metrics for a range
+    (no args = yesterday+today) and upsert over. Runs in the user's Garmin runtime, so an
+    MFA gate propagates to the friendly on_error message instead of a stack trace."""
+    from bot.jobs import user_tz
+
+    logger.info(f"CMD /resync {' '.join(ctx.args)}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        today = dt.datetime.now(user_tz(user)).date()
+        dates, error = _parse_resync_args(ctx.args, today)
+        if error == "format":
+            await update.message.reply_text(
+                "Формат: /resync 2026-07-01 [2026-07-10]  (без аргументів — вчора+сьогодні)."
+            )
+            return
+        if error == "range":
+            await update.message.reply_text(
+                f"Забагато днів — максимум {service.MAX_RESYNC_DAYS} за раз."
+            )
+            return
+        await update.message.reply_text("Пересинковую дані з Garmin…")
+        async with user_runtime(session, user):
+            written, requested = await service.resync_days(session, user.id, dates)
+    await update.message.reply_text(f"✅ Оновлено {written} з {requested} дн.")
 
 
 async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

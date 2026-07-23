@@ -15,6 +15,8 @@
   <div class="wrap" style="--accent:{{ a.color }}">
     <a class="back" href="/me/activities">← Тренування</a>
 
+    {% if resynced %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔄 Дані активності оновлено з Garmin.</div>{% endif %}
+
     {% if strain %}
     <div class="hero-rec">
       <div class="ringbox">
@@ -61,6 +63,10 @@
       {% if a.pain %}<div class="bigstat"><div class="v">🩹</div><div class="k">{{ a.pain if a.pain is string else 'біль' }}</div></div>{% endif %}
     </div>
     {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
+
+    <form method="post" action="/me/activities/{{ a.id }}/resync" style="margin:1rem 0">
+      <button type="submit" class="btn-ghost">🔄 Ресинк із Garmin</button>
+    </form>
 
     {% if analysis %}
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">💬 Розбір</h2>
