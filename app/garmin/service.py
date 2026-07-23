@@ -246,11 +246,15 @@ def daily_summary(date: dt.date) -> dict:
     return result
 
 
-def _attach_detail(row: dict, activity_id) -> bool:
+def _attach_detail(row: dict, activity_id, force: bool = False) -> bool:
     """Fetch and attach the per-sport detail onto ``row`` in place — a strength session's
     exercise sets, or a run/ride pace-or-speed ``series``. Returns True when a Garmin detail
     call was actually made, so a batch loop can space subsequent fetches. Shared by the
     recent-activities fetch and the single-activity resync (ST-15).
+
+    ``force=True`` bypasses the immutable-asset disk cache so a resync of an activity edited
+    in Garmin (a swapped exercise, a cropped track) actually picks up the change instead of
+    returning the stale cached copy (ST-15/ST-16).
 
     EP-10 phase 1: cycling gets the same series treatment (speed/power, not pace) — reuse
     NF-05's sport bucket rather than hand-rolling a second keyword list."""
@@ -258,17 +262,17 @@ def _attach_detail(row: dict, activity_id) -> bool:
     if not activity_id:
         return False
     if typ == "strength_training":
-        ex = client.fetch_exercise_summary(activity_id)
+        ex = client.fetch_exercise_summary(activity_id, force=force)
         if ex:
             row["exercises"] = ex
         return True
     if "run" in typ:
-        sr = client.fetch_activity_series(activity_id, sport="running")
+        sr = client.fetch_activity_series(activity_id, sport="running", force=force)
         if sr:
             row["series"] = sr
         return True
     if sport_bucket(typ) == "bike":
-        sr = client.fetch_activity_series(activity_id, sport="cycling")
+        sr = client.fetch_activity_series(activity_id, sport="cycling", force=force)
         if sr:
             row["series"] = sr
         return True
@@ -322,16 +326,17 @@ def _row_from_detail(a: dict) -> dict:
     }
 
 
-def _fetch_activity_row(activity_id) -> Optional[dict]:
+def _fetch_activity_row(activity_id, force: bool = False) -> Optional[dict]:
     """Login + fetch one activity's detail and enrich it with series/exercises — the blocking
-    half of :func:`resync_activity`, run in a single threadpool hop. None if Garmin returns
-    nothing for the id."""
+    half of :func:`resync_activity`, run in a single threadpool hop. ``force`` bypasses the
+    immutable-asset disk cache (so an edited exercise/track is actually re-read). None if
+    Garmin returns nothing for the id."""
     login()
     a = client.fetch_activity(activity_id)
     if not a:
         return None
     row = _row_from_detail(a)
-    _attach_detail(row, activity_id)
+    _attach_detail(row, activity_id, force=force)
     return row
 
 
@@ -508,12 +513,15 @@ async def resync_activity(session, user_id: int, activity_db_id: int):
     its row (ST-15).
 
     Works for an activity older than the recent-activities window: it fetches by the stored
-    Garmin ``activity_id`` directly, not by scanning the last N activities. Never creates a
-    duplicate (upsert keys on ``activity_id``); ``subjective``/``analysis``/``step_match`` are
-    left untouched, and a transient series/exercises miss keeps the previously-stored value
-    instead of nulling it. Returns the updated ORM row, or None if the id isn't this user's /
-    carries no Garmin id / Garmin returned nothing. Runs under the per-user fetch lock (the
-    ``client._api`` rate-limiter + 429-retry are inherited)."""
+    Garmin ``activity_id`` directly, not by scanning the last N activities. The immutable-asset
+    disk cache is **force-bypassed** so an edit made in Garmin (a swapped exercise, a cropped
+    track) actually re-reads instead of returning the stale cached exercises/series — the main
+    reason to resync a single activity. Never creates a duplicate (upsert keys on
+    ``activity_id``); ``subjective``/``analysis``/``step_match`` are left untouched, and a
+    transient series/exercises miss keeps the previously-stored value instead of nulling it.
+    Returns the updated ORM row, or None if the id isn't this user's / carries no Garmin id /
+    Garmin returned nothing. Runs under the per-user fetch lock (the ``client._api``
+    rate-limiter + 429-retry are inherited)."""
     from app.garmin import repository  # local import to avoid an import cycle
 
     act = await repository.get_activity(session, user_id, activity_db_id)
@@ -521,7 +529,7 @@ async def resync_activity(session, user_id: int, activity_db_id: int):
         return None
     activity_id = act.activity_id
     async with _user_fetch_lock(user_id):
-        row = await run_in_threadpool(_fetch_activity_row, activity_id)
+        row = await run_in_threadpool(_fetch_activity_row, activity_id, True)
         if row is None:
             return None
         # Preserve a good series/exercises when this fetch produced none (transient error, or

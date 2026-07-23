@@ -284,7 +284,8 @@ def test_activity_rows_fetches_series_for_cycling_and_running_not_others():
     with patch.object(client, "fetch_activities", return_value=acts), \
          patch.object(client, "fetch_activity_series") as fetch_series, \
          patch("time.sleep"):
-        fetch_series.side_effect = lambda aid, sport="running": [{"d": 1.0, "hr": 140}]
+        fetch_series.side_effect = \
+            lambda aid, sport="running", force=False: [{"d": 1.0, "hr": 140}]
         rows = service._activity_rows(limit=10)
     by_id = {aid: row for aid, row in rows}
     assert "series" in by_id[1] and "series" in by_id[2]

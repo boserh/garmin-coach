@@ -151,9 +151,14 @@ def test_race_cache_key_stable_and_sensitive():
 async def test_race_pack_job_sends_once_at_trigger_day(session):
     from bot import jobs
 
-    today = dt.date.today()
     user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
     session.add(user)
+    await session.commit()
+    # Compute "today" the same way the job does — in the user's timezone (ST-14) — so the
+    # exact trigger-day match holds regardless of wall-clock time / process TZ. Using naive
+    # dt.date.today() made this flaky: run late enough in UTC, Europe/Warsaw (the default tz)
+    # had already rolled to the next day, so days_to_target was 6, not TRIGGER_DAYS.
+    today = dt.datetime.now(jobs.user_tz(user)).date()
     session.add(_plan(target_date=(today + dt.timedelta(days=race.TRIGGER_DAYS)).isoformat()))
     await session.commit()
 

@@ -159,3 +159,33 @@ def test_resync_days_requires_login(client):
     assert "/login" in r.headers["location"]
 
 
+# ---- strength exercise rows: reps + weight display ----
+
+def test_exercise_rows_formats_reps_and_weight():
+    from app.routers.me import _exercise_rows
+
+    ex = {"active_sets": 5, "sets": {
+        "присідання": {"count": 2, "reps": [12, 12], "weight_kg": [22.0, 22.0]},
+        "утримання": {"count": 1, "reps": [None], "weight_kg": [None]},
+        "жим": {"count": 2, "reps": [10, 12], "weight_kg": [50.0, 55.0]},
+    }}
+    by = {r["name"]: r["detail"] for r in _exercise_rows(ex)}
+    assert by["присідання"] == "2×12 · 22 кг"
+    assert by["утримання"] == "1 підх. · власна вага"   # no reps, bodyweight
+    assert by["жим"] == "2×10–12 · 50–55 кг"            # varying reps + weight → ranges
+
+
+def test_exercise_rows_legacy_count_only_shape():
+    from app.routers.me import _exercise_rows
+
+    rows = _exercise_rows({"active_sets": 4, "sets": {"присідання": 4}})
+    assert rows == [{"name": "присідання", "detail": "4"}]
+
+
+def test_exercise_rows_empty():
+    from app.routers.me import _exercise_rows
+
+    assert _exercise_rows(None) == []
+    assert _exercise_rows({}) == []
+
+
