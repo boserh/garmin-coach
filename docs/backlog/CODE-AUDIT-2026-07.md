@@ -6,6 +6,22 @@
 > All of CODE-01…07 are closed — this is the next wave. The items are independent
 > of each other; none of them changes behaviour.
 
+> **Status (2026-07-23, later that day).** Most of this wave is now done: A2/A3/A4/B1/D2
+> landed earlier (PR #170), and A5's `_mean` triplication was already folded into
+> `app/statutil.py`. This pass closes the remaining safely-closeable items: **A1**
+> (the last un-folded narration, `run_analysis`, now uses `_run_cached_narration`),
+> **A5-format** (the weekday/month/pace primitives → `app/format.py`), **D1** (the
+> risk detectors are gated to the morning window instead of churning all day) and
+> **B3** (`test_routers.py` split per router). **Still open:** **B2** — the
+> `bot/jobs.py` package split — is deliberately deferred to its own PR: the tests
+> monkeypatch ~15 *internal* job functions (`_deload_check_for_user`,
+> `_adapt_morning_check`, `_step_match_for_activity`, …) on the `bot.jobs` namespace
+> and then call the higher-level tick/job entrypoints, so a package split needs those
+> ~15 test files' patch targets re-pointed at the new submodules (the "separate PR"
+> the Suggested-order note below already calls for). **C1's** legacy
+> `garmin_cache.json → .migrated` removal stays gated on confirming the Pi is already
+> `.migrated` (unverifiable from here).
+
 ## TL;DR
 
 | # | What | Kind | Size | Payoff |

@@ -62,6 +62,33 @@ def _no_real_anthropic(monkeypatch):
         pass
 
 
+@pytest.fixture
+def client():
+    """A FastAPI TestClient with Garmin login mocked — shared by the test_routers_* split
+    (B3). A test module may still define its own ``client`` to override this."""
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from app.garmin import service
+    from app.main import create_app
+
+    with patch.object(service, "login", return_value=None):
+        with TestClient(create_app()) as c:
+            yield c
+
+
+@pytest.fixture
+def auth_client(client):
+    """A TestClient with a logged-in admin session cookie (B3)."""
+    from tests.web_helpers import _seed_user
+
+    _seed_user()
+    r = client.post("/login", data={"email": "t@example.com", "password": "pw"})
+    assert r.status_code == 200  # followed the redirect to /ui
+    return client
+
+
 @pytest_asyncio.fixture
 async def session():
     """A fresh in-memory SQLite session per test (shared connection via StaticPool)."""

@@ -18,6 +18,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import format as fmt
 from app.db.models import ActivityRecord, DailyMetric, PersonalRecord
 
 # Only records achieved within this many days of "now" are announced — everything older is
@@ -243,8 +244,7 @@ def announce_worthy(records: list, today: Optional[dt.date] = None) -> list:
 # ---------- FORMATTING ----------
 
 def _fmt_pace(min_km: float) -> str:
-    total = round(min_km * 60)
-    return f"{total // 60}:{total % 60:02d}/км"
+    return fmt.pace(min_km, "/км")
 
 
 def _fmt_hms(seconds: float) -> str:

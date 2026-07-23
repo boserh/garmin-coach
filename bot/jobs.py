@@ -21,6 +21,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from app import baselines, gear, race, records, sleepnudge, stepmatch, weather
+from app import format as fmt
 from app.analysis import delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
@@ -548,29 +549,37 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # Celebrate any new personal record (EP-14) — after the activity recap.
             await _records_check_for_user(ctx, session, user)
 
-            # D1: one memo shared across all three risk hooks — the injury/health detectors
-            # (each a set of ~90-day reads) get computed at most once per tick instead of up
-            # to 3×, with every guard below unchanged.
-            risk = _RiskCache(session, user.id)
+            in_morning = MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR
 
-            # NF-09 auto-deload: try turning an actionable injury/health signal into a
-            # concrete ✅/❌ correction FIRST — that proposal IS the day's one risk
-            # touchpoint, so the plain advisories below are skipped when it fires.
-            deload_sent = await _deload_check_for_user(ctx, session, user, creds, today, risk=risk)
+            # D1: the injury/health detectors (each a set of ~90-day history reads) belong to
+            # the morning report, so gate the risk block to the morning window rather than
+            # recomputing it on every 20-min tick right through the evening. Their DMs are
+            # per-day guarded and the first morning tick already fires them, so this only sheds
+            # the wasted afternoon churn — no advisory that would have gone out is lost. One
+            # _RiskCache memo is still shared across the three hooks so each detector runs at
+            # most once per tick.
+            if in_morning:
+                risk = _RiskCache(session, user.id)
 
-            if not deload_sent:
-                # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack up.
-                await _injury_check_for_user(ctx, session, user, creds, today, risk=risk)
+                # NF-09 auto-deload: try turning an actionable injury/health signal into a
+                # concrete ✅/❌ correction FIRST — that proposal IS the day's one risk
+                # touchpoint, so the plain advisories below are skipped when it fires.
+                deload_sent = await _deload_check_for_user(
+                    ctx, session, user, creds, today, risk=risk)
 
-                # Proactive health alerts (EP-08) — recovery anomalies vs the personal
-                # baseline. Skip when an injury advisory already went out today: at most one
-                # risk DM per day (the detectors share the "don't stack risk pings" rule).
-                injury_sent = (
-                    await repository.get_state(session, user.id, INJURY_WARNED_KEY) == today)
-                if not injury_sent:
-                    await _health_check_for_user(ctx, session, user, creds, today, risk=risk)
+                if not deload_sent:
+                    # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack.
+                    await _injury_check_for_user(ctx, session, user, creds, today, risk=risk)
 
-            if not (MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR):
+                    # Proactive health alerts (EP-08) — recovery anomalies vs the personal
+                    # baseline. Skip when an injury advisory already went out today: at most
+                    # one risk DM per day (the "don't stack risk pings" rule).
+                    injury_sent = (
+                        await repository.get_state(session, user.id, INJURY_WARNED_KEY) == today)
+                    if not injury_sent:
+                        await _health_check_for_user(ctx, session, user, creds, today, risk=risk)
+
+            if not in_morning:
                 return
             if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
                 logger.debug(f"MORNING skip user={user.id}: already sent today")
@@ -626,8 +635,6 @@ def _adapt_ops_dump(edit) -> str:
     )
 
 
-_DOW_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-
 _TYPE_UK = {
     "easy": "легкий біг", "long": "довга пробіжка", "tempo": "темпова",
     "intervals": "інтервали", "rest": "відпочинок", "cross": "кросс-тренування",
@@ -640,7 +647,7 @@ def _dow_label(iso: str) -> str:
         d = dt.date.fromisoformat(iso)
     except (ValueError, TypeError):
         return iso or "?"
-    return f"{_DOW_UK[d.weekday()]} {iso[5:]}"
+    return f"{fmt.WEEKDAYS_UK[d.weekday()]} {iso[5:]}"
 
 
 def _type_label(t: Optional[str]) -> str:

@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import format as fmt
 from app import stepmatch
 from app.charts import run_charts as _run_charts
 from app.charts import trend_series as _trend_series
@@ -172,10 +173,6 @@ _SORT_OPTIONS = [
     ("load_desc",  "Навантаження ↓"),
     ("hr_desc",    "Пульс ↓"),
 ]
-_MONTHS = ["січ", "лют", "бер", "кві", "тра", "чер", "лип", "сер", "вер", "жов", "лис", "гру"]
-_DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-
-
 def _act_meta(t: str):
     t = (t or "").lower()
     if t in _ACT_META:
@@ -190,7 +187,7 @@ def _act_meta(t: str):
 def _nice_date(iso: str) -> str:
     try:
         d = dt.date.fromisoformat((iso or "")[:10])
-        return f"{_DOW[d.weekday()]}, {d.day} {_MONTHS[d.month - 1]} {d.year}"
+        return f"{fmt.WEEKDAYS_UK[d.weekday()]}, {fmt.day_month(d)} {d.year}"
     except (ValueError, TypeError):
         return iso or ""
 
@@ -198,8 +195,7 @@ def _nice_date(iso: str) -> str:
 def _pace_str(dist_km, dur_min):
     if not dist_km or not dur_min:
         return None
-    total = round(dur_min / dist_km * 60)   # seconds per km
-    return f"{total // 60}:{total % 60:02d}"
+    return fmt.pace(dur_min / dist_km)   # seconds per km → M:SS
 
 
 def _spark(series, n: int = 48):

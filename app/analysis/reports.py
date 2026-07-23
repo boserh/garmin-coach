@@ -280,7 +280,6 @@ async def run_analysis(
     Blocking API work runs in a threadpool; the failed-call log is best-effort.
     ``weather`` (optional) is today's forecast passed through to the analyst.
     """
-    from app.db import llm_cache
     from app.garmin import repository
 
     model = MODEL_DEEP if deep else MODEL_DAILY
@@ -362,37 +361,23 @@ async def run_analysis(
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
                            subjective, health_alerts, fueling)
-    cached = await llm_cache.get(session, cache_key)
-    if cached is not None:
-        logger.info(f"CLAUDE CACHE HIT  {model}")
-        text, stats = cached, CallStats(kind=kind, model=model, cached=True)
-    else:
-        try:
-            text, stats = await _run_claude(
-                analyze_with_stats, payload, question, deep, kind, previous_report, api_key,
-                weather, plan_today, fitness, records, norm, subjective, health_alerts, fueling
-            )
-        except AnalystError as e:
-            await repository.log_report(
-                session, user_id=user_id, kind=kind, model=model, ok=False,
-                question=question or None, error=str(e)[:512]
-            )
-            raise
-        await llm_cache.put(session, cache_key, text, CACHE_TTL_S)
-    await repository.log_report(
-        session,
-        user_id=user_id,
-        kind=stats.kind,
-        model=stats.model,
-        input_tokens=stats.input_tokens,
-        output_tokens=stats.output_tokens,
-        cost_usd=stats.cost_usd,
-        ok=True,
-        cached=stats.cached,
-        question=question or None,
-        report_text=text,
+
+    # analyze_with_stats takes its context as positional args (not a single ``context`` dict
+    # like the other narrations), so bind them in a closure that matches the engine's
+    # ``(context, api_key)`` call shape — the shared cache/log tail (A1) then applies as-is,
+    # and ``analyze_with_stats`` stays a module-global lookup so the tests' monkeypatch works.
+    def _analyze(_context, _api_key):
+        return analyze_with_stats(
+            payload, question, deep, kind, previous_report, _api_key, weather,
+            plan_today, fitness, records, norm, subjective, health_alerts, fueling,
+        )
+
+    # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
+    # an empty question must reach ``log_report`` as None, not "".
+    return await _run_cached_narration(
+        session, user_id=user_id, kind=kind, model=model, context=None,
+        cache_key=cache_key, with_stats_fn=_analyze, question=question or None, api_key=api_key,
     )
-    return text
 
 
 # EP-09: /ask is a bounded tool-use agent, not a single completion — the first tool-use
