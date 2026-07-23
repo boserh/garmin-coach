@@ -12,6 +12,7 @@ import json
 import logging
 from typing import Optional, Tuple, Union
 
+from app import gap
 from app.analysis.cache import (
     CACHE_TTL_S,
     _activity_cache_key,
@@ -653,11 +654,19 @@ _SEGMENT_AVG_KEYS = {
 def _segments(series: list, n: int = 6) -> list:
     """Collapse an activity's per-point series into ~n segments (avg of whatever metrics
     are present — pace/HR for a run, speed/power/HR for a ride) so the LLM sees pacing/
-    effort drift without the full point cloud."""
+    effort drift without the full point cloud.
+
+    EP-15: when the series carries elevation (``e``, running only — ``avg_pace`` present),
+    each segment also gets its climb/descent (``gain_m``/``loss_m``) and grade-adjusted
+    pace (``grade_pct``/``gap_pace``) — a hilly split reads as effort, not "slow". Series
+    without elevation (old, pre-backfill runs) get exactly the segments they got before."""
     pts = [p for p in series if any(p.get(k) is not None for k in _SEGMENT_AVG_KEYS)]
     if not pts:
         return []
     size = max(1, len(pts) // n)
+    elevs = [p.get("e") for p in pts]
+    has_elev = any(v is not None for v in elevs)
+    smoothed = gap.smooth_elevation(elevs) if has_elev else None
     segs = []
     for i in range(0, len(pts), size):
         chunk = pts[i:i + size]
@@ -670,6 +679,16 @@ def _segments(series: list, n: int = 6) -> list:
             vals = [c[raw_key] for c in chunk if c.get(raw_key) is not None]
             if vals:
                 seg[out_key] = round(sum(vals) / len(vals), 2)
+        if has_elev and "avg_pace" in seg and len(ds) >= 2:
+            chunk_elev = smoothed[i:i + size]
+            dist_km = ds[-1] - ds[0]
+            gain, loss = gap.elevation_delta(chunk_elev)
+            grade = gap.segment_grade_pct(chunk_elev, dist_km)
+            if gain or loss:
+                seg["gain_m"], seg["loss_m"] = gain, loss
+            if grade is not None:
+                seg["grade_pct"] = grade
+                seg["gap_pace"] = gap.gap_pace_min_km(seg["avg_pace"], grade)
         segs.append(seg)
     return segs
 
@@ -708,6 +727,13 @@ def activity_payload(activity, planned=None) -> dict:
                 data["avg_speed_kmh"] = round(activity.dist_km / (activity.dur_min / 60.0), 1)
             else:
                 data["avg_pace"] = round(activity.dur_min / activity.dist_km, 2)
+        # EP-15: whole-activity climb/descent, when the series carries elevation — the
+        # "hilly" flag is what tells SYSTEM_ACTIVITY whether to mention terrain at all.
+        elevation = gap.activity_elevation_summary(activity.series)
+        if elevation:
+            data["elevation_gain_m"] = elevation["gain_m"]
+            data["elevation_loss_m"] = elevation["loss_m"]
+            data["hilly"] = elevation["hilly"]
     # EP-12: the runner's subjective check-in (RPE + niggle). Part of the payload, so it
     # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
     if getattr(activity, "subjective", None):

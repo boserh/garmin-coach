@@ -368,10 +368,14 @@ SERIES_TTL_S = 365 * 24 * 3600   # a completed run's per-point series is immutab
 # stays pace-first (min/km, the original shape); cycling swaps pace for speed (km/h) +
 # power (watts, when the device reports it) — the ticket's own framing ("вело: швидкість/
 # потужність/HR замість темпу"). Unrecognised sports fall back to the running shape.
+# EP-15: "elevation" is the same lookup mechanics, added to both buckets — a descriptor
+# key that isn't present (older watch, missing altimeter) resolves to None like any other
+# missing column, never a crash (unverified against a live account — see the module intro).
 _SERIES_METRIC_KEYS = {
-    "running": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance"},
+    "running": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance",
+                "elevation": "directElevation"},
     "cycling": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance",
-                "power": "directPower"},
+                "power": "directPower", "elevation": "directElevation"},
 }
 
 
@@ -380,10 +384,12 @@ def fetch_activity_series(activity_id, max_points: int = 150, sport: str = "runn
 
     Reads Garmin's ``/details`` metrics, locates the columns by descriptor key (indices
     vary), and downsamples to ``max_points``. Shape depends on ``sport``:
-    running → ``[{"d": dist_km, "p": pace_min_km, "hr": bpm}, ...]`` (unchanged from v1);
-    cycling → ``[{"d": dist_km, "spd": speed_kmh, "pw": watts_or_None, "hr": bpm}, ...]``.
-    ``None`` where a point lacks the value. Immutable → disk-cached like exercises."""
-    key = f"series:v1:{activity_id}"
+    running → ``[{"d": dist_km, "p": pace_min_km, "hr": bpm, "e": elevation_m}, ...]``;
+    cycling → ``[{"d": dist_km, "spd": speed_kmh, "pw": watts_or_None, "hr": bpm,
+    "e": elevation_m}, ...]``. ``None`` where a point lacks the value (EP-15: ``e`` is
+    ``None`` on every point when the watch/endpoint has no altitude — old series stay
+    exactly as before). Immutable → disk-cached like exercises."""
+    key = f"series:v2:{activity_id}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -399,6 +405,7 @@ def fetch_activity_series(activity_id, max_points: int = 150, sport: str = "runn
     i_hr = idx.get(keys["hr"])
     i_dist = idx.get(keys["dist"])
     i_power = idx.get(keys["power"]) if keys.get("power") else None
+    i_elev = idx.get(keys["elevation"])
     pts = _g(d, "activityDetailMetrics") or []
     step = max(1, len(pts) // max_points)  # downsample if Garmin returned more
 
@@ -409,9 +416,11 @@ def fetch_activity_series(activity_id, max_points: int = 150, sport: str = "runn
     for p in pts[::step]:
         m = p.get("metrics") or []
         speed, hr, dist = val(m, i_speed), val(m, i_hr), val(m, i_dist)
+        elev = val(m, i_elev)
         point = {
             "d": round(dist / 1000.0, 2) if dist is not None else None,
             "hr": int(hr) if hr is not None else None,
+            "e": round(elev, 1) if elev is not None else None,
         }
         if sport == "cycling":
             point["spd"] = round(speed * 3.6, 1) if speed and speed > 0 else None

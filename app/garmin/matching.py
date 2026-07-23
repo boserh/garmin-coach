@@ -36,6 +36,7 @@ from typing import Optional
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import gap
 from app.db.models import ActivityRecord, PlannedWorkout, WorkoutStatus
 from app.garmin import repository
 from app.multisport import BIKE_NEEDLES
@@ -232,6 +233,12 @@ async def _match_distance_based(
             actual_pace: Optional[float] = None
             if best.dur_min and best.dist_km and best.dist_km > 0:
                 actual_pace = best.dur_min / best.dist_km
+            # EP-15: on a hilly route (elevation gain > gap.HILLY_GAIN_PER_KM), "on pace"
+            # should read by grade-adjusted effort, not the raw split — a route that isn't
+            # significantly hilly, or has no elevation data at all (old runs), falls
+            # straight through to the raw pace unchanged.
+            if actual_pace is not None and best.series:
+                actual_pace = gap.effective_pace_min_km(best.series, actual_pace)
             match_info["actual_pace_minkm"] = (
                 round(actual_pace, 2) if actual_pace is not None else None)
             match_info["plan_pace_minkm"] = _extract_target_pace(w)

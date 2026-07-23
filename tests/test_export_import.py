@@ -54,8 +54,25 @@ def test_read_fit_activity_matches_and_collects_points():
     msgs = _fit(start, [(0.0, 2.5, 120), (100.0, 2.6, 122)])
     got, points = read_fit_activity(msgs, lambda ms: targets.pop(ms, None))
     assert got is row
-    assert points == [(0.0, 2.5, 120), (100.0, 2.6, 122)]
+    # no altitude in the fake messages → e is None on every point (EP-15)
+    assert points == [(0.0, 2.5, 120, None), (100.0, 2.6, 122, None)]
     assert targets == {}                  # matched target removed
+
+
+def test_read_fit_activity_collects_altitude():
+    start = dt.datetime(2025, 3, 1, 6, 0, 0)
+    row = SimpleNamespace(activity_id=1)
+    targets = {_ms(start): row}
+    msgs = [
+        _Msg("file_id", type="activity"),
+        _Msg("record", timestamp=start, distance=0.0, enhanced_speed=2.5, heart_rate=120,
+             enhanced_altitude=250.4),
+        _Msg("record", timestamp=start + dt.timedelta(seconds=1), distance=10.0,
+             enhanced_speed=2.6, heart_rate=122, altitude=251.0),  # no enhanced_altitude
+    ]
+    got, points = read_fit_activity(msgs, lambda ms: targets.pop(ms, None))
+    assert got is row
+    assert points == [(0.0, 2.5, 120, 250.4), (10.0, 2.6, 122, 251.0)]
 
 
 def test_read_fit_activity_close_start_does_not_crossmatch():
@@ -81,7 +98,8 @@ def test_read_fit_activity_falls_back_to_plain_speed():
     msgs = [_Msg("file_id", type="activity"),
             _Msg("record", timestamp=start, distance=0.0, speed=3.0, heart_rate=100)]
     got, points = read_fit_activity(msgs, lambda ms: row)
-    assert got is row and points == [(0.0, 3.0, 100)]   # enhanced_speed absent → speed
+    # enhanced_speed absent → speed; no altitude fields → e is None
+    assert got is row and points == [(0.0, 3.0, 100, None)]
 
 
 async def test_load_series_targets_skips_runs_that_already_have_a_series(session, tmp_path):
@@ -173,9 +191,16 @@ def test_series_from_points_converts_and_downsamples():
     s = _series_from_points(pts)
     assert 2 <= len(s) <= 160                                # downsampled
     assert s[0]["p"] == 6.67 and s[0]["hr"] == 120           # 1000/2.5/60 = 6.67 min/km
+    assert s[0]["e"] is None                                 # no altitude in a 3-tuple
     # a stopped point (speed 0) keeps HR but drops pace
     stopped = _series_from_points([(0.0, 0.0, 100), (1.0, 0.0, 101)])
     assert stopped[0]["p"] is None and stopped[0]["hr"] == 100
+
+
+def test_series_from_points_includes_altitude_when_present():
+    pts = [(0.0, 2.5, 120, 250.4), (100.0, 2.6, 122, 252.0)]
+    s = _series_from_points(pts)
+    assert s[0]["e"] == 250.4 and s[1]["e"] == 252.0
 
 
 async def test_import_export_inserts_activities(session, tmp_path):

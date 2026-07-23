@@ -62,7 +62,8 @@ async def test_generation_reuses_confirmed_preview(session):
 
 
 async def test_generation_regenerates_without_preview(session):
-    """No confirmed preview → generation falls back to the Claude call."""
+    """No confirmed preview, single-week window → generation falls back to the plain
+    (one-session) Claude call, not the EP-03 progression one."""
     intake = {"strength": {"enabled": True, "custom": {"tue": "ноги"}}}
     with patch.object(plans, "generate_plan_with_stats",
                       return_value=(_gen(), CallStats(kind="plan", model="m"))), \
@@ -70,13 +71,36 @@ async def test_generation_regenerates_without_preview(session):
                          return_value=(_sess(), CallStats(kind="plan", model="m"))) as m:
         plan = await run_plan_generation(
             session, user_id=U1, goal="first_5k", goal_label="Перші 5 км",
-            target_date="2026-07-20", start_date="2026-06-30", days_per_week=3,
+            target_date="2026-07-05", start_date="2026-06-30", days_per_week=3,
             intensity="moderate", intake=intake, api_key=None,
             run_days=["tue", "thu", "sun"], long_run_day="sun")
     m.assert_called()
     strengths = [w for w in await repository.list_workouts(session, plan.id)
                  if w.type == "strength"]
     assert strengths and strengths[0].strength_plan["name"] == "Ноги"
+
+
+async def test_generation_regenerates_progression_without_preview(session):
+    """EP-03: no confirmed preview, multi-week window → generation calls the progression
+    generator and lays a DIFFERENT session per week."""
+    intake = {"strength": {"enabled": True, "custom": {"tue": "ноги"}}}
+    progression = [_sess(name="Ноги W1"), _sess(name="Ноги W2"), _sess(name="Ноги W3")]
+    with patch.object(plans, "generate_plan_with_stats",
+                      return_value=(_gen(), CallStats(kind="plan", model="m"))), \
+            patch.object(plans, "generate_strength_progression_with_stats",
+                         return_value=(progression, CallStats(kind="plan", model="m"))) as m, \
+            patch.object(plans, "generate_strength_with_stats") as single:
+        plan = await run_plan_generation(
+            session, user_id=U1, goal="first_5k", goal_label="Перші 5 км",
+            target_date="2026-07-20", start_date="2026-06-30", days_per_week=3,
+            intensity="moderate", intake=intake, api_key=None,
+            run_days=["tue", "thu", "sun"], long_run_day="sun")
+    m.assert_called_once()
+    assert m.call_args[0][0]["weeks"] == 3   # 3 tuesdays in the 2026-06-30..2026-07-20 window
+    single.assert_not_called()
+    strengths = sorted((w for w in await repository.list_workouts(session, plan.id)
+                        if w.type == "strength"), key=lambda w: w.date)
+    assert [w.strength_plan["name"] for w in strengths] == ["Ноги W1", "Ноги W2", "Ноги W3"]
 
 
 class _FakeReq:

@@ -85,11 +85,12 @@ def run_series(values, dists):
 
 
 def run_charts(activity_series):
-    """Sparklines for an activity's per-point series ([{d, p, hr}, ...] for a run, or
-    EP-10's ``[{d, spd, pw, hr}, ...]`` for a ride — picked by which keys are present).
+    """Sparklines for an activity's per-point series ([{d, p, hr, e?}, ...] for a run, or
+    EP-10's ``[{d, spd, pw, hr, e?}, ...]`` for a ride — picked by which keys are present).
     Returns (charts, first_km, last_km) for the activity detail page. Each chart
-    carries a ``fmt`` hint (pace/speed/power/hr) so the hover tooltip formats the
-    value right."""
+    carries a ``fmt`` hint (pace/speed/power/hr/elev) so the hover tooltip formats the
+    value right. EP-15: a third ``elev`` sparkline (altitude profile) appears whenever the
+    series carries elevation — absent entirely on old, pre-backfill series (no ``e`` key)."""
     if not activity_series:
         return [], "", ""
     dists = [p.get("d") for p in activity_series]
@@ -106,6 +107,7 @@ def run_charts(activity_series):
             ("Темп, хв/км", "#6cb6ff", "pace", [p.get("p") for p in activity_series]),
             ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in activity_series]),
         ]
+    defs.append(("Висота, м", "#7ee787", "elev", [p.get("e") for p in activity_series]))
     charts = [{"label": lbl, "color": c, "fmt": fmt, "s": s}
               for lbl, c, fmt, vals in defs if (s := run_series(vals, dists))]
     valid = [d for d in dists if d is not None]
