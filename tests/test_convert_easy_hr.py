@@ -1,6 +1,6 @@
 """Unit tests for the easy/long/recovery→HR-zone step transform used by the
-`convert-easy-hr` CLI."""
-from app.cli import _convert_easy_steps, _pace_hint
+`convert-easy-hr` one-off utility (moved to scripts/ — CODE-AUDIT-2026-07 C2)."""
+from scripts.oneoff_plan_fixes import _convert_easy_steps, _pace_hint
 
 
 def test_run_pace_step_becomes_hr_zone():

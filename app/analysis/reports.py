@@ -264,13 +264,6 @@ def analyze_with_stats(
         raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
 
 
-def analyze(payload: Union[Payload, dict], question: str = "", deep: bool = False) -> str:
-    """Back-compatible wrapper returning just the report text. NB: bypasses the
-    dedup cache (that lives in :func:`run_analysis`, which needs a DB session)."""
-    text, _ = analyze_with_stats(payload, question=question, deep=deep)
-    return text
-
-
 async def run_analysis(
     session,
     payload: Union[Payload, dict],

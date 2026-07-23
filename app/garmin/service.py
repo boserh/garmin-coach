@@ -6,7 +6,9 @@ exercise-set muscle grouping, sync flags) is preserved exactly from the old
 ``garmin_client``.
 
 Two entry points:
-* ``build_payload``        — synchronous, always fetches fresh (CLI / fallback).
+* ``build_payload``        — synchronous, always fetches fresh; **test harness only**
+  (the whole-payload shape assertion in ``tests/test_garmin_service.py`` — no
+  production caller, the app runs through ``build_payload_cached``).
 * ``build_payload_cached`` — async; serves immutable past days from the DB and
   persists what it fetches, so history accumulates and Garmin calls drop.
 """
@@ -309,7 +311,9 @@ def fetch_planned(days_ahead: int = 14) -> List[dict]:
 # ---------- PAYLOAD ----------
 
 def build_payload(days: int = 7, activity_limit: int = 30) -> Payload:
-    """Synchronous full fetch. Used by the CLI and as a DB-free fallback."""
+    """Synchronous full fetch. **Test-harness only** — exercises the aggregation shape
+    (``tests/test_garmin_service.py``) with no DB; production always uses the async,
+    DB-backed ``build_payload_cached``."""
     login()
     daily = [daily_summary(d) for d in _date_range(days)]
     today = dt.date.today().isoformat()

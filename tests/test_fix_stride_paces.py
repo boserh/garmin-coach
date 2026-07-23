@@ -1,6 +1,10 @@
 """Unit tests for the stride→pace step transform + description parsing used by the
-`fix-stride-paces` CLI."""
-from app.cli import _parse_pace_ranges, _stride_pace_from_desc, _strides_to_pace
+`fix-stride-paces` one-off utility (moved to scripts/ — CODE-AUDIT-2026-07 C2)."""
+from scripts.oneoff_plan_fixes import (
+    _parse_pace_ranges,
+    _stride_pace_from_desc,
+    _strides_to_pace,
+)
 
 # ---- description parsing ---------------------------------------------------
 

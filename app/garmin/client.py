@@ -519,11 +519,6 @@ def delete_workout(workout_id) -> None:
     _api(f"/workout-service/workout/{workout_id}", method="DELETE")
 
 
-def delete_schedule(schedule_id) -> None:
-    """Unschedule a workout from the calendar (the saved workout stays)."""
-    _api(f"/workout-service/schedule/{schedule_id}", method="DELETE")
-
-
 def fetch_workout_detail(workout_id) -> dict:
     """Structure of a planned workout: name, coach description (Runna's free-text
     guidance, e.g. 'no faster than 7:15/km, a limit not a target'), and steps with
