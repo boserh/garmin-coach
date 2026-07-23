@@ -266,6 +266,16 @@ def fetch_activities(limit: int = 30) -> list:
     )
 
 
+def fetch_activity(activity_id) -> dict:
+    """The full detail DTO for one activity (``/activity-service/activity/{id}``) — its
+    summary (duration/distance/HR/load/type/start) for resyncing a single stored activity
+    that may be older than the recent-activities window (ST-15). The summary lives nested
+    under ``summaryDTO``/``activityTypeDTO`` here, unlike the flat activity-list rows.
+    Returns {} on error."""
+    d = _safe(_api, f"/activity-service/activity/{activity_id}")
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
 def fetch_calendar(year: int, month_index: int):
     """Raw calendar for a month. Garmin's month index is 0-based."""
     return _safe(_api, f"/calendar-service/year/{year}/month/{month_index}")

@@ -62,6 +62,13 @@ def _remember_payload(key: tuple, payload: Payload) -> None:
         _recent_payload.pop(k, None)
 
 
+def _drop_user_payload(user_id: int) -> None:
+    """Invalidate the brief payload reuse-memo for a user after a manual resync (ST-15), so a
+    following ``/report`` doesn't serve stale pre-resync data out of the 30s reuse window."""
+    for k in [k for k in _recent_payload if k[0] == user_id]:
+        _recent_payload.pop(k, None)
+
+
 def _fetch_days(dates_to_fetch: List[dt.date]) -> dict:
     """Fetch several day summaries in ONE threadpool hop (PERF-04b): login is
     already done, so batching avoids a round trip through anyio's pool per day."""
@@ -239,6 +246,35 @@ def daily_summary(date: dt.date) -> dict:
     return result
 
 
+def _attach_detail(row: dict, activity_id) -> bool:
+    """Fetch and attach the per-sport detail onto ``row`` in place — a strength session's
+    exercise sets, or a run/ride pace-or-speed ``series``. Returns True when a Garmin detail
+    call was actually made, so a batch loop can space subsequent fetches. Shared by the
+    recent-activities fetch and the single-activity resync (ST-15).
+
+    EP-10 phase 1: cycling gets the same series treatment (speed/power, not pace) — reuse
+    NF-05's sport bucket rather than hand-rolling a second keyword list."""
+    typ = row.get("type") or ""
+    if not activity_id:
+        return False
+    if typ == "strength_training":
+        ex = client.fetch_exercise_summary(activity_id)
+        if ex:
+            row["exercises"] = ex
+        return True
+    if "run" in typ:
+        sr = client.fetch_activity_series(activity_id, sport="running")
+        if sr:
+            row["series"] = sr
+        return True
+    if sport_bucket(typ) == "bike":
+        sr = client.fetch_activity_series(activity_id, sport="cycling")
+        if sr:
+            row["series"] = sr
+        return True
+    return False
+
+
 def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
     """Build clean activity rows paired with their Garmin id (for persistence).
     The row dict itself keeps the exact public shape — no id leaks into it."""
@@ -258,25 +294,45 @@ def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
             "max_hr": a.get("maxHR"),
             "load": a.get("activityTrainingLoad"),
         }
-        if row["type"] == "strength_training" and a.get("activityId"):
-            ex = client.fetch_exercise_summary(a["activityId"])
-            if ex:
-                row["exercises"] = ex
-            time.sleep(0.3)
-        elif "run" in (row["type"] or "") and a.get("activityId"):
-            sr = client.fetch_activity_series(a["activityId"], sport="running")
-            if sr:
-                row["series"] = sr
-            time.sleep(0.3)
-        # EP-10 phase 1: cycling gets the same series treatment (speed/power, not pace) —
-        # reuse NF-05's sport bucket rather than hand-rolling a second keyword list.
-        elif sport_bucket(row["type"]) == "bike" and a.get("activityId"):
-            sr = client.fetch_activity_series(a["activityId"], sport="cycling")
-            if sr:
-                row["series"] = sr
+        if _attach_detail(row, a.get("activityId")):
             time.sleep(0.3)
         out.append((a.get("activityId"), row))
     return out
+
+
+def _row_from_detail(a: dict) -> dict:
+    """Build an activity row (the shape ``_activity_rows`` produces) from the single-activity
+    detail DTO (``client.fetch_activity``), whose summary lives under ``summaryDTO`` /
+    ``activityTypeDTO`` rather than the flat keys the activity-list endpoint uses. Falls back
+    to the flat keys so it also copes with a list-shaped dict."""
+    summary = _g(a, "summaryDTO") or {}
+
+    def pick(key):
+        v = summary.get(key)
+        return v if v is not None else a.get(key)
+
+    return {
+        "date": (pick("startTimeLocal") or "")[:10],
+        "type": _g(a, "activityTypeDTO", "typeKey") or _g(a, "activityType", "typeKey"),
+        "dur_min": round((pick("duration") or 0) / 60, 1),
+        "dist_km": round((pick("distance") or 0) / 1000, 2),
+        "avg_hr": pick("averageHR"),
+        "max_hr": pick("maxHR"),
+        "load": pick("activityTrainingLoad"),
+    }
+
+
+def _fetch_activity_row(activity_id) -> Optional[dict]:
+    """Login + fetch one activity's detail and enrich it with series/exercises — the blocking
+    half of :func:`resync_activity`, run in a single threadpool hop. None if Garmin returns
+    nothing for the id."""
+    login()
+    a = client.fetch_activity(activity_id)
+    if not a:
+        return None
+    row = _row_from_detail(a)
+    _attach_detail(row, activity_id)
+    return row
 
 
 def activity_summary(limit: int = 30) -> List[dict]:
@@ -406,3 +462,77 @@ async def build_payload_cached(
         await session.commit()
         _remember_payload(reuse_key, payload)
         return payload, new_activities
+
+
+# ---------- MANUAL RESYNC (ST-15) ----------
+
+MAX_RESYNC_DAYS = 31   # hard cap on a single range resync — bound the Garmin request burst
+
+
+async def resync_days(
+    session, user_id: int, dates: List[dt.date]
+) -> Tuple[int, int]:
+    """Force-refetch ``daily_metrics`` for these dates and upsert over (ST-15).
+
+    Unlike ``build_payload_cached`` this ignores the DB day-cache entirely — the whole point
+    is to overwrite a day that was stored wrong or incomplete. Only days that come back with
+    real data are written; an empty day (watch never synced / future date) is skipped rather
+    than nulling over a previously-good row. Returns ``(written, requested)``. Runs under the
+    per-user fetch lock, and every underlying Garmin call goes through ``client._api`` (the
+    ``GARMIN_RPS`` rate-limiter + 429-retry are inherited for free)."""
+    from app.garmin import repository  # local import to avoid an import cycle
+
+    if not dates:
+        return 0, 0
+    dates = list(dates)
+    async with _user_fetch_lock(user_id):
+        await run_in_threadpool(login)
+        fetched = await run_in_threadpool(_fetch_days, dates)
+        written = 0
+        for d in dates:
+            data = fetched.get(d.isoformat())
+            if not data:
+                continue
+            summary = DailySummary(**data)
+            if summary.has_data:
+                await repository.upsert_daily(session, user_id, summary)
+                written += 1
+        await session.commit()
+        _drop_user_payload(user_id)
+    logger.info(f"RESYNC days user={user_id} wrote {written}/{len(dates)}")
+    return written, len(dates)
+
+
+async def resync_activity(session, user_id: int, activity_db_id: int):
+    """Re-fetch one stored activity's summary (+ series/exercises) from Garmin and overwrite
+    its row (ST-15).
+
+    Works for an activity older than the recent-activities window: it fetches by the stored
+    Garmin ``activity_id`` directly, not by scanning the last N activities. Never creates a
+    duplicate (upsert keys on ``activity_id``); ``subjective``/``analysis``/``step_match`` are
+    left untouched, and a transient series/exercises miss keeps the previously-stored value
+    instead of nulling it. Returns the updated ORM row, or None if the id isn't this user's /
+    carries no Garmin id / Garmin returned nothing. Runs under the per-user fetch lock (the
+    ``client._api`` rate-limiter + 429-retry are inherited)."""
+    from app.garmin import repository  # local import to avoid an import cycle
+
+    act = await repository.get_activity(session, user_id, activity_db_id)
+    if act is None or not act.activity_id:
+        return None
+    activity_id = act.activity_id
+    async with _user_fetch_lock(user_id):
+        row = await run_in_threadpool(_fetch_activity_row, activity_id)
+        if row is None:
+            return None
+        # Preserve a good series/exercises when this fetch produced none (transient error, or
+        # a non-run/ride that never carried one) — never null over stored data.
+        if row.get("series") is None and act.series is not None:
+            row["series"] = act.series
+        if row.get("exercises") is None and act.exercises is not None:
+            row["exercises"] = act.exercises
+        await repository.upsert_activity(session, user_id, activity_id, row)
+        await session.commit()
+        _drop_user_payload(user_id)
+    await session.refresh(act)
+    logger.info(f"RESYNC activity user={user_id} id={activity_db_id} garmin={activity_id}")
+    return act

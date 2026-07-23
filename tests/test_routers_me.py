@@ -89,3 +89,73 @@ def test_me_export_empty_history_is_valid_zip(client):
     assert json.loads(zf.read("plans.json")) == []
 
 
+# ---- ST-15: manual resync ----
+
+def _seed_activity(user_id, activity_id=111):
+    import anyio
+
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+
+    async def seed():
+        async with async_session_maker() as s:
+            s.add(ActivityRecord(user_id=user_id, activity_id=activity_id,
+                                 date="2026-06-21", type="running"))
+            await s.commit()
+
+    anyio.run(seed)
+
+
+def _activity_row_id(user_id):
+    import anyio
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+
+    async def get():
+        async with async_session_maker() as s:
+            return (await s.execute(
+                select(ActivityRecord.id).where(ActivityRecord.user_id == user_id)
+            )).scalar_one()
+
+    return anyio.run(get)
+
+
+def test_resync_other_users_activity_404(client):
+    """ST-15 AC: resyncing an activity that isn't yours → 404 (never touches it)."""
+    aid, bid = _seed_two_users_with_data()
+    _seed_activity(bid)                     # bob owns the activity
+    bob_row = _activity_row_id(bid)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{bob_row}/resync", follow_redirects=False)
+    assert r.status_code == 404
+
+
+def test_resync_days_range_cap_rejected(client):
+    """ST-15 AC: a range over 31 days is rejected with a human banner, no Garmin call."""
+    _seed_two_users_with_data()
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post("/me/resync-days",
+                    data={"date_from": "2026-01-01", "date_to": "2026-12-31"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "resync_error=range" in r.headers["location"]
+
+
+def test_resync_days_bad_date_rejected(client):
+    _seed_two_users_with_data()
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post("/me/resync-days", data={"date_from": "not-a-date"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "resync_error=format" in r.headers["location"]
+
+
+def test_resync_days_requires_login(client):
+    r = client.post("/me/resync-days", data={"date_from": "2026-06-21"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "/login" in r.headers["location"]
+
+

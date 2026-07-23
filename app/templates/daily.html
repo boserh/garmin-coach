@@ -21,6 +21,27 @@
     <p class="eyebrow">Мої дані</p>
     <h1 class="title" style="font-size:1.7rem">Відновлення</h1>
 
+    {% if resync_banner %}
+      {% if resync_banner.ok %}
+        <div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔄 Ресинк готовий: оновлено {{ resync_banner.written }} з {{ resync_banner.requested }} дн.</div>
+      {% elif resync_banner.error == 'range' %}
+        <div class="note" style="max-width:none;border-left:3px solid #f7768e">Діапазон завеликий — максимум 31 день за раз.</div>
+      {% else %}
+        <div class="note" style="max-width:none;border-left:3px solid #f7768e">Невірний формат дати.</div>
+      {% endif %}
+    {% endif %}
+
+    <details class="resync" style="margin:.4rem 0 1rem">
+      <summary style="cursor:pointer;color:var(--faint);font-size:.85rem">🔄 Ресинк діапазону днів з Garmin</summary>
+      <form method="post" action="/me/resync-days"
+            style="display:flex;flex-wrap:wrap;gap:.6rem;align-items:end;margin-top:.7rem">
+        <label style="font-size:.8rem;color:var(--faint)">з<br><input type="date" name="date_from" required></label>
+        <label style="font-size:.8rem;color:var(--faint)">по (необов'язково)<br><input type="date" name="date_to"></label>
+        <button type="submit" class="btn-ghost">Оновити</button>
+      </form>
+      <div class="hint">Перезавантажує дані відновлення з Garmin поверх збережених. До 31 дня за раз.</div>
+    </details>
+
     {% include "_hero_ring.html" %}
 
     {% if charts %}

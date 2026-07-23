@@ -256,6 +256,13 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
      box-shadow:0 8px 20px -8px rgba(122,162,247,.55)}
 .btn:hover{filter:brightness(1.06);box-shadow:0 10px 26px -8px rgba(122,162,247,.7)}
 .btn:active{transform:translateY(1px)}
+/* ST-15: a quiet secondary action (resync buttons) — no gradient, no shadow */
+.btn-ghost{padding:.5rem 1.05rem;border:1px solid var(--line-2);border-radius:10px;
+     background:var(--surface);color:var(--ink);font:inherit;font-weight:600;font-size:.85rem;
+     cursor:pointer;transition:filter .12s,border-color .12s}
+.btn-ghost:hover{filter:brightness(1.1);border-color:var(--accent,#7aa2f7)}
+.btn-ghost:active{transform:translateY(1px)}
+.btn-ghost:disabled{opacity:.55;cursor:default}
 .saved{color:var(--easy);margin:1rem 0;font-size:.9rem}
 .err{color:#f7768e;font-size:.85rem}
 

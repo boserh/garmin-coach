@@ -9,8 +9,8 @@ import math
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +30,8 @@ from app.db.models import (
     User,
 )
 from app.dependencies import get_session
-from app.garmin import repository
+from app.garmin import repository, service
+from app.garmin.runtime import user_runtime
 from app.routers.admin import INDEX_COLS
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -643,6 +644,63 @@ async def me_export(
     )
 
 
+# ---- ST-15: manual resync of one activity / a range of days ----
+
+def _parse_resync_range(date_from: str, date_to: str):
+    """Validate a resync range from the form. Returns ``(dates, error)`` — ``dates`` is the
+    inclusive day list (ascending), ``error`` one of ``"format"``/``"range"`` or None. A
+    missing ``date_to`` means a single day; a reversed range is swapped; a span above
+    ``service.MAX_RESYNC_DAYS`` is rejected."""
+    try:
+        start = dt.date.fromisoformat(date_from)
+        end = dt.date.fromisoformat(date_to) if date_to else start
+    except (ValueError, TypeError):
+        return None, "format"
+    if end < start:
+        start, end = end, start
+    span = (end - start).days + 1
+    if span > service.MAX_RESYNC_DAYS:
+        return None, "range"
+    return [start + dt.timedelta(days=i) for i in range(span)], None
+
+
+@router.post("/me/activities/{row_id}/resync")
+async def me_resync_activity(
+    row_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-15: re-pull one activity's summary/series/exercises from Garmin and overwrite the
+    stored row (no duplicate). Runs in the user's Garmin runtime — an MFA gate propagates to
+    the app-level handler (409 + "finish login in /settings"), not a stack trace. 404 if the
+    id isn't this user's."""
+    async with user_runtime(session, user):
+        act = await service.resync_activity(session, user.id, row_id)
+    if act is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    return RedirectResponse(f"/me/activities/{row_id}?resynced=1", status_code=303)
+
+
+@router.post("/me/resync-days")
+async def me_resync_days(
+    date_from: str = Form(...),
+    date_to: str = Form(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-15: force-refetch ``daily_metrics`` for a range of days (hard-capped at
+    ``service.MAX_RESYNC_DAYS``) and upsert over. Runs in the user's Garmin runtime (MFA →
+    the app-level 409 flow). Redirects back to the daily view with a result banner."""
+    dates, error = _parse_resync_range(date_from, date_to)
+    if error:
+        return RedirectResponse(f"/me/daily_metrics?resync_error={error}", status_code=303)
+    async with user_runtime(session, user):
+        written, requested = await service.resync_days(session, user.id, dates)
+    return RedirectResponse(
+        f"/me/daily_metrics?resynced={written}&of={requested}", status_code=303
+    )
+
+
 @router.get("/me", response_class=HTMLResponse)
 async def me_index(
     request: Request,
@@ -669,6 +727,9 @@ async def me_table(
     days: int = Query(0, ge=0),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    resynced: int = Query(-1),          # ST-15: days written by a just-run range resync
+    of: int = Query(0),                 # ST-15: days requested in that resync
+    resync_error: str = Query(""),      # ST-15: "format" | "range"
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -703,11 +764,17 @@ async def me_table(
         charts, first_date, last_date = await _daily_trends(session, user.id)
         total = await _count(session, model, user.id)
         hero = _recovery_ring(days[0]) if offset == 0 and days else None
+        resync_banner = None
+        if resync_error:
+            resync_banner = {"ok": False, "error": resync_error}
+        elif resynced >= 0:
+            resync_banner = {"ok": True, "written": resynced, "requested": of}
         return templates.TemplateResponse(
             request, "daily.html",
             {"days": days, "charts": charts, "first_date": first_date, "last_date": last_date,
              "hero": hero, "user": user, "tables": list(TABLES), "base": "/me", "token": "",
-             "limit": limit, "offset": offset, "total": total},
+             "limit": limit, "offset": offset, "total": total,
+             "resync_banner": resync_banner},
         )
     if table == "report_logs":
         reports = await _report_cards(session, user.id, limit, offset)
@@ -752,6 +819,7 @@ async def me_row(
     table: str,
     row_id: int,
     request: Request,
+    resynced: int = Query(0),           # ST-15: 1 right after a successful activity resync
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -792,7 +860,8 @@ async def me_row(
         return templates.TemplateResponse(
             request, "activity.html",
             {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
-             "analysis": obj.analysis, "user": user, "base": "/me", "token": ""},
+             "analysis": obj.analysis, "user": user, "base": "/me", "token": "",
+             "resynced": bool(resynced)},
         )
 
     if table == "report_logs":
