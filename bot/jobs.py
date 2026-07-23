@@ -21,6 +21,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from app import baselines, gear, race, records, sleepnudge, stepmatch, weather
+from app import format as fmt
 from app.analysis import delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
@@ -626,8 +627,6 @@ def _adapt_ops_dump(edit) -> str:
     )
 
 
-_DOW_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-
 _TYPE_UK = {
     "easy": "легкий біг", "long": "довга пробіжка", "tempo": "темпова",
     "intervals": "інтервали", "rest": "відпочинок", "cross": "кросс-тренування",
@@ -640,7 +639,7 @@ def _dow_label(iso: str) -> str:
         d = dt.date.fromisoformat(iso)
     except (ValueError, TypeError):
         return iso or "?"
-    return f"{_DOW_UK[d.weekday()]} {iso[5:]}"
+    return f"{fmt.WEEKDAYS_UK[d.weekday()]} {iso[5:]}"
 
 
 def _type_label(t: Optional[str]) -> str:

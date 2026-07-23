@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import format as fmt
 from app import weather
 from app.analysis.service import (
     ADJUST_LEVELS,
@@ -187,21 +188,15 @@ def _est_minutes(steps, anchor: Optional[float] = None) -> Optional[int]:
     return int(round(secs / 60.0))
 
 
-_DOW_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-
-
 def _dow(iso: str) -> str:
     """ISO date → Ukrainian weekday abbreviation."""
-    try:
-        return _DOW_UK[dt.date.fromisoformat(iso).weekday()]
-    except (ValueError, TypeError):
-        return ""
+    return fmt.dow_abbr(iso)
 
 
 def _dm(iso: str) -> str:
     """ISO date → 'day month' (7 лип)."""
     try:
-        return _fmt_day(dt.date.fromisoformat(iso))
+        return fmt.day_month(iso)
     except (ValueError, TypeError):
         return iso
 
@@ -345,14 +340,6 @@ async def _cached_forecast_week(lat: float, lon: float):
     return forecast
 
 
-_MONTHS_UK = ["січ", "лют", "бер", "кві", "тра", "чер",
-              "лип", "сер", "вер", "жов", "лис", "гру"]
-
-
-def _fmt_day(d: dt.date) -> str:
-    return f"{d.day} {_MONTHS_UK[d.month - 1]}"
-
-
 def _by_week(workouts):
     """Group workouts into **Monday–Sunday calendar weeks** (by date, not the plan's
     ``week`` field), ordered and numbered sequentially. Returns
@@ -370,7 +357,8 @@ def _by_week(workouts):
     for i, monday in enumerate(sorted(k for k in weeks if k is not None), 1):
         sunday = monday + dt.timedelta(days=6)
         iso_key = monday.strftime("%G-W%V")
-        out.append((i, f"{_fmt_day(monday)} – {_fmt_day(sunday)}", iso_key, weeks[monday]))
+        label = f"{fmt.day_month(monday)} – {fmt.day_month(sunday)}"
+        out.append((i, label, iso_key, weeks[monday]))
     if None in weeks:   # undated (shouldn't happen) — keep them visible at the end
         out.append((len(out) + 1, "", None, weeks[None]))
     return out
