@@ -484,7 +484,10 @@ async def test_query_activities_filters_and_scopes(session):
 
 
 async def test_query_activities_caps_at_ask_max_rows(session, monkeypatch):
-    monkeypatch.setattr(repository, "ASK_MAX_ROWS", 3)
+    # B1: ASK_MAX_ROWS is read internally by query_activities in the repository.core
+    # submodule, so patch it at the definition site (patching the facade re-export wouldn't
+    # reach the in-module reference).
+    monkeypatch.setattr(repository.core, "ASK_MAX_ROWS", 3)
     for i in range(1, 6):
         await repository.upsert_activity(session, U1, i, {
             "date": f"2026-06-{i:02d}", "type": "running", "dist_km": 5.0})
