@@ -10,7 +10,7 @@ may do (window + adjust-level + weather-action filters). Split out of the old fl
 import datetime as dt
 import json
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.analysis.cache import _build_fitness_snapshot, _build_multisport
 from app.analysis.client import (
@@ -63,6 +63,40 @@ def _block_end(start_date: Optional[str], weeks: int) -> Optional[str]:
 _WD_SLUGS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
+def _weeks_span(start: Optional[str], end: Optional[str]) -> int:
+    """Inclusive week count covered by ``[start, end]`` — mirrors the numbering
+    ``repository.add_strength_workouts`` computes internally, so a generated progression's
+    length lines up with how many weekly occurrences actually get placed."""
+    try:
+        s = dt.date.fromisoformat(start or "")
+        e = dt.date.fromisoformat(end or "")
+    except (ValueError, TypeError):
+        return 1
+    if e < s:
+        return 1
+    return (e - s).days // 7 + 1
+
+
+def _fill_progression_gaps(sessions: list) -> list:
+    """EP-03: forward/back-fill a week-by-week progression's holes (a week whose session
+    didn't survive ``_sanitize_strength``) with the nearest valid neighbour, so one bad
+    week never leaves a silent gap mid-block. All-``None`` stays all-``None``."""
+    filled = list(sessions)
+    last = None
+    for i, s in enumerate(filled):
+        if s is None:
+            filled[i] = last
+        else:
+            last = s
+    nxt = None
+    for i in range(len(filled) - 1, -1, -1):
+        if filled[i] is None:
+            filled[i] = nxt
+        else:
+            nxt = filled[i]
+    return filled
+
+
 def _existing_custom_strength(workouts, intake) -> dict:
     """Weekday slug → an already-generated ``strength_plan`` from the plan's current custom
     strength rows, so an extension reuses them verbatim (no Claude call). Only weekdays the
@@ -93,8 +127,14 @@ async def _add_plan_strength(
     on push) and free-text "інше…" sessions built from scratch. ``start``/``end`` bound the
     window (an extension passes the new block); ``week_offset`` continues week numbering.
     Confirmed setup-form previews (``custom_generated``) are reused verbatim, skipping the
-    Claude call; with ``reuse_only`` a free-text weekday with no reusable session is skipped
-    rather than regenerated (used by extensions, which reuse the first block's sessions)."""
+    Claude call — and, since a preview is inherently a single approved session, that
+    weekday stays the pre-EP-03 "same session every week" shape rather than progressing
+    (the user previewed exactly that session, nothing else). With ``reuse_only`` a
+    free-text weekday with no reusable session is skipped rather than regenerated (used by
+    extensions, which reuse the first block's sessions). Otherwise (fresh generation, no
+    confirmed preview), EP-03: a free-text weekday's session PROGRESSES week to week —
+    ``generate_strength_progression_with_stats`` returns one session per week (weight/reps
+    growth + a deload every 4th week) when the window spans more than one week."""
     from app.garmin import repository
 
     strength = (intake or {}).get("strength") or {}
@@ -103,6 +143,7 @@ async def _add_plan_strength(
     custom_generated = strength.get("custom_generated") or {}
     if not (strength.get("enabled") and (assignments or custom)):
         return 0
+    weeks_span = _weeks_span(start or plan.start_date, end or plan.target_date)
     try:
         from fastapi.concurrency import run_in_threadpool
 
@@ -145,12 +186,23 @@ async def _add_plan_strength(
                 continue   # extension with nothing to reuse — skip rather than pay
             if key not in gen_cache:
                 try:
-                    sess, _ = await _run_claude(
-                        generate_strength_with_stats,
-                        {"description": desc, "fitness": fitness or None,
-                         "exercise_categories": exercises.CATEGORIES},
-                        api_key, model)
-                    gen_cache[key] = repository._sanitize_strength(sess)
+                    if weeks_span > 1:
+                        sessions, _ = await _run_claude(
+                            generate_strength_progression_with_stats,
+                            {"description": desc, "fitness": fitness or None,
+                             "exercise_categories": exercises.CATEGORIES,
+                             "weeks": weeks_span},
+                            api_key, model)
+                        progression = _fill_progression_gaps(
+                            [repository._sanitize_strength(s) for s in sessions])
+                        gen_cache[key] = progression if any(progression) else None
+                    else:
+                        sess, _ = await _run_claude(
+                            generate_strength_with_stats,
+                            {"description": desc, "fitness": fitness or None,
+                             "exercise_categories": exercises.CATEGORIES},
+                            api_key, model)
+                        gen_cache[key] = repository._sanitize_strength(sess)
                 except Exception:
                     logger.exception(f"PLAN strength gen failed plan={plan.id}")
                     gen_cache[key] = None
@@ -222,6 +274,56 @@ def generate_strength_with_stats(
         except Exception as e:
             logger.error(f"STRENGTH gen parse failed: {e}")
             raise AnalystError("Не вдалось згенерувати силову з опису. Спробуй інакше.")
+
+
+def generate_strength_progression_with_stats(
+    context: dict, api_key: Optional[str] = None, model: Optional[str] = None,
+) -> Tuple[List[StrengthSession], CallStats]:
+    """EP-03: generate a WEEK-BY-WEEK progression of strength sessions from a free-text
+    description — ``context["weeks"]`` sets how many (weight/reps growth, deload every
+    4th week; see SYSTEM_STRENGTH_GEN). Returns (one StrengthSession per week, stats).
+
+    Degrades gracefully rather than erroring: a reply with fewer sessions than ``weeks``
+    (or the old single-session shape, if the model ignores the array format) is padded by
+    repeating the last/only session — the pre-EP-03 "same session every week" behaviour,
+    never a failed generation. Raises AnalystError only when nothing parses at all."""
+    model = model or MODEL_PLAN_GEN
+    weeks = max(1, int(context.get("weeks") or 1))
+
+    def _parse(t: str) -> List[StrengthSession]:
+        s = t.strip()
+        i, j = s.find("{"), s.rfind("}")
+        if i != -1 and j != -1:
+            s = s[i:j + 1]
+        data = json.loads(s)
+        if isinstance(data, dict) and isinstance(data.get("weeks"), list) and data["weeks"]:
+            sessions = [StrengthSession(**w) for w in data["weeks"]]
+        else:
+            sessions = [StrengthSession(**data)]  # model returned one session — replicate it
+        if len(sessions) < weeks:
+            sessions = sessions + [sessions[-1]] * (weeks - len(sessions))
+        return sessions[:weeks]
+
+    # Progression responses are N sessions long — give it real room (same ceiling as the
+    # main plan generation, an equally infrequent Opus-affordable call).
+    text, stats = _complete(model, SYSTEM_STRENGTH_GEN, context, "plan", api_key,
+                            max_tokens=16000)
+    try:
+        return _parse(text), stats
+    except Exception:
+        retry = dict(context, _note=(
+            "Поверни ЛИШЕ валідний JSON за схемою — масив weeks довжиною "
+            f"{weeks}, якщо weeks>1 у вхідних даних."))
+        text, st2 = _complete(model, SYSTEM_STRENGTH_GEN, retry, "plan", api_key,
+                              max_tokens=16000)
+        stats.input_tokens += st2.input_tokens
+        stats.output_tokens += st2.output_tokens
+        stats.cost_usd += st2.cost_usd
+        try:
+            return _parse(text), stats
+        except Exception as e:
+            logger.error(f"STRENGTH progression gen parse failed: {e}")
+            raise AnalystError("Не вдалось згенерувати прогресію силової з опису. Спробуй інакше.")
 
 
 async def run_plan_generation(

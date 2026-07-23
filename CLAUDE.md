@@ -391,8 +391,48 @@ Optional, with defaults:
   `strength_templates[].exercises` (`read_exercises`) as a structural seed for "similar to
   Day 1/2" requests. `_pushable` allows a `strength_plan` session. The older **clone** path
   (`garmin_template_id` + `swap_exercise` → `exercise_edits`) is kept only for scheduling a
-  saved Day 1/Day 2 **as-is** or editing such a cloned day. **Not yet**: AI progression on the
-  exercises (weights/sets over the plan), a setup-form surface for generation (chat-only).
+  saved Day 1/Day 2 **as-is** or editing such a cloned day. AI progression on the exercises is
+  now wired — see EP-03 below. **Still not yet**: a setup-form surface for generation
+  (chat-only).
+
+**Strength progression (EP-03)**: a generated (`strength_plan`) session used to repeat the
+SAME workout every week of the plan — CLAUDE.md's own gap note. Scope is deliberately narrow:
+progression applies ONLY to **from-scratch, generated** sessions; a **clone** day
+(`garmin_template_id`, Day 1/Day 2) is never mutated week to week — the template belongs to
+the user, and silently drifting its content would desync it from what they see in their own
+Garmin workout list. `SYSTEM_STRENGTH_GEN` now accepts an optional `weeks` count in its
+context: absent/1 → the original single-session JSON shape (unchanged, still what the setup
+form's ST-05 preview and a one-off "додай силову" chat generation use); `weeks > 1` → a
+`{"weeks": [session, ...]}` array, one session per week, with explicit rules (weight +2.5-5kg
+OR +1 set/+1-2 reps for a bodyweight exercise; a **deload** every 4th week, -30-40% volume,
+never dropping the exercise itself). `plans.generate_strength_progression_with_stats` parses
+that array (`app/analysis/plans.py`) and **degrades gracefully rather than erroring**: a reply
+shorter than `weeks` is padded by repeating its last session, and a reply that ignores the
+array format entirely (one bare session) is replicated across every week — the exact pre-EP-03
+behaviour, never a failed generation. `_add_plan_strength` computes the window's week count
+(`_weeks_span`) and calls the progression generator only when it's >1 (a 1-week block, or an
+extension's `reuse_only` reuse-from-existing path, stays on the plain single-session call — an
+extension never pays for regeneration, matching NF-*'s existing "reuse, don't regenerate"
+pattern). Each week's session is independently run through `repository._sanitize_strength`
+(a hallucinated category in week 6 can't reach the watch any more than in week 1);
+`_fill_progression_gaps` forward/back-fills any week that failed sanitising with its nearest
+valid neighbour, so one bad week never leaves a silent gap mid-block. `repository.
+add_strength_workouts`'s `custom` param now accepts EITHER the old single dict (same session
+every week — confirmed previews and extension reuse) OR a **list** (progression — the Nth
+entry lands on the Nth weekly occurrence of that weekday within THIS call's own window,
+clamped to the last entry if the window outruns the list). Because progression lives entirely
+in **per-date `PlannedWorkout` rows** (never a shared array), everything downstream needed
+zero changes: `/plan`'s accordion already reads each row's own `strength_plan`, the rolling
+push window already pushes each date's own row, and a chat edit (`swap_exercise` or a
+`modify`-with-`strength` regeneration) already targets one date → touches only that week,
+never its siblings. One real fix `plan_sync.push_workout` needed: the pushed workout name
+used to skip the `· Wn` suffix whenever the session carried its own `name` (`sp.get("name") or
+(...)"` — the `or` short-circuited past it) — since every week of a progression HAS a name,
+every week was pushing under the **identical** Garmin workout name. Fixed to always append
+the week suffix: `🏋️ <name> · W3`. Not yet: a facts-based closed loop (Garmin doesn't expose
+completed sets/reps, so progression is open-loop — honestly documented, not hidden) — a future
+story if a completed-sets endpoint turns up. `tests/test_strength_progression.py`,
+`tests/test_strength_preview.py`.
 
 ## Structure
 
@@ -426,6 +466,7 @@ app/
   deploy.py            OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
   race.py              EP-05: race-pack target/distance mapping + narration-context builder
   gear.py              NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
+  gap.py               EP-15: grade-adjusted pace (GAP) — elevation smoothing + Minetti cost model
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     prompts.py         SYSTEM + SYSTEM_ASK_TOOLS prompts
@@ -931,6 +972,34 @@ needed no change: a cycling step's `kind="ride"` is outside `_WORKING_KINDS =
 (same as an all-HR-zone easy run today) — confirmed by reading, not by adding a redundant
 test. `tests/test_workout_export.py`, `tests/test_matching.py`, `tests/
 test_cycling_intake.py`, `tests/test_routers.py::test_plan_cycling_*`.
+
+**Grade-adjusted pace / GAP (EP-15)**: a raw min/km split on a hilly route misrepresents
+effort — "6:10/km" climbing can be a harder effort than "5:30/km" flat, and the old series
+had no altitude to tell the two apart. `app/gap.py` is **pure Python, zero-LLM**: `series`
+gained an `"e"` field (elevation, metres) on both the live path
+(`client.fetch_activity_series` — a new `directElevation` descriptor lookup, same
+resolve-by-key mechanics as speed/HR/power; `None` where the endpoint/watch has none, never
+a crash) and the FIT backfill (`export_import.read_fit_activity`/`_record_altitude` —
+`enhanced_altitude` preferred, falls back to `altitude`); the disk cache key bumped to
+`series:v2:<id>` so pre-EP-15 cached series (no elevation) are treated as stale rather than
+silently "complete". `gap.smooth_elevation` rolling-means the (gap-filled) altitude series
+before any grade math — barometric altitude is noisy enough that an unsmoothed point-to-point
+grade swings wildly. `gap.gap_pace_min_km(raw_pace, grade_pct)` rescales a split by Minetti et
+al. (2002)'s energy-cost-of-running polynomial (`_cost_ratio`, clamped to a sane factor
+range so one bad point can't blow up the adjustment) — the same idea Strava/TrainingPeaks
+use. `app.analysis.reports._segments` computes each segment's `gain_m`/`loss_m`/`grade_pct`/
+`gap_pace` when the series carries elevation (running only — a ride's `avg_speed_kmh` has no
+pace to adjust); `activity_payload` adds a whole-activity `elevation_gain_m`/
+`elevation_loss_m`/`hilly` (>10 m/km average climb — the same threshold `SYSTEM_ACTIVITY`
+uses to decide whether to mention terrain at all; a flat run or a series with no elevation
+gets exactly the old segments, no GAP fields, no crash). EP-01 plan-vs-actual matching
+(`app.garmin.matching`) reuses `gap.effective_pace_min_km` for `match_info.actual_pace_minkm`
+on a hilly route — "on pace" is judged by GAP, not the raw split, so a climb doesn't read as
+blown pacing (falls straight through to the raw pace on a flat route or a series with no
+elevation, unchanged from before). The web detail page (`app.charts.run_charts`) gets a third
+`elev` sparkline whenever the series carries elevation, with a matching hover-tooltip format
+in `detail.html`. `tests/test_gap.py`, `tests/test_activity_series.py`,
+`tests/test_export_import.py`, `tests/test_matching.py`.
 
 **Compare-past-self (NF-06)**: "am I fitter than a year ago?" — the deep GDPR-backfilled history
 made visible. `app/compare.py` is the **pure-Python** part: `window_pair(today, weeks, years_back)`

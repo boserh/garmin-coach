@@ -88,6 +88,7 @@ from app.analysis.plans import (  # noqa: F401
     _plan_ops_with_stats,
     _recent_compliance,
     generate_plan_with_stats,
+    generate_strength_progression_with_stats,
     generate_strength_with_stats,
     plan_adapt_with_stats,
     plan_adjust_level,

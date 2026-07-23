@@ -195,18 +195,24 @@ def _activity_row(a: dict):
 
 
 def _series_from_points(points: list) -> list:
-    """[(dist_m, speed_mps, hr), ...] → the [{d, p, hr}] series our charts use,
-    downsampled to ~150 points (same shape as ``client.fetch_activity_series``)."""
+    """[(dist_m, speed_mps, hr, altitude_m), ...] → the [{d, p, hr, e}] series our charts
+    use, downsampled to ~150 points (same shape as ``client.fetch_activity_series``,
+    EP-15's ``e`` field included). A 3-tuple (no altitude) is accepted too, for callers
+    that never read a FIT ``altitude``/``enhanced_altitude`` field — ``e`` is then
+    ``None`` on every point, same as an old pre-backfill series."""
     pts = [p for p in points if p[1] is not None or p[2] is not None]
     if len(pts) < 2:
         return []
     step = max(1, len(pts) // 150)
     out = []
-    for d, s, hr in pts[::step]:
+    for p in pts[::step]:
+        d, s, hr = p[0], p[1], p[2]
+        alt = p[3] if len(p) > 3 else None
         out.append({
             "d": round(d / 1000, 2) if isinstance(d, (int, float)) else None,
             "p": round((1000.0 / s) / 60, 2) if isinstance(s, (int, float)) and s > 0 else None,
             "hr": int(hr) if isinstance(hr, (int, float)) else None,
+            "e": round(alt, 1) if isinstance(alt, (int, float)) else None,
         })
     return out
 
@@ -243,6 +249,15 @@ def _record_speed(m):
     return s if s is not None else m.get_value("speed")
 
 
+def _record_altitude(m):
+    """A FIT ``record``'s altitude (metres) — EP-15: prefer ``enhanced_altitude`` (higher
+    precision), fall back to ``altitude``. ``None`` when the device has no barometer/GPS
+    altitude for this record — the caller treats that exactly like an old series with no
+    elevation at all."""
+    a = m.get_value("enhanced_altitude")
+    return a if a is not None else m.get_value("altitude")
+
+
 def build_targets(runs, aid_begin: dict) -> dict:
     """Map each run to its session-start timestamp (ms) via the activity index, so a FIT
     file's first-record timestamp resolves straight to a run. FIT filenames are upload ids,
@@ -276,7 +291,7 @@ def read_fit_activity(messages, resolve_target):
                 if target is None:           # not a run we need — stop reading this file
                     return None, []
             points.append((m.get_value("distance"), _record_speed(m),
-                           m.get_value("heart_rate")))
+                           m.get_value("heart_rate"), _record_altitude(m)))
     return target, points
 
 

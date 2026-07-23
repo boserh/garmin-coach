@@ -38,10 +38,16 @@ FIT-файли експорту теж мають altitude → бекфіл ст
 
 ## Acceptance criteria
 
-- [ ] Нові пробіжки мають висоту в series; старі — після backfill-команди.
-- [ ] Пласка пробіжка: GAP ≈ сирому темпу (розбіжність <2%) — санітарний тест.
-- [ ] Аналіз горбистої пробіжки згадує набір і оцінює зусилля по GAP.
-- [ ] Пробіжки без висоти (старі, без бекфілу) — аналіз як раніше, без падінь.
+- [x] Нові пробіжки мають висоту в series; старі — після backfill-команди (`import-fit-series`).
+- [x] Пласка пробіжка: GAP ≈ сирому темпу (розбіжність <2%) — санітарний тест
+      (`test_flat_grade_gap_equals_raw_pace`).
+- [x] Аналіз горбистої пробіжки згадує набір і оцінює зусилля по GAP (SYSTEM_ACTIVITY
+      instruction, gated on `hilly=true`).
+- [x] Пробіжки без висоти (старі, без бекфілу) — аналіз як раніше, без падінь.
+
+**Закрито 2026-07-23** — `app/gap.py` + `client.fetch_activity_series`/
+`export_import.read_fit_activity`/`app.analysis.reports._segments`/`app.garmin.matching`/
+`app.charts.run_charts`. Деталі — CLAUDE.md (EP-15) і `docs/backlog/README.md` (Done).
 
 ## Підводні камені
 

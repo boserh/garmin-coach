@@ -353,3 +353,35 @@ async def test_match_info_contains_pace(session):
     await session.refresh(w)
     assert w.match_info is not None
     assert w.match_info["actual_pace_minkm"] == pytest.approx(6.0, abs=0.01)
+
+
+async def test_match_info_pace_uses_gap_on_hilly_route(session):
+    """EP-15: a hilly activity's actual_pace_minkm reads as GAP-adjusted, not the raw
+    dur_min/dist_km split — the plan-vs-actual pace comparison shouldn't penalise a runner
+    for climbing."""
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, dist_km=5.0)
+    # 30 min / 5 km = 6.0 min/km raw, but climbing steadily (20 m/km, well over the 10 m/km
+    # hilly threshold) throughout → GAP should read faster than the raw split.
+    a = await _make_activity(session, YESTERDAY, dist_km=5.0, dur_min=30.0)
+    a.series = [{"d": i * 1.0, "p": 6.0, "hr": 140, "e": 100.0 + i * 20.0} for i in range(6)]
+    await session.commit()
+
+    await matching.match_activities(session, U1)
+
+    await session.refresh(w)
+    assert w.match_info["actual_pace_minkm"] < 6.0
+
+
+async def test_match_info_pace_stays_raw_on_flat_route(session):
+    """A flat activity's series (no meaningful climb) must not perturb the raw pace."""
+    plan = await _make_plan(session)
+    w = await _make_workout(session, plan, YESTERDAY, dist_km=5.0)
+    a = await _make_activity(session, YESTERDAY, dist_km=5.0, dur_min=30.0)
+    a.series = [{"d": i * 1.0, "p": 6.0, "hr": 140, "e": 100.0} for i in range(6)]
+    await session.commit()
+
+    await matching.match_activities(session, U1)
+
+    await session.refresh(w)
+    assert w.match_info["actual_pace_minkm"] == pytest.approx(6.0, abs=0.01)

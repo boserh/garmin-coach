@@ -92,8 +92,11 @@ async def push_workout(session, w):
     building from ``steps``; runs build from ``steps``."""
     if w.strength_plan:
         sp = w.strength_plan
-        name = sp.get("name") or (
-            f"🏋️ {w.description or 'Силова'}" + (f" · W{w.week}" if w.week else ""))
+        # EP-03: the week suffix must survive even when the session carries its own
+        # ``name`` (a progression's every week does) — otherwise every week of a
+        # progression pushes under the identical workout name on the watch.
+        base = sp.get("name") or w.description or "Силова"
+        name = f"🏋️ {base}" + (f" · W{w.week}" if w.week else "")
         payload = workout_export.build_strength_workout(
             name, sp.get("blocks") or [], warmup_s=sp.get("warmup_s") or 0)
     elif w.garmin_template_id:

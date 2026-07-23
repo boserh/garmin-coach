@@ -104,6 +104,7 @@
         var val = fmt === 'pace' ? pace(best.v)
                  : fmt === 'speed' ? best.v.toFixed(1) + ' км/год'
                  : fmt === 'power' ? Math.round(best.v) + ' Вт'
+                 : fmt === 'elev' ? Math.round(best.v) + ' м'
                  : Math.round(best.v) + ' уд';
         tip.textContent = val + (best.d != null ? ' · ' + best.d.toFixed(2) + ' км' : '');
       }

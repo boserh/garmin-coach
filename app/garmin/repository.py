@@ -1461,11 +1461,16 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
     ``garmin_template_id`` (cloned on push). ``snapshots`` (optional, keyed by workout id)
     caches each template's contents ({name?, exercises}) onto the row's ``strength_snapshot``
     so ``/plan`` renders the exercise accordion from the DB. ``custom`` maps a weekday slug →
-    an already-sanitised ``strength_plan`` dict (the setup form's free-text "інше…" sessions,
-    built natively on push). A weekday in both prefers the saved workout. ``start``/``end``
+    EITHER an already-sanitised ``strength_plan`` dict, placed on that weekday **every
+    week** (the pre-EP-03 shape — a confirmed setup-form preview, or a reused extension
+    session), OR (EP-03) a **list** of sanitised dicts, one per week of THIS call's window
+    (0-based: the list's Nth entry lands on the Nth weekly occurrence, clamped to the last
+    entry if the window runs longer than the list) — a week-by-week progression. A weekday
+    in both ``assignments`` and ``custom`` prefers the saved workout. ``start``/``end``
     (ISO) override the plan's date range — the open-ended extension passes the new block's
     window so strength lands only on the freshly-added weeks; ``week_offset`` continues the
-    plan's week numbering. Returns the count."""
+    plan's week numbering (independent of the progression index, which always counts from
+    THIS call's own start). Returns the count."""
     snapshots = snapshots or {}
     by_wd = {}
     for slug, t in (assignments or {}).items():
@@ -1495,9 +1500,13 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
     d = start_d
     while d <= end_d:
         wd = d.weekday()
-        week = (d - start_d).days // 7 + 1 + week_offset
+        week_idx = (d - start_d).days // 7   # 0-based, THIS call's window only
+        week = week_idx + 1 + week_offset
         t = by_wd.get(wd)
         cp = custom_by_wd.get(wd)
+        if isinstance(cp, list):
+            # EP-03 progression: pick this occurrence's week, clamped to the last entry.
+            cp = cp[min(week_idx, len(cp) - 1)] if cp else None
         if t is not None:
             session.add(PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=d.isoformat(),

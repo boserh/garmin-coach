@@ -24,15 +24,48 @@ def test_fetch_activity_series_parses_by_descriptor_key():
          patch.object(client, "_cache_get", return_value=None), \
          patch.object(client, "_cache_put"):
         s = client.fetch_activity_series(123)
-    assert s[0] == {"d": 0.1, "p": 6.67, "hr": 140}   # 100 m → 0.1 km
+    assert s[0] == {"d": 0.1, "p": 6.67, "hr": 140, "e": None}   # 100 m → 0.1 km
     assert s[1]["p"] is None          # stopped point → no pace
-    assert s[2] == {"d": 1.0, "p": 5.56, "hr": 150}
+    assert s[2] == {"d": 1.0, "p": 5.56, "hr": 150, "e": None}
 
 
 def test_fetch_activity_series_empty_on_error():
     with patch.object(client, "_api", return_value={"_error": "boom"}), \
          patch.object(client, "_cache_get", return_value=None):
         assert client.fetch_activity_series(123) == []
+
+
+# ---------- EP-15: elevation ----------
+
+_DETAILS_WITH_ELEVATION = {
+    "metricDescriptors": [
+        {"key": "directSpeed", "metricsIndex": 0},
+        {"key": "directHeartRate", "metricsIndex": 1},
+        {"key": "sumDistance", "metricsIndex": 2},
+        {"key": "directElevation", "metricsIndex": 3},
+    ],
+    "activityDetailMetrics": [
+        {"metrics": [2.5, 140.0, 100.0, 250.4]},
+        {"metrics": [2.6, 142.0, 200.0, 252.0]},
+    ],
+}
+
+
+def test_fetch_activity_series_parses_elevation_when_present():
+    with patch.object(client, "_api", return_value=_DETAILS_WITH_ELEVATION), \
+         patch.object(client, "_cache_get", return_value=None), \
+         patch.object(client, "_cache_put"):
+        s = client.fetch_activity_series(123)
+    assert s[0]["e"] == 250.4 and s[1]["e"] == 252.0
+
+
+def test_fetch_activity_series_uses_v2_cache_key():
+    with patch.object(client, "_cache_get", return_value=None) as get, \
+         patch.object(client, "_api", return_value=_DETAILS), \
+         patch.object(client, "_cache_put") as put:
+        client.fetch_activity_series(123)
+    get.assert_called_once_with("series:v2:123")
+    assert put.call_args[0][0] == "series:v2:123"
 
 
 # ---------- EP-10 phase 1: cycling series (speed/power instead of pace) ----------
@@ -57,9 +90,9 @@ def test_fetch_activity_series_cycling_uses_speed_and_power():
          patch.object(client, "_cache_get", return_value=None), \
          patch.object(client, "_cache_put"):
         s = client.fetch_activity_series(456, sport="cycling")
-    assert s[0] == {"d": 1.0, "hr": 140, "spd": 36.0, "pw": 200}
+    assert s[0] == {"d": 1.0, "hr": 140, "e": None, "spd": 36.0, "pw": 200}
     assert s[1]["spd"] is None and s[1]["pw"] == 0
-    assert s[2] == {"d": 3.0, "hr": 150, "spd": 28.8, "pw": 180}
+    assert s[2] == {"d": 3.0, "hr": 150, "e": None, "spd": 28.8, "pw": 180}
     assert "p" not in s[0]
 
 
