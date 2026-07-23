@@ -324,6 +324,26 @@ _WEATHER_HEAVY_TYPES = {"tempo", "intervals", "long"}
 # default window and keeps the "which days would the weather job flag" question consistent.
 _WEATHER_CHIP_DAYS = 7
 
+# D2: a short, process-local TTL cache for the week forecast, keyed by coordinates. Without
+# it every GET /plan is a live Open-Meteo fetch (in a threadpool) even on rapid page reloads;
+# the forecast only refreshes on a daily cadence, so a ~15-min memo removes that latency. Only
+# successful (non-empty) results are cached, so a transient outage retries on the next open
+# rather than blanking the chips for the whole TTL.
+_WEATHER_FORECAST_TTL_S = 15 * 60
+_forecast_cache: dict = {}   # {(lat, lon): (expires_monotonic, forecast)}
+
+
+async def _cached_forecast_week(lat: float, lon: float):
+    key = (lat, lon)
+    now = time.monotonic()
+    hit = _forecast_cache.get(key)
+    if hit is not None and hit[0] > now:
+        return hit[1]
+    forecast = await run_in_threadpool(weather.fetch_forecast_week, lat, lon)
+    if forecast:
+        _forecast_cache[key] = (now + _WEATHER_FORECAST_TTL_S, forecast)
+    return forecast
+
 
 _MONTHS_UK = ["січ", "лют", "бер", "кві", "тра", "чер",
               "лип", "сер", "вер", "жов", "лис", "гру"]
@@ -489,7 +509,7 @@ async def _weather_chips(user: User, workouts) -> tuple:
     live-fallback pattern as ``_strength_details``. Returns ``({date: day}, {conflict_date})``."""
     if user.latitude is None or user.longitude is None:
         return {}, set()
-    forecast = await run_in_threadpool(weather.fetch_forecast_week, user.latitude, user.longitude)
+    forecast = await _cached_forecast_week(user.latitude, user.longitude)
     if not forecast:
         return {}, set()
     by_date = {d["date"]: d for d in forecast if d.get("date")}
