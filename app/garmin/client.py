@@ -310,10 +310,13 @@ def _exercise_name(code: str) -> str:
     return code.strip("_").replace("_", " ").lower()
 
 
-def fetch_exercise_summary(activity_id) -> dict:
-    """Specific exercises and how many active sets done in a strength workout."""
+def fetch_exercise_summary(activity_id, force: bool = False) -> dict:
+    """Specific exercises and how many active sets done in a strength workout. ``force=True``
+    bypasses the disk cache and refetches (overwriting it) — for a manual resync (ST-15/ST-16)
+    of an activity whose exercises were edited in Garmin, since the cache otherwise treats a
+    completed activity's sets as immutable."""
     key = f"exercise:v2:{activity_id}"
-    raw = _cache_get(key)
+    raw = None if force else _cache_get(key)
     if raw is None:
         d = _safe(_api, f"/activity-service/activity/{activity_id}/exerciseSets")
         if isinstance(d, dict) and "_error" in d:
@@ -359,7 +362,9 @@ _SERIES_METRIC_KEYS = {
 }
 
 
-def fetch_activity_series(activity_id, max_points: int = 150, sport: str = "running") -> list:
+def fetch_activity_series(
+    activity_id, max_points: int = 150, sport: str = "running", force: bool = False
+) -> list:
     """Per-point series for one activity, for the detail-page chart / LLM segments.
 
     Reads Garmin's ``/details`` metrics, locates the columns by descriptor key (indices
@@ -368,9 +373,11 @@ def fetch_activity_series(activity_id, max_points: int = 150, sport: str = "runn
     cycling → ``[{"d": dist_km, "spd": speed_kmh, "pw": watts_or_None, "hr": bpm,
     "e": elevation_m}, ...]``. ``None`` where a point lacks the value (EP-15: ``e`` is
     ``None`` on every point when the watch/endpoint has no altitude — old series stay
-    exactly as before). Immutable → disk-cached like exercises."""
+    exactly as before). Immutable → disk-cached like exercises; ``force=True`` bypasses that
+    cache and refetches (overwriting it) for a manual resync of an edited/cropped activity
+    (ST-15/ST-16)."""
     key = f"series:v2:{activity_id}"
-    cached = _cache_get(key)
+    cached = None if force else _cache_get(key)
     if cached is not None:
         return cached
     d = _safe(

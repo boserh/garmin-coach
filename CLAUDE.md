@@ -52,6 +52,15 @@ attribution. If a tool or the server appends one anyway, **remove it** (edit the
 comment) and verify by reading the post back before considering the task done. When you
 create a PR, read its body back afterwards to confirm no attribution footer slipped in.
 
+## ⚠️ English for commits & PRs — HARD RULE (do not skip)
+
+**Commit messages (subject + body) and PR titles/descriptions must be written in English.**
+This holds regardless of the language used in the codebase's own history, in chat, or in the
+backlog tickets (those are often Ukrainian — that's fine, but git/GitHub prose is English).
+Do **not** infer the language from surrounding commits; default to English every time,
+without needing a per-task reminder. Chat replies to the user stay in the user's language;
+only the git/GitHub artifacts are English.
+
 ## ⚠️ Cost safety — HARD RULE (do not skip)
 
 **Never run anything that makes a real Anthropic API call without explicit, per-time
