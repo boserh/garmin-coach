@@ -61,16 +61,12 @@ async def _post_init(application: Application) -> None:
     ])
 
 
-def main() -> None:
-    defaults = Defaults(tzinfo=handlers.TZ)
-    app = (
-        Application.builder()
-        .token(settings.TELEGRAM_BOT_TOKEN)
-        .defaults(defaults)
-        .post_init(_post_init)
-        .build()
-    )
+def register_handlers(app: Application) -> None:
+    """Wire the product (user-facing) commands + callbacks + error handler.
 
+    The hidden system/admin commands (/deploy, /test_*) deliberately live on a SEPARATE
+    bot process — see bot.admin_main — so deploy + debug traffic stays off this one.
+    """
     app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("report", handlers.report))
     app.add_handler(CommandHandler("ask", handlers.ask))
@@ -95,15 +91,20 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
     app.add_handler(CallbackQueryHandler(handlers.plan_extend_callback, pattern=r"^planext:"))
     app.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci:"))
-    app.add_handler(CommandHandler("test_on", handlers.test_on))
-    app.add_handler(CommandHandler("test_off", handlers.test_off))
-    app.add_handler(CommandHandler("test_morning", handlers.test_morning))
-    app.add_handler(CommandHandler("test_digest", handlers.test_digest))
-    # OPS-03: admin-only remote deploy (git pull + restart). Hidden — not in the "/"
-    # command menu or /help — same treatment as the test_* debug commands.
-    app.add_handler(CommandHandler("deploy", handlers.deploy))
-    app.add_handler(CallbackQueryHandler(handlers.deploy_callback, pattern=r"^deploy:"))
     app.add_error_handler(handlers.on_error)
+
+
+def main() -> None:
+    defaults = Defaults(tzinfo=handlers.TZ)
+    app = (
+        Application.builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .defaults(defaults)
+        .post_init(_post_init)
+        .build()
+    )
+
+    register_handlers(app)
 
     # First check runs shortly after startup, then every CHECK_INTERVAL_MIN.
     # morning_job enforces the time window and the once-a-day guard itself,
