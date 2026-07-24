@@ -499,10 +499,17 @@ def _day_sections(ex: dict) -> list:
 
 
 async def _daily_cards(session, user_id, limit, offset):
+    from app import completeness
+
     rows = (await session.execute(
         select(DailyMetric).where(DailyMetric.user_id == user_id)
         .order_by(DailyMetric.date.desc()).limit(limit).offset(offset)
     )).scalars().all()
+    # ST-18: judge completeness against the fields this user actually produces (last 30 days),
+    # so a metric they never have doesn't badge every day as "incomplete".
+    expected = completeness.expected_fields(
+        await repository.read_history(session, user_id, days=30)
+    )
     out = []
     for r in rows:
         ex = r.extra or {}
@@ -522,6 +529,7 @@ async def _daily_cards(session, user_id, limit, offset):
             "rhr": ex.get("resting_hr"), "readiness": ex.get("readiness_score"),
             "auto_activities": ex.get("auto_activities"),
             "ring": ring,
+            "incomplete": completeness.labels(completeness.daily_completeness(r, expected)),
         })
     return out
 
@@ -912,11 +920,17 @@ async def me_row(
         )
 
     if table == "daily_metrics":
+        from app import completeness
         ex = obj.extra or {}
+        expected = completeness.expected_fields(
+            await repository.read_history(session, user.id, days=30)
+        )
+        incomplete = completeness.labels(completeness.daily_completeness(obj, expected))
         return templates.TemplateResponse(
             request, "day.html",
             {"m": obj, "date": _nice_date(obj.date), "hrv_color": _hrv_color(obj.hrv_status),
-             "extra": ex, "sections": _day_sections(ex), "user": user, "base": "/me", "token": ""},
+             "extra": ex, "sections": _day_sections(ex), "incomplete": incomplete,
+             "user": user, "base": "/me", "token": ""},
         )
 
     fields = [(c.name, getattr(obj, c.name))

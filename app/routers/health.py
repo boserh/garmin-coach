@@ -61,6 +61,16 @@ async def status(
         await get_state(session, user.id, service.GARMIN_ERRORS_KEY)
     )
 
+    # ST-18: how many of the last 30 stored days are incomplete (missing a key recovery
+    # field this user normally has) — the diagnostic for holes in baselines/trends.
+    from app import completeness
+    from app.garmin import repository
+    history30 = await repository.read_history(session, user.id, days=30)
+    expected = completeness.expected_fields(history30)
+    incomplete_days_30d = sum(
+        1 for r in history30 if completeness.daily_completeness(r, expected)
+    )
+
     return {
         "status": "ok",
         "provider": settings.GARMIN_PROVIDER,
@@ -74,4 +84,5 @@ async def status(
         "garmin_errors_24h": errors["count_24h"],
         "garmin_errors_breakdown": errors["counts_24h"],
         "garmin_last_error": errors["last"],
+        "incomplete_days_30d": incomplete_days_30d,
     }

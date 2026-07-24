@@ -18,6 +18,8 @@
       <div>
         <div class="atitle" style="font-size:1.4rem">{{ date }}</div>
         {% if m.hrv_status %}<div style="margin-top:.45rem"><span class="hrvpill" style="background:{{ hrv_color }}">HRV {{ m.hrv_status }}</span></div>{% endif %}
+        {% if incomplete %}<div style="margin-top:.45rem"><span class="hrvpill" style="background:#e0af68">⚠️ неповний день</span>
+          <span style="color:#8a92a6;font-size:.85rem"> — немає: {{ incomplete|join(', ') }}</span></div>{% endif %}
       </div>
     </div>
 

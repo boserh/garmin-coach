@@ -29,6 +29,8 @@ def test_status(auth_client):
     # OPS-05: error counters present (0 when nothing has failed)
     assert body["garmin_errors_24h"] == 0
     assert body["garmin_errors_breakdown"] == {}
+    # ST-18: incomplete-day counter present
+    assert body["incomplete_days_30d"] == 0
 
 
 def test_history_requires_login(client):

@@ -509,7 +509,15 @@ def _dump_steps(steps) -> Optional[list]:
     return out or None
 
 
-async def upsert_daily(session: AsyncSession, user_id: int, s: DailySummary) -> None:
+async def upsert_daily(
+    session: AsyncSession, user_id: int, s: DailySummary, *, merge: bool = False
+) -> None:
+    """Upsert one day's metrics. The default (``merge=False``) fully overwrites an existing
+    row — the volatile "today"/normal path. With ``merge=True`` (ST-18's incomplete-day
+    refetch) it is **null-safe fill-only**: a null in the fresh fetch never overwrites a
+    stored value, and ``extra`` is merged key-by-key (a stored non-null key wins). So a day
+    saved with sleep-but-no-HRV gets HRV filled on the next tick without clobbering what was
+    already good."""
     existing = (
         await session.execute(
             select(DailyMetric).where(
@@ -519,8 +527,21 @@ async def upsert_daily(session: AsyncSession, user_id: int, s: DailySummary) -> 
     ).scalar_one_or_none()
     fields = {k: getattr(s, k) for k in _DAILY_FIELDS}
     if existing:
-        for k, v in fields.items():
-            setattr(existing, k, v)
+        if merge:
+            for k, v in fields.items():
+                if k == "extra":
+                    cur = dict(existing.extra or {})
+                    for ek, ev in (v or {}).items():
+                        if ev is not None and cur.get(ek) is None:
+                            cur[ek] = ev
+                    if cur != (existing.extra or {}):
+                        existing.extra = cur
+                        flag_modified(existing, "extra")
+                elif v is not None and getattr(existing, k) is None:
+                    setattr(existing, k, v)
+        else:
+            for k, v in fields.items():
+                setattr(existing, k, v)
     else:
         session.add(DailyMetric(user_id=user_id, date=s.date, **fields))
 
@@ -562,14 +583,18 @@ async def upsert_activity(
 
 
 async def persist_payload(
-    session: AsyncSession, user_id: int, payload: Payload, act_pairs
+    session: AsyncSession, user_id: int, payload: Payload, act_pairs,
+    merge_dates: Optional[set] = None,
 ) -> List[ActivityRecord]:
     """Upsert everything the payload carries for this user (does not commit).
     Returns newly inserted activity rows (never updates) — the caller uses this to
-    trigger auto-analysis of freshly synced activities."""
+    trigger auto-analysis of freshly synced activities. ``merge_dates`` (ST-18) is the set
+    of ISO dates whose upsert should be null-safe fill-only (a re-fetched incomplete past
+    day) instead of a full overwrite — see :func:`upsert_daily`."""
+    merge_dates = merge_dates or set()
     for d in payload.daily:
         if d.has_data:
-            await upsert_daily(session, user_id, d)
+            await upsert_daily(session, user_id, d, merge=d.date in merge_dates)
     new_activities: List[ActivityRecord] = []
     for activity_id, row in act_pairs:
         rec = await upsert_activity(session, user_id, activity_id, row)

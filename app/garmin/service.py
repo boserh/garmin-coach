@@ -22,6 +22,8 @@ from weakref import WeakValueDictionary
 
 from fastapi.concurrency import run_in_threadpool
 
+from app import completeness
+from app.core.config import settings
 from app.garmin import client
 from app.garmin.client import _g
 from app.garmin.providers import get_provider
@@ -457,6 +459,37 @@ def build_payload(days: int = 7, activity_limit: int = 30) -> Payload:
     )
 
 
+async def _incomplete_days_to_refetch(
+    session, user_id: int, cached: dict, today: dt.date
+) -> set:
+    """ST-18: the ISO dates among ``cached`` (within REFRESH_INCOMPLETE_DAYS of today) that
+    are still missing a key recovery field this user normally produces — the days worth a
+    refetch. Empty when the window holds no cached day (a first sync) or every windowed day is
+    complete (the normal case → zero extra Garmin requests). One 30-day history read to learn
+    the user's expected field set; skipped entirely when no windowed cached day exists."""
+    window = settings.REFRESH_INCOMPLETE_DAYS
+    if window <= 0:
+        return set()
+    window_start = today - dt.timedelta(days=window)
+    windowed = {
+        iso: s for iso, s in cached.items()
+        if window_start <= _parse_iso(iso) < today
+    }
+    if not windowed:
+        return set()
+    from app.garmin import repository
+    history = await repository.read_history(session, user_id, days=30)
+    expected = completeness.expected_fields(history)
+    if not expected:
+        return set()
+    return {iso for iso, s in windowed.items()
+            if completeness.daily_completeness(s, expected)}
+
+
+def _parse_iso(iso: str) -> dt.date:
+    return dt.date.fromisoformat(iso)
+
+
 async def build_payload_cached(
     session, user_id: int, days: int = 7, activity_limit: int = 30
 ) -> Tuple[Payload, List]:
@@ -495,15 +528,27 @@ async def build_payload_cached(
 
         cached = await repository.read_daily_metrics(session, user_id, past_iso)
 
+        # ST-18: a stored past day that's INCOMPLETE (e.g. saved at 7:05 with sleep but no
+        # HRV/readiness) is normally frozen forever, since a cached past day is never
+        # refetched. Re-fetch the last REFRESH_INCOMPLETE_DAYS such days so their nulls get
+        # filled — but judge completeness against what THIS user actually produces (fields
+        # seen in the last 30 days), so a metric they never have doesn't trigger an eternal
+        # refetch. A fully complete day in the window is NOT refetched (no wasted request).
+        refetch_incomplete = await _incomplete_days_to_refetch(session, user_id, cached, today)
+
         # Missing past days + today are fetched together in ONE threadpool hop
         # (PERF-04b), not a round trip per day.
-        to_fetch = [d for d in dates if not (d < today and d.isoformat() in cached)]
+        to_fetch = [d for d in dates
+                    if not (d < today and d.isoformat() in cached)
+                    or d.isoformat() in refetch_incomplete]
         fetched = await run_in_threadpool(_fetch_days, to_fetch) if to_fetch else {}
 
         daily: List[DailySummary] = []
         for d in dates:
             iso = d.isoformat()
-            if d < today and iso in cached:
+            if iso in fetched:
+                daily.append(DailySummary(**fetched[iso]))
+            elif d < today and iso in cached:
                 daily.append(cached[iso])
             else:
                 daily.append(DailySummary(**fetched[iso]))
@@ -527,7 +572,8 @@ async def build_payload_cached(
             planned_runs=planned,
         )
 
-        new_activities = await repository.persist_payload(session, user_id, payload, act_pairs)
+        new_activities = await repository.persist_payload(
+            session, user_id, payload, act_pairs, merge_dates=refetch_incomplete)
         await _flush_garmin_errors(session, user_id)   # OPS-05: record any endpoint failures
         await session.commit()
         _remember_payload(reuse_key, payload)

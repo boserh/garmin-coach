@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # counters + dashboard banner still work). Expected 403s (known garth gaps) never
     # count toward the burst — see client._EXPECTED_ERROR_SUFFIXES.
     GARMIN_ERROR_BURST: int = 10
+    # ST-18: how many recent stored days build_payload_cached will re-fetch if they turn out
+    # incomplete (a day fixed at 7:05 with sleep but no HRV/readiness). Bounds the request
+    # burst — only yesterday/day-before by default; older gaps are a manual /resync (ST-15).
+    REFRESH_INCOMPLETE_DAYS: int = 2
 
     # --- Claude ---
     ANTHROPIC_API_KEY: Optional[str] = None
