@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import time as _time
+from typing import Optional
 
 from app.core.config import settings
 from app.garmin.exercise_names import EXERCISE_NAMES
@@ -38,12 +39,103 @@ def _safe(fn, *a, **kw):
         dt_ms = (_time.perf_counter() - t0) * 1000
         logger.info(f"GARMIN OK  {label}  {dt_ms:.0f}ms")
         return r
-    except GarminRateLimited:
+    except GarminRateLimited as e:
+        # Retries exhausted, Garmin still 429ing — a real degradation, record it. (A single
+        # 429 that a retry cleared never reaches here, so it's correctly not counted.)
+        _record_error(label, e, kind="429")
         raise
     except Exception as e:
         dt_ms = (_time.perf_counter() - t0) * 1000
         logger.warning(f"GARMIN ERR {label}  {dt_ms:.0f}ms  {type(e).__name__}: {e}")
+        _record_error(label, e)
         return {"_error": str(e)}
+
+
+# ---------- ERROR VISIBILITY RING BUFFER (OPS-05) ----------
+# _safe is the single chokepoint every connectapi fetch flows through, so one in-process
+# ring buffer here captures the last ~50 failures with a stable endpoint suffix + a coarse
+# classification (401/403/429/5xx/network/other). This code is synchronous and has no DB
+# session (it runs in the threadpool), so the buffer is module-level; build_payload_cached
+# and the manual resync paths drain it into bot_state after their fetch phase (the bot and
+# web processes each have their own buffer — both merge into the shared DB state). Read-only
+# observation of failures that already happen: zero new Garmin requests.
+_ERROR_BUFFER_MAX = 50
+_error_buffer: list = []
+_error_lock = threading.Lock()
+
+# Endpoint suffixes whose failures are EXPECTED (garth can't reach them on this account —
+# the long-standing resting-HR 403, say) — kept in the buffer for the record but flagged
+# ``expected`` so the burst DM counter can exclude them and not cry wolf.
+_EXPECTED_ERROR_SUFFIXES = ("/biometric-service/",)
+
+
+def _classify_error(exc: Exception) -> str:
+    """Coarse bucket for a Garmin failure: one of 401/403/429/5xx/network/other. Reads the
+    nested ``.error.response.status_code`` garth wraps a requests error in, then falls back
+    to the string form (same defensive shape as ``_is_rate_limited``)."""
+    for obj in (exc, getattr(exc, "error", None)):
+        resp = getattr(obj, "response", None)
+        code = getattr(resp, "status_code", None)
+        if isinstance(code, int):
+            if code in (401, 403, 429):
+                return str(code)
+            if 500 <= code <= 599:
+                return "5xx"
+    text = str(exc).lower()
+    if "429" in text or "too many requests" in text:
+        return "429"
+    if "403" in text or "forbidden" in text:
+        return "403"
+    if "401" in text or "unauthorized" in text:
+        return "401"
+    if any(k in text for k in ("timeout", "timed out", "connection", "network",
+                               "ssl", "resolve", "refused", "reset")):
+        return "network"
+    if any(k in text for k in ("500", "502", "503", "504", "bad gateway",
+                               "server error", "unavailable")):
+        return "5xx"
+    return "other"
+
+
+def _endpoint_suffix(label) -> str:
+    """A short, stable identifier for the failing endpoint — the service + resource path
+    (first two path segments), so per-date/per-id calls group together (``/hrv-service/hrv``
+    rather than ``.../hrv/2026-07-24``)."""
+    s = str(label).split("?", 1)[0]
+    if not s.startswith("/"):
+        return s[:64]
+    segs = [seg for seg in s.split("/") if seg]
+    return "/" + "/".join(segs[:2]) if segs else s[:64]
+
+
+def _record_error(label, exc: Exception, *, kind: Optional[str] = None) -> None:
+    suffix = _endpoint_suffix(label)
+    entry = {
+        "ts": _time.time(),
+        "endpoint": suffix,
+        "kind": kind or _classify_error(exc),
+        "detail": f"{type(exc).__name__}: {exc}"[:200],
+        "expected": any(suffix.startswith(p) for p in _EXPECTED_ERROR_SUFFIXES),
+    }
+    with _error_lock:
+        _error_buffer.append(entry)
+        if len(_error_buffer) > _ERROR_BUFFER_MAX:
+            del _error_buffer[:-_ERROR_BUFFER_MAX]
+
+
+def recent_errors() -> list:
+    """A copy of the current buffer (oldest first) without draining it — for tests/introspection."""
+    with _error_lock:
+        return list(_error_buffer)
+
+
+def drain_errors() -> list:
+    """Return and clear the buffer — the fetch paths call this after a fetch phase to move
+    the captured failures into ``bot_state`` (see ``service._flush_garmin_errors``)."""
+    with _error_lock:
+        items = list(_error_buffer)
+        _error_buffer.clear()
+        return items
 
 
 def _g(obj, *keys, default=None):

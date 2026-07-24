@@ -143,6 +143,39 @@ async def test_digest_goal_projection_enters_cache_key(session):
     assert base != with_proj
 
 
+# ---------- efficiency trend (NF-19) ----------
+
+async def test_digest_context_carries_efficiency(session):
+    from app.db.models import ActivityRecord
+
+    d0 = dt.date.today()
+    # 8 weekly easy runs with series + HR → an "ok" efficiency trend
+    for i in range(8):
+        date = (d0 - dt.timedelta(weeks=(8 - i))).isoformat()
+        series = [{"d": 8.0 * j / 39, "p": 6.0, "hr": 140, "e": 0.0} for j in range(40)]
+        session.add(ActivityRecord(
+            user_id=U1, activity_id=9000 + i, date=date, type="running",
+            dur_min=48.0, dist_km=8.0, avg_hr=140, series=series))
+    await session.commit()
+
+    stats = CallStats(kind="digest", model=service.MODEL_DIGEST)
+    with patch.object(reports, "digest_with_stats", return_value=("текст", stats)) as m:
+        await run_digest(session, user_id=U1)
+
+    ctx = m.call_args.args[0]
+    assert ctx["efficiency"] is not None
+    assert ctx["efficiency"]["status"] in ("ok", "calibrating")
+
+
+def test_digest_efficiency_enters_cache_key():
+    from app.analysis.cache import _digest_cache_key
+
+    base = _digest_cache_key({"iso_week": "2026-W28"}, "m")
+    with_eff = _digest_cache_key(
+        {"iso_week": "2026-W28", "efficiency": {"status": "ok", "pct_change": 3.2}}, "m")
+    assert base != with_eff
+
+
 # ---------- job hook: once-a-week guard ----------
 
 class _FakeBot:

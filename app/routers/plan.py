@@ -20,6 +20,8 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
+from app import goal as goal_mod
+from app import race as race_mod
 from app import weather
 from app.analysis.service import (
     ADJUST_LEVELS,
@@ -295,6 +297,32 @@ def _parse_season(sport: str, sessions: str, avg_min: str) -> Optional[dict]:
             return default
 
     return {"sport": sport, "sessions_per_week": _int(sessions, 3), "avg_min": _int(avg_min, 90)}
+
+
+def _parse_target_time(raw: str) -> Optional[int]:
+    """NF-17: a race target time string (``mm:ss`` or ``h:mm:ss``) → whole seconds, or
+    ``None`` when the field is empty. Raises ``ValueError`` on a non-empty but malformed
+    value so the POST handler can surface a form error (never a 500). Only the *format*
+    is validated here — whether the time is realistic for the runner is the plan's job to
+    comment on, not the form's."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(":")
+    if len(parts) not in (2, 3) or not all(p.strip().isdigit() for p in parts):
+        raise ValueError("bad time format")
+    nums = [int(p) for p in parts]
+    if len(nums) == 2:
+        m, s = nums
+        h = 0
+    else:
+        h, m, s = nums
+    if s >= 60 or (len(nums) == 3 and m >= 60):
+        raise ValueError("bad time components")
+    total = h * 3600 + m * 60 + s
+    if total <= 0:
+        raise ValueError("non-positive time")
+    return total
 
 
 def _parse_cycling(enabled: str, days: list, avg_min: str) -> Optional[dict]:
@@ -599,6 +627,11 @@ async def plan_page(
          "race_pack": race_pack,
          "season": (plan.intake or {}).get("season"), "season_sports": SEASON_SPORTS,
          "cycling": (plan.intake or {}).get("cycling"),
+         # NF-17: race target time (a race goal only), formatted for display + edit.
+         "goal_has_distance": race_mod.distance_for_goal(plan.goal) is not None,
+         "target_time_s": (plan.intake or {}).get("target_time_s"),
+         "target_time_str": goal_mod.fmt_time((plan.intake or {}).get("target_time_s")),
+         "error": error,
          "count": len(workouts), "readonly": False},
     )
 
@@ -683,6 +716,7 @@ async def plan_create(
     request: Request,
     goal: str = Form(...),
     target_date: str = Form(""),
+    target_time: str = Form(""),    # NF-17: race target time (mm:ss / h:mm:ss), race goals only
     run_days: list[str] = Form(default=[]),
     long_run_day: str = Form("sun"),
     intensity: str = Form("moderate"),
@@ -727,6 +761,14 @@ async def plan_create(
         long_run_day = run_days[-1]
     if adjust_level not in ADJUST_LEVELS:   # unset/garbage → default by goal (ST-07)
         adjust_level = "conservative" if target_date else "flexible"
+    # NF-17: a race target time is only meaningful for a goal with a fixed race distance —
+    # the open-ended "general" goal has no distance, so it can't have a time.
+    target_time_s = None
+    if race_mod.distance_for_goal(goal) is not None:
+        try:
+            target_time_s = _parse_target_time(target_time)
+        except ValueError:
+            return RedirectResponse("/plan?error=target_time", status_code=303)
     intake = {
         "recent_5k": recent_5k.strip() or None,
         "longest_run_km": longest_run_km.strip() or None,
@@ -734,6 +776,8 @@ async def plan_create(
         "run_days": run_days, "long_run_day": long_run_day,
         "adjust_level": adjust_level,
     }
+    if target_time_s is not None:
+        intake["target_time_s"] = target_time_s
     season = _parse_season(season_sport, season_sessions, season_avg_min)
     if season:
         intake["season"] = season
@@ -827,6 +871,33 @@ async def plan_set_season(
         plan.intake = intake   # reassign (not mutate) so SQLAlchemy sees the JSON change
         await session.commit()
         logger.info(f"PLAN season={season} user={user.id} plan={plan.id}")
+    return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/plan/goal-time")
+async def plan_set_goal_time(
+    target_time: str = Form(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """NF-17: set/change/clear the active plan's race target time without regenerating it
+    (mirrors /plan/season) — the next /goal and weekly digest pick it up immediately. Only
+    applies to a race goal (a plan with a fixed distance); an empty field clears the target.
+    A malformed non-empty time redirects with a form error rather than 500-ing."""
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is not None and race_mod.distance_for_goal(plan.goal) is not None:
+        try:
+            target_time_s = _parse_target_time(target_time)
+        except ValueError:
+            return RedirectResponse("/plan?error=target_time", status_code=303)
+        intake = dict(plan.intake or {})
+        if target_time_s is not None:
+            intake["target_time_s"] = target_time_s
+        else:
+            intake.pop("target_time_s", None)
+        plan.intake = intake   # reassign (not mutate) so SQLAlchemy sees the JSON change
+        await session.commit()
+        logger.info(f"PLAN target_time_s={target_time_s} user={user.id} plan={plan.id}")
     return RedirectResponse("/plan", status_code=303)
 
 

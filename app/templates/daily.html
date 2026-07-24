@@ -106,6 +106,8 @@
             <div class="dh">
               <span class="dt">{{ d.date }}</span>
               {% if d.hrv_status %}<span class="hrvpill" style="background:{{ d.hrv_color }}">HRV {{ d.hrv_status }}</span>{% endif %}
+              {% if d.incomplete %}<span class="hrvpill" style="background:#e0af68"
+                title="Немає: {{ d.incomplete|join(', ') }}">⚠️ неповний</span>{% endif %}
             </div>
             <div class="mrow">
               {% if d.sleep_score %}<span class="mchip"><b>{{ d.sleep_score }}</b><span class="u">сон бал</span></span>{% endif %}

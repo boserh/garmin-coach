@@ -499,10 +499,17 @@ def _day_sections(ex: dict) -> list:
 
 
 async def _daily_cards(session, user_id, limit, offset):
+    from app import completeness
+
     rows = (await session.execute(
         select(DailyMetric).where(DailyMetric.user_id == user_id)
         .order_by(DailyMetric.date.desc()).limit(limit).offset(offset)
     )).scalars().all()
+    # ST-18: judge completeness against the fields this user actually produces (last 30 days),
+    # so a metric they never have doesn't badge every day as "incomplete".
+    expected = completeness.expected_fields(
+        await repository.read_history(session, user_id, days=30)
+    )
     out = []
     for r in rows:
         ex = r.extra or {}
@@ -522,6 +529,7 @@ async def _daily_cards(session, user_id, limit, offset):
             "rhr": ex.get("resting_hr"), "readiness": ex.get("readiness_score"),
             "auto_activities": ex.get("auto_activities"),
             "ring": ring,
+            "incomplete": completeness.labels(completeness.daily_completeness(r, expected)),
         })
     return out
 
@@ -738,6 +746,24 @@ async def me_resync_days(
     )
 
 
+@router.get("/me/jobs", response_class=HTMLResponse)
+async def me_jobs(
+    request: Request,
+    job: str = Query(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """OPS-04: this user's last background-job runs (morning tick + the daily jobs) — when
+    each ran, its result and reason. Pure DB read; a quick "чому щось не прийшло?" answer."""
+    from app.db import job_runs as _job_runs
+    runs = await _job_runs.recent_job_runs(session, user_id=user.id, job=job or None, limit=50)
+    return templates.TemplateResponse(
+        request, "jobs.html",
+        {"runs": runs, "user": user, "base": "/me", "job_filter": job,
+         "is_admin_view": False, "title": "Фонові задачі", "token": ""},
+    )
+
+
 @router.get("/me", response_class=HTMLResponse)
 async def me_index(
     request: Request,
@@ -912,11 +938,17 @@ async def me_row(
         )
 
     if table == "daily_metrics":
+        from app import completeness
         ex = obj.extra or {}
+        expected = completeness.expected_fields(
+            await repository.read_history(session, user.id, days=30)
+        )
+        incomplete = completeness.labels(completeness.daily_completeness(obj, expected))
         return templates.TemplateResponse(
             request, "day.html",
             {"m": obj, "date": _nice_date(obj.date), "hrv_color": _hrv_color(obj.hrv_status),
-             "extra": ex, "sections": _day_sections(ex), "user": user, "base": "/me", "token": ""},
+             "extra": ex, "sections": _day_sections(ex), "incomplete": incomplete,
+             "user": user, "base": "/me", "token": ""},
         )
 
     fields = [(c.name, getattr(obj, c.name))

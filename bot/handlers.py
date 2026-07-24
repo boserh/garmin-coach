@@ -343,28 +343,42 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     """/goal — quantified progress toward the active plan's target (NF-10): Garmin's own
     race-time-prediction trend (or VO2max for the open-ended goal), projected forward.
     Pure DB read, zero Claude calls in the minimal version — no Garmin fetch, no MFA risk."""
+    from app import efficiency as eff_mod
     from app import goal as goal_mod
 
     logger.info("CMD /goal")
+    blocks = []
     plan = await repository.get_active_plan(session, user.id)
-    if plan is None:
-        await update.message.reply_text(
-            "Спершу створи план на /plan — /goal рахує прогрес відносно нього."
+    if plan is not None:
+        metric_key, label, higher_better = goal_mod.metric_for_goal(plan.goal)
+        history = await repository.read_fitness_history(session, user.id)
+        proj = goal_mod.project(
+            history, metric_key=metric_key, higher_better=higher_better,
+            target_date=plan.target_date,
+            target_s=(plan.intake or {}).get("target_time_s"),   # NF-17: quantified verdict
         )
+        if proj is not None:
+            blocks.append(goal_mod.summary(proj, label=label))
+
+    # NF-19: aerobic-efficiency trend (pace@HR, GAP-honest) — independent of any plan.
+    runs = await repository.runs_for_efficiency(session, user.id)
+    eff_block = eff_mod.summary(eff_mod.build_trend(runs))
+    if eff_block:
+        blocks.append(eff_block)
+
+    if not blocks:
+        if plan is None:
+            await update.message.reply_text(
+                "Спершу створи план на /plan для прогресу до цілі. Тренд аеробної "
+                "ефективності зʼявиться, коли назбирається кілька тижнів легких бігів."
+            )
+        else:
+            await update.message.reply_text(
+                "Замало даних для тренду — потрібно кілька тижнів історії з прогнозами "
+                "Garmin (race predictions / VO2max) або легких бігів. Повернись пізніше."
+            )
         return
-    metric_key, label, higher_better = goal_mod.metric_for_goal(plan.goal)
-    history = await repository.read_fitness_history(session, user.id)
-    proj = goal_mod.project(
-        history, metric_key=metric_key, higher_better=higher_better,
-        target_date=plan.target_date,
-    )
-    if proj is None:
-        await update.message.reply_text(
-            "Замало даних для тренду — потрібно кілька тижнів історії з прогнозами "
-            "Garmin (race predictions / VO2max). Повернись пізніше."
-        )
-        return
-    await update.message.reply_text(goal_mod.summary(proj, label=label))
+    await update.message.reply_text("\n\n".join(blocks))
 
 
 @bot_command(creds="load")

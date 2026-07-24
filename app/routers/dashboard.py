@@ -18,7 +18,7 @@ from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
 from app.db.models import User
 from app.dependencies import get_session
-from app.garmin import repository
+from app.garmin import repository, service
 from app.routers.me import _act_meta, _latest_ring, _pace_str
 from app.routers.plan import _dm, _dow
 
@@ -88,6 +88,27 @@ async def dashboard(
     activities = _activity_cards(await repository.list_activities(session, user.id, n=ACTIVITIES_N))
     month_cost = await repository.month_cost(session, user.id)
 
+    # NF-19: an aerobic-efficiency sparkline (weekly-median EF, GAP-honest) when there's a
+    # real trend — the "faster at the same HR?" signal, reusing the shared chart primitive.
+    from app import efficiency as eff_mod
+    eff_trend = eff_mod.build_trend(await repository.runs_for_efficiency(session, user.id))
+    eff_chart = None
+    if eff_trend and eff_trend.get("status") == "ok":
+        weekly = eff_trend["weekly"]
+        eff_chart = {
+            "series": _trend_series([w["ef"] for w in weekly], [w["week"] for w in weekly]),
+            "pct_change": eff_trend["pct_change"],
+            "delta_pace_s": eff_trend["delta_pace_s"],
+            "typical_hr": eff_trend["typical_hr"],
+            "first_week": weekly[0]["week"], "last_week": weekly[-1]["week"],
+        }
+
+    # OPS-05: a banner when the Garmin API threw failures in the last 24h (degradation vs a
+    # watch that just hasn't synced). Expected garth 403 gaps are excluded from the count.
+    garmin_errors = service.summarize_garmin_errors(
+        await repository.get_state(session, user.id, service.GARMIN_ERRORS_KEY)
+    )
+
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
@@ -98,5 +119,7 @@ async def dashboard(
             "activities": activities,
             "month_cost": month_cost,
             "today_iso": dt.date.today().isoformat(),
+            "garmin_errors": garmin_errors,
+            "eff_chart": eff_chart,
         },
     )

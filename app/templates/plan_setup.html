@@ -40,6 +40,14 @@
         <input id="target_date" name="target_date" type="date" min="{{ today }}">
         <div class="hint">Дата забігу/цілі. Якщо порожньо — підберу розумний термін.</div>
       </div>
+      <div id="targettimerow">
+        <label for="target_time">Цільовий час забігу (необовʼязково)</label>
+        <input id="target_time" name="target_time" type="text" placeholder="напр. 49:00 або 1:45:00">
+        <div class="hint">Час, на який цілишся (mm:ss або h:mm:ss). Виведу цільові темпи
+          з нього; якщо він нереалістичний за формою — чесно скажу і збудую безпечну прогресію.</div>
+      </div>
+      {% if error == 'target_time' %}<div class="err" style="margin:.4rem 0">
+        Невірний формат часу — приклад: 49:00 або 1:45:00.</div>{% endif %}
       <div id="openendedhint" class="hint" style="display:none">
         Режим тренера: без цілі-події. Складу перший блок, а коли він добігатиме кінця —
         запитаю вранці, чи додати наступні тижні.
@@ -216,12 +224,18 @@
     var OPEN_ENDED = ['general'];
     var goalSel = document.getElementById('goal');
     var targetRow = document.getElementById('targetrow');
+    var targetTimeRow = document.getElementById('targettimerow');
     var openHint = document.getElementById('openendedhint');
     function updateGoal() {
       var open = OPEN_ENDED.indexOf(goalSel.value) !== -1;
       targetRow.style.display = open ? 'none' : 'block';
+      // NF-17: a time target needs a race distance — hide it for the open-ended goal.
+      if (targetTimeRow) targetTimeRow.style.display = open ? 'none' : 'block';
       openHint.style.display = open ? 'block' : 'none';
-      if (open) document.getElementById('target_date').value = '';
+      if (open) {
+        document.getElementById('target_date').value = '';
+        document.getElementById('target_time').value = '';
+      }
     }
     goalSel.addEventListener('change', updateGoal);
     updateGoal();

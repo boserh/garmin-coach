@@ -12,6 +12,7 @@ concerns from the same tick (no duplicate Garmin calls):
 import datetime as dt
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -39,6 +40,7 @@ from app.analysis.service import (
     run_weather_plan_check,
 )
 from app.core.config import settings
+from app.db import job_runs
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.db.users import eligible_users
@@ -72,6 +74,11 @@ CHECK_INTERVAL_MIN = 5
 MORNING_STATE_KEY = "morning_sent_date"
 MFA_NOTIFIED_PREFIX = "mfa_notified:"
 RATE_LIMIT_NOTIFIED_PREFIX = "garmin_ratelimited:"
+
+# OPS-05: one-a-day DM guard when Garmin API failures spike over settings.GARMIN_ERROR_BURST
+# in the last hour (key garmin_err_burst:<date>). Read-only observation of failures the fetch
+# phase already recorded into bot_state — no extra Garmin request.
+GARMIN_ERR_BURST_PREFIX = "garmin_err_burst:"
 
 # A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
 # stale ones). Kept out of the morning report — different concern. Scheduled via
@@ -139,18 +146,69 @@ def user_tz(user: User) -> ZoneInfo:
         return TZ
 
 
-async def for_each_user(worker, *, with_chat: bool, label: str) -> None:
+class JobOutcome:
+    """OPS-04: a worker's structured result for the job-run log. ``status`` is ok/skip/error;
+    ``detail`` a short reason. ``notable`` marks an outcome that deserves its own row even in
+    an aggregated job (a report actually sent, an MFA gate) rather than folding into the
+    day's routine-tick counter. Workers may return one; returning ``None`` means plain ok."""
+    __slots__ = ("status", "detail", "notable")
+
+    def __init__(self, status: str = "ok", detail: Optional[str] = None,
+                 notable: bool = False):
+        self.status = status
+        self.detail = detail
+        self.notable = notable
+
+
+def _traceback_tail(limit: int = 512) -> str:
+    import traceback
+    return traceback.format_exc().strip()[-limit:]
+
+
+async def _record_job_run_safe(*, job: str, user, status: str, detail: Optional[str],
+                               started: dt.datetime, aggregate: bool) -> None:
+    """Write one job-run row in its own session (so a worker's failed transaction can't taint
+    the log write), best-effort — a logging failure never breaks the job."""
+    try:
+        async with async_session_maker() as s:
+            await job_runs.record_job_run(
+                s, job=job, user_id=user.id, status=status, detail=detail,
+                run_date=dt.datetime.now(user_tz(user)).date().isoformat(),
+                aggregate=aggregate, started_at=started,
+            )
+            await s.commit()
+    except Exception:
+        logger.exception(f"{job} job-run record failed user={user.id}")
+
+
+async def for_each_user(worker, *, with_chat: bool, label: str,
+                        aggregate: bool = False) -> None:
     """Shared scaffold for the per-user scheduled jobs: open a session, select the
     eligible (active + approved [+ chat id]) recipients, and run ``worker(session, user)``
     for each — isolating failures per user so one user's error never aborts the rest.
-    The three jobs reduce to a single call; PERF-01 will parallelize only this loop."""
+    The three jobs reduce to a single call; PERF-01 will parallelize only this loop.
+
+    OPS-04: every per-user branch leaves exactly one job-run row (ok/skip/error + reason).
+    ``aggregate=True`` (the 20-min morning tick) folds routine ok/skip runs into one row per
+    user/day so it doesn't flood the log — notable outcomes and errors still get their own
+    rows. A worker may return a :class:`JobOutcome`; ``None`` means plain ok."""
     try:
         async with async_session_maker() as session:
             for user in await eligible_users(session, with_chat=with_chat):
+                started = dt.datetime.now(dt.timezone.utc)
                 try:
-                    await worker(session, user)
+                    outcome = await worker(session, user)
+                    if isinstance(outcome, JobOutcome):
+                        status, detail, notable = outcome.status, outcome.detail, outcome.notable
+                    else:
+                        status, detail, notable = "ok", None, False
                 except Exception:
                     logger.exception(f"{label} failed user={user.id}")
+                    await session.rollback()   # don't taint the next user's shared session
+                    status, detail, notable = "error", _traceback_tail(), True
+                agg = aggregate and status != "error" and not notable
+                await _record_job_run_safe(job=label, user=user, status=status,
+                                           detail=detail, started=started, aggregate=agg)
     except Exception:
         logger.exception(f"{label} job failed")
 
@@ -512,6 +570,44 @@ async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
         return
 
 
+async def _garmin_error_burst_check(ctx, session, user: User, today: str) -> None:
+    """OPS-05: DM once/day when Garmin API failures spiked in the last hour — the
+    early warning that the unofficial API is degrading (Cloudflare change, 403 drift),
+    distinct from a watch that simply hasn't synced. Reads the error log the fetch phase
+    already drained into bot_state (zero new Garmin request); best-effort — never a tick
+    failure. Expected garth 403 gaps are excluded by ``summarize_garmin_errors``."""
+    burst = settings.GARMIN_ERROR_BURST
+    if not burst or burst <= 0 or not user.telegram_chat_id:
+        return
+    try:
+        blob = await repository.get_state(session, user.id, service.GARMIN_ERRORS_KEY)
+        summary = service.summarize_garmin_errors(blob)
+        recent = summary["recent"]
+        hour_ago = time.time() - 3600
+        last_hour = [e for e in recent
+                     if not e.get("expected") and (e.get("ts") or 0) >= hour_ago]
+        if len(last_hour) < burst:
+            return
+        guard_key = GARMIN_ERR_BURST_PREFIX + today
+        if await repository.get_state(session, user.id, guard_key) == "1":
+            return
+        await repository.set_state(session, user.id, guard_key, "1")
+        kinds: dict = {}
+        for e in last_hour:
+            k = e.get("kind") or "other"
+            kinds[k] = kinds.get(k, 0) + 1
+        breakdown = ", ".join(f"{k}×{n}" for k, n in sorted(kinds.items()))
+        await ctx.bot.send_message(
+            user.telegram_chat_id,
+            f"⚠️ Garmin API: {len(last_hour)} збоїв за годину ({breakdown}). "
+            "Схоже на деградацію неофіційного API — дивись /status; якщо не мине, "
+            "можливо, час перелогінитись у /settings.",
+        )
+        logger.warning(f"OPS-05 burst DM user={user.id} count={len(last_hour)} kinds={kinds}")
+    except Exception:  # noqa: BLE001 — observation only, never break the tick
+        logger.exception(f"OPS-05 burst check failed user={user.id}")
+
+
 async def _tick_for_user(ctx, session, user: User) -> None:
     # ST-14: window + "today" are per-user (their own timezone), not the process TZ — a
     # traveling user or a second user outside Europe/Warsaw gets their own morning, and
@@ -520,11 +616,11 @@ async def _tick_for_user(ctx, session, user: User) -> None:
     today = now.date().isoformat()
     if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
         logger.debug(f"TICK skip user={user.id}: outside window (hour={now.hour})")
-        return
+        return JobOutcome("skip", "outside window")   # OPS-04: routine, aggregated
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
             if creds is None:
-                return
+                return JobOutcome("skip", "no Garmin credentials")
 
             payload, new_activities = await service.build_payload_cached(
                 session, user.id, days=3, activity_limit=20
@@ -533,6 +629,10 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # OPS-01/ST-11: warn well ahead of the ~1y garth token death date — pure decode,
             # no network, so it runs unconditionally alongside the other risk hooks.
             await _token_expiry_check_for_user(ctx, session, user)
+
+            # OPS-05: the fetch above just drained any endpoint failures into bot_state — DM
+            # once/day if they spiked (a degrading API, not a watch that hasn't synced).
+            await _garmin_error_burst_check(ctx, session, user, today)
 
             # Match freshly synced activities to planned workouts BEFORE the auto-analysis,
             # so it can compare plan vs actual instead of just narrating the raw activity —
@@ -579,13 +679,18 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                     if not injury_sent:
                         await _health_check_for_user(ctx, session, user, creds, today, risk=risk)
 
+            # OPS-04: track what this tick's morning branch did for the job-run log.
+            outcome = JobOutcome("ok", "tick")   # routine in-window tick (aggregated)
             if not in_morning:
-                return
+                return outcome
             if await repository.get_state(session, user.id, MORNING_STATE_KEY) == today:
                 logger.debug(f"MORNING skip user={user.id}: already sent today")
+                outcome = JobOutcome("skip", "morning already sent today")
             elif await _deliver_morning(ctx, session, user, creds, payload, now, today):
                 await repository.set_state(session, user.id, MORNING_STATE_KEY, today)
                 logger.info(f"MORNING sent for {today} user={user.id}")
+                # Notable → its own row you can find, not folded into the tick counter.
+                outcome = JobOutcome("ok", "morning report sent", notable=True)
 
             # Independent guard from the morning report above — runs even on a later
             # tick within the same 07-12 window after the report already went out.
@@ -594,6 +699,7 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # Open-ended plans: ask (✅/❌) whether to add the next block when the plan is
             # about to run out. Confirm-only — generation happens on the ✅ tap, not here.
             await _extend_nudge_for_user(ctx, session, user, today)
+            return outcome
     except GarminRateLimited:
         # Garmin kept answering 429 through every backoff retry — it's actively
         # throttling/blocking us, not a one-off blip. DM once/day per user so the
@@ -605,6 +711,7 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             if user.telegram_chat_id:
                 await ctx.bot.send_message(user.telegram_chat_id, GARMIN_RATE_LIMITED_MSG)
         logger.warning(f"TICK Garmin rate-limited user={user.id}")
+        return JobOutcome("error", "Garmin rate-limited", notable=True)
     except MFARequired:
         # A different process (this one) can't finish the login Garmin is asking
         # about — just point the user at /settings once/day, don't spam every tick.
@@ -614,8 +721,10 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             if user.telegram_chat_id:
                 await ctx.bot.send_message(user.telegram_chat_id, MFA_REQUIRED_MSG)
         logger.warning(f"TICK MFA required user={user.id}")
+        return JobOutcome("skip", "MFARequired", notable=True)
     except Exception:
         logger.exception(f"TICK failed for user={user.id}")
+        return JobOutcome("error", _traceback_tail(), notable=True)
 
 
 async def _has_pending_proposal(session, user_id: int) -> bool:
@@ -1158,6 +1267,7 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
     report. See module docstring. Runs every CHECK_INTERVAL_MIN regardless of the process's
     own clock; ``_tick_for_user`` is what enforces the (per-user) window."""
     async def worker(session, user):
-        await _tick_for_user(ctx, session, user)
+        return await _tick_for_user(ctx, session, user)
 
-    await for_each_user(worker, with_chat=True, label="MORNING")
+    # OPS-04: aggregate the 20-min tick's routine ok/skip into one row per user/day.
+    await for_each_user(worker, with_chat=True, label="MORNING", aggregate=True)

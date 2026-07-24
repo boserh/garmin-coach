@@ -245,6 +245,33 @@ class BotState(Base):
     )
 
 
+class JobRun(Base):
+    """OPS-04: one row per run of a per-user background-job branch (morning tick + the five
+    run_daily jobs), so "did plan_sync run yesterday and how did it end?" is a web read, not
+    an ssh+grep. ``status`` is ok/skip/error; ``detail`` is a short reason ("sent" / "outside
+    window" / "MFARequired" / a traceback tail ≤512). The 20-min morning tick's routine
+    ok/skip results are AGGREGATED into one row per user/day (``count`` = number of ticks,
+    ``run_date`` = that local date) so the log isn't flooded — notable outcomes (a report
+    actually sent, an MFA gate) and errors get their own rows. Rows older than 30 days are
+    purged lazily on write (like llm_cache)."""
+
+    __tablename__ = "job_runs"
+    __table_args__ = (
+        Index("ix_job_runs_user_started", "user_id", "started_at"),
+        Index("ix_job_runs_job_started", "job", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(8))          # ok / skip / error
+    detail: Mapped[Optional[str]] = mapped_column(String(512))
+    count: Mapped[int] = mapped_column(Integer, default=1)  # aggregated tick count
+    run_date: Mapped[Optional[str]] = mapped_column(String(10))  # local date of the run
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class TrainingPlan(Base):
     """A generated running training program for a goal. One active plan per user
     (creating a new one archives the previous). Holds the goal/params, the intake
