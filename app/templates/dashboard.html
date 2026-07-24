@@ -29,6 +29,14 @@
     <p class="eyebrow">Дашборд</p>
     <h1 class="title" style="font-size:1.7rem">Привіт{% if user.email %}, {{ user.email.split('@')[0] }}{% endif %}</h1>
 
+    {% if garmin_errors and garmin_errors.count_24h %}
+      <div class="note" style="border-color:#e0af68;background:rgba(224,175,104,.08)">
+        ⚠️ Garmin API: {{ garmin_errors.count_24h }} збоїв за 24 год
+        {% if garmin_errors.counts_24h %}(<span>{% for k, n in garmin_errors.counts_24h.items() %}{{ k }}×{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</span>){% endif %}.
+        Це може бути тимчасова деградація неофіційного API — дивись <a href="/status">/status</a>.
+      </div>
+    {% endif %}
+
     {% if not has_history %}
       <div class="note">
         Ще немає історії відновлення — після першого синку Garmin тут з'явиться сьогоднішня

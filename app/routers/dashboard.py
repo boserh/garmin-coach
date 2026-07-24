@@ -18,7 +18,7 @@ from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
 from app.db.models import User
 from app.dependencies import get_session
-from app.garmin import repository
+from app.garmin import repository, service
 from app.routers.me import _act_meta, _latest_ring, _pace_str
 from app.routers.plan import _dm, _dow
 
@@ -88,6 +88,12 @@ async def dashboard(
     activities = _activity_cards(await repository.list_activities(session, user.id, n=ACTIVITIES_N))
     month_cost = await repository.month_cost(session, user.id)
 
+    # OPS-05: a banner when the Garmin API threw failures in the last 24h (degradation vs a
+    # watch that just hasn't synced). Expected garth 403 gaps are excluded from the count.
+    garmin_errors = service.summarize_garmin_errors(
+        await repository.get_state(session, user.id, service.GARMIN_ERRORS_KEY)
+    )
+
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
@@ -98,5 +104,6 @@ async def dashboard(
             "activities": activities,
             "month_cost": month_cost,
             "today_iso": dt.date.today().isoformat(),
+            "garmin_errors": garmin_errors,
         },
     )

@@ -55,6 +55,12 @@ async def status(
     )).scalar_one()
     last_morning = await get_state(session, user.id, MORNING_STATE_KEY)
 
+    # OPS-05: recent Garmin API failures (from the drained error buffer in bot_state) so a
+    # user can tell "watch didn't sync" from "API is degrading" without grepping the Pi log.
+    errors = service.summarize_garmin_errors(
+        await get_state(session, user.id, service.GARMIN_ERRORS_KEY)
+    )
+
     return {
         "status": "ok",
         "provider": settings.GARMIN_PROVIDER,
@@ -65,4 +71,7 @@ async def status(
         "last_morning_report": last_morning,
         "reports_total": reports_total,
         "cost_usd_total": round(cost_total, 4),
+        "garmin_errors_24h": errors["count_24h"],
+        "garmin_errors_breakdown": errors["counts_24h"],
+        "garmin_last_error": errors["last"],
     }

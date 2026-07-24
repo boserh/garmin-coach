@@ -26,6 +26,9 @@ def test_status(auth_client):
     assert body["database"] == "ok"
     assert body["garmin_login"] == "ok"
     assert "cost_usd_total" in body
+    # OPS-05: error counters present (0 when nothing has failed)
+    assert body["garmin_errors_24h"] == 0
+    assert body["garmin_errors_breakdown"] == {}
 
 
 def test_history_requires_login(client):

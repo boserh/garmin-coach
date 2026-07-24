@@ -12,6 +12,7 @@ concerns from the same tick (no duplicate Garmin calls):
 import datetime as dt
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -72,6 +73,11 @@ CHECK_INTERVAL_MIN = 5
 MORNING_STATE_KEY = "morning_sent_date"
 MFA_NOTIFIED_PREFIX = "mfa_notified:"
 RATE_LIMIT_NOTIFIED_PREFIX = "garmin_ratelimited:"
+
+# OPS-05: one-a-day DM guard when Garmin API failures spike over settings.GARMIN_ERROR_BURST
+# in the last hour (key garmin_err_burst:<date>). Read-only observation of failures the fetch
+# phase already recorded into bot_state — no extra Garmin request.
+GARMIN_ERR_BURST_PREFIX = "garmin_err_burst:"
 
 # A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
 # stale ones). Kept out of the morning report — different concern. Scheduled via
@@ -512,6 +518,44 @@ async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
         return
 
 
+async def _garmin_error_burst_check(ctx, session, user: User, today: str) -> None:
+    """OPS-05: DM once/day when Garmin API failures spiked in the last hour — the
+    early warning that the unofficial API is degrading (Cloudflare change, 403 drift),
+    distinct from a watch that simply hasn't synced. Reads the error log the fetch phase
+    already drained into bot_state (zero new Garmin request); best-effort — never a tick
+    failure. Expected garth 403 gaps are excluded by ``summarize_garmin_errors``."""
+    burst = settings.GARMIN_ERROR_BURST
+    if not burst or burst <= 0 or not user.telegram_chat_id:
+        return
+    try:
+        blob = await repository.get_state(session, user.id, service.GARMIN_ERRORS_KEY)
+        summary = service.summarize_garmin_errors(blob)
+        recent = summary["recent"]
+        hour_ago = time.time() - 3600
+        last_hour = [e for e in recent
+                     if not e.get("expected") and (e.get("ts") or 0) >= hour_ago]
+        if len(last_hour) < burst:
+            return
+        guard_key = GARMIN_ERR_BURST_PREFIX + today
+        if await repository.get_state(session, user.id, guard_key) == "1":
+            return
+        await repository.set_state(session, user.id, guard_key, "1")
+        kinds: dict = {}
+        for e in last_hour:
+            k = e.get("kind") or "other"
+            kinds[k] = kinds.get(k, 0) + 1
+        breakdown = ", ".join(f"{k}×{n}" for k, n in sorted(kinds.items()))
+        await ctx.bot.send_message(
+            user.telegram_chat_id,
+            f"⚠️ Garmin API: {len(last_hour)} збоїв за годину ({breakdown}). "
+            "Схоже на деградацію неофіційного API — дивись /status; якщо не мине, "
+            "можливо, час перелогінитись у /settings.",
+        )
+        logger.warning(f"OPS-05 burst DM user={user.id} count={len(last_hour)} kinds={kinds}")
+    except Exception:  # noqa: BLE001 — observation only, never break the tick
+        logger.exception(f"OPS-05 burst check failed user={user.id}")
+
+
 async def _tick_for_user(ctx, session, user: User) -> None:
     # ST-14: window + "today" are per-user (their own timezone), not the process TZ — a
     # traveling user or a second user outside Europe/Warsaw gets their own morning, and
@@ -533,6 +577,10 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # OPS-01/ST-11: warn well ahead of the ~1y garth token death date — pure decode,
             # no network, so it runs unconditionally alongside the other risk hooks.
             await _token_expiry_check_for_user(ctx, session, user)
+
+            # OPS-05: the fetch above just drained any endpoint failures into bot_state — DM
+            # once/day if they spiked (a degrading API, not a watch that hasn't synced).
+            await _garmin_error_burst_check(ctx, session, user, today)
 
             # Match freshly synced activities to planned workouts BEFORE the auto-analysis,
             # so it can compare plan vs actual instead of just narrating the raw activity —

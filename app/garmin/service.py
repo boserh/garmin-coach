@@ -14,6 +14,7 @@ Two entry points:
 """
 import asyncio
 import datetime as dt
+import json
 import logging
 import time
 from typing import List, Optional, Tuple
@@ -43,6 +44,69 @@ _user_fetch_locks: "WeakValueDictionary[int, asyncio.Lock]" = WeakValueDictionar
 # auto-analysis never double-fires. Keyed by (user_id, days, activity_limit) so a
 # narrow-window tick (days=3) never serves a wider request (e.g. /deep's days=14).
 _recent_payload: dict = {}  # (user_id, days, activity_limit) -> (monotonic_ts, Payload)
+
+# OPS-05: bot_state key + retention for the drained Garmin-error log. ``recent`` keeps up to
+# _ERR_KEEP entries no older than _ERR_RETENTION_S so the 24h counters stay accurate for a
+# realistic error volume on a 1-3 user Pi (a bigger burst simply shows "≥N").
+GARMIN_ERRORS_KEY = "garmin_errors"
+_ERR_KEEP = 50
+_ERR_RETENTION_S = 48 * 3600
+_ERR_DISPLAY = 20
+
+
+def summarize_garmin_errors(state_json: Optional[str], *, now: Optional[float] = None) -> dict:
+    """Parse the stored ``garmin_errors`` blob into a display/counter summary:
+    ``{count_24h, counts_24h:{401:n,...}, last, recent}``. Pure — used by /status and the
+    dashboard banner. ``counts_24h`` excludes EXPECTED failures (known garth 403 gaps) so a
+    long-standing 403 never inflates the "degradation" signal; ``last`` is the newest entry."""
+    now = now if now is not None else time.time()
+    try:
+        data = json.loads(state_json) if state_json else {}
+    except (ValueError, TypeError):
+        data = {}
+    recent = data.get("recent") or []
+    cutoff = now - 24 * 3600
+    counts: dict = {}
+    count_24h = 0
+    for e in recent:
+        if not isinstance(e, dict) or (e.get("ts") or 0) < cutoff:
+            continue
+        if e.get("expected"):
+            continue
+        kind = e.get("kind") or "other"
+        counts[kind] = counts.get(kind, 0) + 1
+        count_24h += 1
+    last = recent[-1] if recent else None
+    return {
+        "count_24h": count_24h,
+        "counts_24h": counts,
+        "last": last,
+        "recent": recent[-_ERR_DISPLAY:],
+    }
+
+
+async def _flush_garmin_errors(session, user_id: int) -> None:
+    """Drain the client's in-process error ring buffer into this user's ``bot_state``
+    (OPS-05). Best-effort: a bad stored blob is replaced, never fatal. Does not commit —
+    the caller's ``session.commit()`` persists it alongside the fetched data."""
+    drained = client.drain_errors()
+    if not drained:
+        return
+    from app.garmin import repository
+    try:
+        prev = await repository.get_state(session, user_id, GARMIN_ERRORS_KEY)
+        try:
+            data = json.loads(prev) if prev else {}
+        except (ValueError, TypeError):
+            data = {}
+        recent = [e for e in (data.get("recent") or []) if isinstance(e, dict)]
+        recent.extend(drained)
+        now = time.time()
+        recent = [e for e in recent if (e.get("ts") or 0) >= now - _ERR_RETENTION_S][-_ERR_KEEP:]
+        blob = json.dumps({"updated": now, "recent": recent}, ensure_ascii=False)
+        await repository.set_state(session, user_id, GARMIN_ERRORS_KEY, blob)
+    except Exception:  # noqa: BLE001 — never let error-logging break the fetch path
+        logger.exception("OPS-05: failed to flush Garmin errors to bot_state")
 _PAYLOAD_REUSE_S = 30.0
 
 
@@ -464,6 +528,7 @@ async def build_payload_cached(
         )
 
         new_activities = await repository.persist_payload(session, user_id, payload, act_pairs)
+        await _flush_garmin_errors(session, user_id)   # OPS-05: record any endpoint failures
         await session.commit()
         _remember_payload(reuse_key, payload)
         return payload, new_activities
@@ -502,6 +567,7 @@ async def resync_days(
             if summary.has_data:
                 await repository.upsert_daily(session, user_id, summary)
                 written += 1
+        await _flush_garmin_errors(session, user_id)   # OPS-05
         await session.commit()
         _drop_user_payload(user_id)
     logger.info(f"RESYNC days user={user_id} wrote {written}/{len(dates)}")
@@ -539,6 +605,7 @@ async def resync_activity(session, user_id: int, activity_db_id: int):
         if row.get("exercises") is None and act.exercises is not None:
             row["exercises"] = act.exercises
         await repository.upsert_activity(session, user_id, activity_id, row)
+        await _flush_garmin_errors(session, user_id)   # OPS-05
         await session.commit()
         _drop_user_payload(user_id)
     await session.refresh(act)

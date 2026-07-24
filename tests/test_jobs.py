@@ -29,6 +29,55 @@ def _payload(today_row: DailySummary) -> Payload:
     )
 
 
+async def test_garmin_error_burst_dm_once_a_day(session, monkeypatch):
+    """OPS-05: >GARMIN_ERROR_BURST failures in the last hour → one DM/day; a second
+    call the same day is silent; expected 403s don't count."""
+    import json
+    import time as _t
+
+    from app.core.config import settings
+    from app.garmin import repository, service
+
+    monkeypatch.setattr(settings, "GARMIN_ERROR_BURST", 3)
+    user = SimpleNamespace(id=42, telegram_chat_id=555)
+    now = _t.time()
+    recent = [{"ts": now - 10, "endpoint": "/a/b", "kind": "429", "expected": False}
+              for _ in range(5)]
+    recent += [{"ts": now - 10, "endpoint": "/biometric-service/x", "kind": "403",
+                "expected": True} for _ in range(9)]  # expected — excluded
+    await repository.set_state(session, 42, service.GARMIN_ERRORS_KEY,
+                              json.dumps({"updated": now, "recent": recent}))
+    await session.commit()
+
+    ctx = _FakeCtx()
+    await jobs_module._garmin_error_burst_check(ctx, session, user, "2026-06-24")
+    assert len(ctx.bot.sent) == 1 and "Garmin API" in ctx.bot.sent[0][1]
+
+    # guard set → silent on a repeat the same day
+    await jobs_module._garmin_error_burst_check(ctx, session, user, "2026-06-24")
+    assert len(ctx.bot.sent) == 1
+
+
+async def test_garmin_error_burst_below_threshold_silent(session, monkeypatch):
+    import json
+    import time as _t
+
+    from app.core.config import settings
+    from app.garmin import repository, service
+
+    monkeypatch.setattr(settings, "GARMIN_ERROR_BURST", 10)
+    user = SimpleNamespace(id=43, telegram_chat_id=555)
+    now = _t.time()
+    recent = [{"ts": now - 10, "endpoint": "/a/b", "kind": "429", "expected": False}
+              for _ in range(4)]
+    await repository.set_state(session, 43, service.GARMIN_ERRORS_KEY,
+                              json.dumps({"updated": now, "recent": recent}))
+    await session.commit()
+    ctx = _FakeCtx()
+    await jobs_module._garmin_error_burst_check(ctx, session, user, "2026-06-24")
+    assert ctx.bot.sent == []
+
+
 def test_recovery_synced_requires_hrv_and_sleep():
     full = _payload(DailySummary(date=TODAY, hrv_avg=60, sleep_score=80, has_data=True))
     assert _recovery_synced(full, TODAY) is True

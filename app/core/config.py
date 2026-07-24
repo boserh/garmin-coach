@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # GARMIN_RETRIES is how many times a 429 is retried with exponential backoff.
     GARMIN_RPS: float = 3.0
     GARMIN_RETRIES: int = 2
+    # OPS-05: how many Garmin API failures in the last hour count as a "burst" worth a
+    # one-a-day DM ("⚠️ Garmin API деградує"). 0 disables the burst DM (the /status
+    # counters + dashboard banner still work). Expected 403s (known garth gaps) never
+    # count toward the burst — see client._EXPECTED_ERROR_SUFFIXES.
+    GARMIN_ERROR_BURST: int = 10
 
     # --- Claude ---
     ANTHROPIC_API_KEY: Optional[str] = None
