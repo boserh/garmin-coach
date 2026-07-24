@@ -434,3 +434,36 @@ async def test_run_plan_edit_proposes_without_applying(session):
     assert out.summary == "додаю біг"
     # proposed only — not yet written
     assert all(w.date != "2026-07-02" for w in await repository.list_workouts(session, plan.id))
+
+
+async def test_run_plan_edit_feeds_template_blocks_to_model(session):
+    """A "схоже на Day 1" edit gives the model the template's real block structure
+    (sets/rest/weight), not just a flat exercise list — so it can mirror the loading."""
+    from app.garmin import client
+
+    plan = await _seed_plan(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="strength",
+        garmin_template_id=931013083, description="Day 1")])
+    raw = {"workoutSegments": [{"workoutSteps": [
+        {"type": "RepeatGroupDTO", "stepType": {"stepTypeKey": "repeat"},
+         "numberOfIterations": 3, "workoutSteps": [
+            {"stepType": {"stepTypeKey": "interval"}, "category": "SQUAT",
+             "endCondition": {"conditionTypeKey": "reps"}, "endConditionValue": 12.0,
+             "weightValue": 20.0},
+            {"stepType": {"stepTypeKey": "rest"}, "endConditionValue": 90.0}]},
+    ]}]}
+    captured = {}
+
+    def fake_edit(context, api_key=None):
+        captured["context"] = context
+        return PlanEdit(summary="ok", operations=[]), CallStats(kind="plan_edit", model="m")
+
+    with patch.object(client, "fetch_workout_full", return_value=raw), \
+         patch.object(plans, "plan_edit_with_stats", side_effect=fake_edit):
+        await run_plan_edit(session, user_id=U1,
+                            instruction="додай силову як Day 1 але на ноги", api_key=None)
+
+    tmpl = captured["context"]["strength_templates"][0]
+    assert tmpl["blocks"] == [{"reps": 3, "rest_s": 90, "exercises": [
+        {"category": "SQUAT", "exercise": None, "reps": 12, "weight_kg": 20.0}]}]
