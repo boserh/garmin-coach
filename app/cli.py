@@ -264,6 +264,7 @@ async def _backfill_strength_snapshots(email: str) -> int:
                         cache[tid] = {
                             "name": (raw.get("workoutName") or "").strip() or None,
                             "exercises": workout_export.read_exercises(raw),
+                            "blocks": workout_export.read_blocks(raw),
                         }
                     else:
                         cache[tid] = None

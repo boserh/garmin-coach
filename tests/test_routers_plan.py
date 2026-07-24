@@ -187,6 +187,42 @@ def test_plan_view_links_completed_strength_to_activity(auth_client):
     assert "розбір →" in view                          # no distance → plain label
 
 
+def test_plan_renders_strength_supersets_from_snapshot_blocks(auth_client):
+    """A clone day whose snapshot carries block structure renders the Garmin-style
+    supersets (a "N підходів" header + multiple exercise cards + a rest), not a flat list."""
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date="2026-06-04", week=1, type="strength", description="Силова")])
+            plan = await repository.get_active_plan(s, uid)
+            w = (await repository.list_workouts(s, plan.id))[0]
+            w.garmin_template_id = 12345
+            w.strength_snapshot = {"name": "Day 1", "blocks": [
+                {"reps": 3, "rest_s": 90, "exercises": [
+                    {"category": "HIP_RAISE", "exercise": None, "reps": 15, "weight_kg": None},
+                    {"category": "PLANK", "exercise": None, "reps": 30, "weight_kg": None},
+                ]},
+                {"reps": 4, "rest_s": None, "exercises": [
+                    {"category": "BACK_EXTENSION", "exercise": None, "reps": 15,
+                     "weight_kg": 10.0}]},
+            ]}
+            await s.commit()
+
+    anyio.run(seed)
+    html = auth_client.get("/plan").text
+    assert "3 підходи" in html and "4 підходи" in html      # two superset blocks
+    assert "Відпочинок · 90с" in html                       # in-block rest
+    assert 'class="wcard"' in html                          # card markup
+
+
 def test_plan_page_shows_weather_chip_and_conflict(auth_client, monkeypatch):
     """ST-13: a stored location + a forecast covering the plan's next-7-days window renders
     a compact weather chip next to the matching session, and flags a heavy session on an

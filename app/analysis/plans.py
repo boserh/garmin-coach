@@ -165,6 +165,7 @@ async def _add_plan_strength(
                     snapshots[tid] = {
                         "name": (raw.get("workoutName") or "").strip() or None,
                         "exercises": workout_export.read_exercises(raw),
+                        "blocks": workout_export.read_blocks(raw),  # supersets/sets/rest
                     }
                 else:
                     logger.warning(f"PLAN strength snapshot empty tid={tid} plan={plan.id}")
