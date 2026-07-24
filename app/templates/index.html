@@ -28,7 +28,11 @@
       {% endfor %}
     </div>
     {% if base == '/me' %}
-      <p class="crumb" style="margin-top:1.3rem"><a href="/me/export">⬇️ Експорт даних (ZIP)</a></p>
+      <p class="crumb" style="margin-top:1.3rem">
+        <a href="/me/export">⬇️ Експорт даних (ZIP)</a>
+        <span style="color:#909aa8"> · </span>
+        <a href="/me/jobs">⚙️ Фонові задачі</a>
+      </p>
     {% endif %}
   </div>
 </body>

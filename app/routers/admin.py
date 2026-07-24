@@ -75,6 +75,24 @@ async def ui_index(
     )
 
 
+@router.get("/admin/jobs", response_class=HTMLResponse)
+async def admin_jobs(
+    request: Request,
+    job: str = Query(""),
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """OPS-04: all users' background-job runs (admin), optionally filtered by job label."""
+    from app.db import job_runs as _job_runs
+    runs = await _job_runs.recent_job_runs(session, job=job or None, limit=100)
+    return templates.TemplateResponse(
+        request, "jobs.html",
+        {"runs": runs, "user": user, "base": "/ui", "job_filter": job,
+         "is_admin_view": True, "title": "Фонові задачі (всі)",
+         "token": request.query_params.get("token", "")},
+    )
+
+
 @router.get("/ui/{table}", response_class=HTMLResponse)
 async def ui_table(
     table: str,

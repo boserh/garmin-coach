@@ -31,6 +31,21 @@ def test_status(auth_client):
     assert body["garmin_errors_breakdown"] == {}
     # ST-18: incomplete-day counter present
     assert body["incomplete_days_30d"] == 0
+    # OPS-04: last-morning-job field present (None until a tick has run)
+    assert "last_morning_job" in body
+
+
+def test_me_jobs_page_renders(auth_client):
+    r = auth_client.get("/me/jobs")
+    assert r.status_code == 200
+    assert "Фонові задачі" in r.text
+
+
+def test_admin_jobs_page_renders(auth_client):
+    # auth_client is an admin (see /ui tests) → /admin/jobs is reachable
+    r = auth_client.get("/admin/jobs")
+    assert r.status_code == 200
+    assert "Фонові задачі" in r.text
 
 
 def test_history_requires_login(client):

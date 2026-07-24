@@ -746,6 +746,24 @@ async def me_resync_days(
     )
 
 
+@router.get("/me/jobs", response_class=HTMLResponse)
+async def me_jobs(
+    request: Request,
+    job: str = Query(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """OPS-04: this user's last background-job runs (morning tick + the daily jobs) — when
+    each ran, its result and reason. Pure DB read; a quick "чому щось не прийшло?" answer."""
+    from app.db import job_runs as _job_runs
+    runs = await _job_runs.recent_job_runs(session, user_id=user.id, job=job or None, limit=50)
+    return templates.TemplateResponse(
+        request, "jobs.html",
+        {"runs": runs, "user": user, "base": "/me", "job_filter": job,
+         "is_admin_view": False, "title": "Фонові задачі", "token": ""},
+    )
+
+
 @router.get("/me", response_class=HTMLResponse)
 async def me_index(
     request: Request,

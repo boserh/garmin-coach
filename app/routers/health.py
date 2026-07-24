@@ -71,6 +71,18 @@ async def status(
         1 for r in history30 if completeness.daily_completeness(r, expected)
     )
 
+    # OPS-04: the most recent morning-tick run's status/reason (from the job-run log).
+    from app.db import job_runs
+    last_morning_job = await job_runs.last_job_status(session, user.id, "MORNING")
+    last_morning_status = None
+    if last_morning_job is not None:
+        last_morning_status = {
+            "status": last_morning_job.status,
+            "detail": last_morning_job.detail,
+            "at": (last_morning_job.finished_at or last_morning_job.started_at).isoformat()
+            if (last_morning_job.finished_at or last_morning_job.started_at) else None,
+        }
+
     return {
         "status": "ok",
         "provider": settings.GARMIN_PROVIDER,
@@ -85,4 +97,5 @@ async def status(
         "garmin_errors_breakdown": errors["counts_24h"],
         "garmin_last_error": errors["last"],
         "incomplete_days_30d": incomplete_days_30d,
+        "last_morning_job": last_morning_status,
     }
