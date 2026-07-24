@@ -214,6 +214,30 @@ def test_fetch_exercise_summary_force_bypasses_cache_and_parses_reps_weight(monk
     assert squat["weight_kg"] == [22.0, 22.0]   # grams → kg
 
 
+def test_fetch_exercise_summary_keeps_named_unknown_category(monkeypatch):
+    """A set Garmin couldn't classify (category UNKNOWN) but that carries a real name must
+    still count — TRX/bodyweight/custom moves land there and were being dropped ("не все
+    синкає"). A warm-up jog (RUN), a rest, and a nameless UNKNOWN set are still skipped."""
+    class P:
+        def connectapi(self, path, **kwargs):
+            return {"exerciseSets": [
+                {"setType": "ACTIVE", "repetitionCount": 10,
+                 "exercises": [{"category": "UNKNOWN", "name": "TRX_INVERTED_ROW"}]},
+                {"setType": "ACTIVE", "repetitionCount": 8,
+                 "exercises": [{"category": "RUN", "name": "RUN"}]},      # warm-up jog → skip
+                {"setType": "REST"},                                      # rest → skip
+                {"setType": "ACTIVE", "repetitionCount": 5,
+                 "exercises": [{"category": "UNKNOWN", "name": None}]},   # no name → skip
+            ]}
+
+    monkeypatch.setattr(client, "get_provider", lambda: P())
+
+    out = client.fetch_exercise_summary(999)
+    assert out["active_sets"] == 1 and len(out["sets"]) == 1
+    row = next(iter(out["sets"].values()))
+    assert row["count"] == 1 and row["reps"] == [10]
+
+
 async def test_resync_days_empty_range_is_noop(session):
     uid = await _seed_user(session)
     token = _bind()

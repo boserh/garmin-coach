@@ -335,9 +335,15 @@ def fetch_exercise_summary(activity_id, force: bool = False) -> dict:
                 continue
             ex = (s.get("exercises") or [{}])[0]
             cat = ex.get("category")
-            if cat in (None, "RUN", "UNKNOWN"):
-                continue  # skip the warm-up jog / unrecognized sets
+            if cat == "RUN":
+                continue  # a warm-up jog logged inside the workout, not a strength set
+            # Keep any set that carries a real exercise name, even when Garmin couldn't
+            # classify it (category UNKNOWN/None) — TRX, bodyweight and custom moves often
+            # land there, and dropping them lost real sets ("не все синкає"). Only skip a set
+            # that has neither a usable name nor a category.
             code = ex.get("name") or cat
+            if not code or code == "UNKNOWN":
+                continue
             total_active += 1
             entry = by_code.setdefault(code, {"count": 0, "reps": [], "weight_kg": []})
             entry["count"] += 1
@@ -346,8 +352,10 @@ def fetch_exercise_summary(activity_id, force: bool = False) -> dict:
             w = s.get("weight")
             entry["weight_kg"].append(
                 round(w / 1000.0, 1) if isinstance(w, (int, float)) and w else None)
-        # Keep the "most sets first" ordering the old Counter.most_common gave.
-        ordered = sorted(by_code.items(), key=lambda kv: kv[1]["count"], reverse=True)
+        # Preserve Garmin's execution order (first appearance of each exercise) so the list
+        # reads top-to-bottom like Connect's own — easier to spot anything missing than the
+        # old "most sets first" sort. dict keeps insertion order.
+        ordered = list(by_code.items())
         raw = {} if not by_code else {"active_sets": total_active,
                                       "sets": {c: info for c, info in ordered}}
         _cache_put(key, raw, EXERCISE_TTL_S)
