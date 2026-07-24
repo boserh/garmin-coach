@@ -150,6 +150,43 @@ def test_plan_view_links_completed_workout_to_activity(auth_client):
     assert "км факт" in view
 
 
+def test_plan_view_links_completed_strength_to_activity(auth_client):
+    """A matched STRENGTH session has no distance (match_info.actual_dist_km is None), but
+    must still link to its activity — previously the link was gated on distance, so strength
+    had no way through from /plan (runs did)."""
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date="2026-06-01", days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[PlanWorkout(
+                    date="2026-06-03", week=1, type="strength", description="Силова")])
+            plan = await repository.get_active_plan(s, uid)
+            w = (await repository.list_workouts(s, plan.id))[0]
+            act = ActivityRecord(user_id=uid, activity_id=999002, date="2026-06-03",
+                                 type="strength_training", dur_min=45.0)
+            s.add(act)
+            await s.flush()
+            w.completed_activity_id = act.id
+            w.status = "done"
+            w.match_info = {"activity_date": "2026-06-03", "actual_dist_km": None}
+            await s.commit()
+            return act.id
+
+    act_id = anyio.run(seed)
+
+    view = auth_client.get("/plan").text
+    assert f'href="/me/activities/{act_id}"' in view   # clickable link present
+    assert "розбір →" in view                          # no distance → plain label
+
+
 def test_plan_page_shows_weather_chip_and_conflict(auth_client, monkeypatch):
     """ST-13: a stored location + a forecast covering the plan's next-7-days window renders
     a compact weather chip next to the matching session, and flags a heavy session on an
