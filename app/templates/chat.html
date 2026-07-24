@@ -86,9 +86,9 @@
       <div class="thread">
         {% for h in history %}
           {% if h.when %}<div class="when">{{ h.when }}</div>{% endif %}
-          <div class="turn me">
-            <span class="kind">{{ "план" if h.kind != "ask" else "питання" }}</span>{{ h.question }}
-          </div>
+          {# keep the bubble content on one line: white-space:pre-wrap would otherwise render
+             the template's own newlines/indentation as phantom blank blocks inside it #}
+          <div class="turn me"><span class="kind">{{ "план" if h.kind != "ask" else "питання" }}</span>{{ h.question }}</div>
           <div class="turn bot{% if not h.ok %} fail{% endif %}">{{ h.answer }}</div>
         {% endfor %}
       </div>
