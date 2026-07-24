@@ -4,10 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/garmin_bot
-EnvironmentFile=/home/pi/garmin_bot/.env
-ExecStart=/home/pi/garmin_bot/venv/bin/python -m bot.admin_main
+User=sergiwez
+WorkingDirectory=/home/sergiwez/projects/garmin-coach
+EnvironmentFile=/home/sergiwez/projects/garmin-coach/.env
+ExecStart=/home/sergiwez/projects/garmin-coach/venv/bin/python -m bot.admin_main
 Restart=on-failure
 RestartSec=5
 
