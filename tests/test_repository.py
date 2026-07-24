@@ -303,7 +303,7 @@ async def test_pending_plan_edit_stores_summary_and_risky(session):
 
 # ---------- chat history (EP-11: shared bot/web transcript) ----------
 
-async def test_get_chat_history_reads_ask_and_plan_edit_oldest_first(session):
+async def test_get_chat_history_reads_ask_and_plan_edit_newest_first(session):
     await repository.log_report(
         session, user_id=U1, kind="ask", model="claude-sonnet-5", ok=True,
         question="як мій сон?", report_text="Сон непоганий.",
@@ -323,10 +323,17 @@ async def test_get_chat_history_reads_ask_and_plan_edit_oldest_first(session):
         question="інше питання", report_text="Інша відповідь.",
     )
 
+    # newest first: the plan_edit was logged after the ask
     hist = await repository.get_chat_history(session, U1)
-    assert [h["kind"] for h in hist] == ["ask", "plan_edit"]
-    assert hist[0]["question"] == "як мій сон?" and hist[0]["answer"] == "Сон непоганий."
-    assert hist[1]["answer"] == "Переніс довгу на суботу."
+    assert [h["kind"] for h in hist] == ["plan_edit", "ask"]
+    assert hist[0]["answer"] == "Переніс довгу на суботу."
+    assert hist[1]["question"] == "як мій сон?" and hist[1]["answer"] == "Сон непоганий."
+
+    # pagination: offset skips the newest, a small window then a "load more" slice
+    page1 = await repository.get_chat_history(session, U1, n=1)
+    assert [h["kind"] for h in page1] == ["plan_edit"]
+    page2 = await repository.get_chat_history(session, U1, n=1, offset=1)
+    assert [h["kind"] for h in page2] == ["ask"]
 
 
 async def test_get_chat_history_renders_error_for_failed_turn(session):

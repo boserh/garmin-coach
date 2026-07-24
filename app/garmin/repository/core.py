@@ -713,9 +713,12 @@ async def get_recent_asks(
 CHAT_KINDS = ("ask", "plan_edit", "sick")
 
 
-async def get_chat_history(session: AsyncSession, user_id: int, n: int = 30) -> List[dict]:
-    """The last ``n`` chat-shaped exchanges, oldest first, as [{kind, question, answer,
-    ok, created_at}, ...] for the web chat page. ``ReportLog`` is user-scoped, not
+async def get_chat_history(
+    session: AsyncSession, user_id: int, n: int = 30, offset: int = 0
+) -> List[dict]:
+    """Chat-shaped exchanges **newest first**, as [{kind, question, answer, ok,
+    created_at}, ...] for the web chat page — a window of ``n`` starting ``offset`` rows
+    back from the newest (for "load more" pagination). ``ReportLog`` is user-scoped, not
     chat-scoped, so this is the exact same thread the bot's /ask and /plan already write
     to — a question asked in Telegram shows up here too. A failed call (``ok=False``)
     still renders as a turn, with ``answer`` from ``error`` instead of ``report_text``,
@@ -725,6 +728,7 @@ async def get_chat_history(session: AsyncSession, user_id: int, n: int = 30) -> 
             select(ReportLog)
             .where(ReportLog.user_id == user_id, ReportLog.kind.in_(CHAT_KINDS))
             .order_by(ReportLog.created_at.desc())
+            .offset(max(0, offset))
             .limit(n)
         )
     ).scalars().all()
@@ -735,7 +739,7 @@ async def get_chat_history(session: AsyncSession, user_id: int, n: int = 30) -> 
             "ok": r.ok,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
-        for r in reversed(rows)
+        for r in rows
     ]
 
 

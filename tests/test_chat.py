@@ -83,6 +83,33 @@ def test_chat_page_renders_empty_state(auth_client):
     assert "Ще нема повідомлень" in r.text
 
 
+def test_chat_page_newest_first_and_load_more(auth_client):
+    client, uid = auth_client
+
+    async def seed():
+        async with async_session_maker() as s:
+            for i in range(35):
+                await repository.log_report(
+                    s, user_id=uid, kind="ask", model="claude-sonnet-5", ok=True,
+                    question=f"питання номер {i}", report_text=f"відповідь {i}",
+                )
+    anyio.run(seed)
+
+    body = client.get("/chat").text
+    # newest exchange (34) appears before the older one (33) in the HTML → newest at top
+    assert body.index("питання номер 34") < body.index("питання номер 33")
+    # each turn carries a date/time label
+    assert 'class="when"' in body
+    # only the newest 30 are shown by default; #4 (35 - 31) is off the first page
+    assert "питання номер 4" not in body
+    # a "load more" link is offered because there are >30
+    assert "Показати більше" in body and "/chat?limit=60" in body
+
+    # loading more reveals the older ones
+    more = client.get("/chat?limit=60").text
+    assert "питання номер 0" in more
+
+
 # ---------- POST /chat ----------
 
 def test_chat_send_question_routes_to_run_ask(auth_client):

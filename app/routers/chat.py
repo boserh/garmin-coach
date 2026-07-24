@@ -18,11 +18,13 @@ separate change than this router. Every turn is a plain POST + full-page reload,
 "no-JS still works" AC holds by construction (there's no JS-only fast path to fall back
 from yet).
 """
+import datetime as dt
 import logging
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +47,32 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 router = APIRouter(tags=["chat"])
 
-CHAT_HISTORY_N = 30
+CHAT_HISTORY_N = 30       # how many exchanges to show initially / add per "load more"
+CHAT_HISTORY_MAX = 500    # hard cap so a crafted ?limit= can't pull the whole history
+
+
+def _user_tz(user: User) -> ZoneInfo:
+    """This user's IANA timezone (ST-14), falling back to Europe/Warsaw on a bad value —
+    so chat timestamps read in the user's own local time, like the rest of the app."""
+    try:
+        return ZoneInfo(user.timezone or "Europe/Warsaw")
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("Europe/Warsaw")
+
+
+def _with_local_time(history: list, tz: ZoneInfo) -> list:
+    """Annotate each chat turn with a ``when`` string (date + time in the user's timezone)
+    from its stored UTC ``created_at``."""
+    for h in history:
+        iso = h.get("created_at")
+        when = ""
+        if iso:
+            try:
+                when = dt.datetime.fromisoformat(iso).astimezone(tz).strftime("%d.%m.%Y %H:%M")
+            except ValueError:
+                when = ""
+        h["when"] = when
+    return history
 
 # A pragmatic, conservative v1 heuristic (documented limitation, in the spirit of NF-16's
 # "no bedtime clock" or NF-15's desk-only recon note): imperative plan-editing verbs route
@@ -67,14 +94,22 @@ def _looks_like_plan_edit(text: str) -> bool:
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_page(
     request: Request,
+    limit: int = Query(CHAT_HISTORY_N, ge=1),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    history = await repository.get_chat_history(session, user.id, n=CHAT_HISTORY_N)
+    # "Load more" grows the window (?limit=60, 90, …); newest exchanges come first, so older
+    # ones appear further down and each click reveals more below. Fetch one extra to know
+    # whether a "load more" link is still worth showing (has_more), then trim it off.
+    limit = max(CHAT_HISTORY_N, min(limit, CHAT_HISTORY_MAX))
+    history = await repository.get_chat_history(session, user.id, n=limit + 1)
+    has_more = len(history) > limit
+    history = _with_local_time(history[:limit], _user_tz(user))
     pending = await repository.get_pending_plan_edit(session, user.id)
     return templates.TemplateResponse(
         request, "chat.html",
         {"user": user, "history": history, "pending": pending,
+         "has_more": has_more, "next_limit": limit + CHAT_HISTORY_N,
          "error": request.query_params.get("err")},
     )
 
