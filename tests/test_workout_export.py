@@ -230,3 +230,21 @@ def test_build_then_read_blocks_roundtrips():
     ]
     dto = wx.build_strength_workout("Day 1", blocks)
     assert wx.read_blocks(dto) == blocks
+
+
+def test_read_blocks_and_exercises_skip_warmup_jog():
+    """A warmup step (the intro Jog) is not a strength exercise — excluded from both readers
+    even if it carries a category."""
+    raw = {"workoutSegments": [{"workoutSteps": [
+        {"stepType": {"stepTypeKey": "warmup"}, "category": "CARDIO",
+         "exerciseName": "JOG", "endCondition": {"conditionTypeKey": "time"},
+         "endConditionValue": 300.0},
+        {"type": "RepeatGroupDTO", "stepType": {"stepTypeKey": "repeat"},
+         "numberOfIterations": 3, "workoutSteps": [
+            {"stepType": {"stepTypeKey": "interval"}, "category": "SQUAT",
+             "endCondition": {"conditionTypeKey": "reps"}, "endConditionValue": 12.0,
+             "weightValue": 20.0}]},
+    ]}]}
+    blocks = wx.read_blocks(raw)
+    assert len(blocks) == 1 and blocks[0]["exercises"][0]["category"] == "SQUAT"
+    assert all(e["category"] != "CARDIO" for e in wx.read_exercises(raw))

@@ -300,10 +300,17 @@ def build_strength_workout(name: str, blocks: list, *, warmup_s: int = 0) -> dic
     }
 
 
+def _step_key(st: dict) -> str:
+    return (st.get("stepType") or {}).get("stepTypeKey") or ""
+
+
 def _read_strength_step(st: dict) -> Optional[dict]:
-    """One exercise step → ``{category, exercise, reps, weight_kg}`` (None if it's not an
-    exercise). ``weightValue`` is kg directly in the workout DTO (verified — see the strength
-    DTO note), ``-1``/≤0 = bodyweight."""
+    """One exercise step → ``{category, exercise, reps, weight_kg}`` (None if it's not a
+    working exercise). ``weightValue`` is kg directly in the workout DTO (verified — see the
+    strength DTO note), ``-1``/≤0 = bodyweight. A warmup/cooldown step (e.g. the intro Jog)
+    is not a strength exercise → skipped even if it carries a category."""
+    if _step_key(st) in ("warmup", "cooldown"):
+        return None
     cat = (st.get("category") or "").upper()
     if not cat:
         return None
@@ -316,10 +323,6 @@ def _read_strength_step(st: dict) -> Optional[dict]:
         "reps": int(reps) if reps else None,
         "weight_kg": round(w, 1) if isinstance(w, (int, float)) and w > 0 else None,
     }
-
-
-def _step_key(st: dict) -> str:
-    return (st.get("stepType") or {}).get("stepTypeKey") or ""
 
 
 def read_blocks(raw: dict) -> list:
@@ -365,6 +368,8 @@ def read_exercises(raw: dict) -> list:
     def walk(steps: list) -> None:
         for st in steps or []:
             walk(st.get("workoutSteps"))  # repeat groups nest their steps
+            if _step_key(st) in ("warmup", "cooldown"):
+                continue  # the intro Jog / cooldown is not a strength exercise
             cat = (st.get("category") or "").upper()
             if not cat:
                 continue
