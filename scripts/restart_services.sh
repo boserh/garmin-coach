@@ -8,4 +8,4 @@
 # waiting for it to finish. garmin-bot.service is what's running this script, so
 # waiting would mean waiting on our own process being killed as part of the restart.
 set -euo pipefail
-exec /bin/systemctl restart --no-block garmin-bot.service garmin-web.service
+exec /bin/systemctl restart --no-block garmin-bot.service garmin-web.service garmin-admin-bot.service

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
 
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
+    # Second, separate bot identity for the hidden system/admin commands (/deploy +
+    # /test_*), run as its own process (bot.admin_main), off the main coaching bot.
+    # Unset → bot.admin_main refuses to start.
+    TELEGRAM_ADMIN_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[int] = None
     # Bot's public @username (without @) — used to render a t.me/ link in the web
     # onboarding so users know which bot to message. Override via env if it changes.

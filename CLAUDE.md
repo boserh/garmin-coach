@@ -143,7 +143,8 @@ Then log in at `/login`, manage credentials at `/settings`, add users at `/admin
 
 ```
 APP_SECRET_KEY=        # Fernet key — encrypts creds + signs sessions (required for auth)
-TELEGRAM_BOT_TOKEN=    # the (single) bot identity — global
+TELEGRAM_BOT_TOKEN=    # the main (product) bot identity — global
+TELEGRAM_ADMIN_BOT_TOKEN=  # separate system/admin bot (bot.admin_main): /deploy + /test_*
 # Seed-only (per-user after bootstrap; used by `create-user --seed-env`):
 GARMIN_EMAIL=
 GARMIN_PASSWORD=
@@ -508,8 +509,10 @@ app/
     admin.py           /ui DB browser — admin only
   dependencies.py      shared deps (get_session)
 bot/
-  main.py              builds the Application, registers handlers + job, run_polling
-  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /deploy (OPS-03, admin), /test_*; _resolve_user, error handler
+  main.py              product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
+  admin_main.py        system/admin bot: hidden /deploy + /test_* only, owner-only gate,
+                       hardcoded token, its own process (garmin-admin-bot.service)
+  handlers.py          /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /deploy (OPS-03, admin), /test_*; _resolve_user, error handler (shared by both bots)
   jobs.py              morning_job loops users (per-user timezone window, ST-14; per-user once-a-day guard); also weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job
 alembic/               migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/                 pytest: crypto, garmin service, routers (login), repository, user runtime
@@ -633,6 +636,22 @@ flag — comparing against the current issue date means a fresh re-login (new is
 the stored guard stop matching and silently re-arms both thresholds, no explicit reset needed.
 Best-effort: a missing/undecodable token blob is a silent skip, never a tick failure.
 `tests/test_token_expiry.py`.
+
+**Separate system/admin bot**: the hidden system commands — **`/deploy`** (OPS-03) and the
+**`/test_*`** debug commands — live on a **second Telegram bot** run as its own process
+(`bot/admin_main.py` → `garmin-admin-bot.service`), keeping deploy + debug traffic off the
+main coaching bot (`bot/main.py`). Both share the exact same handler code (`bot/handlers.py`),
+codebase and DB — only the token and process differ. `bot.main.register_handlers` wires the
+product commands + jobs; `bot.admin_main.register_admin_handlers` wires only `/deploy` +
+`/test_*`. The admin bot's token comes from `TELEGRAM_ADMIN_BOT_TOKEN` (`.env`; unset → the
+process refuses to start), and **every** update is gated by
+`_owner_only` (a group `-1` `TypeHandler`): access is locked to the **first user** (lowest
+`users.id` — the bootstrap admin), so even another registered admin can't drive deploy/test
+from it. The scheduled jobs stay on `bot.main`; the admin process runs no JobQueue work beyond
+the on-demand `/test_on` tick. `deploy/garmin-admin-bot.service` mirrors `garmin-bot.service`
+(`ExecStart=... -m bot.admin_main`), and `scripts/restart_services.sh` now restarts all three
+units (`garmin-bot`, `garmin-web`, `garmin-admin-bot`) — the sudoers grant whitelists the
+script path, not its args, so that addition needs no sudoers change. `tests/test_admin_bot.py`.
 
 **Remote deploy from Telegram (OPS-03)**: the admin-only **`/deploy`** bot command — `git pull`
 then restart the systemd services — for pushing code to the Pi without SSHing in. `app/deploy.py`
