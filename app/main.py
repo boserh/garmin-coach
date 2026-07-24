@@ -29,6 +29,19 @@ from app.routers import settings as settings_router
 logger = logging.getLogger("api")
 
 
+class _RevalidatingStatic(StaticFiles):
+    """Serve static assets with ``Cache-Control: no-cache`` so the browser revalidates
+    (via the ETag StaticFiles already sends) on every load — a cheap 304 when unchanged,
+    a fresh 200 right after a deploy. Without this a changed app.css could sit stale in a
+    browser's heuristic cache long after a deploy (the classic "CSS didn't update" bug).
+    Combined with the ``?v=`` link bump that one-time-breaks any already-cached copy."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -75,7 +88,7 @@ def create_app() -> FastAPI:
 
     app.mount(
         "/static",
-        StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+        _RevalidatingStatic(directory=str(Path(__file__).resolve().parent / "static")),
         name="static",
     )
 
