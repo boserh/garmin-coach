@@ -169,17 +169,18 @@ def test_exercise_rows_formats_reps_and_weight():
         "утримання": {"count": 1, "reps": [None], "weight_kg": [None]},
         "жим": {"count": 2, "reps": [10, 12], "weight_kg": [50.0, 55.0]},
     }}
-    by = {r["name"]: r["detail"] for r in _exercise_rows(ex)}
-    assert by["присідання"] == "2×12 · 22 кг"
-    assert by["утримання"] == "1 підх. · власна вага"   # no reps, bodyweight
-    assert by["жим"] == "2×10–12 · 50–55 кг"            # varying reps + weight → ranges
+    by = {r["name"]: r for r in _exercise_rows(ex)}
+    # The set count moves to the card header (`sets`); the subtitle drops it.
+    assert by["присідання"]["sets"] == 2 and by["присідання"]["detail"] == "12 повт. · 22 кг"
+    assert by["утримання"]["sets"] == 1 and by["утримання"]["detail"] == "власна вага"
+    assert by["жим"]["detail"] == "10–12 повт. · 50–55 кг"   # ranges when they vary
 
 
 def test_exercise_rows_legacy_count_only_shape():
     from app.routers.me import _exercise_rows
 
     rows = _exercise_rows({"active_sets": 4, "sets": {"присідання": 4}})
-    assert rows == [{"name": "присідання", "detail": "4"}]
+    assert rows == [{"name": "присідання", "sets": 4, "detail": ""}]
 
 
 def test_exercise_rows_empty():
@@ -187,5 +188,51 @@ def test_exercise_rows_empty():
 
     assert _exercise_rows(None) == []
     assert _exercise_rows({}) == []
+
+
+def test_sets_word_ukrainian_plural():
+    from app.format import sets_word
+
+    assert sets_word(1) == "підхід"
+    assert [sets_word(n) for n in (2, 3, 4)] == ["підходи"] * 3
+    assert [sets_word(n) for n in (5, 11, 12, 0)] == ["підходів"] * 4
+    assert sets_word(21) == "підхід" and sets_word(22) == "підходи"
+
+
+def test_activity_strength_renders_garmin_style_cards(client):
+    """The strength activity detail renders each exercise as a Garmin-style card block
+    (header "N підходів" + a card with reps/weight), not the old flat list."""
+    import anyio
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+
+    _seed_user(email="strength@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "strength@example.com", "password": "pw"})
+
+    async def seed():
+        from app.db import users
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "strength@example.com")
+            s.add(ActivityRecord(
+                user_id=u.id, activity_id=555, date="2026-07-23", type="strength_training",
+                dur_min=60, exercises={"active_sets": 8, "sets": {
+                    "гіперекстензія": {"count": 4, "reps": [15, 15, 15, 12],
+                                       "weight_kg": [5.0, 5.0, 10.0, 10.0]},
+                    "TRX": {"count": 3, "reps": [15, 7, 10], "weight_kg": [None, None, None]},
+                    "утримання": {"count": 1, "reps": [None], "weight_kg": [None]},
+                }}))
+            await s.commit()
+            return (await s.execute(
+                select(ActivityRecord.id).where(ActivityRecord.user_id == u.id)
+            )).scalar_one()
+
+    rid = anyio.run(seed)
+    html = client.get(f"/me/activities/{rid}").text
+    assert 'class="wcard"' in html and 'class="wbhead"' in html  # card markup
+    assert "4 підходи" in html and "15 повт. · 5–10 кг" in html   # hyperextension card
+    assert "3 підходи" in html and "власна вага" in html          # TRX bodyweight
+    assert "1 підхід" in html                                     # correct singular plural
 
 

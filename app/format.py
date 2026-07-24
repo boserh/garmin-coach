@@ -35,3 +35,16 @@ def pace(min_km: float, suffix: str = "") -> str:
     """min/km → 'M:SS' (+ optional suffix like '/км')."""
     total = round(min_km * 60)
     return f"{total // 60}:{total % 60:02d}{suffix}"
+
+
+def sets_word(n) -> str:
+    """Ukrainian plural for 'підхід' (a strength set): 1 підхід / 2–4 підходи / 5+ підходів.
+    Used for the 'N підходів' header on the Garmin-style strength cards."""
+    n = int(n or 0)
+    if n % 100 in (11, 12, 13, 14):
+        return "підходів"
+    if n % 10 == 1:
+        return "підхід"
+    if n % 10 in (2, 3, 4):
+        return "підходи"
+    return "підходів"
