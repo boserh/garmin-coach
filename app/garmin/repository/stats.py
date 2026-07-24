@@ -31,6 +31,7 @@ async def weekly_run_volume(
                 ActivityRecord.type.like("%run%"),
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
         )
     ).all()
@@ -71,6 +72,7 @@ async def runs_for_efficiency(
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= cutoff,
                 ActivityRecord.avg_hr.is_not(None),
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             ).order_by(ActivityRecord.date)
         )
     ).scalars().all()
@@ -139,6 +141,7 @@ async def weekly_activity_load(
                 ActivityRecord.user_id == user_id,
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
         )
     ).all()
@@ -166,6 +169,7 @@ async def window_stats(
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= start,
                 ActivityRecord.date <= end,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
         )
     ).all()
@@ -276,6 +280,7 @@ async def wrapped_stats(
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= start,
                 ActivityRecord.date <= end,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
         )
     ).all()
@@ -295,6 +300,7 @@ async def wrapped_stats(
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= start,
                 ActivityRecord.date <= end,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
         )
     ).all()

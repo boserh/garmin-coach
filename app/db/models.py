@@ -157,6 +157,11 @@ class ActivityRecord(Base):
     # pushed with structured steps. Null when there's nothing structured to compare
     # (free run, no match, or the session predates the feature).
     step_match: Mapped[Optional[dict]] = mapped_column(JSON)
+    # ST-17: user-hidden (a duplicate watch+phone record, a broken-GPS track, a stray
+    # activity synced from someone else's device). A hidden row is excluded from every
+    # list / aggregate / record / plan-match and stays hidden after the next Garmin sync
+    # (upsert_activity never resets it). Kept, not deleted, so a resync can't resurrect it.
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

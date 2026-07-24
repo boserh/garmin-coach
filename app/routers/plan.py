@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
@@ -34,7 +35,7 @@ from app.analysis.service import (
 from app.core.auth import current_user
 from app.core.config import settings
 from app.db.base import async_session_maker
-from app.db.models import User
+from app.db.models import ActivityRecord, User
 from app.dependencies import get_session
 from app.garmin import exercises as _exercises
 from app.garmin import plan_sync, repository
@@ -578,6 +579,57 @@ async def _race_pack_block(session, user: User, plan) -> Optional[dict]:
     return {"text": text, "date": date, "days_left": days_left}
 
 
+# ST-21: workout types a manual link may target (mirror repository._MANUAL_MATCH_TYPES).
+_MANUAL_TYPES = {"easy", "long", "tempo", "intervals", "race", "cycling"}
+
+
+async def _manual_actions(session, user, workouts, today: str) -> dict:
+    """ST-21: per PAST matchable session, the data the /plan manual-status menu needs —
+    ``{workout_id: {"candidates": [{id, label}], "manual": bool}}``. One query for the whole
+    plan window (not per-session), candidates (±1 day, compatible sport, own & visible)
+    assigned in Python. Empty for a plan with no past run/cycling sessions."""
+    from app.multisport import BIKE_NEEDLES
+
+    past = [w for w in workouts
+            if (w.type or "").lower() in _MANUAL_TYPES and w.date and w.date < today]
+    if not past:
+        return {}
+    lo = (dt.date.fromisoformat(min(w.date for w in past))
+          - dt.timedelta(days=1)).isoformat()
+    hi = (dt.date.fromisoformat(max(w.date for w in past))
+          + dt.timedelta(days=1)).isoformat()
+    acts = (await session.execute(
+        select(ActivityRecord).where(
+            ActivityRecord.user_id == user.id,
+            ActivityRecord.is_hidden.is_(False),
+            ActivityRecord.date.is_not(None),
+            ActivityRecord.date >= lo, ActivityRecord.date <= hi,
+        ).order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
+    )).scalars().all()
+    out: dict = {}
+    for w in past:
+        wtype = (w.type or "").lower()
+        needles = BIKE_NEEDLES if wtype == "cycling" else ("run",)
+        wd = dt.date.fromisoformat(w.date)
+        cands = []
+        for a in acts:
+            if a.id == w.completed_activity_id:
+                continue
+            if abs((dt.date.fromisoformat(a.date) - wd).days) > 1:
+                continue
+            if not any(n in (a.type or "").lower() for n in needles):
+                continue
+            label = f"{a.date} · {(a.type or '—').replace('_', ' ')}"
+            if a.dist_km:
+                label += f" · {a.dist_km:.1f} км"
+            cands.append({"id": a.id, "label": label})
+        out[w.id] = {
+            "candidates": cands,
+            "manual": bool(w.match_info and w.match_info.get("manual")),
+        }
+    return out
+
+
 @router.get("/plan", response_class=HTMLResponse)
 async def plan_page(
     request: Request,
@@ -615,9 +667,12 @@ async def plan_page(
     anchor_pace = await repository.typical_run_pace(session, user.id)
     weather_chips, weather_conflicts = await _weather_chips(user, workouts)
     race_pack = await _race_pack_block(session, user, plan)
+    today_iso = dt.date.today().isoformat()
+    manual_actions = await _manual_actions(session, user, workouts, today_iso)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts),
+         "manual_actions": manual_actions,
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
          "compliance": compliance, "anchor_pace": anchor_pace,
@@ -845,6 +900,30 @@ async def plan_set_adjust_level(
         plan.intake = dict(plan.intake or {}, adjust_level=adjust_level)
         await session.commit()
         logger.info(f"PLAN adjust_level={adjust_level} user={user.id} plan={plan.id}")
+    return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/plan/workout/{workout_id}/status")
+async def plan_set_workout_status(
+    workout_id: int,
+    action: str = Form(...),
+    activity_id: str = Form(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-21: manually fix a past session's plan/actual state — ``done``/``skipped``,
+    ``unlink`` a wrong match, or ``link`` a specific own activity. Pure DB (no Garmin/Claude);
+    the row is tagged ``match_info.manual`` so the auto-matcher leaves it alone afterwards.
+    Compliance and the next adaptation read the corrected status immediately."""
+    if action not in ("done", "skipped", "unlink", "link"):
+        return RedirectResponse("/plan", status_code=303)
+    aid = int(activity_id) if activity_id.isdigit() else None
+    w = await repository.set_workout_status(
+        session, user.id, workout_id, action, activity_id=aid)
+    if w is not None:
+        await session.commit()
+        logger.info(
+            f"PLAN manual-status user={user.id} workout={workout_id} action={action}")
     return RedirectResponse("/plan", status_code=303)
 
 
