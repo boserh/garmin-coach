@@ -23,6 +23,13 @@
     .turn .kind { display: block; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
                   color: var(--faint); margin-bottom: .3rem; }
     .turn.me .kind { color: rgba(10,16,32,.55); }
+    .when { align-self: center; font-size: .7rem; color: var(--faint); margin: .5rem 0 .1rem;
+            letter-spacing: .02em; }
+    .loadmore { text-align: center; margin: 1.1rem 0 .2rem; }
+    .loadmore a { display: inline-block; padding: .5rem 1.1rem; border-radius: 10px;
+                  border: 1px solid var(--line-2); color: var(--muted); font-size: .85rem;
+                  background: var(--surface-2); text-decoration: none; }
+    .loadmore a:hover { color: var(--ink); }
     .empty { color: var(--muted); font-size: .9rem; margin: 1.5rem 0; }
     .composer { display: flex; gap: .6rem; align-items: flex-end; margin-top: 1rem; flex-wrap: wrap; }
     .composer textarea { min-height: 3.1rem; max-height: 10rem; resize: vertical; flex: 1 1 14rem; }
@@ -67,24 +74,28 @@
       </div>
     {% endif %}
 
+    <form method="post" action="/chat" class="composer">
+      <textarea name="message" placeholder="Напр.: як мій сон цього тижня? / перенеси довгу на суботу" required></textarea>
+      <button class="btn" type="submit">Надіслати</button>
+    </form>
+
     {% if not history %}
       <p class="empty">Ще нема повідомлень. Запитай щось про сон/тренування або напиши,
         що змінити в плані (напр. «перенеси довгу на суботу»).</p>
     {% else %}
       <div class="thread">
         {% for h in history %}
+          {% if h.when %}<div class="when">{{ h.when }}</div>{% endif %}
           <div class="turn me">
             <span class="kind">{{ "план" if h.kind != "ask" else "питання" }}</span>{{ h.question }}
           </div>
           <div class="turn bot{% if not h.ok %} fail{% endif %}">{{ h.answer }}</div>
         {% endfor %}
       </div>
+      {% if has_more %}
+        <div class="loadmore"><a href="/chat?limit={{ next_limit }}">↓ Показати більше</a></div>
+      {% endif %}
     {% endif %}
-
-    <form method="post" action="/chat" class="composer">
-      <textarea name="message" placeholder="Напр.: як мій сон цього тижня? / перенеси довгу на суботу" required></textarea>
-      <button class="btn" type="submit">Надіслати</button>
-    </form>
   </div>
 </body>
 </html>
