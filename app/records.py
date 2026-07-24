@@ -124,6 +124,8 @@ async def _run_bests(session: AsyncSession, user_id: int) -> dict:
                 ActivityRecord.user_id == user_id,
                 ActivityRecord.type.like("%run%"),
                 ActivityRecord.date.is_not(None),
+                ActivityRecord.is_hidden.is_(False),   # ST-17: a hidden dup/broken track
+                # must not set a fake PB or inflate a record week.
             )
         )
     ).scalars().all()

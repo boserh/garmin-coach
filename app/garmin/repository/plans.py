@@ -11,6 +11,7 @@ from app.db.models import (
     ActivityRecord,
     PlannedWorkout,
     TrainingPlan,
+    WorkoutStatus,
 )
 from app.garmin import exercises
 from app.garmin.repository.core import _dump_steps
@@ -74,6 +75,114 @@ async def get_workout_for_activity(
             )
         )
     ).scalar_one_or_none()
+
+
+# ---------- MANUAL WORKOUT STATUS (ST-21) ----------
+
+# Which plan-workout types a manual link may match against (v1 — run/cycling only, no
+# strength manual match; a strength session has no distance to reconcile anyway).
+_MANUAL_MATCH_TYPES = {"easy", "long", "tempo", "intervals", "race", "cycling"}
+
+
+async def get_workout(session: AsyncSession, user_id: int, workout_id: int):
+    """One PlannedWorkout by id, scoped to the user (None if missing / not theirs)."""
+    return (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.id == workout_id, PlannedWorkout.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def link_candidates(
+    session: AsyncSession, user_id: int, workout: PlannedWorkout
+) -> List[ActivityRecord]:
+    """Own, visible activities of a compatible sport within ±1 day of ``workout``'s date —
+    the pick list for a manual "🔗 привʼязати" (ST-21). Running plan types offer running
+    activities, cycling offers cycling; already-hidden activities are excluded. Newest first.
+    Empty for a strength/rest/cross session (no manual match in v1)."""
+    wtype = (workout.type or "").lower()
+    if wtype not in _MANUAL_MATCH_TYPES or not workout.date:
+        return []
+    if wtype == "cycling":
+        from app.multisport import BIKE_NEEDLES
+        substrs = BIKE_NEEDLES
+    else:
+        substrs = ("run",)
+    w_date = dt.date.fromisoformat(workout.date)
+    lo = (w_date - dt.timedelta(days=1)).isoformat()
+    hi = (w_date + dt.timedelta(days=1)).isoformat()
+    from sqlalchemy import or_
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.is_hidden.is_(False),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= lo,
+                ActivityRecord.date <= hi,
+                or_(*(ActivityRecord.type.contains(s) for s in substrs)),
+            ).order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def set_workout_status(
+    session: AsyncSession, user_id: int, workout_id: int, action: str,
+    *, activity_id: Optional[int] = None,
+):
+    """Manually override a past session's plan/actual state (ST-21). ``action`` is one of:
+
+    * ``done``   — mark completed by hand (treadmill / a tracker that never synced): status
+      ``done``, tag ``match_info.manual``; an existing activity link is kept.
+    * ``skipped``— mark not done: status ``skipped``, un-link any matched activity (freeing it
+      for another session), tag manual.
+    * ``unlink`` — drop a wrong match: clear ``completed_activity_id``/``match_info`` and send
+      the session back to ``missed``/``planned`` by date, so the auto-matcher may try again.
+    * ``link``   — attach a specific own activity (``activity_id``, must be a compatible-sport
+      row within ±1 day): status ``done``, tag manual with the activity's date/distance.
+
+    A ``manual`` tag makes the auto-matcher leave the row alone on subsequent runs (see
+    ``matching``). Returns the workout, or None if it isn't this user's (or the link target is
+    invalid). Does not commit."""
+    w = await get_workout(session, user_id, workout_id)
+    if w is None:
+        return None
+    today_s = dt.date.today().isoformat()
+    if action == "unlink":
+        w.completed_activity_id = None
+        w.match_info = None
+        w.status = WorkoutStatus.MISSED if (w.date or "") < today_s else WorkoutStatus.PLANNED
+        return w
+    if action == "skipped":
+        w.completed_activity_id = None
+        w.match_info = {"manual": True}
+        w.status = WorkoutStatus.SKIPPED
+        return w
+    if action == "done":
+        info = dict(w.match_info or {})
+        info["manual"] = True
+        w.match_info = info
+        w.status = WorkoutStatus.DONE
+        return w
+    if action == "link":
+        if activity_id is None:
+            return None
+        candidates = await link_candidates(session, user_id, w)
+        act = next((a for a in candidates if a.id == activity_id), None)
+        if act is None:
+            return None
+        w.completed_activity_id = act.id
+        w.match_info = {
+            "manual": True,
+            "activity_date": act.date,
+            "actual_dist_km": act.dist_km,
+        }
+        w.status = WorkoutStatus.DONE
+        return w
+    return None
 
 
 async def upcoming_plan_workouts(

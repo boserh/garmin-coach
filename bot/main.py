@@ -49,6 +49,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("activity", "Розбір активності, напр. /activity 5"),
         BotCommand("checkin", "Оцінити останнє тренування (RPE + чи боліло)"),
         BotCommand("resync", "Пересинкувати дані з Garmin (без аргументів — вчора+сьогодні)"),
+        BotCommand("hide", "Приховати активність (дубль/битий трек), напр. /hide 5"),
         BotCommand("records", "Особисті рекорди"),
         BotCommand("costs", "Витрати на Claude за місяць"),
         BotCommand("gear", "Спорядження (кросівки) з пробігом"),
@@ -75,6 +76,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("activity", handlers.activity))
     app.add_handler(CommandHandler("checkin", handlers.checkin))
     app.add_handler(CommandHandler("resync", handlers.resync))
+    app.add_handler(CommandHandler("hide", handlers.hide))
     app.add_handler(CommandHandler("records", handlers.records_cmd))
     app.add_handler(CommandHandler("costs", handlers.costs_cmd))
     app.add_handler(CommandHandler("gear", handlers.gear_cmd))

@@ -107,6 +107,39 @@
               {%- endif %}
             {% endif %}
           </div>
+          {% set ma = (manual_actions or {}).get(w.id) %}
+          {% if not readonly and ma %}
+          <details class="wmenu">
+            <summary>✏️ статус<span class="chev">▾</span></summary>
+            <div class="wmenu-body">
+              <form method="post" action="/plan/workout/{{ w.id }}/status">
+                <input type="hidden" name="action" value="done">
+                <button type="submit">✅ виконано вручну</button>
+              </form>
+              <form method="post" action="/plan/workout/{{ w.id }}/status">
+                <input type="hidden" name="action" value="skipped">
+                <button type="submit">⏭ пропущено</button>
+              </form>
+              {% if w.completed_activity_id or ma.manual %}
+              <form method="post" action="/plan/workout/{{ w.id }}/status">
+                <input type="hidden" name="action" value="unlink">
+                <button type="submit">↺ відвʼязати</button>
+              </form>
+              {% endif %}
+              {% if ma.candidates %}
+              <form method="post" action="/plan/workout/{{ w.id }}/status" class="wmenu-link">
+                <input type="hidden" name="action" value="link">
+                <select name="activity_id">
+                  {% for c in ma.candidates %}
+                  <option value="{{ c.id }}">{{ c.label }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit">🔗 привʼязати</button>
+              </form>
+              {% endif %}
+            </div>
+          </details>
+          {% endif %}
           {% if w.description %}<div class="desc">{{ (strength_names or {}).get(w.id, w.description) }}</div>{% endif %}
           {% if w.steps %}
           <div class="steps">

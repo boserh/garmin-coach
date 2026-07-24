@@ -16,6 +16,13 @@
     <a class="back" href="/me/activities">← Тренування</a>
 
     {% if resynced %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔄 Дані активності оновлено з Garmin.</div>{% endif %}
+    {% if regen == 'ok' %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔁 Розбір перегенеровано.</div>{% endif %}
+    {% if regen == 'err' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">⚠️ Не вдалося перегенерувати — попередній розбір збережено.</div>{% endif %}
+    {% if regen == 'nokey' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">🔑 Додай Claude-ключ у <a href="/settings">Налаштуваннях</a>, щоб генерувати розбір.</div>{% endif %}
+    {% if regen == 'wait' %}<div class="note" style="max-width:none;border-left:3px solid #e0af68">⏳ Зачекай хвилину перед повторною перегенерацією.</div>{% endif %}
+    {% if hidden_banner %}<div class="note" style="max-width:none;border-left:3px solid #e0af68">🙈 Активність приховано — вона зникла з усіх списків, рекордів і матчингу.</div>{% endif %}
+    {% if shown_banner %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">👁 Активність знову видима.</div>{% endif %}
+    {% if a.is_hidden %}<div class="note" style="max-width:none;border-left:3px solid #565f89">🙈 Ця активність прихована.</div>{% endif %}
 
     {% if strain %}
     <div class="hero-rec">
@@ -64,9 +71,28 @@
     </div>
     {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
 
-    <form method="post" action="/me/activities/{{ a.id }}/resync" style="margin:1rem 0">
-      <button type="submit" class="btn-ghost">🔄 Ресинк із Garmin</button>
-    </form>
+    <div style="display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0">
+      <form method="post" action="/me/activities/{{ a.id }}/resync">
+        <button type="submit" class="btn-ghost">🔄 Ресинк із Garmin</button>
+      </form>
+      {% if analysis and has_claude_key %}
+      <form method="post" action="/me/activities/{{ a.id }}/regenerate"
+            onsubmit="this.querySelector('button').disabled=true">
+        <button type="submit" class="btn-ghost" title="~$0.02">🔁 Перегенерувати розбір</button>
+      </form>
+      {% endif %}
+      {% if a.is_hidden %}
+      <form method="post" action="/me/activities/{{ a.id }}/hide">
+        <input type="hidden" name="show" value="1">
+        <button type="submit" class="btn-ghost">👁 Показати</button>
+      </form>
+      {% else %}
+      <form method="post" action="/me/activities/{{ a.id }}/hide"
+            onsubmit="return confirm('Приховати цю активність з усіх списків, рекордів і матчингу?')">
+        <button type="submit" class="btn-ghost">🙈 Приховати</button>
+      </form>
+      {% endif %}
+    </div>
 
     {% if analysis %}
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">💬 Розбір</h2>

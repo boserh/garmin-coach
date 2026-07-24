@@ -722,3 +722,67 @@ def _archive_all_plans():
             await s.commit()
 
     anyio.run(go)
+
+
+# ---- ST-21: manual workout status via /plan ----
+
+def _seed_plan_with_past_workout():
+    """An active plan with one past 'missed' run session for t@example.com. Returns
+    (workout_id)."""
+    import datetime as dt
+
+    from app.db.models import PlannedWorkout, TrainingPlan
+
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+
+    async def go():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            plan = TrainingPlan(
+                user_id=u.id, goal="first_5k", start_date=yesterday,
+                target_date=(dt.date.today() + dt.timedelta(weeks=8)).isoformat(),
+                status="active")
+            s.add(plan)
+            await s.flush()
+            w = PlannedWorkout(plan_id=plan.id, user_id=u.id, date=yesterday, week=1,
+                               type="easy", dist_km=5.0, status="missed")
+            s.add(w)
+            await s.commit()
+            return w.id
+
+    return anyio.run(go)
+
+
+def _workout_status(workout_id):
+    from app.db.models import PlannedWorkout
+
+    async def go():
+        async with async_session_maker() as s:
+            w = await s.get(PlannedWorkout, workout_id)
+            return w.status, w.match_info
+
+    return anyio.run(go)
+
+
+def test_plan_manual_status_done(auth_client):
+    wid = _seed_plan_with_past_workout()
+    r = auth_client.post(f"/plan/workout/{wid}/status", data={"action": "done"},
+                         follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/plan"
+    status, info = _workout_status(wid)
+    assert status == "done" and info.get("manual") is True
+
+
+def test_plan_manual_status_bad_action_noop(auth_client):
+    wid = _seed_plan_with_past_workout()
+    r = auth_client.post(f"/plan/workout/{wid}/status", data={"action": "explode"},
+                         follow_redirects=False)
+    assert r.status_code == 303
+    status, _ = _workout_status(wid)
+    assert status == "missed"   # unchanged
+
+
+def test_plan_manual_status_requires_login(client):
+    r = client.post("/plan/workout/1/status", data={"action": "done"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and "/login" in r.headers["location"]

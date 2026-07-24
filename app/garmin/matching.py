@@ -65,6 +65,15 @@ _ACT_STRENGTH_SUBSTR = ("strength",)
 _ACT_CYCLING_SUBSTR = BIKE_NEEDLES
 
 
+def _is_manual(w: PlannedWorkout) -> bool:
+    """ST-21: a workout whose status was set by hand carries ``match_info.manual`` — the
+    auto-matcher must never overwrite it (a user's correction outranks the best-effort
+    matcher, symmetric to the existing "already matched / skipped" skip). A ``manual`` row is
+    typically already out of ``planned`` status anyway, but this guards the edge where a
+    manual state left it planned."""
+    return isinstance(w.match_info, dict) and bool(w.match_info.get("manual"))
+
+
 def _extract_target_pace(w: PlannedWorkout) -> Optional[float]:
     """Return the midpoint target pace (min/km) from the workout's structured steps,
     or None when not available. Looks for the first run/tempo step with a pace range."""
@@ -106,6 +115,7 @@ async def _get_unlinked_activities(
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= date_from,
                 ActivityRecord.date <= date_to,
+                ActivityRecord.is_hidden.is_(False),   # ST-17: never match a hidden activity
             )
         )
     ).scalars().all()
@@ -172,6 +182,7 @@ async def _match_distance_based(
     workouts = [
         w for w in await repository.list_workouts(session, plan.id)
         if w.status == WorkoutStatus.PLANNED
+        and not _is_manual(w)                     # ST-21: honour a manual correction
         and (w.type or "").lower() in plan_types
         and w.date <= today_s
         and w.date >= (plan.start_date or "")
@@ -270,6 +281,7 @@ async def _match_strength(
     workouts = [
         w for w in await repository.list_workouts(session, plan.id)
         if w.status == WorkoutStatus.PLANNED
+        and not _is_manual(w)                     # ST-21: honour a manual correction
         and (w.type or "").lower() in _PLAN_STRENGTH_TYPES
         and w.date <= today_s
         and w.date >= (plan.start_date or "")

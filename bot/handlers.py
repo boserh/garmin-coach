@@ -76,9 +76,10 @@ HELP_TEXT = (
     "/insights — що на тебе насправді впливає (кореляції сну/HRV/стресу)\n\n"
     "🏃 Активності\n"
     "/activities — останні активності\n"
-    "/activity <id> — розбір конкретної активності\n"
+    "/activity <id> [force] — розбір активності (force — перегенерувати платно)\n"
     "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
     "/resync [дата [дата]] — пересинкувати дані з Garmin (без аргументів — вчора+сьогодні)\n"
+    "/hide <id> [show] — приховати активність (дубль/битий трек); show — повернути\n"
     "/records — особисті рекорди\n"
     "/costs [YYYY-MM] — витрати на Claude за місяць\n"
     "/gear — спорядження (кросівки) з пробігом\n\n"
@@ -574,11 +575,15 @@ async def health(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
 async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args or not ctx.args[0].isdigit():
         await update.message.reply_text(
-            "Вкажи id активності, напр.: /activity 5  (список — /activities)"
+            "Вкажи id активності, напр.: /activity 5  (список — /activities). "
+            "Додай force, щоб перегенерувати розбір: /activity 5 force"
         )
         return
     row_id = int(ctx.args[0])
-    logger.info(f"CMD /activity {row_id}")
+    # ST-19: "/activity <id> force" regenerates a stored analysis (bypasses the dedup cache
+    # for one paid re-run) instead of returning the same cached text.
+    force = any(a.lower() == "force" for a in ctx.args[1:])
+    logger.info(f"CMD /activity {row_id}{' force' if force else ''}")
     async with async_session_maker() as session:
         user = await _resolve_user(update, session)
         if user is None:
@@ -587,11 +592,12 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if act is None:
             await update.message.reply_text(f"Активність #{row_id} не знайдено.")
             return
-        await update.message.reply_text("Аналізую активність...")
+        await update.message.reply_text(
+            "Перегенеровую розбір..." if force else "Аналізую активність...")
         async with user_runtime(session, user) as creds:
             try:
                 text = await run_activity_analysis(
-                    session, act, user_id=user.id, api_key=creds.anthropic_key
+                    session, act, user_id=user.id, api_key=creds.anthropic_key, force=force
                 )
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")
@@ -781,6 +787,35 @@ async def resync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         async with user_runtime(session, user):
             written, requested = await service.resync_days(session, user.id, dates)
     await update.message.reply_text(f"✅ Оновлено {written} з {requested} дн.")
+
+
+async def hide(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/hide <id> [show] — ST-17: hide an activity (dup / broken track) so it drops out of
+    every list, aggregate, record and plan-match and won't come back after the next sync.
+    ``show`` un-hides it. Pure DB, no Garmin/Claude."""
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text(
+            "Вкажи id активності: /hide 5  (показати назад: /hide 5 show). Список — /activities."
+        )
+        return
+    row_id = int(ctx.args[0])
+    show = any(a.lower() == "show" for a in ctx.args[1:])
+    logger.info(f"CMD /hide {row_id}{' show' if show else ''}")
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        act = await repository.set_activity_hidden(session, user.id, row_id, not show)
+        if act is None:
+            await update.message.reply_text(f"Активність #{row_id} не знайдено.")
+            return
+        await session.commit()
+    if show:
+        await update.message.reply_text(f"👁 Активність #{row_id} знову видима.")
+    else:
+        await update.message.reply_text(
+            f"🙈 Активність #{row_id} приховано — зникла зі списків, рекордів і матчингу."
+        )
 
 
 async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

@@ -71,6 +71,7 @@ logger = logging.getLogger("claude")
 async def _run_cached_narration(
     session, *, user_id: Optional[int], kind: str, model: str, context: dict,
     cache_key: str, with_stats_fn, question: str, api_key: Optional[str] = None,
+    force: bool = False,
 ) -> str:
     """Shared engine for the cached ``run_*`` narrations (A1).
 
@@ -81,11 +82,15 @@ async def _run_cached_narration(
     the success ReportLog and return the text. The per-report differences (context assembly,
     ``has_signal`` gating, the ``cache_key``/``question`` strings) stay in the thin wrappers;
     only this mechanical tail is centralised. ``*_with_stats`` signatures are untouched — the
-    tests monkeypatch them (the CODE-06 lesson)."""
+    tests monkeypatch them (the CODE-06 lesson).
+
+    ``force=True`` (ST-19) skips the cache **get** (a deliberate "look again" for a paid
+    re-run after resynced data / a bad first analysis) but still **writes** the fresh result
+    back to the cache and logs a non-cached ReportLog, so the next non-force caller hits it."""
     from app.db import llm_cache
     from app.garmin import repository
 
-    cached = await llm_cache.get(session, cache_key)
+    cached = None if force else await llm_cache.get(session, cache_key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {model} ({kind})")
         text, stats = cached, CallStats(kind=kind, model=model, cached=True)
@@ -532,7 +537,7 @@ async def _run_ask_tool(session, user_id: Optional[int], name: str, args: dict) 
             except (TypeError, ValueError):
                 return {"error": "id must be an integer (the id from query_activities)"}
             act = await repository.get_activity(session, user_id, aid)
-            if act is None:
+            if act is None or getattr(act, "is_hidden", False):   # ST-17: hidden → not found
                 return {"error": f"no activity with id={aid} for this user"}
             return activity_payload(act)
         if name == "get_training_plan":
@@ -806,10 +811,16 @@ def analyze_activity_with_stats(
 
 
 async def run_activity_analysis(
-    session, activity, *, user_id: Optional[int] = None, api_key: Optional[str] = None
+    session, activity, *, user_id: Optional[int] = None, api_key: Optional[str] = None,
+    force: bool = False,
 ) -> str:
     """Analyze one activity, store the text on the row (``analysis``) for the web detail
-    page, log a ReportLog (kind="activity"), and return the text."""
+    page, log a ReportLog (kind="activity"), and return the text.
+
+    ``force=True`` (ST-19) regenerates even when a valid cached analysis exists — for an
+    explicit "подивись ще раз" after resynced data or a poor first write. It still writes the
+    fresh text to both the dedup cache and ``activity.analysis`` (a following non-force call
+    is a cache hit)."""
     from app.garmin import repository
 
     planned = await repository.get_workout_for_activity(session, user_id, activity.id) \
@@ -820,6 +831,7 @@ async def run_activity_analysis(
         session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, context=data,
         cache_key=_activity_cache_key(data, MODEL_ACTIVITY),
         with_stats_fn=analyze_activity_with_stats, question=q, api_key=api_key,
+        force=force,
     )
     activity.analysis = text
     return text

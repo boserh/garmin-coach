@@ -7,7 +7,7 @@ and ``repository.X`` keep working unchanged. ``stats`` imports ``query_daily`` /
 import datetime as dt
 from typing import Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -18,6 +18,7 @@ from app.db.models import (
     PlannedWorkout,
     ReportLog,
     TrainingPlan,
+    WorkoutStatus,
 )
 from app.garmin.schemas import DailySummary, Payload
 
@@ -64,7 +65,8 @@ async def list_activities(session: AsyncSession, user_id: int, n: int = 5) -> Li
     rows = (
         await session.execute(
             select(ActivityRecord)
-            .where(ActivityRecord.user_id == user_id)
+            .where(ActivityRecord.user_id == user_id,
+                   ActivityRecord.is_hidden.is_(False))   # ST-17
             .order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
             .limit(n)
         )
@@ -90,7 +92,10 @@ async def query_activities(
     minimum distance. Read-only, user-scoped, newest-first, capped at ``limit`` (never above
     ``ASK_MAX_ROWS``) so a tool result stays small enough for the model to read. Compact rows
     only — no series; ``get_activity_detail`` is the drill-down for one activity."""
-    stmt = select(ActivityRecord).where(ActivityRecord.user_id == user_id)
+    stmt = select(ActivityRecord).where(
+        ActivityRecord.user_id == user_id,
+        ActivityRecord.is_hidden.is_(False),   # ST-17: /ask never sees a hidden activity
+    )
     if date_from:
         stmt = stmt.where(ActivityRecord.date >= date_from)
     if date_to:
@@ -233,7 +238,8 @@ async def get_last_activity(session: AsyncSession, user_id: int):
     return (
         await session.execute(
             select(ActivityRecord)
-            .where(ActivityRecord.user_id == user_id)
+            .where(ActivityRecord.user_id == user_id,
+                   ActivityRecord.is_hidden.is_(False))   # ST-17
             .order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
             .limit(1)
         )
@@ -265,6 +271,49 @@ async def set_subjective(
     act.subjective = data
     # JSON column reassignment needs an explicit flag for SQLAlchemy to persist it.
     flag_modified(act, "subjective")
+    return act
+
+
+async def set_activity_hidden(
+    session: AsyncSession, user_id: int, row_id: int, hidden: bool
+):
+    """ST-17: hide (or un-hide) one activity, scoped to the user. Returns the row, or None if
+    it isn't this user's. Does not commit.
+
+    Hiding also cleans up the poisoned downstream state the activity had already leaked into:
+    * any ``PersonalRecord`` rows tied to THIS activity (``activity_id``) are deleted — a
+      false PB from a broken-GPS track shouldn't survive the hide (other categories, e.g. a
+      week/VO2max record not tied to an activity, are re-seeded by ``backfill-records``);
+    * any ``PlannedWorkout`` it was matched to is un-matched (``completed_activity_id`` and
+      ``match_info`` cleared, status back to ``missed``/``planned`` by date) so a session no
+      longer reads as done off a bogus activity, and the activity is freed for another match.
+    Un-hiding just flips the flag back (records/matches are not restored — the automatic
+    detectors re-derive them on the next tick)."""
+    act = await get_activity(session, user_id, row_id)
+    if act is None:
+        return None
+    act.is_hidden = hidden
+    if hidden:
+        await session.execute(
+            delete(PersonalRecord).where(
+                PersonalRecord.user_id == user_id,
+                PersonalRecord.activity_id == row_id,
+            )
+        )
+        matched = (
+            await session.execute(
+                select(PlannedWorkout).where(
+                    PlannedWorkout.user_id == user_id,
+                    PlannedWorkout.completed_activity_id == row_id,
+                )
+            )
+        ).scalars().all()
+        today_s = dt.date.today().isoformat()
+        for w in matched:
+            w.completed_activity_id = None
+            w.match_info = None
+            w.status = (WorkoutStatus.MISSED if (w.date or "") < today_s
+                        else WorkoutStatus.PLANNED)
     return act
 
 
@@ -409,6 +458,7 @@ async def typical_run_pace(
                 ActivityRecord.type.like("%run%"),
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
         )
     ).all()
@@ -479,6 +529,7 @@ async def recent_subjective_runs(
                 ActivityRecord.date.is_not(None),
                 ActivityRecord.date >= cutoff,
                 ActivityRecord.subjective.is_not(None),
+                ActivityRecord.is_hidden.is_(False),   # ST-17
             )
             .order_by(ActivityRecord.date)
         )
