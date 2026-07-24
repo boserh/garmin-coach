@@ -245,6 +245,7 @@ templates.env.filters["exlabel"] = lambda cat, ex="": _exercises.label(cat or ""
 templates.env.filters["pace_fmt"] = _pace  # decimal min/km → "m:ss"
 templates.env.filters["est_min"] = _est_minutes  # steps → approx whole minutes
 templates.env.filters["wdlabel"] = lambda slug: WEEKDAYS.get(slug, slug)  # weekday slug → label
+templates.env.filters["sets_word"] = fmt.sets_word  # N → Ukrainian plural of "підхід"
 
 logger = logging.getLogger("plan")
 

@@ -133,14 +133,19 @@
           <details class="strength-acc">
             <summary>Вправи<span class="chev">▾</span></summary>
             {% for b in sblocks %}
-            <div class="sblock">
-              {% if b.reps %}<div class="sbhead">{{ b.reps }}× підходи{% if b.rest_s %} · відпочинок {{ b.rest_s }}с{% endif %}</div>{% endif %}
+            <div class="wblock">
+              {% if b.reps %}<div class="wbhead">{{ b.reps }} {{ b.reps|sets_word }}</div>{% endif %}
               {% for ex in b.exercises %}
-              <div class="sex">
-                <span class="sxname">{{ ex.category|exlabel(ex.exercise) }}</span>
-                <span class="sxval">{% if ex.reps %}{{ ex.reps }} повт.{% endif %}{% if ex.weight_kg %} · {{ '%g'|format(ex.weight_kg) }} кг{% endif %}</span>
+              <div class="wcard">
+                <div class="wlabel">Вправа</div>
+                <div class="wname">{{ ex.category|exlabel(ex.exercise) }}</div>
+                {% set d = [] %}
+                {% if ex.reps %}{% set _ = d.append(ex.reps ~ ' повт.') %}{% endif %}
+                {% if ex.weight_kg %}{% set _ = d.append('%g'|format(ex.weight_kg) ~ ' кг') %}{% endif %}
+                {% if d %}<div class="wsub">{{ d|join(' · ') }}</div>{% endif %}
               </div>
               {% endfor %}
+              {% if b.rest_s %}<div class="wcard rest"><div class="wname">Відпочинок · {{ b.rest_s }}с</div></div>{% endif %}
             </div>
             {% endfor %}
           </details>

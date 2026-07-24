@@ -118,6 +118,22 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .sex .sxname{color:#dbe0e8}
 .sex .sxval{flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
 
+/* Garmin-style strength cards — shared by the activity view and the plan accordion.
+   A block ("N підходів") holds exercise cards (blue accent bar) and an optional rest card
+   (grey), mirroring how Connect renders a structured strength workout. */
+.wblock{margin:.5rem 0 .9rem}
+.wblock:last-child{margin-bottom:0}
+.wbhead{font-size:.82rem;font-weight:700;color:var(--ink);margin:.1rem 0 .5rem}
+.wcard{position:relative;background:var(--surface);border:1px solid var(--line-2);
+  border-radius:11px;padding:.62rem .85rem .62rem 1rem;margin:.42rem 0;overflow:hidden}
+.wcard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#5b8def}
+.wcard.rest::before{background:#6b7490}
+.wcard .wlabel{font-size:.68rem;color:var(--faint);text-transform:uppercase;letter-spacing:.05em}
+.wcard .wname{font-size:1rem;font-weight:600;color:var(--ink);margin-top:.12rem;line-height:1.3}
+.wcard .wsub{font-size:.83rem;color:var(--muted);margin-top:.2rem;font-variant-numeric:tabular-nums}
+.wcard.rest{padding:.5rem .85rem .5rem 1rem}
+.wcard.rest .wname{font-size:.92rem;font-weight:500;margin-top:0}
+
 /* today / status */
 .row.today{border-color:var(--accent);
   box-shadow:0 0 0 1px rgba(122,162,247,.3),0 10px 28px -14px rgba(122,162,247,.55)}

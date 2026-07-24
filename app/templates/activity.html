@@ -98,13 +98,16 @@
 
     {% if a.exercise_rows %}
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">Вправи</h2>
-    <div class="note" style="max-width:none;font-variant-numeric:tabular-nums">
-      {% for e in a.exercise_rows %}
-        <div style="display:flex;justify-content:space-between;gap:.8rem;padding:.3rem 0">
-          <span>{{ e.name }}</span><b style="white-space:nowrap">{{ e.detail }}</b>
-        </div>
-      {% endfor %}
+    {% for e in a.exercise_rows %}
+    <div class="wblock">
+      {% if e.sets %}<div class="wbhead">{{ e.sets }} {{ e.sets|sets_word }}</div>{% endif %}
+      <div class="wcard">
+        <div class="wlabel">Вправа</div>
+        <div class="wname">{{ e.name }}</div>
+        {% if e.detail %}<div class="wsub">{{ e.detail }}</div>{% endif %}
+      </div>
     </div>
+    {% endfor %}
     {% endif %}
   </div>
 

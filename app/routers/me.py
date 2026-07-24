@@ -50,6 +50,7 @@ def _hm(hours):
 
 
 templates.env.filters["hm"] = _hm
+templates.env.filters["sets_word"] = fmt.sets_word
 
 # Only the user's own data tables (all carry user_id).
 TABLES = {
@@ -215,10 +216,10 @@ def _summ(vals):
 
 
 def _exercise_rows(exercises):
-    """Format a stored ``exercises`` dict into display rows ``[{name, detail}]`` — set count,
-    reps and weight per exercise. Handles the current per-set shape ({count, reps[],
-    weight_kg[]}) and the legacy shape (a bare set-count int), so activities synced before
-    reps/weight were captured still render (they show just the count until resynced)."""
+    """Format a stored ``exercises`` dict into display cards ``[{name, sets, detail}]`` — set
+    count, reps and weight per exercise, for the Garmin-style card view. Handles the current
+    per-set shape ({count, reps[], weight_kg[]}) and the legacy shape (a bare set-count int),
+    so activities synced before reps/weight were captured still render (just the count)."""
     if not exercises:
         return []
     out = []
@@ -228,11 +229,10 @@ def _exercise_rows(exercises):
             reps = _summ(info.get("reps") or [])
             wv = info.get("weight_kg") or []
             weight = (_summ(wv) + " кг") if any(v is not None for v in wv) else "власна вага"
-            head = f"{count}×{reps}" if reps else f"{count} підх."
-            detail = " · ".join(p for p in (head, weight) if p)
+            parts = ([f"{reps} повт."] if reps else []) + [weight]
+            out.append({"name": name, "sets": count, "detail": " · ".join(parts)})
         else:
-            detail = str(info)   # legacy: bare set count
-        out.append({"name": name, "detail": detail})
+            out.append({"name": name, "sets": info, "detail": ""})   # legacy: count only
     return out
 
 
