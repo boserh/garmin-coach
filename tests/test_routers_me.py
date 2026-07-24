@@ -159,6 +159,77 @@ def test_resync_days_requires_login(client):
     assert "/login" in r.headers["location"]
 
 
+# ---- ST-17: hide / show an activity ----
+
+def _row_by_aid(user_id, activity_id):
+    """Row id + is_hidden for one (user, garmin activity_id) — robust to the shared file DB
+    accumulating other activities across tests."""
+    import anyio
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+
+    async def get():
+        async with async_session_maker() as s:
+            row = (await s.execute(
+                select(ActivityRecord.id, ActivityRecord.is_hidden).where(
+                    ActivityRecord.user_id == user_id,
+                    ActivityRecord.activity_id == activity_id)
+            )).first()
+            return row
+
+    return anyio.run(get)
+
+
+def test_hide_activity_hides_and_shows(client):
+    aid, _ = _seed_two_users_with_data()
+    _seed_activity(aid, activity_id=17001)
+    row, _hidden = _row_by_aid(aid, 17001)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{row}/hide", follow_redirects=False)
+    assert r.status_code == 303 and "hidden=1" in r.headers["location"]
+    assert _row_by_aid(aid, 17001)[1] is True
+    # It disappears from the activities list.
+    assert f"/me/activities/{row}" not in client.get("/me/activities").text
+    # Show again.
+    r = client.post(f"/me/activities/{row}/hide", data={"show": "1"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and "shown=1" in r.headers["location"]
+    assert _row_by_aid(aid, 17001)[1] is False
+
+
+def test_hide_other_users_activity_404(client):
+    aid, bid = _seed_two_users_with_data()
+    _seed_activity(bid, activity_id=17002)
+    bob_row, _ = _row_by_aid(bid, 17002)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{bob_row}/hide", follow_redirects=False)
+    assert r.status_code == 404
+    assert _row_by_aid(bid, 17002)[1] is False
+
+
+# ---- ST-19: regenerate activity analysis ----
+
+def test_regenerate_without_claude_key_redirects_nokey(client):
+    """No Claude key → a friendly banner, never a paid call or a crash."""
+    aid, _ = _seed_two_users_with_data()   # seeded users have no anthropic key
+    _seed_activity(aid, activity_id=19001)
+    row, _ = _row_by_aid(aid, 19001)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{row}/regenerate", follow_redirects=False)
+    assert r.status_code == 303 and "regen=nokey" in r.headers["location"]
+
+
+def test_regenerate_other_users_activity_404(client):
+    aid, bid = _seed_two_users_with_data()
+    _seed_activity(bid, activity_id=19002)
+    bob_row, _ = _row_by_aid(bid, 19002)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{bob_row}/regenerate", follow_redirects=False)
+    assert r.status_code == 404
+
+
 # ---- strength exercise rows: reps + weight display ----
 
 def test_exercise_rows_formats_reps_and_weight():

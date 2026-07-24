@@ -112,6 +112,20 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .strength-acc[open]>summary .chev{transform:rotate(180deg)}
 .strength-acc[open]>summary{margin-bottom:.5rem;color:var(--ink)}
 .sblock{border-left:2px solid var(--line-2);padding-left:.95rem;margin-bottom:.55rem}
+/* ST-21: manual plan/actual status menu on a past session */
+.wmenu{margin:.35rem 0}
+.wmenu>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;
+  gap:.3rem;font-size:.75rem;font-weight:600;color:var(--muted);user-select:none}
+.wmenu>summary::-webkit-details-marker{display:none}
+.wmenu>summary .chev{font-size:.65rem;transition:transform .15s}
+.wmenu[open]>summary .chev{transform:rotate(180deg)}
+.wmenu-body{display:flex;flex-wrap:wrap;gap:.4rem;margin:.45rem 0 .2rem}
+.wmenu-body button{padding:.28rem .6rem;border:1px solid var(--line-2);border-radius:8px;
+  background:transparent;color:var(--ink);font-size:.75rem;cursor:pointer}
+.wmenu-body button:hover{border-color:var(--accent,#7aa2f7)}
+.wmenu-link{display:flex;gap:.3rem;align-items:center}
+.wmenu-link select{max-width:13rem;font-size:.72rem;padding:.22rem;border-radius:8px;
+  border:1px solid var(--line-2);background:var(--bg-2,#1a1b26);color:var(--ink)}
 .sblock:last-child{margin-bottom:0}
 .sbhead{font-size:.74rem;font-weight:600;color:var(--faint);letter-spacing:.02em;margin-bottom:.28rem}
 .sex{display:flex;justify-content:space-between;gap:.7rem;font-size:.82rem;line-height:1.4;padding:.06rem 0}

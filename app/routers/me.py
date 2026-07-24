@@ -5,7 +5,9 @@ import csv
 import datetime as dt
 import io
 import json
+import logging
 import math
+import time as _time
 import zipfile
 from pathlib import Path
 
@@ -33,6 +35,8 @@ from app.dependencies import get_session
 from app.garmin import repository, service
 from app.garmin.runtime import user_runtime
 from app.routers.admin import INDEX_COLS
+
+logger = logging.getLogger("api")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -258,7 +262,10 @@ def _spark(series, n: int = 48):
 
 def _act_stmt(user_id, type_filter="", days_filter=0, sort="date_desc",
               date_from="", date_to=""):
-    stmt = select(ActivityRecord).where(ActivityRecord.user_id == user_id)
+    stmt = select(ActivityRecord).where(
+        ActivityRecord.user_id == user_id,
+        ActivityRecord.is_hidden.is_(False),   # ST-17
+    )
     if type_filter:
         stmt = stmt.where(ActivityRecord.type == type_filter)
     if date_from or date_to:
@@ -312,7 +319,8 @@ async def _activity_cards(session, user_id, limit, offset,
 async def _activity_count_filtered(session, user_id, type_filter="", days_filter=0,
                                     date_from="", date_to=""):
     stmt = (select(func.count()).select_from(ActivityRecord)
-            .where(ActivityRecord.user_id == user_id))
+            .where(ActivityRecord.user_id == user_id,
+                   ActivityRecord.is_hidden.is_(False)))   # ST-17
     if type_filter:
         stmt = stmt.where(ActivityRecord.type == type_filter)
     if date_from or date_to:
@@ -330,7 +338,8 @@ async def _activity_type_counts(session, user_id, days_filter=0, date_from="", d
     """Returns list of (type, count) sorted by count desc, respecting date filter."""
     stmt = (
         select(ActivityRecord.type, func.count().label("n"))
-        .where(ActivityRecord.user_id == user_id)
+        .where(ActivityRecord.user_id == user_id,
+               ActivityRecord.is_hidden.is_(False))   # ST-17
     )
     if date_from:
         stmt = stmt.where(ActivityRecord.date >= date_from)
@@ -746,6 +755,73 @@ async def me_resync_days(
     )
 
 
+# ---- ST-19: regenerate a stored activity analysis (one paid, cache-bypassing re-run) ----
+
+# In-process "not more than once a minute per activity" guard against a double-tap paying
+# twice (per-process, best-effort — the button also disables itself on submit client-side).
+_REGEN_MIN_INTERVAL_S = 60
+_regen_guard: dict = {}
+
+
+@router.post("/me/activities/{row_id}/regenerate")
+async def me_regenerate_analysis(
+    row_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-19: regenerate one activity's Claude analysis, bypassing the dedup cache for a
+    single paid re-run (after resynced data or a poor first write). Pure DB + Claude
+    (``load_credentials``, no Garmin/MFA). A missing Claude key → a friendly banner; an
+    ``AnalystError`` keeps the old text. Guarded against an accidental double-tap."""
+    from app.analysis.reports import run_activity_analysis
+    from app.analysis.service import AnalystError
+    from app.garmin.credentials import load_credentials
+
+    act = await repository.get_activity(session, user.id, row_id)
+    if act is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return RedirectResponse(f"/me/activities/{row_id}?regen=nokey", status_code=303)
+    now = _time.monotonic()
+    last = _regen_guard.get(row_id)
+    if last is not None and now - last < _REGEN_MIN_INTERVAL_S:
+        return RedirectResponse(f"/me/activities/{row_id}?regen=wait", status_code=303)
+    _regen_guard[row_id] = now
+    try:
+        await run_activity_analysis(
+            session, act, user_id=user.id, api_key=creds.anthropic_key, force=True
+        )
+        await session.commit()
+    except AnalystError as e:
+        logger.warning(f"REGEN activity user={user.id} id={row_id} failed: {e}")
+        return RedirectResponse(f"/me/activities/{row_id}?regen=err", status_code=303)
+    return RedirectResponse(f"/me/activities/{row_id}?regen=ok", status_code=303)
+
+
+# ---- ST-17: hide / show an activity (dup / broken track) ----
+
+@router.post("/me/activities/{row_id}/hide")
+async def me_hide_activity(
+    row_id: int,
+    show: str = Form(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-17: hide (or, with ``show=1``, un-hide) one activity. Hidden activities vanish from
+    every list / aggregate / record / plan-match and stay gone after the next Garmin sync
+    (``upsert_activity`` never resets the flag). Pure DB, no Garmin/Claude. 404 if not
+    this user's."""
+    hidden = not (show == "1")
+    act = await repository.set_activity_hidden(session, user.id, row_id, hidden)
+    if act is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    await session.commit()
+    return RedirectResponse(
+        f"/me/activities/{row_id}?{'shown' if not hidden else 'hidden'}=1", status_code=303
+    )
+
+
 @router.get("/me/jobs", response_class=HTMLResponse)
 async def me_jobs(
     request: Request,
@@ -883,6 +959,9 @@ async def me_row(
     row_id: int,
     request: Request,
     resynced: int = Query(0),           # ST-15: 1 right after a successful activity resync
+    regen: str = Query(""),             # ST-19: ok|err|nokey|wait after a regenerate attempt
+    hidden: int = Query(0),             # ST-17: 1 right after hiding this activity
+    shown: int = Query(0),              # ST-17: 1 right after un-hiding it
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -915,6 +994,7 @@ async def me_row(
             "rpe": (obj.subjective or {}).get("rpe"),
             "pain": (obj.subjective or {}).get("note") or (obj.subjective or {}).get("pain"),
             "step_badge": stepmatch.badge(obj.step_match),
+            "is_hidden": bool(obj.is_hidden),
         }
         strain = None
         if obj.load:
@@ -925,7 +1005,9 @@ async def me_row(
             request, "activity.html",
             {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
              "analysis": obj.analysis, "user": user, "base": "/me", "token": "",
-             "resynced": bool(resynced)},
+             "resynced": bool(resynced), "regen": regen,
+             "hidden_banner": bool(hidden), "shown_banner": bool(shown),
+             "has_claude_key": bool(user.anthropic_key_enc)},
         )
 
     if table == "report_logs":

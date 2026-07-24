@@ -1251,6 +1251,64 @@ loops via `for_each_user`; `_sleep_nudge_for_user` computes "today"/the once-a-e
 currently stored gives a wake-time to count back from, so the nudge says "lie down earlier"
 without a number (the ticket itself names this fallback as acceptable).
 
+**Activity data management (ST-15/16/17/19/21)**: a batch of manual "fix my data" controls
+over activities already in the DB, all pure-DB / no-new-LLM except the one explicit paid
+re-run.
+- **Manual resync (ST-15)**: `service.resync_activity` re-fetches ONE stored activity by its
+  saved Garmin `activity_id` (so it works for an activity older than the recent-activities
+  window), overwriting the row without a duplicate — `subjective`/`analysis`/`step_match`
+  are never touched, and a transient series/exercises miss keeps the prior value instead of
+  nulling it. `service.resync_days` force-refetches `daily_metrics` for a date range over the
+  DB day-cache (only days that come back with real data are written; cap
+  `MAX_RESYNC_DAYS`=31). Both run under `_user_fetch_locks` and every fetch goes through
+  `client._api` (rate-limiter + 429-retry inherited); MFA propagates to the existing
+  409/banner flow. Web: `POST /me/activities/{id}/resync` (button on the activity detail) +
+  `POST /me/resync-days` (range form). Bot: `/resync [date [date]]`.
+- **Cache bypass (ST-16)**: `client.fetch_activity_series`/`fetch_exercise_summary`/
+  `fetch_activity_splits` take `force=True` to skip the immutable-asset disk cache and
+  overwrite it — for a resync of an edited/cropped activity whose details the cache otherwise
+  treats as immutable for a year. **An empty force-refetch never clobbers a previously-good
+  cached copy** (Garmin still computing the track → keep the old one, log, return it) — the
+  key ST-16 correctness guard. `client.cache_del(key)` drops one key (memo + file). The
+  activity resync always force-refetches series/exercises, so a broken cache is fixed without
+  ssh.
+- **Regenerate analysis (ST-19)**: `run_activity_analysis(force=True)` / `_run_cached_narration
+  (force=True)` skip the dedup-cache *get* (a deliberate "look again" after resynced data or a
+  poor first write) but still WRITE the fresh text to both `llm_cache` and
+  `ActivityRecord.analysis` (a following non-force call is a hit of the new text); logged as
+  `ReportLog(kind="activity", cached=False)` so the cost is visible in `/costs`. Web:
+  `POST /me/activities/{id}/regenerate` (button; disables on submit + an in-process 1/min
+  guard against a double-tap; no Claude key → a banner, not a crash; `AnalystError` keeps the
+  old text). Bot: `/activity <id> force`.
+- **Hide activity (ST-17)**: `ActivityRecord.is_hidden` (migration `c5d6e7f8a9b0`) — for a
+  duplicate watch+phone record, a broken-GPS track (a fake 2:10/km "PB") or a stray activity
+  synced from someone else's device. A hidden row is excluded from EVERY reader (activity
+  lists, `weekly_run_volume`/`weekly_activity_load`/`window_stats`/`wrapped_stats`/
+  `runs_for_efficiency`, `records._run_bests`, `matching`, `/ask get_activity_detail`,
+  `typical_run_pace`, `recent_subjective_runs`, the `/me` cards/counts). `repository.
+  set_activity_hidden` also cleans the poison the activity already leaked: it deletes any
+  `PersonalRecord` tied to its id (a false PB — other categories re-seed via
+  `backfill-records`) and un-matches any `PlannedWorkout` it satisfied (clears
+  `completed_activity_id`/`match_info`, status back to `missed`/`planned` by date, freeing the
+  activity for another match). `upsert_activity` never resets the flag (its fields-dict omits
+  `is_hidden`), so the next Garmin sync updates the numbers but doesn't resurrect the row —
+  hidden, not deleted, precisely so a resync can't undo it. Web: 🙈 Приховати / 👁 Показати
+  on the detail page (`POST /me/activities/{id}/hide`). Bot: `/hide <id> [show]`.
+- **Manual workout status (ST-21)**: `repository.set_workout_status(action=done/skipped/
+  unlink/link)` + `link_candidates` (own, visible, compatible-sport activities within ±1 day)
+  let a user correct a best-effort EP-01 mismatch on `/plan`: mark a treadmill run done, skip
+  a session the matcher wrongly closed, unlink a wrong match (freeing the activity, status
+  back by date so the auto-matcher may retry), or link a specific activity. Every manual
+  action tags `match_info.manual=true`, and `matching._is_manual` makes the auto-matcher
+  leave such a row alone on subsequent runs (symmetric to the existing already-matched/skipped
+  skip) — a user's correction outranks the matcher, so `weekly_compliance` → digest and
+  `_recent_compliance` → adaptation read the truth. Web: a per-past-session «✏️ статус»
+  `<details>` menu on `/plan` (`POST /plan/workout/{id}/status`); link candidates for the
+  whole plan window are gathered in ONE query (`_manual_actions`), not per-session. Web-only
+  (bot already has plan chat-ops); strength manual-match is out of v1 scope (no distance to
+  reconcile). `tests/test_hide_activity.py`, `test_manual_workout_status.py`,
+  `test_regenerate_analysis.py`, `test_cache_bypass.py`, `test_resync.py`.
+
 **Race pack (EP-05)**: `TrainingPlan.target_date` was already a typed ISO string (phase 0
 turned out to be nearly free) — what was missing was a typed **target distance**:
 `app/race.py::GOAL_DISTANCE_KM` maps a race goal (`first_5k`/`faster_5k`/`first_10k`/

@@ -278,6 +278,19 @@ def _cache_put(key: str, value, ttl_s: float) -> None:
         logger.warning(f"GCACHE save failed: {e}")
 
 
+def cache_del(key: str) -> None:
+    """Drop one cache entry — the in-process memo AND the on-disk file (ST-16). For a manual
+    force-refetch that wants the immutable-asset cache (``series``/``splits``/``exercise``)
+    gone so the next read re-fetches from Garmin. Missing file is a no-op; never raises."""
+    _memo.pop(key, None)
+    try:
+        os.remove(_key_path(key))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"GCACHE delete failed: {e}")
+
+
 # ---------- FETCHERS ----------
 
 def fetch_sleep(date: dt.date) -> dict:
@@ -450,7 +463,17 @@ def fetch_exercise_summary(activity_id, force: bool = False) -> dict:
         ordered = list(by_code.items())
         raw = {} if not by_code else {"active_sets": total_active,
                                       "sets": {c: info for c, info in ordered}}
-        _cache_put(key, raw, EXERCISE_TTL_S)
+        # ST-16: on a force-refetch that came back empty (Garmin hadn't finished computing
+        # the sets yet), don't overwrite a previously-good cached copy with the empty one.
+        if force and not raw:
+            old = _cache_get(key)
+            if old:
+                logger.info(f"GCACHE keep non-empty on empty force-refetch: {key}")
+                raw = old
+            else:
+                _cache_put(key, raw, EXERCISE_TTL_S)
+        else:
+            _cache_put(key, raw, EXERCISE_TTL_S)
     if not raw:
         return {}
     # Map raw name codes → readable names at return time (merge on collisions).
@@ -539,6 +562,13 @@ def fetch_activity_series(
         else:
             point["p"] = round((1000.0 / speed) / 60.0, 2) if speed and speed > 0 else None
         series.append(point)
+    # ST-16: an empty force-refetch (Garmin still computing the track) must not clobber a
+    # previously-good cached series — keep the old one and return it.
+    if force and not series:
+        old = _cache_get(key)
+        if old:
+            logger.info(f"GCACHE keep non-empty on empty force-refetch: {key}")
+            return old
     _cache_put(key, series, SERIES_TTL_S)
     return series
 
@@ -546,15 +576,17 @@ def fetch_activity_series(
 SPLITS_TTL_S = 365 * 24 * 3600   # a completed run's laps are immutable, like the series
 
 
-def fetch_activity_splits(activity_id) -> list:
+def fetch_activity_splits(activity_id, force: bool = False) -> list:
     """This run's lap/split breakdown — one row per structured-workout step actually
     executed on the watch (warmup, each work/recovery interval, cooldown), for NF-14
     step-level plan-vs-actual matching. Returns ``[{"dist_m", "dur_s", "pace_min_km"},
     ...]`` in lap order (``pace_min_km`` is ``None`` when the lap has no usable speed or
     distance/duration). Immutable once the activity is complete → disk-cached like the
-    series/exercises."""
+    series/exercises. ``force=True`` bypasses that cache and refetches (overwriting it) for a
+    manual resync of an edited/cropped activity (ST-16); an empty force-refetch never clobbers
+    a previously-good cached copy."""
     key = f"splits:v1:{activity_id}"
-    cached = _cache_get(key)
+    cached = None if force else _cache_get(key)
     if cached is not None:
         return cached
     d = _safe(_api, f"/activity-service/activity/{activity_id}/splits")
@@ -575,6 +607,11 @@ def fetch_activity_splits(activity_id) -> list:
             "dur_s": round(dur, 1) if dur is not None else None,
             "pace_min_km": pace,
         })
+    if force and not laps:
+        old = _cache_get(key)
+        if old:
+            logger.info(f"GCACHE keep non-empty on empty force-refetch: {key}")
+            return old
     _cache_put(key, laps, SPLITS_TTL_S)
     return laps
 
