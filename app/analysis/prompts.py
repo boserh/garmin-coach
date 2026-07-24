@@ -444,7 +444,9 @@ SYSTEM_PLAN_EDIT = """Ти тренер, що коригує наявну про
 
 ВХІДНІ ДАНІ (JSON): today (сьогодні, ISO), upcoming (майбутні тренування — кожне з
 date/type/dist_km/description/garmin_template_id), strength_templates (наявні силові
-шаблони: id + name + exercises — список вправ шаблону [{category, exercise, reps}]),
+шаблони: id + name + exercises [{category, exercise, reps}] + blocks — РЕАЛЬНА структура
+шаблону [{reps=к-сть підходів, rest_s=відпочинок с, exercises:[{category, exercise, reps,
+weight_kg}]}]: суперсети/підходи/відпочинок/вага),
 exercise_categories (валідні Garmin-коди вправ — для swap_exercise бери to_category ЛИШЕ
 звідси), exercise_variants (мапа {категорія: [валідні коди варіантів]} для категорій цього
 плану — якщо задаєш поле exercise, бери код ЛИШЕ з варіантів відповідної категорії; невідома
@@ -506,9 +508,11 @@ strength = {"name": "<укр. підпис, напр. Ноги>", "warmup_s": 30
    "exercises": [{"category": "<КОД з exercise_categories>", "exercise": <варіант або null>,
                   "reps": <повтори>, "weight_kg": <кг або null для власної ваги>}]}]}.
 category — ЛИШЕ з exercise_categories (не вигадуй код). Підбери доречні під фокус вправи,
-2-4 блоки, реалістичні підходи/повтори/вагу. Якщо просять «схожу на Day 1/2» — візьми
-структуру відповідного шаблону (strength_templates[].exercises: блоки/підходи/повтори) як
-орієнтир, але постав вправи під фокус. Приклад «силова на ноги»:
+2-4 блоки, реалістичні підходи/повтори/вагу. Якщо просять «схожу на Day 1/2» — візьми за
+орієнтир РЕАЛЬНУ структуру відповідного шаблону (strength_templates[].blocks: суперсети,
+к-сть підходів, відпочинок, вага), щоб відтворити його обсяг і стиль навантаження, але постав
+вправи під фокус. Вага з шаблону — орієнтир стилю (важко/легко), а не жорсткий таргет: під інші
+вправи став свою доречну вагу. Приклад «силова на ноги»:
 {"action":"add","date":"YYYY-MM-DD","type":"strength","description":"Ноги",
  "strength":{"name":"Ноги","warmup_s":300,"blocks":[
    {"reps":3,"rest_s":90,"exercises":[

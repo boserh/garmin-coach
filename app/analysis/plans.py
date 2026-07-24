@@ -596,6 +596,9 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
             raw = await run_in_threadpool(client.fetch_workout_full, tid)
             if raw:
                 entry["exercises"] = workout_export.read_exercises(raw)
+                # Full block structure (sets/rest/weight per superset) so "схоже на Day 1"
+                # generation can mirror the template's real loading, not just its exercises.
+                entry["blocks"] = workout_export.read_blocks(raw)
         except Exception:
             logger.debug(f"template {tid} exercises unavailable", exc_info=True)
         strength_templates.append(entry)
