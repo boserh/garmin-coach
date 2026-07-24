@@ -151,7 +151,7 @@ def _context_cache_key(kind: str, context: dict, model: str, fields: tuple) -> s
 # Per-narration field lists — the exact context each model reads (see _context_cache_key).
 _DIGEST_KEY_FIELDS = (
     "iso_week", "week", "weekly_volume", "compliance", "recovery",
-    "fitness", "multisport", "goal", "goal_projection", "records",
+    "fitness", "multisport", "goal", "goal_projection", "efficiency", "records",
 )
 _INSIGHTS_KEY_FIELDS = ("window_days", "findings")
 _WRAPPED_KEY_FIELDS = ("period", "start", "end", "stats", "records")

@@ -884,6 +884,14 @@ async def run_digest(
         await repository.recent_records(session, user_id, days=DIGEST_RECORDS_DAYS)
     ) or None
 
+    # NF-19: aerobic-efficiency trend (pace@HR, GAP-honest) — plan-independent, so it's
+    # built here regardless of whether there's an active plan. Only the "ok"/"calibrating"
+    # states carry into context (None → the field is simply absent, prompt stays silent).
+    from app import efficiency as eff_mod
+    efficiency_trend = eff_mod.build_trend(
+        await repository.runs_for_efficiency(session, user_id)
+    )
+
     plan = await repository.get_active_plan(session, user_id)
     compliance = None
     goal = None
@@ -927,6 +935,7 @@ async def run_digest(
         "multisport": multisport,
         "goal": goal,
         "goal_projection": goal_projection,
+        "efficiency": efficiency_trend,
         "records": month_records,
         "has_plan": plan is not None,
     }

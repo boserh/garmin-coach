@@ -54,6 +54,33 @@ async def weekly_run_volume(
     return out
 
 
+async def runs_for_efficiency(
+    session: AsyncSession, user_id: int, weeks: int = 12
+) -> List[dict]:
+    """NF-19: runs over the last ``weeks`` weeks that carry a per-point ``series`` AND an
+    average HR — the raw material for the aerobic-efficiency trend (pace@HR). Filtered to
+    running type; the easy-vs-hard split and the ≥30-min gate live in ``app.efficiency``
+    (kept out of SQL so it's testable). The JSON ``series`` null is filtered in Python (a
+    JSON column stores ``None`` as JSON ``null``, not SQL NULL — the README gotcha)."""
+    cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.avg_hr.is_not(None),
+            ).order_by(ActivityRecord.date)
+        )
+    ).scalars().all()
+    return [
+        {"date": a.date, "type": a.type, "dur_min": a.dur_min, "dist_km": a.dist_km,
+         "avg_hr": a.avg_hr, "series": a.series}
+        for a in rows if a.series
+    ]
+
+
 # EP-09 /ask tool: run-volume metrics reuse weekly_run_volume's buckets; anything else in
 # ASK_DAILY_FIELDS is averaged per ISO week from query_daily.
 _ASK_WEEKLY_RUN_KEYS = {"run_km": "km", "run_count": "runs", "longest_km": "longest_km"}
