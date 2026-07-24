@@ -185,3 +185,48 @@ def test_build_strength_workout_structure():
                 collect(s["workoutSteps"])
     collect(steps)
     assert orders == list(range(1, len(orders) + 1))
+
+
+def test_read_blocks_preserves_supersets_sets_and_rest():
+    """read_blocks recovers the block/superset structure read_exercises flattens away."""
+    raw = {"workoutSegments": [{"workoutSteps": [
+        {"type": "RepeatGroupDTO", "stepType": {"stepTypeKey": "repeat"},
+         "numberOfIterations": 3, "workoutSteps": [
+            {"stepType": {"stepTypeKey": "interval"}, "category": "HIP_RAISE",
+             "exerciseName": "HANGING_LEG_RAISE",
+             "endCondition": {"conditionTypeKey": "reps"}, "endConditionValue": 15.0,
+             "weightValue": -1.0},
+            {"stepType": {"stepTypeKey": "interval"}, "category": "PLANK",
+             "exerciseName": "STRAIGHT_ARM_PLANK",
+             "endCondition": {"conditionTypeKey": "reps"}, "endConditionValue": 30.0,
+             "weightValue": -1.0},
+            {"stepType": {"stepTypeKey": "rest"}, "endConditionValue": 90.0},
+         ]},
+        {"stepType": {"stepTypeKey": "rest"}},   # lap-button separator between groups
+        {"type": "RepeatGroupDTO", "stepType": {"stepTypeKey": "repeat"},
+         "numberOfIterations": 4, "workoutSteps": [
+            {"stepType": {"stepTypeKey": "interval"}, "category": "BACK_EXTENSION",
+             "endCondition": {"conditionTypeKey": "reps"}, "endConditionValue": 15.0,
+             "weightValue": 10.0},
+         ]},
+    ]}]}
+    blocks = wx.read_blocks(raw)
+    assert len(blocks) == 2
+    assert blocks[0]["reps"] == 3 and blocks[0]["rest_s"] == 90
+    assert [e["category"] for e in blocks[0]["exercises"]] == ["HIP_RAISE", "PLANK"]
+    assert blocks[0]["exercises"][0]["weight_kg"] is None    # -1 = bodyweight
+    assert blocks[1]["reps"] == 4 and blocks[1]["exercises"][0]["weight_kg"] == 10.0
+
+
+def test_build_then_read_blocks_roundtrips():
+    blocks = [
+        {"reps": 3, "rest_s": 90, "exercises": [
+            {"category": "SQUAT", "exercise": "GOBLET_SQUAT", "reps": 12, "weight_kg": 22.0},
+            {"category": "LUNGE", "exercise": None, "reps": 10, "weight_kg": None},
+        ]},
+        {"reps": 4, "rest_s": None, "exercises": [
+            {"category": "BACK_EXTENSION", "exercise": None, "reps": 15, "weight_kg": 10.0},
+        ]},
+    ]
+    dto = wx.build_strength_workout("Day 1", blocks)
+    assert wx.read_blocks(dto) == blocks

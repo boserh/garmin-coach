@@ -300,6 +300,62 @@ def build_strength_workout(name: str, blocks: list, *, warmup_s: int = 0) -> dic
     }
 
 
+def _read_strength_step(st: dict) -> Optional[dict]:
+    """One exercise step → ``{category, exercise, reps, weight_kg}`` (None if it's not an
+    exercise). ``weightValue`` is kg directly in the workout DTO (verified — see the strength
+    DTO note), ``-1``/≤0 = bodyweight."""
+    cat = (st.get("category") or "").upper()
+    if not cat:
+        return None
+    end = st.get("endCondition") or {}
+    reps = st.get("endConditionValue") if end.get("conditionTypeKey") == "reps" else None
+    w = st.get("weightValue")
+    return {
+        "category": cat,
+        "exercise": (st.get("exerciseName") or None),
+        "reps": int(reps) if reps else None,
+        "weight_kg": round(w, 1) if isinstance(w, (int, float)) and w > 0 else None,
+    }
+
+
+def _step_key(st: dict) -> str:
+    return (st.get("stepType") or {}).get("stepTypeKey") or ""
+
+
+def read_blocks(raw: dict) -> list:
+    """Extract a strength workout's block/superset structure from its Garmin DTO — what
+    :func:`read_exercises` flattens away. Each ``RepeatGroupDTO`` becomes one block
+    ``{reps (=sets), rest_s, exercises:[{category, exercise, reps, weight_kg}]}`` (its nested
+    exercises, plus the trailing rest's duration), so ``/plan`` can render the same
+    "N підходів" supersets Garmin shows instead of a flat list. A standalone exercise (not
+    wrapped in a repeat group) becomes a single-exercise block; lap-button rests between
+    groups are separators, not blocks."""
+    blocks: list = []
+    for seg in raw.get("workoutSegments", []) or []:
+        for st in seg.get("workoutSteps", []) or []:
+            if st.get("type") == "RepeatGroupDTO" or _step_key(st) == "repeat":
+                exercises: list = []
+                rest_s = None
+                for child in st.get("workoutSteps", []) or []:
+                    if _step_key(child) == "rest":
+                        rv = child.get("endConditionValue")
+                        if isinstance(rv, (int, float)) and rv > 0:
+                            rest_s = int(rv)
+                    else:
+                        ex = _read_strength_step(child)
+                        if ex:
+                            exercises.append(ex)
+                if exercises:
+                    sets = st.get("numberOfIterations")
+                    blocks.append({"reps": int(sets) if sets else None,
+                                   "rest_s": rest_s, "exercises": exercises})
+            elif _step_key(st) != "rest":
+                ex = _read_strength_step(st)
+                if ex:
+                    blocks.append({"reps": None, "rest_s": None, "exercises": [ex]})
+    return blocks
+
+
 def read_exercises(raw: dict) -> list:
     """Extract a strength workout's exercise list from its Garmin DTO, in order:
     ``[{category, exercise, reps}]`` (reps only when the step ends on reps). Used to show

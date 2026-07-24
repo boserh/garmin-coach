@@ -446,43 +446,59 @@ async def _strength_details(session, user, workouts):
     maps stay empty and the page still renders (just without the exercise list)."""
     view: dict = {}
     names: dict = {}
+    # Clone days whose snapshot lacks the block/superset structure (older snapshots stored a
+    # flat exercise list) get a best-effort live fetch below to recover the real supersets.
+    needs_blocks: list = []
     for w in workouts:
         if w.type != "strength":
             continue
         if w.strength_plan and w.strength_plan.get("blocks"):
             view[w.id] = w.strength_plan["blocks"]
-        elif w.strength_snapshot and w.strength_snapshot.get("exercises"):
+        elif w.strength_snapshot:
             snap = w.strength_snapshot
-            view[w.id] = [{"reps": None, "rest_s": None, "exercises": snap["exercises"]}]
             if snap.get("name"):
                 names[w.id] = snap["name"]
+            if snap.get("blocks"):
+                view[w.id] = snap["blocks"]                 # real supersets/sets/rest
+            elif snap.get("exercises"):
+                # legacy flat snapshot → show it now, refresh to real blocks if we can
+                view[w.id] = [{"reps": None, "rest_s": None, "exercises": snap["exercises"]}]
+                if w.garmin_template_id:
+                    needs_blocks.append(w)
     clones = [w for w in workouts
               if w.type == "strength" and w.garmin_template_id
               and not w.strength_plan and not w.strength_snapshot]
-    if not clones:
+    if not clones and not needs_blocks:
         return view, names
 
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client, workout_export
     from app.garmin.providers import get_provider
-    cache: dict = {}   # template id → (exercises, name)
+    cache: dict = {}   # template id → (blocks, name)
     try:
         async with user_runtime(session, user) as creds:
             if not creds.has_garmin:
                 return view, names
             await run_in_threadpool(get_provider().login)
-            for w in clones:
+            for w in clones + needs_blocks:
                 tid = w.garmin_template_id
                 if tid not in cache:
                     raw = await run_in_threadpool(client.fetch_workout_full, tid)
-                    exs = workout_export.read_exercises(raw) if raw else []
-                    cache[tid] = (exs, (raw.get("workoutName") or "").strip() if raw else "")
-                exs, nm = cache[tid]
-                if exs:   # one pseudo-block (no set/rest structure from a bare template read)
-                    view[w.id] = [{"reps": None, "rest_s": None, "exercises": exs}]
+                    blocks = workout_export.read_blocks(raw) if raw else []
+                    cache[tid] = (blocks, (raw.get("workoutName") or "").strip() if raw else "")
+                blocks, nm = cache[tid]
+                if blocks:
+                    view[w.id] = blocks
+                    # Backfill the snapshot so the next render is fetch-free.
+                    snap = dict(w.strength_snapshot or {})
+                    snap["blocks"] = blocks
+                    if nm and not snap.get("name"):
+                        snap["name"] = nm
+                    w.strength_snapshot = snap
                 if nm:
                     names[w.id] = nm
+            await session.commit()   # persist any backfilled block snapshots
     except Exception:
         logger.exception(f"strength details fetch failed user={user.id}")
     return view, names
