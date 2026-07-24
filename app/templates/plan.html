@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=2">
 </head>
 <body>
   {% set active = 'plan' %}
@@ -93,13 +93,14 @@
               {%- elif w.status == 'missed' %} пропущено
               {%- elif w.status == 'skipped' %} скіпнуто
               {%- endif %}</span>
-              {%- if w.match_info and w.match_info.actual_dist_km %}
-                {%- if w.completed_activity_id %}
+              {%- if w.completed_activity_id %}
+                {# link to the actual activity for any matched session — runs show the fact
+                   distance, strength (no distance) shows a plain "розбір →" link. #}
                 <a class="match-dist match-link" href="/me/activities/{{ w.completed_activity_id }}">
-                  {{- '%.1f'|format(w.match_info.actual_dist_km) }} км факт →</a>
-                {%- else %}
+                  {%- if w.match_info and w.match_info.actual_dist_km %}{{ '%.1f'|format(w.match_info.actual_dist_km) }} км факт →{% else %}розбір →{% endif -%}
+                </a>
+              {%- elif w.match_info and w.match_info.actual_dist_km %}
                 <span class="match-dist">{{ '%.1f'|format(w.match_info.actual_dist_km) }} км факт</span>
-                {%- endif %}
               {%- endif %}
             {% endif %}
           </div>
