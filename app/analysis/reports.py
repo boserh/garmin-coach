@@ -908,6 +908,7 @@ async def run_digest(
         goal_projection = goal_mod.project(
             fitness_history, metric_key=metric_key, higher_better=higher_better,
             target_date=plan.target_date,
+            target_s=(plan.intake or {}).get("target_time_s"),   # NF-17: number on "чи на треку"
         )
 
     # Nothing worth saying for a brand-new user with no runs, no metrics and no plan.

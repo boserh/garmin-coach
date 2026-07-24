@@ -370,6 +370,9 @@ async def run_plan_generation(
         "multisport": multisport,
         "season": (intake or {}).get("season") or None,
         "cycling": (intake or {}).get("cycling") or None,
+        # NF-17: a race target time (seconds) — SYSTEM_PLAN derives target paces from it
+        # when it's realistic for the fitness snapshot, else says so honestly in the summary.
+        "target_time_s": (intake or {}).get("target_time_s") or None,
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
@@ -453,6 +456,7 @@ async def run_plan_extension(
         "fitness": fitness or None, "multisport": multisport,
         "season": intake.get("season") or None,
         "cycling": intake.get("cycling") or None,
+        "target_time_s": intake.get("target_time_s") or None,   # NF-17 (open-ended: normally None)
     }
     logger.info(f"PLAN extend user={user_id} plan={plan.id} {new_start}..{block_end}")
     try:

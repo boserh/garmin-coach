@@ -357,6 +357,7 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     proj = goal_mod.project(
         history, metric_key=metric_key, higher_better=higher_better,
         target_date=plan.target_date,
+        target_s=(plan.intake or {}).get("target_time_s"),   # NF-17: quantified verdict
     )
     if proj is None:
         await update.message.reply_text(

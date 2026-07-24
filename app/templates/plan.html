@@ -42,6 +42,9 @@
       {% if adjust_level %}
         <span class="sep">·</span>адаптація — <b>{{ (adjust_labels or {}).get(adjust_level, adjust_level) }}</b>
       {% endif %}
+      {% if target_time_s %}
+        <span class="sep">·</span>🎯 ціль — <b>{{ target_time_str }}</b>
+      {% endif %}
     </div>
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
     {% if race_pack %}
@@ -194,6 +197,18 @@
           <button class="arch" type="submit">Зберегти</button>
         </form>
       </div>
+      {% if goal_has_distance %}
+      <div>
+        <form class="inline" method="post" action="/plan/goal-time">
+          <label for="target_time">🎯 Цільовий час забігу:</label>
+          <input id="target_time" name="target_time" type="text" style="width:7rem"
+                 value="{{ target_time_str if target_time_s else '' }}"
+                 placeholder="49:00 / 1:45:00" title="mm:ss або h:mm:ss; порожньо — прибрати">
+          <button class="arch" type="submit">Зберегти</button>
+        </form>
+        {% if error == 'target_time' %}<span class="err">невірний формат часу</span>{% endif %}
+      </div>
+      {% endif %}
       {% if cycling %}
       <div class="meta">🚴 Вело-сесії: {{ cycling.days|map('wdlabel')|join(', ') }}
         · ~{{ cycling.avg_min }} хв (закладено в генерацію цієї програми)</div>

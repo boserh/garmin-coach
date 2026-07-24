@@ -604,6 +604,100 @@ def test_plan_post_invalid_days_does_not_spawn(auth_client):
 
 
 
+# ---------- NF-17: race target time ----------
+
+def test_parse_target_time_formats():
+    from app.routers.plan import _parse_target_time
+
+    assert _parse_target_time("") is None
+    assert _parse_target_time("  ") is None
+    assert _parse_target_time("49:00") == 49 * 60
+    assert _parse_target_time("1:45:00") == 105 * 60
+    assert _parse_target_time("0:30") == 30
+    for bad in ("abc", "49:99", "1:60:00", "0:00", "12", "1:2:3:4", "-5:00"):
+        try:
+            _parse_target_time(bad)
+            raise AssertionError(f"{bad!r} should have raised")
+        except ValueError:
+            pass
+
+
+def test_plan_target_time_stored_from_form(auth_client):
+    """NF-17: a race goal's target time lands in intake["target_time_s"]; garbage → form
+    error, no spawn; the open-ended goal ignores it entirely."""
+    from app.garmin import repository
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+
+    def clear_gen_state():
+        async def run():
+            async with async_session_maker() as s:
+                await repository.set_state(s, uid, plan_router.PLAN_GEN_KEY, "")
+        anyio.run(run)
+
+    base = {"goal": "first_10k", "run_days": ["tue", "thu"], "long_run_day": "thu",
+            "intensity": "moderate"}
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        r = auth_client.post("/plan", data=dict(base, target_time="49:00"),
+                             follow_redirects=False)
+    assert r.status_code == 303
+    _uid, params = spawn.call_args.args
+    assert params["intake"]["target_time_s"] == 49 * 60
+    clear_gen_state()
+
+    # garbage time → form error, no generation spawned
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        r = auth_client.post("/plan", data=dict(base, target_time="nope"),
+                             follow_redirects=False)
+    assert r.headers["location"] == "/plan?error=target_time"
+    assert spawn.call_count == 0
+    clear_gen_state()
+
+    # open-ended goal ignores any time (no distance → no time)
+    with patch.object(plan_router, "_spawn_plan_generation") as spawn:
+        auth_client.post("/plan", data={"goal": "general", "run_days": ["tue", "thu"],
+                                        "long_run_day": "thu", "intensity": "moderate",
+                                        "target_time": "49:00"}, follow_redirects=False)
+    _uid, params = spawn.call_args.args
+    assert "target_time_s" not in params["intake"]
+    clear_gen_state()
+
+
+def test_plan_goal_time_editable_on_page(auth_client):
+    """NF-17: /plan/goal-time sets/clears the active plan's target time without
+    regenerating it (mirrors /plan/season); a malformed time → form error."""
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_10k", goal_label="Перші 10 км", target_date="2026-10-01",
+                start_date="2026-07-01", days_per_week=2, intensity="moderate",
+                intake={}, summary="s", workouts=[])
+
+    _archive_all_plans()
+    anyio.run(seed)
+    assert "Цільовий час забігу" in auth_client.get("/plan").text
+
+    r = auth_client.post("/plan/goal-time", data={"target_time": "49:00"},
+                         follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/plan"
+    view = auth_client.get("/plan").text
+    assert "49:00" in view and "🎯 ціль" in view
+
+    # malformed → error redirect, target unchanged
+    r = auth_client.post("/plan/goal-time", data={"target_time": "bad"},
+                         follow_redirects=False)
+    assert r.headers["location"] == "/plan?error=target_time"
+
+    # clearing removes it
+    auth_client.post("/plan/goal-time", data={"target_time": ""})
+    assert "🎯 ціль" not in auth_client.get("/plan").text
+
+
 def _set_plan_state(value):
     from app.garmin import repository
 
