@@ -77,6 +77,12 @@ def _run(coro) -> int:
 
 
 async def _import_garth_token(email: str, path: str) -> int:
+    """Seed a user's session from a garth token dir. Only useful with the OPS-10
+    rollback (``GARMIN_PROVIDER=garth`` + the ``garth`` extra installed): the native
+    engine can't read a garth blob and will just do one silent fresh login instead."""
+    if settings.GARMIN_PROVIDER.lower() != "garth":
+        print("Note: GARMIN_PROVIDER is not 'garth' — the imported token will be "
+              "ignored by the native engine (one fresh login on next use).")
     garth_dir = pathlib.Path(path).expanduser()
     if not garth_dir.exists():
         print(f"{garth_dir} not found.")
@@ -428,9 +434,11 @@ async def _list_workouts(email: str) -> int:
 
 
 async def _token_expiry() -> int:
-    """OPS-01: read-only decode of every user's stored garth token — when does each
-    user's OAuth1 token (≈1 year from issue) die, i.e. the plan-B migration deadline.
-    Raw SQL on purpose: a diagnostic tool must work even on a half-migrated DB."""
+    """OPS-01: read-only decode of every user's stored Garmin session — when does each
+    user's login die, i.e. when a /settings re-connect becomes mandatory. Prints the
+    engine that wrote each blob (``gconn`` since OPS-10, ``garth`` for a user who
+    hasn't re-logged in since). Raw SQL on purpose: a diagnostic tool must work even
+    on a half-migrated DB."""
     from app.core.crypto import decrypt
     from app.garmin.token_info import decode_token_info
 
@@ -443,7 +451,7 @@ async def _token_expiry() -> int:
         )
         for uid, email, token_enc in rows:
             if not token_enc:
-                print(f"  {uid}  {email}: no stored garth token")
+                print(f"  {uid}  {email}: no stored Garmin session")
                 continue
             try:
                 info = decode_token_info(decrypt(token_enc))
@@ -451,10 +459,10 @@ async def _token_expiry() -> int:
                 print(f"  {uid}  {email}: undecodable token ({e})")
                 continue
             print(
-                f"  {uid}  {email}: oauth1 issued {fmt(info['oauth1_issued'])}"
-                f" → dies ≈ {fmt(info['oauth1_expiry_est'])}"
-                f"  (oauth2 exp {fmt(info['oauth2_expires_at'])},"
-                f" refresh exp {fmt(info['oauth2_refresh_expires_at'])})"
+                f"  {uid}  {email}: [{info['kind']}] session issued"
+                f" {fmt(info['session_issued'])} → dies ≈ {fmt(info['session_expiry_est'])}"
+                f"  (access exp {fmt(info['access_expires_at'])},"
+                f" refresh exp {fmt(info['refresh_expires_at'])})"
             )
     return 0
 
@@ -571,7 +579,7 @@ def main(argv=None) -> int:
 
     sub.add_parser(
         "token-expiry",
-        help="Decode all users' stored garth tokens: OAuth1 issue/expiry dates (read-only)",
+        help="Decode all users' stored Garmin sessions: engine + issue/expiry dates (read-only)",
     )
 
     args = parser.parse_args(argv)

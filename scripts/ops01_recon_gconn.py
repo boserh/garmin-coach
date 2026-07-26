@@ -6,10 +6,12 @@ uses (see app/garmin/client.py), printing a PASS/FAIL table to paste into
 docs/backlog/OPS-01-garmin-auth-plan-b.md.
 
 Deliberately standalone — NO app imports — so it runs in a throwaway venv with
-the *latest* python-garminconnect. Do NOT run it in the project venv: that one
-pins garth==0.4.47 (the working production path) and its garminconnect 0.2.8
-authenticates *through* that same old garth, which proves nothing about the
-Cloudflare-era auth engine. Setup:
+the *latest* python-garminconnect, without touching the app's DB or config.
+
+Since OPS-10 the project venv carries the same native engine, so a run there would
+also be meaningful — but keep using a throwaway venv anyway: this script mints its
+own session, and an isolated venv + token dir keeps a recon run from interfering
+with production auth state. Setup:
 
     python3 -m venv /tmp/ops01-venv
     /tmp/ops01-venv/bin/pip install --upgrade garminconnect

@@ -1,11 +1,20 @@
-"""Bridge between garth's synchronous MFA prompt and the web ``/settings`` route.
+"""Bridge between the Garmin client's synchronous MFA prompt and the web ``/settings``
+route.
 
-The installed garth (0.4.47) has no ``return_on_mfa``/``resume_login`` pair — ``login()``
-just calls a ``prompt_mfa`` callback and blocks until it returns a code. To let a web
-request kick off a login, discover Garmin wants MFA, and only *later* (a follow-up
-request with the code) finish it, we run ``login()`` on a background thread whose
-``prompt_mfa`` parks on a queue: the initiating call waits briefly for either a fast
-(no-MFA) result or the MFA gate, then returns control to the caller either way.
+A client's ``login(email, password, prompt_mfa=...)`` just calls the ``prompt_mfa``
+callback and blocks until it returns a code. To let a web request kick off a login,
+discover Garmin wants MFA, and only *later* (a follow-up request with the code) finish
+it, we run ``login()`` on a background thread whose ``prompt_mfa`` parks on a queue: the
+initiating call waits briefly for either a fast (no-MFA) result or the MFA gate, then
+returns control to the caller either way.
+
+Engine-agnostic by construction: ``login(email, password, prompt_mfa=)`` + ``dumps()``
+is the only surface used, and both the native ``garminconnect.client.Client`` (OPS-10,
+default) and the legacy ``garth.Client`` (rollback) spell it the same way — so the
+migration needed no change here. The native client also offers
+``return_on_mfa``/``resume_login``, which would let this bridge drop the background
+thread entirely; that simplification is deliberately a separate step (OPS-10 keeps the
+minimal diff, so a rollback swaps only the provider).
 
 Deliberately per-process, in-memory (a module-level dict, TTL ~10 min) — an MFA
 trigger from the bot (a different process than the web) can't be completed there;
@@ -91,9 +100,11 @@ def start_login(user_id: int, client, email: str, password: str) -> None:
                     state.ok, state.token = True, client.dumps()
                 except Exception as exc:  # surfaced to whoever is waiting
                     state.error = exc
-                    # OPS-01 monitoring: a fresh-login failure is the trigger for
-                    # the garth → python-garminconnect migration. Keep the marker
-                    # grep-stable: `grep "GARMIN AUTH FAIL" bot.log`.
+                    # OPS-01 monitoring: a fresh-login failure is how a broken auth
+                    # engine announces itself (it was the garth → garminconnect
+                    # migration trigger; post-OPS-10 it's the signal that the native
+                    # engine is being blocked in turn). Keep the marker grep-stable:
+                    # `grep "GARMIN AUTH FAIL" bot.log`.
                     logger.error(
                         "GARMIN AUTH FAIL: fresh login failed for user %s: %r",
                         user_id, exc,
@@ -121,7 +132,7 @@ def start_login(user_id: int, client, email: str, password: str) -> None:
 
 def submit_code(user_id: int, code: str) -> str:
     """Deliver the user's MFA code to the paused login and wait for it to finish.
-    Returns the fresh garth session token on success."""
+    Returns the fresh session token blob on success."""
     state = _pending.get(user_id)
     if state is None or state.done.is_set() or not state.mfa_requested.is_set():
         raise MFANotPending(f"No pending MFA login for user {user_id}")

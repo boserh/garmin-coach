@@ -94,6 +94,9 @@ database that stores history, caches immutable days, and tracks cost.
 
 ## Running
 
+**Python 3.12+** (OPS-10: `python-garminconnect`'s floor; the Pi runs 3.13.5, CI 3.13) —
+a venv built on an older interpreter must be recreated, not upgraded in place.
+
 Always use the venv interpreter — the system Python is aliased and won't find the
 installed packages:
 
@@ -159,7 +162,7 @@ Optional, with defaults:
 | `APP_SECRET_KEY` | `` (empty) | Fernet master key: encrypts stored creds + signs cookie sessions. **Empty → sessions signed with an ephemeral per-process key** (SEC-01): a loud `AUTH: APP_SECRET_KEY is not set` error + a `/login` banner; sessions don't survive a restart but can't be forged (a fixed fallback let anyone forge an admin cookie). Credential encryption still hard-requires it (`crypto` fails without it). |
 | `LOGIN_RATE_LIMIT` | `5` | SEC-01: max `POST /login`/`POST /register` attempts per window before a 429; `0` disables (tests set it to 0). In-memory + per-process (`app/core/ratelimit.py`) — a single Pi web process, by design. |
 | `LOGIN_RATE_WINDOW_S` | `300` | SEC-01: the rate-limit window in seconds. |
-| `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
+| `GARMIN_PROVIDER` | `gconn` | Garmin auth engine: `gconn` (native `python-garminconnect`, OPS-10) or `garth` (pre-OPS-10 rollback — needs `pip install -e ".[garth]"`) |
 | `GARMIN_RPS` | `3.0` | Process-wide Garmin request rate cap (req/s); `0` disables the limiter (PERF-05) |
 | `GARMIN_RETRIES` | `2` | 429 retries with exponential backoff inside `client._api` (PERF-05) |
 | `CLAUDE_MAX_WORKERS` | `4` | Size of the dedicated Claude thread pool, off the shared anyio pool (PERF-04b) |
@@ -213,15 +216,15 @@ Optional, with defaults:
   the old `GET /logout` is a stateless redirect to `/settings`. `same_site="lax"`
   already blocks cross-site form POSTs, so no CSRF tokens at this stage.
 - **Per-user runtime**: `app.garmin.runtime.user_runtime(session, user)` binds that
-  user's Garmin provider (a `garth.Client` resumed from the stored token, else
-  email+password login — saving a fresh token) via a ContextVar, and yields
+  user's Garmin provider (a native `garminconnect` client resumed from the stored
+  session, else email+password login — saving a fresh token) via a ContextVar, and yields
   decrypted creds (so `run_analysis(..., api_key=creds.anthropic_key)` uses their key).
   All data reads/writes are scoped by `user_id`. A login that hits Garmin's MFA gate
   raises `MFARequired` rather than hanging or silently failing — `user_runtime` lets it
   propagate (see the MFA re-login bullet below).
-- **Remote MFA re-login**: the installed `garth` (0.4.47) has no `return_on_mfa`/
-  `resume_login` pair — `Client.login(email, password, prompt_mfa=...)` just blocks on
-  a callback until it returns a code. `app.garmin.mfa` bridges that into a two-request
+- **Remote MFA re-login**: `Client.login(email, password, prompt_mfa=...)` blocks on
+  a callback until it returns a code (true of both engines — OPS-10 changed nothing
+  here). `app.garmin.mfa` bridges that into a two-request
   web flow: `start_login` runs the real `login()` on a background thread whose
   `prompt_mfa` parks on a `queue.Queue`; the initiating call waits up to ~25s for either
   a fast (no-MFA) result or the MFA gate. On the gate it raises `MFARequired(user_id)`
@@ -264,7 +267,8 @@ Optional, with defaults:
 - **CLI**: `python -m app.cli create-user [--admin] [--seed-env]` — `--seed-env`
   encrypts `.env` creds into the user and claims pre-existing (unowned) data rows.
   `import-garth-token --email [--path ~/.garth]` seeds a user's garth session from a
-  token dir (`--path` defaults to `~/.garth`);
+  token dir (`--path` defaults to `~/.garth`) — OPS-10 rollback path only, the native
+  engine can't read a garth blob;
   `backfill-series --email` fetches the pace/HR series for already-stored runs that
   predate the feature (fills nulls only, idempotent). `import-export --email --path
   [--since YYYY-MM-DD] [--overwrite]` backfills `daily_metrics` (+`extra`) **and**
@@ -300,10 +304,12 @@ Optional, with defaults:
   prints the payloads without writing; `--date YYYY-MM-DD` targets one session;
   `unpush-plan --email [--date]` removes pushed workouts (by stored id; tolerant of a
   workout already deleted in the UI — never touches manual/Runna workouts).
-  `token-expiry` (OPS-01) decodes every user's stored garth token — OAuth1 issue date
-  (= the OAuth2 JWT `iat`, since we persist only right after a fresh login) and the
-  ≈+1y death date, i.e. each user's auth deadline (`app/garmin/token_info.py`;
-  read-only raw SQL so it works even on a half-migrated DB).
+  `token-expiry` (OPS-01) decodes every user's stored session — its engine (`gconn`/
+  `garth`), issue date and estimated death date, i.e. each user's auth deadline
+  (`app/garmin/token_info.py`; read-only raw SQL so it works even on a half-migrated DB).
+  For a garth blob that's the OAuth2 JWT `iat` + ≈1y; for a native one it's the DI
+  **refresh** token's own `iat`/`exp` (the access token is refreshed hourly, so its dates
+  say nothing) — and honestly `—` when that token isn't a JWT to read.
   `trigger-plan-adapt --email` runs the weekly plan-adaptation review (EP-02, same call
   as `plan_adapt_job`) on demand from the console instead of waiting for Sunday — a real
   Claude call, and when it proposes a change it sends the normal ✅/❌ proposal to the
@@ -481,7 +487,7 @@ app/
   garmin/
     providers.py       legacy global + _UserGarthProvider + provider ContextVar
     credentials.py     load_credentials(user) → decrypted UserCredentials
-    runtime.py         user_runtime(session, user): bind provider, persist fresh garth token
+    runtime.py         user_runtime(session, user): bind provider, persist a fresh session token
     client.py          low-level connectapi fetches + disk cache for immutable assets
     service.py         aggregation; build_payload (sync) + build_payload_cached (async, per-user)
     repository.py      user-scoped upserts/reads, ReportLog, per-user BotState
@@ -522,9 +528,9 @@ tests/                 pytest: crypto, garmin service, routers (login), reposito
 
 ```
 Telegram command (chat_id→user) / HTTP request (session→user)
-  → async with user_runtime(session, user) as creds:   # binds user's garth provider
+  → async with user_runtime(session, user) as creds:   # binds user's Garmin provider
       → service.build_payload_cached(session, user.id, days, activity_limit)   [async]
-          → provider.login() (per-user garth.Client; token resumed/persisted in DB)
+          → provider.login() (per-user Garmin client; session resumed/persisted in DB)
           → past immutable days served from DB (repository.read_daily_metrics, user-scoped)
           → today + missing days fetched via Garmin (run_in_threadpool); activities, planned
           → persist_payload(): upsert daily + activities (idempotent, per user)
@@ -613,29 +619,62 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 
 ## Key design decisions
 
-**Garmin provider**: `garth` is the working path (unofficial endpoints, token at
-`~/.garth`, first run needs interactive MFA). A `gconn` provider over `garminconnect`
-exists behind `GARMIN_PROVIDER=gconn` but is **untested against the live API** — do
-not rely on it. Endpoint URLs and the m/s→min/km pace conversion are unchanged.
-**Auth plan B (OPS-01)**: garth is deprecated upstream (Cloudflare TLS-fingerprinting;
-the 0.4.47 pin still works — don't touch it), so auth failures are monitored via
-grep-stable markers — `GARMIN AUTH FAIL` (ERROR, fresh login failed — the migration
-trigger; logged in `mfa.start_login`, the single chokepoint for all fresh logins) and
-`GARMIN AUTH: stored token resume failed` (WARNING, `_UserGarthProvider`). The
-migration plan + a standalone recon script (`scripts/ops01_recon_gconn.py`, run in a
-throwaway venv with the latest `python-garminconnect`) live in
-`docs/backlog/OPS-01-garmin-auth-plan-b.md`.
+**Garmin provider (OPS-10)**: the auth engine is **`python-garminconnect`'s native
+client** (`garminconnect.client.Client`, curl_cffi TLS impersonation) — `gconn` is now
+`GARMIN_PROVIDER`'s default, and `_UserGConnProvider` is what `build_user_provider`
+returns. garth (`0.4.47`) is deprecated upstream (Cloudflare TLS-fingerprinting) and was
+migrated **proactively, while it still worked**, rather than under fire: it moved out of
+the base dependencies into a `garth` extra and both garth classes stay in `providers.py`
+untouched, so the rollback is `pip install -e ".[garth]"` + `GARMIN_PROVIDER=garth` — the
+known-good code, not a port. Endpoint URLs, `client.py` and the m/s→min/km conversion are
+unchanged (the provider interface — `login()`/`connectapi(path, **kwargs)`/`username`/
+`display_name` — was designed for exactly this swap). Three things the new engine forced:
+- **`connectapi` is GET-only.** garth took the verb as `connectapi(path, method="POST",
+  json=…)`; the native one would forward a stray `method=` into `requests` as a duplicate
+  arg. `providers._gconn_connectapi` translates it to the client's `post`/`put`/`delete`
+  (`api=True` → parsed JSON, a 204 → `{}`), so the write path (`create_workout`/
+  `schedule_workout`/`delete_workout` → push-plan, plan_sync) keeps its call shape.
+- **Session format changed and is not convertible.** The native `dumps()` is plain JSON
+  (`di_token`/`di_refresh_token`/`di_client_id`) vs garth's base64 `[oauth1, oauth2]` —
+  different token material, so there's nothing to convert. `providers.is_gconn_token`
+  tells them apart locally; a user still holding a garth blob gets ONE silent fresh login
+  (logged at INFO, deliberately not as the scary `resume failed` WARNING) using the
+  credentials already stored. Both formats decode in `token_info` (see ST-11 below).
+- **`new_token` is computed, not assigned.** The native client refreshes the DI token
+  in-place mid-runtime (and Garmin may rotate the refresh token with it), so
+  `_UserGConnProvider.new_token` is a property comparing the current dump against the
+  loaded one — `runtime.user_runtime` persists a refresh exactly like a fresh login,
+  with no new wiring. There is also no cached `profile` dict any more: `username`/
+  `display_name` come from one lazy `/userprofile-service/socialProfile` fetch per
+  provider instance.
+The MFA bridge (`app/garmin/mfa.py`) needed **no** code change — `login(email, password,
+prompt_mfa=…)` + `dumps()` is spelled identically by both clients. The native client does
+offer `return_on_mfa`/`resume_login`, which would let the bridge drop its background
+thread; that simplification is deliberately deferred (a rollback should swap the provider
+only). Auth failures stay monitored via the same grep-stable markers — `GARMIN AUTH FAIL`
+(ERROR, fresh login failed — now the signal that the *native* engine is being blocked in
+turn; logged in `mfa.start_login`, the single chokepoint for all fresh logins) and
+`GARMIN AUTH: stored token resume failed` (WARNING). PERF-05's rate limiter and 429
+backoff live in `client._api`, above the provider, so they cover the new engine unchanged;
+`_is_rate_limited`/`_classify_error` fall back to the message string, which is what reads
+the native `GarminConnectConnectionError("API Error 429 - …")` (it has no `.response`).
+The recon runs that de-risked all this (3 runs on the Pi, 0 FAIL) plus the standalone
+script (`scripts/ops01_recon_gconn.py`) are in
+`docs/backlog/OPS-01-garmin-auth-plan-b.md`; the migration itself is
+`docs/backlog/OPS-10-migrate-to-garminconnect.md`. **Python 3.12+ is now required**
+(garminconnect's floor); the Pi runs 3.13.5 and CI moved to 3.13.
 
 **Token-expiry warning (ST-11)**: OPS-01's `token_info.decode_token_info` could always tell you
 a token's ~1y death date, but nobody was watching it proactively — a stale token meant the
 morning job silently starts hard-failing into MFA. `bot/jobs.py::_token_expiry_check_for_user`
 runs unconditionally in the tick (pure decode, zero network) and DMs a heads-up once the
-estimated `oauth1_expiry_est` is within `TOKEN_WARN_THRESHOLDS` (30, 7) days. The `bot_state`
+estimated `session_expiry_est` is within `TOKEN_WARN_THRESHOLDS` (30, 7) days. The `bot_state`
 guard (`token_warn:<threshold>`) stores the token's *issue date* as its value rather than a bare
 flag — comparing against the current issue date means a fresh re-login (new issue date) makes
 the stored guard stop matching and silently re-arms both thresholds, no explicit reset needed.
-Best-effort: a missing/undecodable token blob is a silent skip, never a tick failure.
-`tests/test_token_expiry.py`.
+Best-effort: a missing/undecodable token blob is a silent skip, never a tick failure — and
+since OPS-10 so is a native session whose refresh token isn't a JWT (no knowable deadline
+⇒ no warning, rather than one off an invented date). `tests/test_token_expiry.py`.
 
 **Separate system/admin bot**: the hidden system commands — **`/deploy`** (OPS-03) and the
 **`/test_*`** debug commands — live on a **second Telegram bot** run as its own process
@@ -689,7 +728,7 @@ silence — the confirmation is reliable precisely because it no longer races it
 killed. `tests/test_deploy.py`.
 
 **HRV is the primary recovery signal** — `hrv_status = BALANCED` means recovered; a drop is
-the main stress indicator. (The dedicated resting-HR endpoint 403s via garth, but RHR comes
+the main stress indicator. (The dedicated resting-HR endpoint 403s, but RHR comes
 free inside the sleep DTO — stored in `extra.resting_hr`; see below.)
 
 **`DailyMetric.extra` (JSON)** — everything we fetch but don't model as a typed column,
@@ -1676,5 +1715,8 @@ to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
 
 ## TODO
 
-- Validate the `gconn` provider against the live Garmin API.
+- OPS-10 live verification on the Pi (needs a real account — code side is done):
+  `scripts/ops01_recon_gconn.py --write-test` (create → schedule → delete a workout,
+  the one branch recon never exercised) and one full cycle `/report` → morning job →
+  `push-plan --dry-run` → a real MFA connect through `/settings`.
 - Deploy to Raspberry Pi 4 (systemd units for `bot.main` and `uvicorn`).
