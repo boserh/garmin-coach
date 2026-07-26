@@ -216,9 +216,24 @@ json=…)`), а нативний `connectapi` — GET-only, тож `method=` п�
 version-tolerant), **write-раундтріп треба перепрогнати** — на цьому прогоні Garmin
 жодного запису не отримав, тож і чистити в Connect нічого.
 
-**Підсумок розвідки: план Б робочий.** Нативний `garminconnect` (curl_cffi) з IP проду:
-логін + MFA + resume + **усі** наші read-endpoint-и — 0 FAIL (прогони 2–4). Write-гілка
-(create → schedule → delete) — єдина, що досі не підтверджена живим прогоном.
+**Прогін 5 — Pi, 2026-07-26 20:18, python 3.13.5, `--write-test`** — **21 перевірка,
+0 FAIL**. Ті самі 18 read-перевірок, що в прогоні 4 (vo2max так само EMPTY — нема даних
+за день), плюс закрита нарешті write-гілка:
+
+| перевірка | статус | нотатка |
+| --- | --- | --- |
+| workout create | PASS | id 1643625094 |
+| workout schedule | PASS | schedule 1723994945 on 2026-07-26 |
+| workout cleanup (deletes) | PASS | тестовий воркаут прибрано, в Connect нічого не лишилось |
+
+Тобто **POST/DELETE у `/workout-service/` нативним движком працюють** — саме той шлях,
+яким ходять `push-plan` і `plan_sync`. Підтверджено і форму виклику з OPS-10
+(`client.post/delete` замість garth-івського `connectapi(..., method=)`), і те, що Garmin
+приймає запис з IP проду.
+
+**Підсумок розвідки: план Б робочий і повністю перевірений.** Нативний `garminconnect`
+(curl_cffi) з IP проду: логін + MFA + resume + усі read-endpoint-и + write-раундтріп
+календаря — 0 FAIL (прогони 2, 3, 5). Неперевірених гілок не лишилось.
 
 ## План міграції
 
