@@ -181,8 +181,44 @@ workout-а (`--write-test`: create → schedule → delete). Токени — в
   workout) — свідомо відкладений до самої міграції, щоб не писати в календар
   без потреби.
 
-**Підсумок розвідки: план Б робочий.** Нативний `garminconnect` 0.3.6
-(curl_cffi) з IP проду: логін + MFA + resume + всі наші read-endpoint-и — 0 FAIL.
+**Прогін 4 — Pi, 2026-07-26 20:10, python 3.13.5, `--write-test`** — **19 перевірок,
+1 FAIL** (перший прогін write-гілки, під час міграції OPS-10):
+
+| перевірка | статус | нотатка |
+| --- | --- | --- |
+| login: token resume | PASS | ./.ops01_tokens |
+| profile: userName/displayName | PASS | b77d575e-… (via socialProfile endpoint) |
+| sleep | PASS | dict[24] |
+| hrv (hrvService) | PASS | dict[11] |
+| stress | PASS | dict[14] |
+| body battery | PASS | list[1] |
+| training readiness | PASS | list[3] |
+| user summary | PASS | dict[94] |
+| vo2max (maxmet) | EMPTY | немає даних за день — endpoint живий |
+| race predictions | PASS | dict[8] |
+| endurance score | PASS | dict[16] |
+| daily events | PASS | list[2] |
+| activities list | PASS | list[50] |
+| activity details/series (id 23694675874) | PASS | dict[10] |
+| exerciseSets (id 23702705688) | PASS | dict[2] |
+| calendar month | PASS | dict[6] |
+| workouts list | PASS | list[10] |
+| workout full (id 1643519791) | PASS | dict[33] |
+| **workout create** | **FAIL** | `Client._run_request() got multiple values for argument 'method'` |
+
+Діагноз FAIL-у: **це помилка самого скрипта, не бібліотеки і не апки.**
+`write_roundtrip` був написаний під garth-конвенцію (`connectapi(path, method="POST",
+json=…)`), а нативний `connectapi` — GET-only, тож `method=` прилітає в `requests`
+другим значенням того самого аргументу. Тобто прогін **емпірично підтвердив** саме ту
+поведінку, під яку в OPS-10 з'явився `providers._gconn_connectapi` (мапінг не-GET на
+`client.post`/`put`/`delete`) — застосунок цю гілку вже проходить, а скрипт спіткнувся
+на власній формі виклику. Скрипт полагоджено тим самим способом (`write_call`,
+version-tolerant), **write-раундтріп треба перепрогнати** — на цьому прогоні Garmin
+жодного запису не отримав, тож і чистити в Connect нічого.
+
+**Підсумок розвідки: план Б робочий.** Нативний `garminconnect` (curl_cffi) з IP проду:
+логін + MFA + resume + **усі** наші read-endpoint-и — 0 FAIL (прогони 2–4). Write-гілка
+(create → schedule → delete) — єдина, що досі не підтверджена живим прогоном.
 
 ## План міграції
 
