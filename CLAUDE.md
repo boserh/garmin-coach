@@ -1254,6 +1254,26 @@ Claude or proposes anything; that stays the job's one-proposal-at-a-time territo
 never does, since a past forecast means nothing. No location or a failed fetch → the page
 renders exactly as before, just without the chips section.
 
+**Collapsed past weeks on `/plan` (ST-22)**: a mid-plan page buried today under dozens of
+finished rows (a 12-week plan is ~100 rows, and `/plan` is read on a phone). `_by_week` now
+takes `today`/`readonly` and returns a 5-tuple with a `collapsed` flag — all the logic sits
+in the router, the template only reads it. A week collapses when its **Sunday** is already
+past (deliberately coarse: the current week never splits in half) **and** it doesn't hold
+the last completed session (`_last_done_date`, statuses `done`/`partial` — "where I'm coming
+from" is the one bit of the past worth seeing daily, and it's usually the current week
+anyway). An archived plan (`readonly`) is all past, so only its final week stays open —
+collapsing everything would open the page as an empty accordion. In the template there is
+**one** render path, no duplicated row markup: a week is always
+`<details class="wk">` and an expanded one is the same block with `open`; the week header
+became `<summary class="week">` carrying the same `.chev` the strength-exercise accordion
+and the ST-21 status menu use. Rows therefore **stay in the DOM** while collapsed — Ctrl+F
+and the existing grep-style tests keep working, and ST-21/ST-13 behave exactly as before. A
+collapsed week with no compliance data shows "N сесій" (`fmt.sessions_word`, sharing the new
+`fmt.plural_uk` with `sets_word`). Zero new queries — template + router only. Deliberate v1
+limitation: the open/closed state is not remembered across reloads (that needs JS +
+`localStorage` or a query param, both more than it's worth). `tests/test_plan.py`,
+`tests/test_routers_plan.py::test_plan_view_collapses_past_weeks`.
+
 **Heat/duration fueling advisor (NF-11)**: EP-13 already moves a key session off an
 extreme-weather day; it never said how to survive one that stays. `app/fueling.py` is a
 **pure-Python, zero-LLM** calculator: `estimate_minutes` derives a session's duration from

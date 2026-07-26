@@ -37,14 +37,25 @@ def pace(min_km: float, suffix: str = "") -> str:
     return f"{total // 60}:{total % 60:02d}{suffix}"
 
 
-def sets_word(n) -> str:
-    """Ukrainian plural for 'підхід' (a strength set): 1 підхід / 2–4 підходи / 5+ підходів.
-    Used for the 'N підходів' header on the Garmin-style strength cards."""
+def plural_uk(n, one: str, few: str, many: str) -> str:
+    """Ukrainian plural form for ``n``: 1 → *one*, 2–4 → *few*, else *many* (with the
+    11–14 exception every Slavic pluraliser needs)."""
     n = int(n or 0)
     if n % 100 in (11, 12, 13, 14):
-        return "підходів"
+        return many
     if n % 10 == 1:
-        return "підхід"
+        return one
     if n % 10 in (2, 3, 4):
-        return "підходи"
-    return "підходів"
+        return few
+    return many
+
+
+def sets_word(n) -> str:
+    """1 підхід / 2–4 підходи / 5+ підходів — the 'N підходів' header on the
+    Garmin-style strength cards."""
+    return plural_uk(n, "підхід", "підходи", "підходів")
+
+
+def sessions_word(n) -> str:
+    """1 сесія / 2–4 сесії / 5+ сесій — the count on a collapsed past week (ST-22)."""
+    return plural_uk(n, "сесія", "сесії", "сесій")

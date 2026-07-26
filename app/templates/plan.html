@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=2">
+  <link rel="stylesheet" href="/static/app.css?v=3">
 </head>
 <body>
   {% set active = 'plan' %}
@@ -55,9 +55,13 @@
       </div>
     {% endif %}
 
-    {% for week_no, week_range, iso_week, items in weeks %}
+    {# ST-22: a fully-past week renders as a shut <details> so today isn't buried under
+       finished rows. The rows stay in the DOM (Ctrl+F, and the tests grep them); an
+       expanded week is the same markup with `open`, so there's one code path, not two. #}
+    {% for week_no, week_range, iso_week, items, collapsed in weeks %}
       {% set cb = (compliance or {}).get(iso_week) %}
-      <div class="week">
+      <details class="wk"{% if not collapsed %} open{% endif %}>
+      <summary class="week">
         <span class="wn">Тиждень {{ week_no }}</span>
         {% if week_range %}<span class="wr">{{ week_range }}</span>{% endif %}
         {% if cb and cb.total > 0 %}
@@ -70,8 +74,11 @@
               {%- endif %}
             {%- endif %}
           </span>
+        {% elif collapsed %}
+          <span class="compliance">{{ items|length }} {{ items|length|sessions_word }}</span>
         {% endif %}
-      </div>
+        <span class="chev">▾</span>
+      </summary>
       {% for w in items %}
       <div class="row {{ 'today' if w.date == today else '' }} {{ w.status }}">
         <div class="when">
@@ -197,6 +204,7 @@
         </div>
       </div>
       {% endfor %}
+      </details>
     {% endfor %}
 
     {% if not readonly %}

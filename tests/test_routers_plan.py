@@ -786,3 +786,50 @@ def test_plan_manual_status_requires_login(client):
     r = client.post("/plan/workout/1/status", data={"action": "done"},
                     follow_redirects=False)
     assert r.status_code == 303 and "/login" in r.headers["location"]
+
+
+def test_plan_view_collapses_past_weeks(auth_client):
+    """ST-22: a fully-past week renders as a shut <details> (its rows stay in the DOM),
+    the current week stays open, and the last completed session stays visible with it."""
+    import datetime as dt
+
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+    today = dt.date.today()
+    monday = today - dt.timedelta(days=today.weekday())
+    old = monday - dt.timedelta(days=14)          # two weeks back — fully past
+    done_day = monday - dt.timedelta(days=7)      # last completed, a week back
+    upcoming = monday + dt.timedelta(days=1)
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date=old.isoformat(), days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[
+                    PlanWorkout(date=old.isoformat(), week=1, type="easy",
+                                dist_km=4.0, description="давній біг"),
+                    PlanWorkout(date=done_day.isoformat(), week=2, type="tempo",
+                                dist_km=6.0, description="останній виконаний"),
+                    PlanWorkout(date=upcoming.isoformat(), week=3, type="long",
+                                dist_km=10.0, description="майбутній довгий"),
+                ])
+            plan = await repository.get_active_plan(s, uid)
+            for w in await repository.list_workouts(s, plan.id):
+                if w.date == done_day.isoformat():
+                    w.status = "done"
+            await s.commit()
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+
+    # every session is still in the markup — collapsing must not drop rows (Ctrl+F, greps)
+    assert "давній біг" in view and "останній виконаний" in view and "майбутній довгий" in view
+    blocks = view.split('<details class="wk"')[1:]
+    assert len(blocks) == 3
+    assert "давній біг" in blocks[0] and not blocks[0].startswith(" open")   # collapsed
+    assert blocks[1].startswith(" open") and "останній виконаний" in blocks[1]
+    assert blocks[2].startswith(" open") and "майбутній довгий" in blocks[2]
