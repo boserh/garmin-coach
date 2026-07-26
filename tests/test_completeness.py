@@ -51,18 +51,20 @@ def test_labels_are_ordered_and_ukrainian():
 # ---------- merge upsert (null-safe fill-only) ----------
 
 async def test_upsert_daily_merge_fills_nulls_without_clobbering(session):
+    # a recent day (relative to today, so the read_history window always covers it)
+    day = dt.date.today().isoformat()
     # store a sleep-only day
-    await repository.upsert_daily(session, 1, DailySummary(**_sleep_only("2026-07-20")))
+    await repository.upsert_daily(session, 1, DailySummary(**_sleep_only(day)))
     await session.commit()
 
     # a later fetch brings HRV/stress + a real resting_hr but sleep is momentarily None
-    fresh = DailySummary(date="2026-07-20", sleep_score=None, hrv_avg=60, stress_avg=25,
+    fresh = DailySummary(date=day, sleep_score=None, hrv_avg=60, stress_avg=25,
                          bb_charged=None, extra={"resting_hr": 48, "readiness_score": 72})
     await repository.upsert_daily(session, 1, fresh, merge=True)
     await session.commit()
 
     rows = await repository.read_history(session, 1, days=40)
-    row = next(r for r in rows if r["date"] == "2026-07-20")
+    row = next(r for r in rows if r["date"] == day)
     assert row["sleep_score"] == 80         # kept (fresh None never clobbers)
     assert row["hrv_avg"] == 60             # filled
     assert row["stress_avg"] == 25          # filled
@@ -71,15 +73,16 @@ async def test_upsert_daily_merge_fills_nulls_without_clobbering(session):
 
 
 async def test_upsert_daily_merge_keeps_existing_extra_value(session):
+    day = dt.date.today().isoformat()  # relative to today so days=5 window always covers it
     await repository.upsert_daily(session, 2, DailySummary(
-        date="2026-07-20", sleep_score=80, extra={"resting_hr": 50}))
+        date=day, sleep_score=80, extra={"resting_hr": 50}))
     await session.commit()
     # a fresh fetch reports a DIFFERENT resting_hr — merge must NOT overwrite the stored one
     await repository.upsert_daily(session, 2, DailySummary(
-        date="2026-07-20", extra={"resting_hr": 99, "readiness_score": 70}), merge=True)
+        date=day, extra={"resting_hr": 99, "readiness_score": 70}), merge=True)
     await session.commit()
     rows = await repository.read_history(session, 2, days=5)
-    row = next(r for r in rows if r["date"] == "2026-07-20")
+    row = next(r for r in rows if r["date"] == day)
     assert row["resting_hr"] == 50   # untouched
     assert (row["extra"] or {}).get("readiness_score") == 70   # new key filled
 
