@@ -6,10 +6,12 @@ uses (see app/garmin/client.py), printing a PASS/FAIL table to paste into
 docs/backlog/OPS-01-garmin-auth-plan-b.md.
 
 Deliberately standalone — NO app imports — so it runs in a throwaway venv with
-the *latest* python-garminconnect. Do NOT run it in the project venv: that one
-pins garth==0.4.47 (the working production path) and its garminconnect 0.2.8
-authenticates *through* that same old garth, which proves nothing about the
-Cloudflare-era auth engine. Setup:
+the *latest* python-garminconnect, without touching the app's DB or config.
+
+Since OPS-10 the project venv carries the same native engine, so a run there would
+also be meaningful — but keep using a throwaway venv anyway: this script mints its
+own session, and an isolated venv + token dir keeps a recon run from interfering
+with production auth state. Setup:
 
     python3 -m venv /tmp/ops01-venv
     /tmp/ops01-venv/bin/pip install --upgrade garminconnect
@@ -249,6 +251,23 @@ def main():
     return 0
 
 
+def write_call(api, method, path, **kwargs):
+    """POST/DELETE with whichever calling convention the installed library has.
+
+    Run 4 (2026-07-26) died here with ``_run_request() got multiple values for argument
+    'method'``: the native 0.3.x ``connectapi`` is GET-only, so garth's
+    ``connectapi(path, method="POST", …)`` spelling forwards ``method=`` into requests as
+    a duplicate argument. The app hit the same wall and solves it the same way
+    (``providers._gconn_connectapi``) — this helper keeps the script honest about which
+    engine it's exercising instead of failing on its own call shape.
+    """
+    client = getattr(api, "client", None)   # native 0.3.x: Garmin facade → Client
+    fn = getattr(client, method.lower(), None) if client is not None else None
+    if fn is not None:
+        return fn("connectapi", path, api=True, **kwargs)
+    return api.connectapi(path, method=method, **kwargs)   # old garth-backed 0.2.x
+
+
 def write_roundtrip(api, day):
     """Prove the plan-push path: POST a tiny workout, schedule it, remove both."""
     payload = {
@@ -268,7 +287,7 @@ def write_roundtrip(api, day):
     }
     wid = sched = None
     try:
-        created = api.connectapi("/workout-service/workout", method="POST", json=payload)
+        created = write_call(api, "POST", "/workout-service/workout", json=payload)
         wid = created.get("workoutId")
         record("workout create", "PASS", f"id {wid}")
     except Exception as e:
@@ -276,16 +295,16 @@ def write_roundtrip(api, day):
         return
     try:
         tomorrow = (day + dt.timedelta(days=1)).isoformat()
-        r = api.connectapi(f"/workout-service/schedule/{wid}",
-                           method="POST", json={"date": tomorrow})
+        r = write_call(api, "POST", f"/workout-service/schedule/{wid}",
+                       json={"date": tomorrow})
         sched = (r or {}).get("workoutScheduleId")
         record("workout schedule", "PASS", f"schedule {sched} on {tomorrow}")
     except Exception as e:
         record("workout schedule", "FAIL", f"{type(e).__name__}: {e}")
     try:
         if sched:
-            api.connectapi(f"/workout-service/schedule/{sched}", method="DELETE")
-        api.connectapi(f"/workout-service/workout/{wid}", method="DELETE")
+            write_call(api, "DELETE", f"/workout-service/schedule/{sched}")
+        write_call(api, "DELETE", f"/workout-service/workout/{wid}")
         record("workout cleanup (deletes)", "PASS")
     except Exception as e:
         record("workout cleanup (deletes)", "FAIL",

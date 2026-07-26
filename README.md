@@ -90,8 +90,12 @@ Both front-ends share `app.garmin` and `app.analysis` — no duplicated logic.
 
 Create a virtual environment:
 
+Python **3.12+** is required (the Garmin auth engine, `python-garminconnect`, needs it —
+OPS-10; the Raspberry Pi runs 3.13). A venv created with an older interpreter has to be
+recreated, not upgraded in place.
+
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 ```
 
@@ -134,7 +138,7 @@ variables below.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GARMIN_PROVIDER` | `garth` | Garmin backend: `garth` (working) or `gconn` (untested) |
+| `GARMIN_PROVIDER` | `gconn` | Garmin auth engine: `gconn` (native `python-garminconnect`) or `garth` (pre-OPS-10 rollback — needs `pip install -e ".[garth]"`) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; switch to `postgresql+asyncpg://...` by env alone |
 | `DB_ECHO` | `false` | Log every SQL statement (verbose) |
 | `TELEGRAM_BOT_USERNAME` | `garmim_coach_bot` | Bot's @username, rendered as a t.me/ link in onboarding |
@@ -152,10 +156,16 @@ The morning-report status is no longer a file — it lives in the `bot_state` ta
 
 Each user connects Garmin at `/settings` (email + password, stored encrypted). If
 Garmin asks for MFA, the page shows a code-entry form — the whole flow is remote,
-no terminal needed. The resulting garth token is stored per user in the DB and
+no terminal needed. The resulting session token is stored per user in the DB and
 reused automatically, so subsequent logins are silent. If a stored token expires
 and MFA is needed again, the bot and the JSON endpoints reply with a friendly
 "finish the login in /settings" instead of a generic error.
+
+Auth runs on `python-garminconnect`'s native client (curl_cffi TLS impersonation) since
+OPS-10. The previous engine, `garth`, is deprecated upstream and kept only as a rollback:
+`pip install -e ".[garth]"` plus `GARMIN_PROVIDER=garth`. The two session formats are not
+interchangeable — switching engines costs each user one fresh login (their credentials are
+already stored, so it happens by itself, MFA aside).
 
 ## Running
 
@@ -190,7 +200,8 @@ first `alembic upgrade head`.
 
 * `create-user [--admin] [--seed-env]` — create a web-login user; `--seed-env`
   encrypts the `.env` creds into it and claims pre-existing data
-* `import-garth-token [--path ~/.garth]` — seed a user's Garmin session from a token dir
+* `import-garth-token [--path ~/.garth]` — seed a user's Garmin session from a garth token
+  dir (rollback path only: the native engine can't read a garth blob)
 * `import-export --path [--since] [--overwrite]` — backfill daily metrics +
   activities from a Garmin GDPR export folder (offline, no API)
 * `import-fit-series --path [--since]` — fill runs' pace/HR series from the
@@ -277,13 +288,13 @@ Current implementation uses the following Garmin Connect endpoints:
 
 ### Garmin Access Is Unofficial
 
-The project relies on `garth`, which uses unofficial Garmin Connect APIs.
+The project relies on `python-garminconnect`, which uses unofficial Garmin Connect APIs.
 
 Garmin does not support this approach, and endpoints may change without notice.
 
 ### Resting Heart Rate Recovery Metrics
 
-Resting heart rate recovery data is currently unavailable through garth because Garmin returns HTTP 403 responses.
+The dedicated resting-heart-rate endpoint is unavailable because Garmin returns HTTP 403 responses for it.
 
 Recovery analysis therefore relies primarily on:
 

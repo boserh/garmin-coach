@@ -533,12 +533,14 @@ async def _deload_check_for_user(ctx, session, user: User, creds, today: str,
 
 
 async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
-    """ST-11: decode the stored garth token's estimated OAuth1 death date
-    (``app.garmin.token_info``, ~1y from issue) and DM a heads-up once the deadline is
-    within TOKEN_WARN_THRESHOLDS days — so a re-login happens in /settings before the
-    morning job starts hard-failing on it (OPS-01 turned from a fire into a scheduled
-    chore). Pure decode, no network call; best-effort like the other risk hooks — a
-    missing/undecodable token blob is a silent skip, never a tick failure."""
+    """ST-11: decode the stored Garmin session's estimated death date
+    (``app.garmin.token_info``) and DM a heads-up once the deadline is within
+    TOKEN_WARN_THRESHOLDS days — so a re-login happens in /settings before the morning
+    job starts hard-failing on it (OPS-01 turned from a fire into a scheduled chore).
+    Pure decode, no network call; best-effort like the other risk hooks — a
+    missing/undecodable token blob is a silent skip, never a tick failure. Since OPS-10
+    a native session whose refresh token isn't a JWT has no knowable deadline: that
+    decodes to ``None`` and stays silent rather than guessing a date."""
     if not user.telegram_chat_id or not user.garth_token_enc:
         return
     try:
@@ -547,8 +549,8 @@ async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
         info = decode_token_info(decrypt(user.garth_token_enc))
     except Exception:
         return
-    issued = info.get("oauth1_issued")
-    expiry = info.get("oauth1_expiry_est")
+    issued = info.get("session_issued")
+    expiry = info.get("session_expiry_est")
     if not issued or not expiry:
         return
     days_left = (expiry.date() - dt.date.today()).days
@@ -562,8 +564,8 @@ async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
         await repository.set_state(session, user.id, guard_key, issued_iso)
         await ctx.bot.send_message(
             user.telegram_chat_id,
-            f"⏳ Токен Garmin спливає приблизно {expiry.date().isoformat()} "
-            "(≈рік від останнього повного логіну). Перелогінься завчасно в /settings, "
+            f"⏳ Сесія Garmin спливає приблизно {expiry.date().isoformat()} "
+            f"(від логіну {issued_iso}). Перелогінься завчасно в /settings, "
             "щоб ранкові звіти не перервались.",
         )
         logger.info(f"TOKEN_EXPIRY warn user={user.id} days_left={days_left} threshold={threshold}")

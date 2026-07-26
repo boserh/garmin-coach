@@ -20,8 +20,10 @@ class Settings(BaseSettings):
     # --- Garmin ---
     GARMIN_EMAIL: Optional[str] = None
     GARMIN_PASSWORD: Optional[str] = None
-    # Which backend talks to Garmin Connect: "garth" (working) or "gconn" (untested).
-    GARMIN_PROVIDER: str = "garth"
+    # Which engine talks to Garmin Connect: "gconn" (default since OPS-10 — the
+    # native python-garminconnect client) or "garth" (the deprecated pre-OPS-10 path,
+    # kept as the rollback: pip install -e ".[garth]" + GARMIN_PROVIDER=garth).
+    GARMIN_PROVIDER: str = "gconn"
     # PERF-05: a process-wide, polite request pattern to Garmin's unofficial API
     # (post-Cloudflare an aggressive pattern risks an account ban, not just a 429).
     # GARMIN_RPS caps requests/sec across all threads (0 disables the limiter);

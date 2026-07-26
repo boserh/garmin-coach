@@ -63,7 +63,7 @@ _ERROR_BUFFER_MAX = 50
 _error_buffer: list = []
 _error_lock = threading.Lock()
 
-# Endpoint suffixes whose failures are EXPECTED (garth can't reach them on this account —
+# Endpoint suffixes whose failures are EXPECTED (Garmin refuses them for this account —
 # the long-standing resting-HR 403, say) — kept in the buffer for the record but flagged
 # ``expected`` so the burst DM counter can exclude them and not cry wolf.
 _EXPECTED_ERROR_SUFFIXES = ("/biometric-service/",)
@@ -72,7 +72,9 @@ _EXPECTED_ERROR_SUFFIXES = ("/biometric-service/",)
 def _classify_error(exc: Exception) -> str:
     """Coarse bucket for a Garmin failure: one of 401/403/429/5xx/network/other. Reads the
     nested ``.error.response.status_code`` garth wraps a requests error in, then falls back
-    to the string form (same defensive shape as ``_is_rate_limited``)."""
+    to the string form (same defensive shape as ``_is_rate_limited``). The string fallback
+    is what carries the native engine (OPS-10): its ``GarminConnectConnectionError`` has no
+    ``.response``, but its message is ``"API Error <status> - …"``."""
     for obj in (exc, getattr(exc, "error", None)):
         resp = getattr(obj, "response", None)
         code = getattr(resp, "status_code", None)
@@ -183,7 +185,8 @@ _limiter = _RateLimiter(settings.GARMIN_RPS)
 def _is_rate_limited(exc: Exception) -> bool:
     """True if ``exc`` is a Garmin 429. garth raises ``GarthHTTPError`` wrapping a
     requests error (``.error.response``), so check the nested status and fall back
-    to the string form."""
+    to the string form — which is also what catches the native engine's
+    ``GarminConnectConnectionError("API Error 429 - …")`` (OPS-10, no ``.response``)."""
     for obj in (exc, getattr(exc, "error", None)):
         resp = getattr(obj, "response", None)
         if getattr(resp, "status_code", None) == 429:
@@ -704,8 +707,9 @@ def fetch_workout_detail(workout_id) -> dict:
 
 
 # ---------- GEAR (NF-15) ----------
-# NB the gear endpoints below are the two methods the community `python-garminconnect`
-# library exposes (get_gear / get_gear_stats) — this codebase has no live-verified recon
+# NB the gear endpoints below are the two methods `python-garminconnect` exposes
+# (get_gear / get_gear_stats; since OPS-10 that library is also our auth engine, but these
+# paths are still called through our own `_api`) — this codebase has no live-verified recon
 # against a real account yet (the ticket's own AC #1 flags this as a blocker, not a
 # detail: docs/backlog/NF-15-shoe-mileage-tracker.md). There is also no documented
 # activity→gear link endpoint in that reference library, so — deliberately deviating from

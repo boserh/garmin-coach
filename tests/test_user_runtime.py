@@ -1,5 +1,11 @@
-"""Per-user provider, credential decryption, and runtime token persistence."""
-import garth
+"""Per-user provider, credential decryption, and runtime token persistence.
+
+The provider under test is the native one (``_UserGConnProvider``, the default since
+OPS-10); the garth twin it replaced is covered by ``test_garth_provider_rollback.py``,
+which skips unless the rollback extra is installed.
+"""
+import json
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -15,81 +21,119 @@ def key(monkeypatch):
     monkeypatch.setattr(crypto, "_fernet", None)
 
 
-class FakeGarthClient:
-    """Stand-in for garth.Client — no network."""
+def gconn_token(di_token="di", refresh="r") -> str:
+    """A blob shaped like ``garminconnect.client.Client.dumps()``."""
+    return json.dumps(
+        {"di_token": di_token, "di_refresh_token": refresh, "di_client_id": "c"}
+    )
+
+
+class FakeGConnClient:
+    """Stand-in for garminconnect.client.Client — no network."""
 
     def __init__(self):
-        self._profile = {"userName": "tester"}
         self.logged_in_with = None
+        self._token = None
 
     def loads(self, token):
-        if token == "bad":
+        if token == gconn_token(di_token="bad"):
             raise ValueError("stale token")
-
-    @property
-    def username(self):
-        return "tester"
+        self._token = token
 
     def login(self, email, password, prompt_mfa=None):
         self.logged_in_with = (email, password)
+        self._token = gconn_token(di_token="fresh")
 
     def dumps(self):
-        return "fresh-token"
-
-    @property
-    def profile(self):
-        return self._profile
+        return self._token or gconn_token(di_token="fresh")
 
     def connectapi(self, path, **kwargs):
-        return {"path": path}
+        if path == providers._PROFILE_PATH:
+            return {"userName": "tester", "displayName": "Tester T"}
+        return {"path": path, **kwargs}
+
+    def post(self, _domain, path, **kwargs):
+        kwargs.pop("api", None)
+        return {"posted": path, **kwargs}
+
+    def delete(self, _domain, path, **kwargs):
+        kwargs.pop("api", None)
+        return {"deleted": path}
 
 
 @pytest.fixture
-def fake_garth(monkeypatch):
-    monkeypatch.setattr(garth, "Client", FakeGarthClient)
+def fake_gconn(monkeypatch):
+    monkeypatch.setattr(providers, "_gconn_client_cls", lambda: FakeGConnClient)
 
 
-def test_provider_fresh_login_exposes_new_token(fake_garth):
+def test_provider_fresh_login_exposes_new_token(fake_gconn):
     creds = UserCredentials(user_id=1, garmin_email="e@x.com", garmin_password="p")
     p = providers.build_user_provider(creds)
     p.login()
-    assert p.new_token == "fresh-token"   # caller persists this
+    assert p.new_token == gconn_token(di_token="fresh")   # caller persists this
     assert p.username == "tester"
+    assert p.display_name == "Tester T"
 
 
-def test_provider_resumes_from_token_without_login(fake_garth):
-    creds = UserCredentials(user_id=1, garth_token="good")
+def test_provider_resumes_from_token_without_login(fake_gconn):
+    creds = UserCredentials(user_id=1, garth_token=gconn_token())
     p = providers.build_user_provider(creds)
     p.login()
-    assert p.new_token is None   # resumed, no fresh login
+    assert p._client.logged_in_with is None
+    assert p.new_token is None   # resumed, unchanged — nothing to persist
 
 
-def test_provider_falls_back_when_token_stale(fake_garth):
-    creds = UserCredentials(user_id=1, garth_token="bad",
+def test_provider_falls_back_when_token_stale(fake_gconn):
+    creds = UserCredentials(user_id=1, garth_token=gconn_token(di_token="bad"),
                             garmin_email="e@x.com", garmin_password="p")
     p = providers.build_user_provider(creds)
     p.login()
-    assert p.new_token == "fresh-token"
+    assert p.new_token == gconn_token(di_token="fresh")
+
+
+def test_legacy_garth_token_triggers_one_fresh_login(fake_gconn, caplog):
+    """OPS-10: a garth-format blob can't be converted (different token material), so
+    the native engine ignores it and logs in once — quietly, not as an auth failure."""
+    creds = UserCredentials(user_id=1, garth_token="eyJ0b2tlbiI6ICJnYXJ0aCJ9",
+                            garmin_email="e@x.com", garmin_password="p")
+    p = providers.build_user_provider(creds)
+    with caplog.at_level("INFO", logger="garmin"):
+        p.login()
+    assert p._client.logged_in_with == ("e@x.com", "p")
+    assert p.new_token == gconn_token(di_token="fresh")
+    assert any("garth-format token" in r.message for r in caplog.records)
+    # the loud "resume failed" warning is for a corrupt native blob, not this
+    assert not any("resume failed" in r.message for r in caplog.records)
+
+
+def test_refreshed_session_is_offered_for_persistence(fake_gconn):
+    """The native client refreshes the DI token in place (and Garmin may rotate the
+    refresh token with it) — no login happens, but the stored blob is now stale."""
+    creds = UserCredentials(user_id=1, garth_token=gconn_token())
+    p = providers.build_user_provider(creds)
+    p.login()
+    assert p.new_token is None
+    p._client._token = gconn_token(di_token="refreshed")   # as _run_request would
+    assert p.new_token == gconn_token(di_token="refreshed")
 
 
 def test_resume_does_not_validate_with_network_call(monkeypatch):
     """A resumed token must NOT be validated with a live API call — a transient failure
     of such a call used to escalate to a full sso.garmin.com re-login, and a burst of
     those earns a Cloudflare 1015 ban (OPS-01). loads() succeeds → logged in, no fresh
-    login, even if username/profile would blow up on the network."""
+    login, even if the profile fetch would blow up on the network."""
     calls = {"login": 0}
 
-    class NetTouchClient(FakeGarthClient):
-        @property
-        def username(self):  # simulate a rate-limited/blipped validation call
+    class NetTouchClient(FakeGConnClient):
+        def connectapi(self, path, **kwargs):  # simulate a rate-limited profile call
             raise RuntimeError("429 rate limited")
 
         def login(self, email, password, prompt_mfa=None):
             calls["login"] += 1
             super().login(email, password, prompt_mfa)
 
-    monkeypatch.setattr(garth, "Client", NetTouchClient)
-    creds = UserCredentials(user_id=1, garth_token="good",
+    monkeypatch.setattr(providers, "_gconn_client_cls", lambda: NetTouchClient)
+    creds = UserCredentials(user_id=1, garth_token=gconn_token(),
                             garmin_email="e@x.com", garmin_password="p")
     p = providers.build_user_provider(creds)
     p.login()
@@ -98,17 +142,16 @@ def test_resume_does_not_validate_with_network_call(monkeypatch):
     assert calls["login"] == 0      # never hit the sso.garmin.com login path
 
 
-def test_provider_without_credentials_raises(fake_garth):
+def test_provider_without_credentials_raises(fake_gconn):
     p = providers.build_user_provider(UserCredentials(user_id=1))
     with pytest.raises(RuntimeError, match="No Garmin credentials"):
         p.login()
 
 
-def test_connectapi_logs_in_lazily(fake_garth):
+def test_connectapi_logs_in_lazily(fake_gconn):
     # ST-09: a flow that reaches Garmin without build_payload_cached (e.g. plan
-    # generation's strength snapshot) must still authenticate — connectapi logs in itself,
-    # otherwise the empty garth.Client() blows up on `assert self.oauth1_token`.
-    creds = UserCredentials(user_id=1, garth_token="good")
+    # generation's strength snapshot) must still authenticate — connectapi logs in itself.
+    creds = UserCredentials(user_id=1, garth_token=gconn_token())
     p = providers.build_user_provider(creds)
     assert p._logged_in is False
     out = p.connectapi("/workout-service/workout/42")
@@ -116,14 +159,94 @@ def test_connectapi_logs_in_lazily(fake_garth):
     assert out == {"path": "/workout-service/workout/42"}
 
 
-def test_username_property_logs_in_lazily(fake_garth):
+def test_write_calls_translate_gaths_method_kwarg(fake_gconn):
+    """OPS-10: garth took the HTTP verb as a ``method=`` kwarg; the native connectapi is
+    GET-only and would forward it into requests as a duplicate arg. push-plan/plan_sync
+    write through this path, so the translation has to happen in the provider."""
+    creds = UserCredentials(user_id=1, garth_token=gconn_token())
+    p = providers.build_user_provider(creds)
+    assert p.connectapi("/workout-service/workout", method="POST", json={"a": 1}) == {
+        "posted": "/workout-service/workout", "json": {"a": 1},
+    }
+    assert p.connectapi("/workout-service/workout/9", method="DELETE") == {
+        "deleted": "/workout-service/workout/9",
+    }
+    with pytest.raises(ValueError, match="Unsupported"):
+        p.connectapi("/x", method="PATCH")
+
+
+def test_write_translation_matches_the_real_client(monkeypatch):
+    """The same translation against the REAL garminconnect client (transport stubbed at
+    the lowest level): a fake can agree with a wrong idea of the library's API, this
+    can't. Catches a signature drift on a version bump without touching the network."""
+    from garminconnect.client import Client
+
+    seen = []
+
+    class Recording(Client):
+        def _run_request(self, method, path, **kwargs):
+            seen.append((method, path, kwargs))
+
+            class Resp:
+                @staticmethod
+                def json():
+                    return {"ok": path}
+
+            return Resp()
+
+    client = Recording()
+    assert providers._gconn_connectapi(client, "/a/b") == {"ok": "/a/b"}
+    assert seen[-1][:2] == ("GET", "/a/b")
+    assert providers._gconn_connectapi(
+        client, "/workout-service/workout", method="POST", json={"a": 1}
+    ) == {"ok": "/workout-service/workout"}
+    assert seen[-1] == ("POST", "/workout-service/workout", {"json": {"a": 1}})
+    providers._gconn_connectapi(client, "/workout-service/workout/9", method="DELETE")
+    assert seen[-1][:2] == ("DELETE", "/workout-service/workout/9")
+
+
+def test_username_property_logs_in_lazily(fake_gconn):
     creds = UserCredentials(user_id=1, garmin_email="e@x.com", garmin_password="p")
     p = providers.build_user_provider(creds)
     assert p.username == "tester"      # triggers the fresh login
-    assert p.new_token == "fresh-token"
+    assert p.new_token == gconn_token(di_token="fresh")
 
 
-def test_get_provider_prefers_context(fake_garth):
+def test_profile_is_fetched_once_per_provider(fake_gconn):
+    creds = UserCredentials(user_id=1, garth_token=gconn_token())
+    p = providers.build_user_provider(creds)
+    calls = {"n": 0}
+    inner = p._client.connectapi
+
+    def counting(path, **kwargs):
+        if path == providers._PROFILE_PATH:
+            calls["n"] += 1
+        return inner(path, **kwargs)
+
+    p._client.connectapi = counting
+    assert p.username == "tester"
+    assert p.display_name == "Tester T"
+    assert calls["n"] == 1
+
+
+def test_is_gconn_token_tells_the_two_formats_apart():
+    assert providers.is_gconn_token(gconn_token()) is True
+    assert providers.is_gconn_token("eyJ0b2tlbiI6ICJnYXJ0aCJ9") is False  # base64 garth
+    assert providers.is_gconn_token('{"di_token": null}') is False        # empty session
+    assert providers.is_gconn_token(None) is False
+    assert providers.is_gconn_token("") is False
+
+
+def test_build_user_provider_honours_rollback_switch(fake_gconn, monkeypatch):
+    creds = UserCredentials(user_id=1, garth_token=gconn_token())
+    assert isinstance(providers.build_user_provider(creds), providers._UserGConnProvider)
+    monkeypatch.setattr(providers.settings, "GARMIN_PROVIDER", "garth")
+    garth = pytest.importorskip("garth")  # the rollback extra isn't installed by default
+    assert garth is not None
+    assert isinstance(providers.build_user_provider(creds), providers._UserGarthProvider)
+
+
+def test_get_provider_prefers_context(fake_gconn):
     sentinel = object()
     token = providers.set_current_provider(sentinel)
     try:
