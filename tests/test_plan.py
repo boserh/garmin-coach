@@ -165,12 +165,49 @@ def test_by_week_groups_by_calendar_monday():
           ("2026-07-02", "2026-07-05", "2026-07-07", "2026-07-12", "2026-07-14")]
     weeks = _by_week(ws)
     # 07-02(Thu)+07-05(Sun) share Mon 06-29; 07-07+07-12 share Mon 07-06; 07-14 → Mon 07-13
-    assert [[w.date for w in items] for _, _, _, items in weeks] == [
+    assert [[w.date for w in items] for _, _, _, items, _ in weeks] == [
         ["2026-07-02", "2026-07-05"],
         ["2026-07-07", "2026-07-12"],
         ["2026-07-14"],
     ]
     assert weeks[0][0] == 1 and "чер" in weeks[0][1] and "лип" in weeks[0][1]
+    assert all(collapsed is False for *_, collapsed in weeks)   # no `today` → nothing collapses
+
+
+def _week_rows(*dates, status="planned"):
+    from types import SimpleNamespace
+    return [SimpleNamespace(date=d, week=1, status=status) for d in dates]
+
+
+def test_by_week_collapses_only_fully_past_weeks():
+    """ST-22: a week whose Sunday is already gone folds away; the current week never
+    splits in half, so it stays open even though part of it is behind us."""
+    from app.routers.plan import _by_week
+
+    ws = _week_rows("2026-07-02", "2026-07-09", "2026-07-14", "2026-07-16")
+    # 2026-07-14 is a Tuesday → the 07-13..07-19 week is current, 06-29 and 07-06 are past.
+    weeks = _by_week(ws, "2026-07-14")
+    assert [collapsed for *_, collapsed in weeks] == [True, True, False]
+
+
+def test_by_week_keeps_the_last_completed_week_open():
+    """The one bit of the past worth seeing daily: where you're coming from."""
+    from app.routers.plan import _by_week
+
+    ws = _week_rows("2026-07-02") + _week_rows("2026-07-09", status="done") + \
+        _week_rows("2026-07-16")
+    weeks = _by_week(ws, "2026-07-16")
+    assert [collapsed for *_, collapsed in weeks] == [True, False, False]
+
+
+def test_by_week_archived_plan_keeps_only_the_last_week_open():
+    """Everything is past on an archived plan — collapsing all of it would open the
+    page as an empty accordion."""
+    from app.routers.plan import _by_week
+
+    ws = _week_rows("2026-07-02", "2026-07-09", "2026-07-16", status="done")
+    weeks = _by_week(ws, "2026-07-30", readonly=True)
+    assert [collapsed for *_, collapsed in weeks] == [True, True, False]
 
 
 def test_coerce_edit_parses():

@@ -249,6 +249,7 @@ templates.env.filters["pace_fmt"] = _pace  # decimal min/km → "m:ss"
 templates.env.filters["est_min"] = _est_minutes  # steps → approx whole minutes
 templates.env.filters["wdlabel"] = lambda slug: WEEKDAYS.get(slug, slug)  # weekday slug → label
 templates.env.filters["sets_word"] = fmt.sets_word  # N → Ukrainian plural of "підхід"
+templates.env.filters["sessions_word"] = fmt.sessions_word  # N → plural of "сесія" (ST-22)
 
 logger = logging.getLogger("plan")
 
@@ -370,11 +371,31 @@ async def _cached_forecast_week(lat: float, lon: float):
     return forecast
 
 
-def _by_week(workouts):
+_DONE_STATUSES = ("done", "partial")
+
+
+def _last_done_date(workouts) -> Optional[str]:
+    """ISO date of the most recent session the user actually did (ST-22). Used to keep
+    that week expanded — 'where am I coming from' is the one bit of the past worth
+    seeing every day, and it's usually the current week anyway."""
+    dates = [w.date for w in workouts if w.status in _DONE_STATUSES and w.date]
+    return max(dates) if dates else None
+
+
+def _by_week(workouts, today: Optional[str] = None, readonly: bool = False):
     """Group workouts into **Monday–Sunday calendar weeks** (by date, not the plan's
     ``week`` field), ordered and numbered sequentially. Returns
-    ``[(week_no, "29 чер – 5 лип", iso_week_key, [workouts...]), ...]``
-    where ``iso_week_key`` is the '%G-W%V' string for the Monday of that week."""
+    ``[(week_no, "29 чер – 5 лип", iso_week_key, [workouts...], collapsed), ...]``
+    where ``iso_week_key`` is the '%G-W%V' string for the Monday of that week.
+
+    ST-22: ``collapsed`` marks a week the template renders as a shut ``<details>`` —
+    a mid-plan page otherwise buries today under dozens of finished rows. A week
+    collapses only when its **Sunday** is already past (deliberately coarse: the
+    current week never splits in half), and the week holding the last completed
+    session stays open. On an archived plan (``readonly``) everything is past, so
+    only the final week stays open — collapsing all of them would open the page as
+    an empty accordion. ``today=None`` collapses nothing.
+    """
     weeks: dict = {}
     for w in workouts:
         try:
@@ -383,14 +404,25 @@ def _by_week(workouts):
         except (ValueError, TypeError):
             monday = None
         weeks.setdefault(monday, []).append(w)
+    mondays = sorted(k for k in weeks if k is not None)
+    today_d = dt.date.fromisoformat(today) if today else None
+    last_done = _last_done_date(workouts) if today else None
     out = []
-    for i, monday in enumerate(sorted(k for k in weeks if k is not None), 1):
+    for i, monday in enumerate(mondays, 1):
         sunday = monday + dt.timedelta(days=6)
         iso_key = monday.strftime("%G-W%V")
         label = f"{fmt.day_month(monday)} – {fmt.day_month(sunday)}"
-        out.append((i, label, iso_key, weeks[monday]))
+        if today_d is None:
+            collapsed = False
+        elif readonly:
+            collapsed = monday != mondays[-1]
+        else:
+            collapsed = sunday < today_d and not (
+                last_done and monday.isoformat() <= last_done <= sunday.isoformat()
+            )
+        out.append((i, label, iso_key, weeks[monday], collapsed))
     if None in weeks:   # undated (shouldn't happen) — keep them visible at the end
-        out.append((len(out) + 1, "", None, weeks[None]))
+        out.append((len(out) + 1, "", None, weeks[None], False))
     return out
 
 
@@ -671,7 +703,7 @@ async def plan_page(
     manual_actions = await _manual_actions(session, user, workouts, today_iso)
     return templates.TemplateResponse(
         request, "plan.html",
-        {"user": user, "plan": plan, "weeks": _by_week(workouts),
+        {"user": user, "plan": plan, "weeks": _by_week(workouts, today_iso),
          "manual_actions": manual_actions,
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
@@ -719,7 +751,8 @@ async def plan_view(
     anchor_pace = await repository.typical_run_pace(session, user.id)
     return templates.TemplateResponse(
         request, "plan.html",
-        {"user": user, "plan": plan, "weeks": _by_week(workouts),
+        {"user": user, "plan": plan,
+         "weeks": _by_week(workouts, dt.date.today().isoformat(), readonly=True),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
          "compliance": compliance, "anchor_pace": anchor_pace,

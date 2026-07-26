@@ -55,10 +55,21 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
     background:rgba(158,206,106,.07);border:1px solid rgba(158,206,106,.2)}
 
 /* ---- week section ---- */
+/* ST-22: every week is a <details>; a past one renders shut, so its header is the
+   clickable summary. Marker suppressed in favour of the same .chev the other
+   accordions use (strength exercises, the status menu). */
 .week{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;
       margin:2.5rem 0 1rem;padding-bottom:.65rem;border-bottom:1px solid var(--line-2)}
 .week .wn{font-size:.82rem;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#c8d0db}
 .week .wr{font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums}
+summary.week{cursor:pointer;list-style:none}
+summary.week::-webkit-details-marker{display:none}
+summary.week:hover .wn{color:var(--ink)}
+summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
+.wk[open]>summary.week .chev{transform:rotate(180deg)}
+/* A collapsed week keeps its own bottom margin — without rows after it the header
+   would otherwise sit flush against the next week's header. */
+.wk:not([open])>summary.week{margin-bottom:0}
 
 /* ---- workout card ---- */
 .row{display:grid;grid-template-columns:4.6rem 1fr auto;gap:1.1rem;align-items:start;
