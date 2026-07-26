@@ -107,6 +107,7 @@ NF-15's gear-endpoint recon у Done-записі — desk-only (без live Garm
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
+| [OPS-10](OPS-10-migrate-to-garminconnect.md) | 🟠 P1 | Виконати міграцію Garmin-auth на python-garminconnect (проактивно, поки garth ще працює) | M | OPS-01 ✅, PERF-05 ✅ |
 | [OPS-08](OPS-08-backup-freshness-monitoring.md) | 🟡 medium | Моніторинг свіжості бекапів БД | S | OPS-02 ✅ |
 | [OPS-09](OPS-09-calendar-push-audit.md) | 🟡 medium | Аудит пушів у Garmin-календар + «Синк зараз» | M | — |
 | [OPS-06](OPS-06-cache-metrics-page.md) | 🟢 low | Метрики кешів (hit-rate, розміри) | S | ST-20 (та сама сторінка) |
