@@ -361,7 +361,18 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .hero-date{color:var(--faint);font-size:.8rem;margin-bottom:.2rem;text-transform:capitalize}
 
 /* ---- activity filters ---- */
-.fbar{display:flex;flex-direction:column;gap:.6rem;margin:1.2rem 0 1rem}
+/* The bar is collapsed by default (its sport pills alone run two phone screens); the
+   summary is a pill that names the active filters and highlights when any are on. */
+.fwrap{margin:1.2rem 0 1rem}
+.fsum{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:.4rem;
+  font-size:.8rem;font-weight:600;padding:.3rem .75rem;border-radius:20px;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--muted);user-select:none}
+.fsum::-webkit-details-marker{display:none}
+.fsum:hover{border-color:var(--accent);color:var(--ink)}
+.fsum.on{border-color:var(--accent);color:var(--ink)}
+.fsum .chev{font-size:.7rem;transition:transform .15s}
+.fwrap[open]>.fsum .chev{transform:rotate(180deg)}
+.fbar{display:flex;flex-direction:column;gap:.6rem;margin:.7rem 0 1rem}
 .fgroup{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center}
 .fpill{font-size:.8rem;padding:.28rem .7rem;border-radius:20px;border:1px solid var(--line-2);
   color:var(--muted);background:var(--surface);white-space:nowrap;transition:border-color .1s,background .1s,color .1s}
