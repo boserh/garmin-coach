@@ -48,6 +48,10 @@ PENDING_ADAPT_KEY = "pending_adapt"
 # an explicit ❌ (set by plan_extend_callback, read by the morning nudge). "" = not snoozed.
 PLAN_EXTEND_SNOOZE_KEY = "extend_snooze"
 
+# ST-23: every unconfirmed proposal says the dialogue is open — a plain text message
+# while it stands is routed back into the edit engine as a follow-up (plan_followup).
+PROPOSAL_HINT = "\n\n💬 Питання чи корекція? Просто напиши повідомленням."
+
 _REPORT_Q = "Оціни відновлення і дай пораду до наступної запланованої пробіжки."
 _DEEP_Q = "Глибокий розбір сну, HRV і навантаження за два тижні."
 _NOT_REGISTERED = (
@@ -89,6 +93,7 @@ HELP_TEXT = (
     "🗓 План\n"
     "/plan — переглянути програму\n"
     "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n"
+    "   ↳ поки пропозиція не підтверджена — просто напиши питання чи корекцію\n"
     "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n"
     "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n"
     "/race — race pack: пейсинг/харчування/чекліст до цільового старту (Opus)\n\n"
@@ -848,41 +853,16 @@ async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction: str):
-    """Propose a free-text plan change and offer confirm/cancel buttons."""
-    logger.info(f"CMD /plan edit: {instruction[:60]}")
-    async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
-        await update.message.reply_text("Думаю над змінами...")
-        async with user_runtime(session, user) as creds:
-            try:
-                _plan, edit = await run_plan_edit(
-                    session, user_id=user.id, instruction=instruction,
-                    api_key=creds.anthropic_key,
-                )
-            except AnalystError as e:
-                logger.error(f"ANALYST {e}")
-                await update.message.reply_text(str(e))
-                return
-    if not edit.operations:
-        await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
-        return
-    ops = [op.model_dump() for op in edit.operations]
-    alt = [op.model_dump() for op in (edit.alt_operations or [])]
-    async with async_session_maker() as session:
-        await repository.set_pending_plan_edit(
-            session, user.id, ops, alt,
-            summary=edit.summary, alt_summary=edit.alt_summary, risky=edit.risky,
-        )
-
-    if edit.risky and alt:
+def _proposal_view(summary: Optional[str], alt_summary: Optional[str],
+                   risky: bool, ops: list, alt: list) -> tuple:
+    """Render a proposal as (text, keyboard) — shared by the first proposal and every
+    ST-23 refinement of it, so a re-proposal looks exactly like the original."""
+    if risky and alt:
         # risky request → keep what the user asked AND offer the coach's safer version,
         # so the user explicitly chooses (apply-as-asked / take-suggestion / cancel).
-        text = "⚠️ " + edit.summary
-        if edit.alt_summary:
-            text += "\n\n🛡 Безпечніше: " + edit.alt_summary
+        text = "⚠️ " + (summary or "")
+        if alt_summary:
+            text += "\n\n🛡 Безпечніше: " + alt_summary
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"✅ Як просив{_ops_hint(ops)}", callback_data="plan_apply")],
             [InlineKeyboardButton(f"🛡 Пропоноване{_ops_hint(alt)}",
@@ -894,8 +874,114 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
             InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
             InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
         ]])
-        text = "Пропоную:\n\n" + edit.summary
-    await update.message.reply_text(text, reply_markup=kb)
+        text = "Пропоную:\n\n" + (summary or "")
+    return text + PROPOSAL_HINT, kb
+
+
+async def _retire_proposal_message(ctx: ContextTypes.DEFAULT_TYPE,
+                                   pending: Optional[dict]) -> None:
+    """Drop the confirm keyboard off the previous proposal message (ST-23) so only the
+    newest one is tappable — the pending state is single-use, so a stale ✅ would either
+    apply a proposal whose text the user never saw or read back nothing at all.
+    Best-effort: an already-edited/deleted message never breaks the new proposal."""
+    msg = (pending or {}).get("message") or {}
+    if not (msg.get("chat_id") and msg.get("message_id") and getattr(ctx, "bot", None)):
+        return
+    try:
+        await ctx.bot.edit_message_reply_markup(
+            chat_id=msg["chat_id"], message_id=msg["message_id"], reply_markup=None,
+        )
+    except Exception:
+        logger.debug("previous proposal keyboard not retired", exc_info=True)
+
+
+async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction: str):
+    """Propose a free-text plan change and offer confirm/cancel buttons.
+
+    ST-23: when a proposal is already pending (unconfirmed), ``instruction`` is treated as
+    a follow-up **to that proposal** — a question about it (answered, the proposal stays
+    on the table) or a correction (a complete new proposal replacing it) — instead of a
+    fresh, context-free edit. Every turn carries the dialogue so far, so "краще 8 км"
+    after "перенеси довгу на суботу" means the Saturday long run, not a stray 8 km.
+    """
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        pending = await repository.get_pending_plan_edit(session, user.id)
+        logger.info(f"CMD /plan {'follow-up' if pending else 'edit'}: {instruction[:60]}")
+        await update.message.reply_text(
+            "Думаю над уточненням..." if pending else "Думаю над змінами..."
+        )
+        async with user_runtime(session, user) as creds:
+            try:
+                _plan, edit = await run_plan_edit(
+                    session, user_id=user.id, instruction=instruction,
+                    api_key=creds.anthropic_key, pending=pending,
+                )
+            except AnalystError as e:
+                logger.error(f"ANALYST {e}")
+                await update.message.reply_text(str(e))
+                return
+
+    if edit.operations:
+        ops = [op.model_dump() for op in edit.operations]
+        alt = [op.model_dump() for op in (edit.alt_operations or [])]
+        summary, alt_summary, risky = edit.summary, edit.alt_summary, edit.risky
+    elif pending:
+        # a pure question about the pending proposal — answer it and keep the proposal
+        # itself intact (its ops/summary carry over untouched).
+        ops, alt = pending.get("ops") or [], pending.get("alt") or []
+        summary, alt_summary = pending.get("summary"), pending.get("alt_summary")
+        risky = bool(pending.get("risky"))
+    else:
+        await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
+        return
+
+    text, kb = _proposal_view(summary, alt_summary, risky, ops, alt)
+    if edit.answer:
+        text = edit.answer + "\n\n" + text
+    # The new message carries the only live buttons; the previous one loses its keyboard.
+    await _retire_proposal_message(ctx, pending)
+    sent = await update.message.reply_text(text, reply_markup=kb)
+
+    async with async_session_maker() as session:
+        await repository.set_pending_plan_edit(
+            session, user.id, ops, alt,
+            summary=summary, alt_summary=alt_summary, risky=risky,
+            instruction=(pending or {}).get("instruction") or instruction,
+            thread=repository.append_thread(pending, instruction,
+                                            edit.answer or edit.summary) if pending else [],
+            message=_message_ref(sent),
+        )
+
+
+def _message_ref(sent) -> Optional[dict]:
+    """``{chat_id, message_id}`` of a just-sent message, or None when the transport
+    didn't return one (a fake message object in tests, a stubbed bot)."""
+    chat = getattr(sent, "chat_id", None)
+    mid = getattr(sent, "message_id", None)
+    return {"chat_id": chat, "message_id": mid} if chat and mid else None
+
+
+async def plan_followup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ST-23: a plain (non-command) text message while a plan proposal is unconfirmed is
+    a follow-up to it — so the user can just type «а чому саме субота?» or «краще 8 км»
+    instead of retyping ``/plan ...``. With no pending proposal the bot stays silent on
+    free text, exactly as before this handler existed."""
+    if update.message is None or not (update.message.text or "").strip():
+        return
+    text = update.message.text.strip()
+    async with async_session_maker() as session:
+        # Resolved quietly (not via _resolve_user): random text from an unknown chat
+        # shouldn't earn an unsolicited "you are not registered" reply.
+        user = await users.get_by_chat_id(session, update.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            return
+        pending = await repository.get_pending_plan_edit(session, user.id)
+    if not pending:
+        return
+    await _plan_edit(update, ctx, text)
 
 
 async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -934,15 +1020,21 @@ async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(edit.summary or "Перебудовувати нічого.")
         return
     ops = [op.model_dump() for op in edit.operations]
-    async with async_session_maker() as session:
-        await repository.set_pending_plan_edit(session, user.id, ops, [], summary=edit.summary)
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
         InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
     ]])
-    await update.message.reply_text(
-        "🤒 Пропоную перебудову:\n\n" + edit.summary, reply_markup=kb
+    sent = await update.message.reply_text(
+        "🤒 Пропоную перебудову:\n\n" + edit.summary + PROPOSAL_HINT, reply_markup=kb
     )
+    # Stored with the ST-23 dialogue extras, so a follow-up question/correction refines
+    # this rebuild through the same path as a /plan proposal.
+    async with async_session_maker() as session:
+        await repository.set_pending_plan_edit(
+            session, user.id, ops, [], summary=edit.summary,
+            instruction=f"хвороба/подорож: пропущено днів {days_missed}",
+            message=_message_ref(sent),
+        )
 
 
 def _ops_hint(ops: list) -> str:

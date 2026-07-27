@@ -2,6 +2,12 @@
 /plan <text> already use — a single input box, routed to the right engine by a simple
 heuristic, with HTML confirm/cancel buttons for a plan-edit proposal.
 
+ST-23 adds a dialogue turn on top of it: the pending-proposal card carries its own input
+(``refine=1``) whose message is fed back into ``run_plan_edit`` **with the pending
+proposal as context** — a question is answered without touching the proposal, a
+correction replaces it with a new one. The dialogue rides inside the same pending blob
+(``thread``), so it is shared with Telegram exactly like the proposal itself.
+
 The pending-edit state lives in ``bot_state`` (``repository.set_pending_plan_edit`` /
 ``pop_pending_plan_edit``), the same DB-backed key/value store EP-02's adaptation
 proposals already use — so a proposal shown here can be confirmed from Telegram and
@@ -117,17 +123,25 @@ async def chat_page(
 @router.post("/chat", response_class=HTMLResponse)
 async def chat_send(
     message: str = Form(...),
+    refine: str = Form(""),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    """``refine=1`` (ST-23) comes from the input inside the pending-proposal card: the
+    message is then a follow-up **to that proposal** — a question about it or a
+    correction — rather than a message routed by the plan-edit/ask heuristic. Keeping it
+    an explicit field (not "pending exists ⇒ everything is a follow-up") means the main
+    composer still answers an unrelated «як мій сон?» while a proposal waits."""
     text = message.strip()
     if not text:
         return RedirectResponse("/chat", status_code=303)
+    pending = await repository.get_pending_plan_edit(session, user.id) if refine else None
     creds = load_credentials(user)
     try:
-        if _looks_like_plan_edit(text):
+        if pending or _looks_like_plan_edit(text):
             _plan, edit = await run_plan_edit(
                 session, user_id=user.id, instruction=text, api_key=creds.anthropic_key,
+                pending=pending,
             )
             if edit.operations:
                 ops = [op.model_dump() for op in edit.operations]
@@ -135,6 +149,21 @@ async def chat_send(
                 await repository.set_pending_plan_edit(
                     session, user.id, ops, alt,
                     summary=edit.summary, alt_summary=edit.alt_summary, risky=edit.risky,
+                    instruction=(pending or {}).get("instruction") or text,
+                    thread=repository.append_thread(pending, text, edit.answer) if pending
+                    else [],
+                )
+            elif pending:
+                # a question about the proposal — it stays exactly as it was, only the
+                # dialogue thread grows (so the next follow-up keeps the context).
+                await repository.set_pending_plan_edit(
+                    session, user.id, pending.get("ops") or [], pending.get("alt") or [],
+                    summary=pending.get("summary"), alt_summary=pending.get("alt_summary"),
+                    risky=bool(pending.get("risky")),
+                    instruction=pending.get("instruction"),
+                    thread=repository.append_thread(pending, text,
+                                                    edit.answer or edit.summary),
+                    message=pending.get("message"),
                 )
         else:
             await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key)

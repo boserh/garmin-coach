@@ -190,6 +190,11 @@ class PlanEdit(BaseModel):
     risky: bool = False
     alt_summary: Optional[str] = None
     alt_operations: Optional[List[PlanOp]] = None
+    # ST-23: a reply to a follow-up asked about an ALREADY PROPOSED, not-yet-confirmed
+    # edit. A pure question → `answer` filled and `operations` empty (the pending
+    # proposal stays as it is); a correction → a full new `operations` set, with
+    # `answer` optionally saying in one line what changed. Empty on a first proposal.
+    answer: Optional[str] = None
 
 
 PlanStep.model_rebuild()  # resolve the self-referential `steps` forward ref

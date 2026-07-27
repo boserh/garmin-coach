@@ -11,7 +11,14 @@ import logging
 from datetime import time
 
 from telegram import BotCommand
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Defaults
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    Defaults,
+    MessageHandler,
+    filters,
+)
 
 from app.core import logging as app_logging
 from app.core.config import settings
@@ -93,6 +100,11 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
     app.add_handler(CallbackQueryHandler(handlers.plan_extend_callback, pattern=r"^planext:"))
     app.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci:"))
+    # ST-23: plain text is a follow-up to an unconfirmed plan proposal (question or
+    # correction). Registered last so every command above still wins; with no pending
+    # proposal the handler returns silently, keeping the bot's previous behaviour on
+    # free text.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.plan_followup))
     app.add_error_handler(handlers.on_error)
 
 
