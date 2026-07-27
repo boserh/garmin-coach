@@ -12,6 +12,11 @@
 html{-webkit-text-size-adjust:100%}
 body{
   margin:0; color:var(--ink); line-height:1.5;
+  /* A token with no break opportunity — an email in a heading, a pasted URL in chat —
+     otherwise runs past the screen edge and takes the whole page into horizontal scroll
+     with it. `break-word` only breaks when the word genuinely doesn't fit, so normal
+     wrapping is unchanged. */
+  overflow-wrap:break-word;
   font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
   font-feature-settings:"cv05","ss03"; -webkit-font-smoothing:antialiased;
   text-rendering:optimizeLegibility; padding:2.5rem 1.5rem 6rem;
@@ -84,7 +89,10 @@ summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
 .wx-chip{font-size:.68rem;color:var(--faint);margin-top:.35rem;
          display:flex;flex-wrap:wrap;gap:.2rem .35rem}
 .wx-chip.wx-conflict{color:var(--intervals);font-weight:600}
-.kind{display:inline-flex;align-items:center;gap:.5rem;margin-bottom:.45rem}
+/* The badge row can carry type + "сьогодні" + a status + a "розбір →" link — more than
+   fits one phone line, so it wraps instead of pushing the card past the screen edge. */
+.kind{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem .5rem;margin-bottom:.45rem;
+      min-width:0}
 .dot{width:.55rem;height:.55rem;border-radius:50%;flex:none}
 .klabel{font-size:.75rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#b6bfca}
 .badge-today{font-size:.64rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--accent)}
