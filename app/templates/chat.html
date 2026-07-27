@@ -40,6 +40,11 @@
     .pending .btn.alt { background: linear-gradient(180deg,#8fe0c9,#5fc2a8); }
     .pending .btn.cancel { background: var(--surface-2); color: var(--muted);
                             border: 1px solid var(--line-2); box-shadow: none; }
+    .composer.refine { margin-top: .8rem; }
+    .composer.refine textarea { min-height: 2.6rem; font-size: .88rem; }
+    .refine-thread { margin-top: .8rem; }
+    .refine-thread summary { cursor: pointer; font-size: .8rem; color: var(--muted); }
+    .refine-thread .turn { margin-top: .5rem; font-size: .85rem; }
   </style>
 </head>
 <body>
@@ -71,6 +76,23 @@
           {% endif %}
           <button class="btn cancel" type="submit" name="action" value="cancel">❌ Скасувати</button>
         </form>
+        {# ST-23: ask about this proposal or correct it — a follow-up turn that either
+           answers (proposal untouched) or replaces it with a new one. #}
+        <form method="post" action="/chat" class="composer refine">
+          <input type="hidden" name="refine" value="1">
+          <textarea name="message" rows="2" required
+            placeholder="Питання чи корекція до пропозиції: «чому саме субота?» / «краще 8 км»"></textarea>
+          <button class="btn cancel" type="submit">💬 Уточнити</button>
+        </form>
+        {% if pending.thread %}
+          <details class="refine-thread">
+            <summary>Уточнення ({{ pending.thread|length }})</summary>
+            {% for t in pending.thread %}
+              <div class="turn me">{{ t.q }}</div>
+              <div class="turn bot">{{ t.a }}</div>
+            {% endfor %}
+          </details>
+        {% endif %}
       </div>
     {% endif %}
 

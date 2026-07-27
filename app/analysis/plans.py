@@ -572,9 +572,20 @@ def plan_edit_with_stats(
     )
 
 
-async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Optional[str] = None):
+async def run_plan_edit(
+    session, *, user_id: int, instruction: str, api_key: Optional[str] = None,
+    pending: Optional[dict] = None,
+):
     """Propose changes to the active plan from a free-text instruction (does NOT apply —
-    the caller confirms first). Returns (plan, PlanEdit). Logs ReportLog(kind="plan_edit")."""
+    the caller confirms first). Returns (plan, PlanEdit). Logs ReportLog(kind="plan_edit").
+
+    ``pending`` (ST-23) is this user's still-unconfirmed proposal (the stored
+    ``repository.get_pending_plan_edit`` dict), turning the call into a **dialogue turn
+    about that proposal** rather than a fresh, context-free edit: the model either answers
+    a question about it (``PlanEdit.answer`` filled, ``operations`` empty — the caller
+    keeps the proposal alive) or returns a complete replacement proposal. Nothing was
+    applied, so ``upcoming`` is still the pre-proposal plan and a correction must come
+    back as a FULL operation set, not a delta — spelled out in ``SYSTEM_PLAN_EDIT``."""
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import repository
@@ -628,19 +639,32 @@ async def run_plan_edit(session, *, user_id: int, instruction: str, api_key: Opt
         # without the catalog); an invalid name is otherwise dropped to a bare category
         "exercise_variants": exercise_variants,
     }
+    if pending:
+        context["pending"] = {
+            "instruction": pending.get("instruction"),
+            "summary": pending.get("summary"),
+            "operations": pending.get("ops") or [],
+            "alt_summary": pending.get("alt_summary"),
+            "thread": pending.get("thread") or [],
+        }
+    # A follow-up is marked in the stored question so the web-chat transcript (and /me's
+    # report_logs) reads as a thread rather than a series of unrelated edit requests.
+    logged_q = (f"↳ {instruction}" if pending else instruction)[:200]
     try:
         edit, stats = await _run_claude(plan_edit_with_stats, context, api_key)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan_edit", model=MODEL_PLAN, ok=False,
-            question=instruction[:200], error=str(e)[:512],
+            question=logged_q, error=str(e)[:512],
         )
         raise
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
-        question=instruction[:200], report_text=edit.summary,
+        question=logged_q,
+        # a question-only turn has no proposal of its own — log the answer as the reply
+        report_text=(edit.summary if edit.operations else (edit.answer or edit.summary)),
     )
     return plan, edit
 

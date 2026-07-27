@@ -1215,6 +1215,41 @@ Garmin resync binds `user_runtime`, same MFA exposure the bot's `plan_callback` 
 documented, deliberate exclusion, not a gap. `tests/test_chat.py` +
 `tests/test_repository.py::test_pending_plan_edit_*`/`test_get_chat_history_*`.
 
+**Dialogue about an unconfirmed proposal (ST-23)**: a `/plan <text>`/`/sick` proposal used
+to be take-it-or-leave-it — ✅/❌ and nothing else, so "almost right" (or "why Saturday?")
+meant cancelling and retyping the whole request into a call that knew nothing about the
+proposal it was replacing. While a proposal is pending it is now a conversation:
+`run_plan_edit(..., pending=<the stored pending dict>)` feeds the unconfirmed proposal
+(its `instruction`/`summary`/`operations`/`alt_summary` + the follow-up `thread` so far)
+into `SYSTEM_PLAN_EDIT`, whose new "ДІАЛОГ ДО ПРОПОЗИЦІЇ" section splits the reply two
+ways: a **question** → `PlanEdit.answer` filled with `operations` empty (the proposal
+stays exactly as it was, only the thread grows), a **correction** → a COMPLETE new
+operation set replacing the old one. "Complete, not a delta" is the correctness rule
+behind the whole feature and is spelled out in the prompt: nothing was applied, so both
+the old and the new proposal are computed against the same `upcoming` — a delta would
+double-apply (two "move it a day later" turns landing two days out). Both live in the
+same `bot_state` blob as the proposal (`set_pending_plan_edit` gained `instruction` /
+`thread`, capped at `PENDING_THREAD_MAX`=6 via the pure `repository.append_thread` /
+`message`, all optional so a pre-ST-23 blob still reads), so a dialogue started in
+Telegram continues in the web chat and survives a restart, like the proposal itself.
+Bot: `bot.handlers.plan_followup` (`MessageHandler(filters.TEXT & ~filters.COMMAND)`,
+registered **last** so every command still wins) makes a plain text message a follow-up —
+with no pending proposal it returns silently, exactly the pre-ST-23 behaviour on free
+text; `_proposal_view` renders the first proposal and every refinement identically, and
+`_retire_proposal_message` strips the keyboard off the previous proposal message (the
+pending state is single-use, so two live ✅ buttons would mean one of them lies — it would
+either apply a proposal whose text the user never saw, or read back nothing). Web: the
+pending card grows its own input (`refine=1`) plus a `<details>` thread of the
+refinements; the main composer deliberately keeps EP-11's heuristic routing, so an
+unrelated "як мій сон?" typed while a proposal waits still goes to `/ask` instead of
+being swallowed by the plan-edit engine. A follow-up's `ReportLog.question` is prefixed
+`↳` and a question turn logs its `answer` as `report_text`, so the shared transcript
+reads as a thread. Cost: every turn is its own (Sonnet) `plan_edit` call, uncached like
+all plan-ops — deliberate, a dialogue has to be live. **Not covered**: the automatic
+proposers' own proposals (EP-02 adapt / EP-13 weather / NF-09 deload) live under
+`PENDING_ADAPT_KEY` and take no follow-ups — refining one belongs in the adaptation
+prompt with its risk context, a separate story. `tests/test_plan_refine.py`.
+
 **Per-user timezone (ST-14)**: `User.timezone` (IANA string, default `Europe/Warsaw`,
 migration `a3b4c5d6e7f8`) + a `/settings` field validated via `zoneinfo.ZoneInfo` on save
 (a bad string → `?tz=fail`, never a 500). `bot.jobs.user_tz(user)` is the shared reader —
@@ -1616,8 +1651,9 @@ persists a `TrainingPlan` + `PlannedWorkout` rows via `repository.create_plan` (
 prior active plan), and logs `ReportLog(kind="plan")`. Adjustments are **free-text in the
 bot**: `/plan <текст>` → `run_plan_edit` (`SYSTEM_PLAN_EDIT` → `PlanEdit` operations
 add/move/modify/skip) returns a *proposed* change; the bot shows it with inline ✅/❌ buttons
-(`plan_callback`, pending ops in `context.user_data["pending_plan"]`) and only
-`repository.apply_plan_ops` on confirm. **Risky edits** (a big distance/intensity jump, etc.):
+(`plan_callback`, pending ops in `bot_state` since EP-11 — shared with the web chat) and
+only `repository.apply_plan_ops` on confirm; while that proposal is unconfirmed, free text
+refines it instead of starting over (ST-23, see the EP-11 section). **Risky edits** (a big distance/intensity jump, etc.):
 `PlanEdit.operations` always holds the *literal* request, but the prompt also sets `risky` and
 returns a safer counter-proposal (`alt_summary`/`alt_operations`); the bot then offers a third
 button (✅ as-asked / 🛡 take-suggestion / ❌ cancel — `plan_apply` / `plan_apply_alt` /

@@ -184,6 +184,83 @@ def test_chat_send_blank_message_is_a_noop(auth_client):
     fake_ask.assert_not_called()
 
 
+# ---------- ST-23: dialogue about a pending proposal ----------
+
+def _stage_pending(uid, **kw):
+    async def stage():
+        async with async_session_maker() as s:
+            await repository.set_pending_plan_edit(
+                s, uid, [{"action": "move", "date": "2026-07-01", "to_date": "2026-07-04"}], [],
+                summary="Переніс довгу на суботу.", instruction="перенеси довгу", **kw,
+            )
+
+    anyio.run(stage)
+
+
+def _read_pending(uid):
+    async def read():
+        async with async_session_maker() as s:
+            return await repository.get_pending_plan_edit(s, uid)
+
+    return anyio.run(read)
+
+
+def test_chat_refine_question_keeps_the_proposal_and_grows_the_thread(auth_client):
+    client, uid = auth_client
+    _stage_pending(uid)
+    edit = PlanEdit(summary="", operations=[], answer="Бо в неділю довгий.")
+    fake = AsyncMock(return_value=(object(), edit))
+    with patch.object(chat_router, "run_plan_edit", fake):
+        r = client.post("/chat", data={"message": "чому саме субота?", "refine": "1"},
+                        follow_redirects=False)
+    assert r.status_code == 303
+    # the pending proposal rode into the engine as context
+    assert fake.await_args.kwargs["pending"]["summary"] == "Переніс довгу на суботу."
+
+    pending = _read_pending(uid)
+    assert pending["ops"][0]["to_date"] == "2026-07-04"      # proposal untouched
+    assert pending["thread"][-1] == {"q": "чому саме субота?", "a": "Бо в неділю довгий."}
+    assert "чому саме субота?" in client.get("/chat").text   # thread rendered on the card
+
+
+def test_chat_refine_correction_replaces_the_proposal(auth_client):
+    client, uid = auth_client
+    _stage_pending(uid)
+    edit = PlanEdit(
+        summary="Переніс довгу на неділю.", answer="Ок, неділя.",
+        operations=[PlanOp(action="move", date="2026-07-01", to_date="2026-07-05")],
+    )
+    with patch.object(chat_router, "run_plan_edit", AsyncMock(return_value=(object(), edit))):
+        client.post("/chat", data={"message": "краще неділя", "refine": "1"})
+
+    pending = _read_pending(uid)
+    assert pending["ops"][0]["to_date"] == "2026-07-05"
+    assert pending["summary"] == "Переніс довгу на неділю."
+    assert pending["instruction"] == "перенеси довгу"        # the dialogue's root request
+    assert pending["thread"][-1]["q"] == "краще неділя"
+
+
+def test_chat_main_composer_still_answers_questions_while_a_proposal_waits(auth_client):
+    """Only the proposal card's own input refines; the main composer keeps routing by the
+    heuristic, so an unrelated question isn't swallowed by the plan-edit engine."""
+    client, uid = auth_client
+    _stage_pending(uid)
+    fake_ask = AsyncMock(return_value="Сон непоганий.")
+    with patch.object(chat_router, "run_ask", fake_ask):
+        client.post("/chat", data={"message": "як мій сон?"})
+    fake_ask.assert_awaited_once()
+    assert _read_pending(uid)["ops"]        # proposal untouched
+
+
+def test_chat_refine_without_a_pending_proposal_falls_back_to_the_heuristic(auth_client):
+    client, uid = auth_client
+    fake_ask = AsyncMock(return_value="Відповідь.")
+    with patch.object(chat_router, "run_ask", fake_ask):
+        client.post("/chat", data={"message": "як мій сон?", "refine": "1"})
+    fake_ask.assert_awaited_once()          # stale card, no pending → plain question
+    assert _read_pending(uid) is None
+
+
 # ---------- POST /chat/confirm ----------
 
 def _seed_plan_with_workout(uid: int, date="2026-07-01"):

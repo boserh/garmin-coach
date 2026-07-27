@@ -37,20 +37,45 @@ async def set_state(session: AsyncSession, user_id: int, key: str, value: str) -
 PENDING_PLAN_EDIT_KEY = "pending_plan_edit"
 
 
+# ST-23: how many follow-up turns about one proposal ride along as context. A dialogue
+# about a single edit is short by nature; the cap keeps the stored blob (and the prompt
+# it feeds) bounded no matter how long the user keeps poking at one proposal.
+PENDING_THREAD_MAX = 6
+
+
 async def set_pending_plan_edit(
     session: AsyncSession, user_id: int, ops: list, alt: Optional[list] = None,
     *, summary: Optional[str] = None, alt_summary: Optional[str] = None,
-    risky: bool = False,
+    risky: bool = False, instruction: Optional[str] = None,
+    thread: Optional[list] = None, message: Optional[dict] = None,
 ) -> None:
     """``summary``/``alt_summary``/``risky`` are display-only extras (EP-11's web chat
     re-renders the proposal text across page loads, unlike a Telegram message which
     already has the text baked in) — the bot's confirm flow ignores them, reading only
-    ``ops``/``alt``, so old and new writers stay compatible either direction."""
+    ``ops``/``alt``, so old and new writers stay compatible either direction.
+
+    ST-23 adds the dialogue extras, all equally optional: ``instruction`` (the request
+    this proposal came from), ``thread`` (the follow-up Q/A so far, trimmed to
+    ``PENDING_THREAD_MAX``) and ``message`` (``{chat_id, message_id}`` of the Telegram
+    message carrying the confirm buttons, so a superseding proposal can retire the old
+    one's keyboard instead of leaving two live button sets in the chat)."""
     await set_state(
         session, user_id, PENDING_PLAN_EDIT_KEY,
         json.dumps({"ops": ops, "alt": alt or [], "summary": summary,
-                    "alt_summary": alt_summary, "risky": bool(risky)}, ensure_ascii=False),
+                    "alt_summary": alt_summary, "risky": bool(risky),
+                    "instruction": instruction,
+                    "thread": (thread or [])[-PENDING_THREAD_MAX:],
+                    "message": message}, ensure_ascii=False),
     )
+
+
+def append_thread(pending: Optional[dict], question: str, answer: Optional[str]) -> list:
+    """The follow-up thread of ``pending`` with this turn appended (ST-23), trimmed to
+    ``PENDING_THREAD_MAX``. Pure — the caller passes the result back to
+    ``set_pending_plan_edit(thread=...)``."""
+    thread = list((pending or {}).get("thread") or [])
+    thread.append({"q": (question or "")[:300], "a": (answer or "")[:500]})
+    return thread[-PENDING_THREAD_MAX:]
 
 
 async def get_pending_plan_edit(session: AsyncSession, user_id: int) -> Optional[dict]:
