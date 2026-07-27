@@ -231,12 +231,18 @@
             <option value="{{ slug }}" {{ 'selected' if season and slug == season.sport else '' }}>{{ lbl }}</option>
             {% endfor %}
           </select>
-          <input name="season_sessions" type="number" min="1" max="14" style="width:4rem"
-                 value="{{ season.sessions_per_week if season else 3 }}" title="сесій/тиждень">
-          <input name="season_avg_min" type="number" min="10" max="600" style="width:5rem"
-                 value="{{ season.avg_min if season else 90 }}" title="хвилин/сесію">
+          {# these two used to be bare number boxes whose meaning lived in a title=
+             tooltip — invisible on a phone, which is where /plan is actually read #}
+          <span class="numf"><label for="season_sessions">сесій/тиждень</label>
+            <input id="season_sessions" name="season_sessions" type="number" min="1" max="14"
+                   style="width:4rem" value="{{ season.sessions_per_week if season else 3 }}"></span>
+          <span class="numf"><label for="season_avg_min">хв/сесію</label>
+            <input id="season_avg_min" name="season_avg_min" type="number" min="10" max="600"
+                   style="width:5rem" value="{{ season.avg_min if season else 90 }}"></span>
           <button class="arch" type="submit">Зберегти</button>
         </form>
+        <div class="hint">Інший спорт, під який генерація свідомо закладає менший біговий
+          обсяг (напр. кайт у сезон). «— нема —» + Зберегти — прибрати акцент.</div>
       </div>
       {% if goal_has_distance %}
       <div>
