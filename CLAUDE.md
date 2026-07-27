@@ -122,6 +122,17 @@ The web app also runs zero-config: `init_db()` in the lifespan creates tables on
 startup, so `uvicorn` works even before `alembic upgrade head`. Alembic remains the
 source of truth for schema changes.
 
+**Mobile-layout guard** (`tests/test_mobile_layout.py`): renders every user-facing page
+through the app, loads it in headless Chromium with the real `app.css` and asserts
+`scrollWidth <= clientWidth` at 390px and 320px (all `<details>` forced open, external
+requests blocked — a Google-Fonts fetch per navigation turned a 4-second check into four
+minutes). It exists because a flex row that can't shrink pushed a card off-screen twice —
+a bug class no template assertion catches, since it only exists once the CSS lays out; the
+failure message names the offending selector and its box. Opt-in: `pytest.importorskip`
+plus a Chromium-binary check, so it skips in CI (which installs only `.[dev]`) — run it
+locally after touching card/step/badge layout: `pip install playwright` then
+`./venv/bin/python -m pytest tests/test_mobile_layout.py`.
+
 ### First-run bootstrap (multi-user)
 
 Credentials are now **per user, stored encrypted in the DB** — `.env` Garmin/Claude
