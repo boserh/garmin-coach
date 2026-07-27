@@ -179,6 +179,31 @@ _SORT_OPTIONS = [
     ("load_desc",  "Навантаження ↓"),
     ("hr_desc",    "Пульс ↓"),
 ]
+
+_DAYS_LABELS = {30: "30 днів", 90: "3 міс", 365: "Рік"}
+
+
+def _filter_summary(type_counts, type_filter="", days_filter=0, sort="date_desc",
+                    date_from="", date_to=""):
+    """What the activity list is currently filtered by, as ``(label, is_active)``.
+
+    The filter bar is a long wall of sport pills (one per activity type ever recorded —
+    two full phone screens before the first activity), so it renders collapsed. The
+    label is what a collapsed bar has to say instead: "Фільтри" when nothing is applied,
+    else the active choices spelled out. ``is_active`` also decides whether the bar opens
+    itself — a filtered list must never look like the whole history.
+    """
+    bits = []
+    if type_filter:
+        tc = next((t for t in type_counts if t["type"] == type_filter), None)
+        bits.append(f"{tc['emoji']} {tc['label']}" if tc else type_filter)
+    if date_from or date_to:
+        bits.append(" – ".join(p for p in (date_from, date_to) if p))
+    elif days_filter:
+        bits.append(_DAYS_LABELS.get(days_filter, f"{days_filter} днів"))
+    if sort != "date_desc":
+        bits.append(dict(_SORT_OPTIONS).get(sort, sort))
+    return ("Фільтри · " + " · ".join(bits) if bits else "Фільтри"), bool(bits)
 def _act_meta(t: str):
     t = (t or "").lower()
     if t in _ACT_META:
@@ -890,13 +915,18 @@ async def me_table(
     days_filter=effective_days, date_from=date_from, date_to=date_to)
         valid_sorts = {k for k, _ in _SORT_OPTIONS}
         safe_sort = sort if sort in valid_sorts else "date_desc"
+        filter_label, filters_active = _filter_summary(
+            type_counts, type_filter=type, days_filter=effective_days, sort=safe_sort,
+            date_from=date_from, date_to=date_to,
+        )
         return templates.TemplateResponse(
             request, "activities.html",
             {"acts": cards, "user": user, "tables": list(TABLES), "base": "/me",
              "token": "", "limit": limit, "offset": offset, "total": total,
              "type_filter": type, "days_filter": effective_days, "sort": safe_sort,
              "date_from": date_from, "date_to": date_to,
-             "type_counts": type_counts, "sort_options": _SORT_OPTIONS},
+             "type_counts": type_counts, "sort_options": _SORT_OPTIONS,
+             "filter_label": filter_label, "filters_active": filters_active},
         )
     if table == "daily_metrics":
         days = await _daily_cards(session, user.id, limit, offset)

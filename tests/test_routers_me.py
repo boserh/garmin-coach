@@ -307,3 +307,51 @@ def test_activity_strength_renders_garmin_style_cards(client):
     assert "1 підхід" in html                                     # correct singular plural
 
 
+
+
+def test_filter_summary_labels_active_choices():
+    """The collapsed filter bar has to say what it's filtering by — that label is the
+    only thing visible when the bar is shut."""
+    from app.routers.me import _filter_summary
+
+    counts = [{"type": "running", "count": 5, "emoji": "🏃", "label": "Біг"}]
+
+    assert _filter_summary(counts) == ("Фільтри", False)
+    assert _filter_summary(counts, type_filter="running", days_filter=30) == (
+        "Фільтри · 🏃 Біг · 30 днів", True)
+    # a type with no count row (filtered out by the date range) still names itself
+    assert _filter_summary(counts, type_filter="tennis")[0] == "Фільтри · tennis"
+    assert _filter_summary(counts, date_from="2026-05-01", date_to="2026-06-01") == (
+        "Фільтри · 2026-05-01 – 2026-06-01", True)
+    assert _filter_summary(counts, sort="dist_desc") == ("Фільтри · Відстань ↓", True)
+
+
+def test_activities_filter_bar_collapsed_unless_filtered(client):
+    """The sport pills are two phone screens of chips, so the bar renders shut — but a
+    filtered list must never look like the full history, so any active filter opens it."""
+    import anyio
+
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+
+    _seed_user(email="filt@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "filt@example.com", "password": "pw"})
+
+    async def seed():
+        from app.db import users
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "filt@example.com")
+            s.add(ActivityRecord(user_id=u.id, activity_id=901, date="2026-07-20",
+                                 type="running", dist_km=8.0, dur_min=45))
+            await s.commit()
+
+    anyio.run(seed)
+
+    plain = client.get("/me/activities").text
+    assert '<details class="fwrap">' in plain          # no `open` → collapsed
+    assert "🔎 Фільтри<" in plain
+    assert "Всі" in plain                              # the pills are still in the DOM
+
+    filtered = client.get("/me/activities?type=running").text
+    assert '<details class="fwrap" open>' in filtered
+    assert "Фільтри · 🏃 Біг" in filtered

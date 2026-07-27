@@ -24,7 +24,11 @@
     <p class="eyebrow">Активності</p>
     <h1 class="title" style="font-size:1.7rem">Тренування</h1>
 
-    {# ---- filter bar ---- #}
+    {# ---- filter bar: collapsed by default (the sport pills alone are two phone
+       screens), and opened automatically whenever a filter is actually applied, so a
+       filtered list can never be mistaken for the full history. #}
+    <details class="fwrap"{% if filters_active %} open{% endif %}>
+    <summary class="fsum{{ ' on' if filters_active }}">🔎 {{ filter_label }}<span class="chev">▾</span></summary>
     <div class="fbar">
 
       {# type pills #}
@@ -68,6 +72,7 @@
       </div>
 
     </div>
+    </details>
 
     {% if not acts %}<div class="empty">Немає активностей за обраними фільтрами.</div>{% endif %}
     <div class="acts">
