@@ -479,3 +479,7 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
       transition:border-color .12s,color .12s,background .12s}
 .arch:hover{border-color:#3a2a2c;color:#e0817a;background:rgba(224,129,122,.05)}
 form.inline{display:inline}
+/* a small number input that needs its unit spelled out next to it (a title= tooltip is
+   invisible on a phone, which is where /plan is read) */
+.numf{display:inline-flex;align-items:center;gap:.35rem;margin:0 .6rem .35rem 0}
+.numf label{color:var(--faint);font-size:.8rem;white-space:nowrap}

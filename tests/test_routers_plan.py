@@ -564,6 +564,10 @@ def test_plan_season_editable_on_page(auth_client):
     view = auth_client.get("/plan").text
     assert 'value="kite"' in view
     assert 'value="tennis" selected' not in view
+    # the two number inputs say what they mean on the page itself — a title= tooltip is
+    # invisible on a phone, which left bare "3" and "90" boxes
+    assert 'for="season_sessions">сесій/тиждень' in view
+    assert 'for="season_avg_min">хв/сесію' in view
 
     r = auth_client.post(
         "/plan/season", data={"season_sport": "tennis", "season_sessions": "2",
