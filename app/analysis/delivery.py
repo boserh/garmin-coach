@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.analysis.service import run_analysis
+from app.core.tz import user_today
 from app.db.models import User
 from app.garmin.schemas import Payload
 
@@ -46,9 +47,12 @@ async def build_report(
     Raises ``AnalystError`` on Claude failure — the caller decides how to surface it.
     Dedup-cache behaviour is unchanged: this only assembles the ``run_analysis`` call
     that each channel already made.
+
+    "Today" is resolved in the USER's timezone (ST-14) and passed down, so the plan
+    window and the analyst's relative-day labels agree with the day they're living in.
     """
     text = await run_analysis(
         session, payload, user_id=user.id, question=question,
-        kind=kind, api_key=api_key, weather=weather,
+        kind=kind, api_key=api_key, weather=weather, today=user_today(user),
     )
     return ReportResult(text, payload.synced_today, payload.last_data_date)

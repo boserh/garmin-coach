@@ -15,7 +15,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from fastapi.concurrency import run_in_threadpool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -40,6 +40,7 @@ from app.analysis.service import (
     run_weather_plan_check,
 )
 from app.core.config import settings
+from app.core.tz import user_tz as core_user_tz
 from app.db import job_runs
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -55,7 +56,7 @@ from bot.handlers import (
     MFA_REQUIRED_MSG,
     PENDING_ADAPT_KEY,
     PLAN_EXTEND_SNOOZE_KEY,
-    TZ,
+    TZ,  # noqa: F401 — the process TZ, re-exported here for the run_daily schedules/tests
     checkin_keyboard,
 )
 
@@ -139,11 +140,12 @@ def user_tz(user: User) -> ZoneInfo:
     to the process default (Europe/Warsaw) on a corrupt/missing value so a bad zoneinfo
     string can never break a job. Per-user checks (the morning window, once-a-day/week/
     month bot_state guard dates) read this instead of the hardcoded process TZ; the
-    run_daily-scheduled jobs themselves stay on the process TZ in v1 (see CLAUDE.md)."""
-    try:
-        return ZoneInfo(user.timezone or "Europe/Warsaw")
-    except (ZoneInfoNotFoundError, ValueError):
-        return TZ
+    run_daily-scheduled jobs themselves stay on the process TZ in v1 (see CLAUDE.md).
+
+    Thin alias for ``app.core.tz.user_tz`` — the canonical implementation, shared with the
+    web layer and the report's date context; kept as a name here because the jobs read it
+    everywhere."""
+    return core_user_tz(user)
 
 
 class JobOutcome:

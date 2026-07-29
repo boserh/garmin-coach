@@ -82,9 +82,13 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                norm: Optional[dict] = None,
                subjective: Optional[dict] = None,
                health_alerts: Optional[dict] = None,
-               fueling: Optional[dict] = None) -> str:
+               fueling: Optional[dict] = None,
+               today: Optional[str] = None) -> str:
+    # ``today`` is the user's own date (their timezone, ST-14) when the caller knows it —
+    # it is part of the prompt (and of every relative-day label built from it), so it must
+    # be part of the key. Falls back to the process date for callers without a user.
     material = {
-        "today": dt.date.today().isoformat(),
+        "today": today or dt.date.today().isoformat(),
         "daily": data.get("daily"),
         "activities": data.get("recent_activities"),
         "planned": data.get("planned_runs"),
