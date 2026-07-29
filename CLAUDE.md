@@ -1761,6 +1761,17 @@ morning nudge itself is free, and there's no scheduled auto-generation.
   so the bot and web processes share hits — the old per-process `claude_cache.json`
   paid twice for the same call and its whole-file rewrites lost the other process's
   entries. Cache failures are best-effort: a failed read is a miss, never an error.
+  **Purging it** (`scripts/reset_morning.py`): after a prompt/context change, re-running
+  the morning tick over unchanged data is a cache HIT and returns the pre-change text —
+  so the fix looks like it did nothing. `./venv/bin/python -m scripts.reset_morning`
+  drops the entries created in the last `--days N` (default 1; `--all` for everything,
+  `--dry-run` to count first) — the rows carry no `user_id`/`kind` (the key is an opaque
+  sha256), so "only the morning report" can't be selected and the date window is the
+  honest approximation. Pure DB, zero API calls; it only makes the NEXT report a paid
+  call. `--email … --resend` additionally clears that user's `morning_sent_date` guard so
+  the scheduled DM fires again today (a real Claude call, unattended) — for merely LOOKING
+  at a regenerated report prefer the admin bot's `/test_morning`, which runs the same path
+  without touching the guard. `report_logs` is never touched (it's the cost audit trail).
 - **Garmin disk cache** (per-key files in `GARMIN_CACHE_DIR`, PERF-02): immutable
   ID-keyed assets only — `exercise:v2:<id>` (365d), `workout:v2:<id>` (7d; name + coach
   description + steps), and `series:v1:<id>` (365d; a run's per-point pace/HR from
