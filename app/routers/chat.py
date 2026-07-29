@@ -28,7 +28,7 @@ import datetime as dt
 import logging
 from pathlib import Path
 from urllib.parse import quote
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -39,6 +39,7 @@ from app.analysis.client import AnalystError
 from app.analysis.plans import run_plan_edit
 from app.analysis.reports import run_ask
 from app.core.auth import current_user
+from app.core.tz import user_tz as core_user_tz
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import plan_sync, repository
@@ -59,11 +60,9 @@ CHAT_HISTORY_MAX = 500    # hard cap so a crafted ?limit= can't pull the whole h
 
 def _user_tz(user: User) -> ZoneInfo:
     """This user's IANA timezone (ST-14), falling back to Europe/Warsaw on a bad value —
-    so chat timestamps read in the user's own local time, like the rest of the app."""
-    try:
-        return ZoneInfo(user.timezone or "Europe/Warsaw")
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("Europe/Warsaw")
+    so chat timestamps read in the user's own local time, like the rest of the app.
+    Thin alias for the canonical ``app.core.tz.user_tz``."""
+    return core_user_tz(user)
 
 
 def _with_local_time(history: list, tz: ZoneInfo) -> list:

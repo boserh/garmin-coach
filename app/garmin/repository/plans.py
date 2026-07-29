@@ -186,14 +186,19 @@ async def set_workout_status(
 
 
 async def upcoming_plan_workouts(
-    session: AsyncSession, user_id: int, days: int = 2
+    session: AsyncSession, user_id: int, days: int = 2,
+    today: Optional[dt.date] = None,
 ) -> List[PlannedWorkout]:
     """Today's and the next ``days-1`` days' planned workouts from the active plan.
-    Returns [] when there is no active plan or nothing in the window."""
+    Returns [] when there is no active plan or nothing in the window.
+
+    ``today`` lets a caller pass the user's OWN date (their timezone, ST-14) instead of
+    the process one — otherwise a user a few hours ahead gets a window shifted by a day.
+    """
     plan = await get_active_plan(session, user_id)
     if plan is None:
         return []
-    today = dt.date.today()
+    today = today or dt.date.today()
     window_end = (today + dt.timedelta(days=days - 1)).isoformat()
     return (
         await session.execute(

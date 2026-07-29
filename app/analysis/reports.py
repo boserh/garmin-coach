@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Optional, Tuple, Union
 
-from app import gap
+from app import daterel, gap
 from app.analysis.cache import (
     CACHE_TTL_S,
     _activity_cache_key,
@@ -154,6 +154,18 @@ def _strength_exercises(w) -> Optional[dict]:
     return None
 
 
+def _labelled_data(data: dict, today: str) -> dict:
+    """Payload copy with a relative-day ``day`` label on every dated list (see
+    ``app.daterel``) — so the analyst reads "вчора (вт)" off the record instead of
+    subtracting dates itself. Copy, never in-place: this dict is shared with the
+    payload memo and the cache key."""
+    out = dict(data)
+    for k in ("daily", "recent_activities", "planned_runs"):
+        if isinstance(out.get(k), list):
+            out[k] = daterel.annotate(out[k], today)
+    return out
+
+
 def analyze_with_stats(
     payload: Union[Payload, dict],
     question: str = "",
@@ -169,6 +181,7 @@ def analyze_with_stats(
     subjective: Optional[dict] = None,
     health_alerts: Optional[dict] = None,
     fueling: Optional[dict] = None,
+    today: Optional[str] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -180,29 +193,37 @@ def analyze_with_stats(
     analyst tailor advice for a run today/tomorrow (heat, rain, wind, run timing). Part
     of the cache key so a forecast change yields a fresh report.
 
+    ``today`` (ISO) is the user's OWN today (their timezone, ST-14), not the process's.
+    Every dated record in the context is labelled against it in Python (``app.daterel``)
+    rather than left to the model's date arithmetic — the day-confusion fix.
+
     No dedup-cache check here — this runs sync in a threadpool with no DB access;
     :func:`run_analysis` fronts it with the shared ``llm_cache`` get/put.
     """
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
-    data = _as_dict(payload)
+    today_iso = today or dt.date.today().isoformat()
+    data = _labelled_data(_as_dict(payload), today_iso)
     effective_q = question or _DEFAULT_DAILY_Q
 
     user_content = {
-        "today": dt.date.today().isoformat(),
+        **daterel.today_context(today_iso),
         "data": data,
         "question": effective_q,
     }
     if previous_report:
-        user_content["previous_report"] = previous_report
+        lab = daterel.label(previous_report.get("date"), today_iso)
+        user_content["previous_report"] = (
+            {**previous_report, "day": lab} if lab else previous_report
+        )
     if weather:
         user_content["weather"] = weather
     if plan_today:
-        user_content["plan_today"] = plan_today
+        user_content["plan_today"] = daterel.annotate(plan_today, today_iso)
     if fitness:
         user_content["fitness"] = fitness
     if records:
-        user_content["records"] = records
+        user_content["records"] = daterel.annotate(records, today_iso)
     if norm:
         user_content["norm"] = norm
     if subjective:
@@ -279,16 +300,24 @@ async def run_analysis(
     kind: Optional[str] = None,
     api_key: Optional[str] = None,
     weather: Optional[dict] = None,
+    today: Optional[Union[str, dt.date]] = None,
 ) -> str:
     """Analyze, persist a ReportLog row (success or failure), return the text.
 
     Blocking API work runs in a threadpool; the failed-call log is best-effort.
     ``weather`` (optional) is today's forecast passed through to the analyst.
+
+    ``today`` (optional, ISO string or ``date``) is the user's own current date in THEIR
+    timezone (``app.core.tz.user_today``) — it decides which plan sessions count as
+    today's, which day the fueling advice is for, and the relative labels the analyst
+    reads. Defaults to the process date for callers with no user in hand.
     """
     from app.garmin import repository
 
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
+    today_d = daterel.parse(today) or dt.date.today()
+    today_iso = today_d.isoformat()
 
     # Day-over-day continuity: feed yesterday's report as context (daily/morning
     # only — /deep is a one-off deep dive that doesn't need it). Fetched before the
@@ -308,7 +337,8 @@ async def run_analysis(
             previous_report = {"date": date_prev, "text": text_prev}
 
         if user_id is not None:
-            ws = await repository.upcoming_plan_workouts(session, user_id, days=2)
+            ws = await repository.upcoming_plan_workouts(
+                session, user_id, days=2, today=today_d)
             if ws:
                 plan_today = [
                     {k: v for k, v in {
@@ -350,7 +380,6 @@ async def run_analysis(
             # Heat/duration fueling advisor (NF-11): only for TODAY's session (the ST-03
             # proximity rule — no gel math for Friday) and only when we have today's
             # forecast already (no extra network call). Zero-LLM; the analyst just narrates.
-            today_iso = dt.date.today().isoformat()
             today_session = next((s for s in plan_today or [] if s.get("date") == today_iso),
                                   None)
             if weather and today_session:
@@ -365,7 +394,7 @@ async def run_analysis(
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
-                           subjective, health_alerts, fueling)
+                           subjective, health_alerts, fueling, today_iso)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -375,6 +404,7 @@ async def run_analysis(
         return analyze_with_stats(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
+            today_iso,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
@@ -778,7 +808,14 @@ def analyze_activity_with_stats(
     The dedup cache (keyed on the activity payload + model) is checked in
     :func:`run_activity_analysis`."""
     model = MODEL_ACTIVITY
-    user_content = {"today": dt.date.today().isoformat(), "activity": activity_data}
+    today_iso = dt.date.today().isoformat()
+    user_content = {**daterel.today_context(today_iso), "activity": activity_data}
+    # The label rides OUTSIDE ``activity`` on purpose: the dedup cache keys on the activity
+    # payload alone, so a relative label inside it would expire a stored analysis every
+    # midnight (a paid re-run of an unchanged activity).
+    day = daterel.label(activity_data.get("date"), today_iso)
+    if day:
+        user_content["activity_day"] = day
     try:
         from anthropic import APIConnectionError, APIStatusError
 

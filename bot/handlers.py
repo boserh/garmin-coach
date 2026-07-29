@@ -28,6 +28,7 @@ from app.analysis.service import (
     run_plan_extension,
 )
 from app.core.config import settings
+from app.core.tz import user_today
 from app.db import users
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -192,6 +193,7 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text = await run_analysis(
                     session, payload, user_id=user.id, question=question,
                     deep=True, kind="deep", api_key=creds.anthropic_key,
+                    today=user_today(user),
                 )
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")

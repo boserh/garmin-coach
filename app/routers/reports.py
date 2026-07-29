@@ -10,6 +10,7 @@ from app import weather
 from app.analysis import delivery
 from app.analysis.service import AnalystError, run_analysis
 from app.core.auth import current_user
+from app.core.tz import user_today
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import service
@@ -60,6 +61,7 @@ async def deep(
             text = await run_analysis(
                 session, payload, user_id=user.id, question=q or _DEEP_Q,
                 deep=True, kind="deep", api_key=creds.anthropic_key,
+                today=user_today(user),
             )
         except AnalystError as e:
             raise HTTPException(status_code=502, detail=str(e))

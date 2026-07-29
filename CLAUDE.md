@@ -488,6 +488,7 @@ app/
     config.py          pydantic-settings Settings — the single source for all env vars
     logging.py         logging config (was logging_setup.py)
     crypto.py          Fernet encrypt/decrypt for creds + bcrypt password hashing
+    tz.py              canonical per-user timezone: user_tz / user_today (ST-14)
     auth.py            current_user / require_admin deps; session login/logout helpers
   db/
     base.py            async engine + sessionmaker + declarative Base; init_db/dispose_db
@@ -511,6 +512,7 @@ app/
   race.py              EP-05: race-pack target/distance mapping + narration-context builder
   gear.py              NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
   gap.py               EP-15: grade-adjusted pace (GAP) — elevation smoothing + Minetti cost model
+  daterel.py           relative day labels (сьогодні/вчора/через N дн) for the LLM context — the day-confusion fix
   analysis/
     service.py         analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     prompts.py         SYSTEM + SYSTEM_ASK_TOOLS prompts
@@ -1547,6 +1549,38 @@ it null (default daily prompt). Visible in the `/me` and `/ui` browsers, and wha
 `repository.get_last_report` — which excludes today's reports and `/deep`+`/ask`. Excluding
 today keeps the dedup-cache key stable across repeated same-day `/report` presses (so a
 second press is a `CLAUDE CACHE HIT`, not a paid re-run).
+
+**Relative day labels — the day-confusion fix (`app/daterel.py`)**: the report kept getting
+days wrong in production — a run from **позавчора** narrated as "вчора", and (the screenshot
+that triggered the fix) **tomorrow's** plan session announced as "Сьогодні за планом". The
+prompt had a whole ДАТИ section telling the model how to subtract dates; it still slipped,
+because that's deterministic arithmetic we already know the answer to — it should never have
+been the model's job. So every dated record handed to Claude now carries a **precomputed**
+`day` label (pure Python, zero-LLM): `"сьогодні (ср)"` / `"вчора (вт)"` / `"позавчора (пн)"` /
+`"завтра (чт)"` / `"3 дн тому (нд)"` / `"через 5 дн (пн)"`. The weekday in the label is a
+second, independent anchor (a bare "2 дн тому" has nothing to cross-check against), and the
+prompt's rule collapses to "take the word from the record's `day` field; if there is none,
+name the date instead". Applied in `analyze_with_stats` to `data.daily[]`,
+`data.recent_activities[]`, `data.planned_runs[]`, `plan_today[]`, `records[]` and
+`previous_report`, plus a `today`+`today_weekday` anchor pair; `analyze_activity_with_stats`
+gets an `activity_day` **beside** `activity` (never inside it — that dict IS the
+`_activity_cache_key`, so a daily-changing label in there would expire every stored analysis
+at midnight and re-run it for money). `daterel.annotate` copies rather than mutates: the
+payload is shared with the dedup cache and PERF-05's 30-second per-user memo, so an in-place
+label would leak into a *later* request's data — the very day-shift being fixed.
+Two structural causes fixed alongside the labels:
+- **`plan_today` is a window, not "today's session"** — `upcoming_plan_workouts` returns
+  today+tomorrow *filtered to `status="planned"`*, so on a day with no session (or one
+  already done/skipped) the list holds ONLY tomorrow's, and its name invited the model to
+  read it as today's. The prompt now says so explicitly, and each entry's `day` settles it.
+- **"today" was the process's, not the user's** (ST-14 gap): `run_analysis` takes a `today`
+  kwarg — `delivery.build_report` (morning DM, bot `/report`, web `/report.json`) and both
+  `/deep` entry points pass `app.core.tz.user_today(user)`. It drives the plan window
+  (`upcoming_plan_workouts(..., today=)`), NF-11's "is this session today" fueling check, the
+  labels, and the dedup-cache key (`_cache_key(..., today)` — the README pitfall: it's in the
+  prompt, so it's in the key). `app/core/tz.py` is the canonical `user_tz`/`user_today`;
+  `bot.jobs.user_tz` and `chat._user_tz` are now thin aliases of it (they were three copies).
+`tests/test_daterel.py`.
 
 **Exercise names**: `fetch_exercise_summary` reads Garmin's specific `name` code, maps it
 to Ukrainian via `app/garmin/exercise_names.py` at return time (cache stays language-

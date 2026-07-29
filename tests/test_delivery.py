@@ -14,7 +14,8 @@ def test_build_report_returns_text_and_sync_flags():
     user = SimpleNamespace(id=7)
     captured = {}
 
-    async def fake_run_analysis(session, pl, *, user_id, question, kind, api_key, weather):
+    async def fake_run_analysis(session, pl, *, user_id, question, kind, api_key, weather,
+                                today=None):
         captured.update(user_id=user_id, question=question, kind=kind,
                         api_key=api_key, weather=weather, payload=pl)
         return "аналіз"
