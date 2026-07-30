@@ -550,6 +550,24 @@ async def recent_subjective_runs(
 
 # ---------- WRITE ----------
 
+def _strip_empty_repeats(steps: list) -> list:
+    """Drop a ``repeat`` step whose nested ``steps`` is empty — meaningless on its own,
+    and Garmin's create-workout endpoint rejects the equivalent empty RepeatGroupDTO
+    with a bare 400 (a chat-generated plan edit occasionally emits one: the model adds
+    the repeat wrapper but leaves its interval/recovery children as flat siblings
+    instead of nesting them). Recurses so a nested repeat is checked too."""
+    out = []
+    for s in steps:
+        if isinstance(s, dict) and s.get("kind") == "repeat":
+            children = _strip_empty_repeats(s.get("steps") or [])
+            if not children:
+                continue
+            s = dict(s)
+            s["steps"] = children
+        out.append(s)
+    return out
+
+
 def _dump_steps(steps) -> Optional[list]:
     """Serialize a workout's structured steps (PlanStep models or plain dicts) to a
     JSON-storable list, dropping null fields. None/empty → None (stored as JSON null)."""
@@ -557,6 +575,7 @@ def _dump_steps(steps) -> Optional[list]:
         return None
     out = [s.model_dump(exclude_none=True) if hasattr(s, "model_dump") else s
            for s in steps]
+    out = _strip_empty_repeats(out)
     return out or None
 
 
