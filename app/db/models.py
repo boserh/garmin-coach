@@ -367,3 +367,31 @@ class PlannedWorkout(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class HealthCheckup(Base):
+    """A user-entered medical checkup/lab-test record (the new "Аналізи" tab). v1 is
+    pure data entry — a place to log a blood panel, a doctor visit, or any periodic
+    checkup with its individual values, so a future step can narrate trends over them
+    and remind about upcoming checkups. ``results`` is a compact list of
+    ``{name, value, unit, ref_range}`` dicts (mirrors the JSON-breakdown pattern used by
+    ``PlannedWorkout.steps``/``strength_plan`` elsewhere) rather than a child table —
+    there is no need to query into individual values yet, only to display them.
+    ``next_due_date`` is captured now (optional) so a future reminder job has something
+    to key off without a schema change."""
+
+    __tablename__ = "health_checkups"
+    __table_args__ = (Index("ix_health_checkups_user_date", "user_id", "date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    date: Mapped[str] = mapped_column(String(10))            # when the checkup was done
+    title: Mapped[str] = mapped_column(String(128))          # e.g. "Загальний аналіз крові"
+    category: Mapped[Optional[str]] = mapped_column(String(64))  # free-text tag
+    results: Mapped[Optional[list]] = mapped_column(JSON)     # [{name, value, unit, ref_range}]
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    next_due_date: Mapped[Optional[str]] = mapped_column(String(10))  # future reminder hook
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

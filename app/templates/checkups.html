@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Аналізи</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+  {% set active = 'checkups' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <p class="eyebrow">Аналізи</p>
+    <h1 class="title" style="font-size:1.7rem">Мої аналізи та чекапи</h1>
+    <div class="hint" style="margin-bottom:1.2rem">
+      Записуй сюди результати аналізів і чекапів (кров, гормони, огляди). Поки що це
+      просто журнал даних — аналіз трендів і нагадування про наступний чекап додамо
+      далі.
+    </div>
+
+    {% if request.query_params.get('saved') == '1' %}<div class="saved">✅ Збережено.</div>{% endif %}
+    {% if request.query_params.get('err') == 'required' %}
+      <div class="err" style="margin:0 0 1rem">Заповни дату і назву аналізу.</div>
+    {% endif %}
+
+    <details class="fwrap">
+      <summary class="fsum">➕ Додати аналіз<span class="chev">▾</span></summary>
+      <form class="form" method="post" action="/checkups">
+        <label for="date">Дата</label>
+        <input id="date" name="date" type="date" required value="{{ today }}">
+
+        <label for="title">Назва</label>
+        <input id="title" name="title" type="text" required
+               placeholder="напр. Загальний аналіз крові">
+
+        <label for="category">Категорія</label>
+        <input id="category" name="category" type="text"
+               placeholder="напр. кров, гормони, огляд лікаря">
+
+        <label>Показники</label>
+        <div class="hint" style="margin:0 0 .5rem">Незаповнені рядки просто ігноруються.</div>
+        <div id="results-rows">
+          {% for _ in range(4) %}
+          <div class="result-row">
+            <input name="result_name" type="text" placeholder="показник (напр. Феритин)">
+            <input name="result_value" type="text" placeholder="значення">
+            <input name="result_unit" type="text" placeholder="одиниці">
+            <input name="result_ref" type="text" placeholder="норма">
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" class="btn-ghost" id="add-result-row">+ показник</button>
+
+        <label for="notes">Нотатки</label>
+        <textarea id="notes" name="notes" rows="3" placeholder="довільні нотатки, висновок лікаря тощо"></textarea>
+
+        <label for="next_due_date">Наступний чекап (необов'язково)</label>
+        <input id="next_due_date" name="next_due_date" type="date">
+
+        <button class="btn" type="submit">Зберегти</button>
+      </form>
+    </details>
+
+    {% if not checkups %}
+      <div class="empty" style="margin-top:1.4rem">Ще немає жодного запису — додай перший аналіз вище.</div>
+    {% endif %}
+    <div style="margin-top:1.4rem">
+    {% for c in checkups %}
+      <a class="listcard" href="/checkups/{{ c.id }}">
+        <div class="lg">{{ c.title }}</div>
+        <div class="lm">
+          {{ c.date }}{% if c.category %} · {{ c.category }}{% endif %}
+          {% if c.results %} · {{ c.results|length }} показник{{ 'ів' if c.results|length != 1 else '' }}{% endif %}
+          {% if c.next_due_date %} · наступний чекап {{ c.next_due_date }}{% endif %}
+        </div>
+      </a>
+    {% endfor %}
+    </div>
+  </div>
+
+  <template id="result-row-tpl">
+    <div class="result-row">
+      <input name="result_name" type="text" placeholder="показник (напр. Феритин)">
+      <input name="result_value" type="text" placeholder="значення">
+      <input name="result_unit" type="text" placeholder="одиниці">
+      <input name="result_ref" type="text" placeholder="норма">
+      <button type="button" class="btn-ghost result-del" aria-label="видалити">✕</button>
+    </div>
+  </template>
+  <script>
+    (function () {
+      var wrap = document.getElementById('results-rows');
+      var tpl = document.getElementById('result-row-tpl');
+      function addRow() {
+        wrap.appendChild(tpl.content.cloneNode(true));
+      }
+      document.getElementById('add-result-row').addEventListener('click', addRow);
+      wrap.addEventListener('click', function (e) {
+        if (e.target.classList.contains('result-del')) {
+          e.target.closest('.result-row').remove();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
