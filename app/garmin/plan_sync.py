@@ -111,11 +111,19 @@ async def push_workout(session, w):
             logger.info(f"GARMIN push: applied {n} exercise edit(s) to {w.date}")
     else:
         payload = workout_export.build_workout(w)
-    created = await run_in_threadpool(client.create_workout, payload)
-    wid = created.get("workoutId")
-    sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
+    try:
+        created = await run_in_threadpool(client.create_workout, payload)
+        wid = created.get("workoutId") if isinstance(created, dict) else None
+        if not wid:
+            logger.error(f"GARMIN push FAILED workout={w.id} date={w.date}: "
+                         f"create_workout returned no workoutId: {created!r}")
+            return None
+        sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
+    except Exception:
+        logger.exception(f"GARMIN push FAILED workout={w.id} date={w.date}")
+        raise
     w.garmin_workout_id = wid
-    w.garmin_schedule_id = sched.get("workoutScheduleId")
+    w.garmin_schedule_id = sched.get("workoutScheduleId") if isinstance(sched, dict) else None
     await session.commit()
     return wid
 
@@ -197,6 +205,11 @@ async def resync_workouts(session, user_id: int, workouts, *, days: int = 14) ->
         if w.status == "planned" and today <= w.date <= end and _pushable(w):
             if await push_workout(session, w):
                 pushed += 1
-    if pushed or removed:
-        logger.info(f"GARMIN edit-sync user={user_id}: +{pushed} pushed, -{removed} removed")
+        else:
+            logger.info(
+                f"GARMIN edit-sync SKIP workout={w.id} date={w.date} status={w.status} "
+                f"type={w.type} in_window={today <= w.date <= end} pushable={_pushable(w)}"
+            )
+    logger.info(f"GARMIN edit-sync user={user_id}: +{pushed} pushed, -{removed} removed "
+                f"(touched {len(workouts)})")
     return {"pushed": pushed, "removed": removed}
