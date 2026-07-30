@@ -106,10 +106,15 @@ def _build_steps(steps: List[dict]) -> List[dict]:
         counter[0] += 1
         return counter[0]
 
-    def conv(step: dict) -> dict:
+    def conv(step: dict) -> Optional[dict]:
         if step.get("kind") == "repeat":
+            raw_children = step.get("steps") or []
+            if not raw_children:
+                # Garmin rejects a RepeatGroupDTO with no workoutSteps (400) — a repeat
+                # with nothing nested is meaningless anyway, so drop it rather than send it.
+                return None
             order = nxt()                                  # the group's own order
-            children = [conv(c) for c in (step.get("steps") or [])]
+            children = [c for c in (conv(c) for c in raw_children) if c]
             reps = int(step.get("reps") or 1)
             return {
                 "type": "RepeatGroupDTO",
@@ -123,7 +128,7 @@ def _build_steps(steps: List[dict]) -> List[dict]:
             }
         return _exec_step(step, nxt())
 
-    return [conv(s) for s in steps]
+    return [c for c in (conv(s) for s in steps) if c]
 
 
 # A leading per-type emoji so the session type reads at a glance in Garmin's list (and
