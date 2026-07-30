@@ -119,7 +119,15 @@ async def push_workout(session, w):
                          f"create_workout returned no workoutId: {created!r}")
             return None
         sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
-    except Exception:
+    except Exception as exc:
+        body = None
+        resp = getattr(exc, "response", None) or getattr(
+            getattr(exc, "error", None), "response", None
+        )
+        if resp is not None:
+            body = getattr(resp, "text", None)
+        logger.error(f"GARMIN push FAILED workout={w.id} date={w.date} "
+                     f"payload={payload!r} response_body={body!r}")
         logger.exception(f"GARMIN push FAILED workout={w.id} date={w.date}")
         raise
     w.garmin_workout_id = wid
