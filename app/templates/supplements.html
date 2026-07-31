@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Добавки</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+  {% set active = 'checkups' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <div class="crumb"><a href="/checkups">← Аналізи</a></div>
+    <p class="eyebrow">Добавки</p>
+    <h1 class="title" style="font-size:1.7rem">Мої добавки та вітаміни</h1>
+    <div class="hint" style="margin-bottom:1.2rem">
+      Список того, що приймаєш зараз — на основі нього Claude порадить, які аналізи
+      варто здавати для контролю і як часто. Це орієнтир, не медичне призначення.
+    </div>
+
+    {% if request.query_params.get('saved') == '1' %}<div class="saved">✅ Збережено.</div>{% endif %}
+    {% if request.query_params.get('analyzed') == '1' %}<div class="saved">✅ Порада готова.</div>{% endif %}
+    {% if request.query_params.get('err') == 'required' %}
+      <div class="err" style="margin:0 0 1rem">Вкажи назву добавки.</div>
+    {% elif request.query_params.get('err') == 'nokey' %}
+      <div class="err" style="margin:0 0 1rem">Спершу додай Claude API ключ у
+        <a href="/settings">Налаштуваннях</a>.</div>
+    {% elif request.query_params.get('err') == 'analyze' %}
+      <div class="err" style="margin:0 0 1rem">Не вдалось отримати пораду — спробуй ще раз.</div>
+    {% elif request.query_params.get('err') == 'none' %}
+      <div class="err" style="margin:0 0 1rem">Немає активних добавок — спершу додай хоча б одну.</div>
+    {% endif %}
+
+    <details class="fwrap">
+      <summary class="fsum">➕ Додати добавку<span class="chev">▾</span></summary>
+      <form class="form" method="post" action="/checkups/supplements">
+        <label for="name">Назва</label>
+        <input id="name" name="name" type="text" required placeholder="напр. Вітамін D3">
+
+        <label for="dosage">Дозування</label>
+        <input id="dosage" name="dosage" type="text" placeholder="напр. 5000 МО">
+
+        <label for="frequency">Частота прийому</label>
+        <input id="frequency" name="frequency" type="text" placeholder="напр. щодня">
+
+        <label for="started_date">Дата початку (необов'язково)</label>
+        <input id="started_date" name="started_date" type="date">
+
+        <label for="notes">Нотатки</label>
+        <textarea id="notes" name="notes" rows="2" placeholder="напр. за порадою лікаря"></textarea>
+
+        <button class="btn" type="submit">Зберегти</button>
+      </form>
+    </details>
+
+    {% if supplements %}
+    <form method="post" action="/checkups/supplements/analyze" style="margin:1.2rem 0">
+      <button class="btn-ghost" type="submit">🔬 Порадь, які аналізи здавати</button>
+    </form>
+    {% endif %}
+
+    {% if advice_text %}
+    <div class="note">
+      <b>💊 Порада щодо моніторингу</b>
+      <div style="margin-top:.5rem;white-space:pre-wrap;line-height:1.55">{{ advice_text }}</div>
+    </div>
+    {% endif %}
+
+    {% if not supplements %}
+      <div class="empty" style="margin-top:1.4rem">Ще немає жодної добавки — додай першу вище.</div>
+    {% endif %}
+    <div style="margin-top:1.4rem">
+    {% for s in supplements %}
+      <div class="listcard" style="{% if not s.is_active %}opacity:.55{% endif %}">
+        <div class="lg">{{ s.name }}{% if not s.is_active %} <span style="font-weight:400;color:var(--faint)">(припинено)</span>{% endif %}</div>
+        <div class="lm">
+          {% if s.dosage %}{{ s.dosage }}{% endif %}{% if s.frequency %} · {{ s.frequency }}{% endif %}
+          {% if s.started_date %} · з {{ s.started_date }}{% endif %}
+        </div>
+        {% if s.notes %}<div class="hint" style="margin-top:.3rem">{{ s.notes }}</div>{% endif %}
+        <details style="margin-top:.6rem">
+          <summary class="fsum" style="font-size:.78rem;padding:.3rem .7rem">✏️ редагувати<span class="chev">▾</span></summary>
+          <form class="form" method="post" action="/checkups/supplements/{{ s.id }}">
+            <label>Назва</label>
+            <input name="name" type="text" required value="{{ s.name }}">
+            <label>Дозування</label>
+            <input name="dosage" type="text" value="{{ s.dosage or '' }}">
+            <label>Частота</label>
+            <input name="frequency" type="text" value="{{ s.frequency or '' }}">
+            <label>Дата початку</label>
+            <input name="started_date" type="date" value="{{ s.started_date or '' }}">
+            <label>Нотатки</label>
+            <textarea name="notes" rows="2">{{ s.notes or '' }}</textarea>
+            <label class="check">
+              <input type="checkbox" name="is_active" {% if s.is_active %}checked{% endif %}>
+              Приймаю зараз
+            </label>
+            <button class="btn" type="submit">Зберегти</button>
+          </form>
+          <form method="post" action="/checkups/supplements/{{ s.id }}/delete" style="margin-top:.6rem"
+                onsubmit="return confirm('Видалити цю добавку?')">
+            <button class="btn-ghost" type="submit">🗑 Видалити</button>
+          </form>
+        </details>
+      </div>
+    {% endfor %}
+    </div>
+  </div>
+</body>
+</html>

@@ -26,6 +26,7 @@ from app.analysis.cache import (
     _digest_cache_key,
     _insights_cache_key,
     _race_cache_key,
+    _supplement_cache_key,
     _wrapped_cache_key,
 )
 from app.analysis.client import (
@@ -40,6 +41,7 @@ from app.analysis.client import (
     MODEL_INJURY,
     MODEL_INSIGHTS,
     MODEL_RACE,
+    MODEL_SUPPLEMENTS,
     MODEL_WRAPPED,
     PRICES,
     AnalystError,
@@ -62,6 +64,7 @@ from app.analysis.prompts import (
     SYSTEM_INJURY,
     SYSTEM_INSIGHTS,
     SYSTEM_RACE,
+    SYSTEM_SUPPLEMENTS,
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
@@ -1333,3 +1336,58 @@ async def run_checkup_analysis(
     )
     checkup.analysis = text
     return text
+
+
+# ---------- SUPPLEMENT → LAB-MONITORING ADVICE (the "Аналізи" tab's third follow-up) ----------
+
+def supplement_payload(supplements: list, recent_categories: Optional[list] = None) -> dict:
+    """Compact LLM input: each active ``Supplement``'s name/dosage/frequency/started_date/
+    notes, plus (when given) the categories of checkups the user is already logging, so
+    the model can skip recommending a test that's already tracked."""
+    data = {
+        "supplements": [
+            {k: v for k, v in (
+                ("name", s.name), ("dosage", s.dosage), ("frequency", s.frequency),
+                ("started_date", s.started_date), ("notes", s.notes),
+            ) if v is not None}
+            for s in supplements
+        ],
+    }
+    if recent_categories:
+        data["recent_checkup_categories"] = recent_categories
+    return data
+
+
+def supplement_advice_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate which lab markers to monitor given the active supplement list (Sonnet).
+    Returns (text, stats); raises AnalystError on API failure. The dedup cache is checked
+    in :func:`run_supplement_advice`."""
+    return _complete(MODEL_SUPPLEMENTS, SYSTEM_SUPPLEMENTS, context, "supplements", api_key,
+                     max_tokens=700)
+
+
+async def run_supplement_advice(
+    session, *, user_id: int, api_key: Optional[str] = None,
+) -> Optional[str]:
+    """Advise which lab markers are worth tracking given the user's currently active
+    supplements, and roughly how often. Logs ``ReportLog(kind="supplements")`` — read
+    back via ``repository.get_last_report_of_kind`` rather than stored on any one row
+    (there's no single row this advice belongs to; it's regenerated whenever the
+    supplement list changes). Returns ``None`` when there are no active supplements to
+    advise on — the caller shows a friendly message, never spends a Claude call."""
+    from app.db import checkups as checkups_db
+    from app.db import supplements as supplements_db
+
+    active = await supplements_db.list_supplements(session, user_id, active_only=True)
+    if not active:
+        return None
+    categories = await checkups_db.recent_categories(session, user_id)
+    data = supplement_payload(active, categories)
+    return await _run_cached_narration(
+        session, user_id=user_id, kind="supplements", model=MODEL_SUPPLEMENTS, context=data,
+        cache_key=_supplement_cache_key(data, MODEL_SUPPLEMENTS),
+        with_stats_fn=supplement_advice_with_stats,
+        question=f"supplements:{len(active)}", api_key=api_key,
+    )

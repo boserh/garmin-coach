@@ -125,3 +125,29 @@ async def due_for_reminder(session: AsyncSession, user_id: int) -> Sequence[Heal
         )
     )
     return rows.scalars().all()
+
+
+RECENT_CATEGORIES_DAYS = 365
+
+
+async def recent_categories(
+    session: AsyncSession, user_id: int, days: int = RECENT_CATEGORIES_DAYS
+) -> list:
+    """Distinct ``category`` (falling back to ``title`` when uncategorised) of checkups
+    logged in the last ``days`` — so :func:`app.analysis.reports.run_supplement_advice`
+    can skip recommending a test the user is already tracking. Newest-first, capped
+    implicitly by the DISTINCT (a user rarely has more than a handful of categories)."""
+    import datetime as dt
+
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    rows = await session.execute(
+        select(HealthCheckup.category, HealthCheckup.title)
+        .where(HealthCheckup.user_id == user_id, HealthCheckup.date >= since)
+        .order_by(HealthCheckup.date.desc())
+    )
+    seen: list = []
+    for category, title in rows.all():
+        label = category or title
+        if label and label not in seen:
+            seen.append(label)
+    return seen

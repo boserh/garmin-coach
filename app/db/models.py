@@ -369,6 +369,32 @@ class PlannedWorkout(Base):
     )
 
 
+class Supplement(Base):
+    """A user-entered supplement/vitamin the user currently takes (or used to) — the
+    "Аналізи" tab's supplement list. Feeds ``run_supplement_advice`` (which lab markers
+    are worth tracking given what's being taken, and how often) — the advice text itself
+    isn't stored here (it can be regenerated any time the list changes); it rides on the
+    normal ``ReportLog(kind="supplements")`` audit trail, like every other narration, and
+    is read back via ``repository.get_last_report_of_kind``. ``is_active`` (not a delete)
+    keeps a stopped supplement in view for history without it counting toward advice."""
+
+    __tablename__ = "supplements"
+    __table_args__ = (Index("ix_supplements_user_active", "user_id", "is_active"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128))            # e.g. "Вітамін D3"
+    dosage: Mapped[Optional[str]] = mapped_column(String(64))     # free text, e.g. "5000 МО"
+    frequency: Mapped[Optional[str]] = mapped_column(String(64))  # free text, e.g. "щодня"
+    started_date: Mapped[Optional[str]] = mapped_column(String(10))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class HealthCheckup(Base):
     """A user-entered medical checkup/lab-test record (the "Аналізи" tab) — a place to
     log a blood panel, a doctor visit, or any periodic checkup, with its individual

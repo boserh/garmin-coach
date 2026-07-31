@@ -4,7 +4,14 @@ Data entry (add/edit/delete, list, detail) plus an on-demand Claude interpretati
 (``POST /checkups/{id}/analyze`` → ``run_checkup_analysis``, a real but cheap Sonnet
 call — only ever triggered by an explicit button tap, never automatically). Reminders
 about an upcoming ``next_due_date`` are a separate, bot-side concern
-(``app.checkup_reminders`` + ``bot.jobs``), not this router."""
+(``app.checkup_reminders`` + ``bot.jobs``), not this router.
+
+``/checkups/supplements`` is a sibling data-entry page (active/stopped supplements) with
+its own on-demand advice call (``POST /checkups/supplements/analyze`` →
+``run_supplement_advice``) — which lab markers are worth tracking given what's being
+taken. Its static routes are registered BEFORE ``/checkups/{checkup_id}`` so
+"supplements" is never swallowed as a checkup id (same ordering trick as
+``/plan/archive`` vs ``/plan/{plan_id}``)."""
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -12,12 +19,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analysis.service import AnalystError, run_checkup_analysis
+from app.analysis.service import AnalystError, run_checkup_analysis, run_supplement_advice
 from app.core.auth import current_user
 from app.core.tz import user_today
-from app.db import checkups
+from app.db import checkups, supplements
 from app.db.models import User
 from app.dependencies import get_session
+from app.garmin import repository
 from app.garmin.credentials import load_credentials
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -81,6 +89,108 @@ async def checkups_create(
         next_due_date=(form.get("next_due_date") or "").strip() or None,
     )
     return RedirectResponse("/checkups?saved=1", status_code=303)
+
+
+def _parse_date_or_none(v: str) -> "str | None":
+    return v.strip() or None
+
+
+@router.get("/checkups/supplements", response_class=HTMLResponse)
+async def supplements_list(
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = await supplements.list_supplements(session, user.id)
+    advice = await repository.get_last_report_of_kind(session, user.id, "supplements")
+    return templates.TemplateResponse(
+        request, "supplements.html",
+        {
+            "user": user, "supplements": rows,
+            "advice_text": advice[0] if advice else None,
+            "today": user_today(user).isoformat(),
+        },
+    )
+
+
+@router.post("/checkups/supplements")
+async def supplements_create(
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        return RedirectResponse("/checkups/supplements?err=required", status_code=303)
+    await supplements.create_supplement(
+        session, user.id,
+        name=name,
+        dosage=(form.get("dosage") or "").strip() or None,
+        frequency=(form.get("frequency") or "").strip() or None,
+        started_date=_parse_date_or_none(form.get("started_date") or ""),
+        notes=(form.get("notes") or "").strip() or None,
+    )
+    return RedirectResponse("/checkups/supplements?saved=1", status_code=303)
+
+
+@router.post("/checkups/supplements/analyze")
+async def supplements_analyze(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """On-demand advice on which lab markers to track given the active supplement list
+    (a real Sonnet call — only from this explicit button tap). Dedup-cached, so
+    re-tapping an unchanged list is free."""
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return RedirectResponse("/checkups/supplements?err=nokey", status_code=303)
+    try:
+        text = await run_supplement_advice(session, user_id=user.id, api_key=creds.anthropic_key)
+        await session.commit()
+    except AnalystError:
+        return RedirectResponse("/checkups/supplements?err=analyze", status_code=303)
+    if text is None:
+        return RedirectResponse("/checkups/supplements?err=none", status_code=303)
+    return RedirectResponse("/checkups/supplements?analyzed=1", status_code=303)
+
+
+@router.post("/checkups/supplements/{supplement_id}")
+async def supplement_update(
+    supplement_id: int,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await supplements.get_supplement(session, user.id, supplement_id)
+    if row is None:
+        return RedirectResponse("/checkups/supplements", status_code=303)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        return RedirectResponse("/checkups/supplements?err=required", status_code=303)
+    await supplements.update_supplement(
+        session, row,
+        name=name,
+        dosage=(form.get("dosage") or "").strip() or None,
+        frequency=(form.get("frequency") or "").strip() or None,
+        started_date=_parse_date_or_none(form.get("started_date") or ""),
+        notes=(form.get("notes") or "").strip() or None,
+        is_active=bool(form.get("is_active")),
+    )
+    return RedirectResponse("/checkups/supplements?saved=1", status_code=303)
+
+
+@router.post("/checkups/supplements/{supplement_id}/delete")
+async def supplement_delete(
+    supplement_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await supplements.get_supplement(session, user.id, supplement_id)
+    if row is not None:
+        await supplements.delete_supplement(session, row)
+    return RedirectResponse("/checkups/supplements", status_code=303)
 
 
 @router.get("/checkups/{checkup_id}", response_class=HTMLResponse)

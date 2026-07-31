@@ -142,6 +142,15 @@ def _checkup_cache_key(data: dict, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _supplement_cache_key(data: dict, model: str) -> str:
+    """Keys on the active-supplement list + recent checkup categories (both part of the
+    prompt — the README pitfall) + model. Changing/adding/stopping a supplement changes
+    the payload and so naturally busts the cache; no date component needed."""
+    blob = json.dumps({"supplements": data, "model": model, "supp": True},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _context_cache_key(kind: str, context: dict, model: str, fields: tuple) -> str:
     """Generic dedup-cache key for a context-driven narration (A2): pick ``fields`` from
     ``context``, add the model and a ``{kind: True}`` marker, sha256 the JSON. Replaces the
