@@ -701,6 +701,7 @@ async def plan_page(
     race_pack = await _race_pack_block(session, user, plan)
     today_iso = dt.date.today().isoformat()
     manual_actions = await _manual_actions(session, user, workouts, today_iso)
+    load_forecast = await repository.load_forecast(session, user.id)
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts, today_iso),
@@ -711,7 +712,7 @@ async def plan_page(
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
-         "race_pack": race_pack,
+         "race_pack": race_pack, "load_forecast": load_forecast,
          "season": (plan.intake or {}).get("season"), "season_sports": SEASON_SPORTS,
          "cycling": (plan.intake or {}).get("cycling"),
          # NF-17: race target time (a race goal only), formatted for display + edit.

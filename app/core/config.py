@@ -170,6 +170,14 @@ class Settings(BaseSettings):
     GEAR_WEAR_KM: float = 700
     GEAR_REWARN_KM: float = 150
 
+    # --- Forward load forecast (NF-20) ---
+    # A pure-Python, zero-LLM forecast (app.loadforecast): this ISO week's still-planned
+    # sessions + the week's actual load so far, vs the trailing-4-weeks chronic average —
+    # a forward-looking ACWR instead of a retrospective one. Display-only (/plan,
+    # dashboard) + one context line in weekly plan adaptation.
+    FORECAST_ACWR_WARN: float = 1.4    # forecast ACWR at/above this → yellow
+    FORECAST_ACWR_HIGH: float = 1.6    # ...and at/above this → red
+
 
 @lru_cache
 def get_settings() -> Settings:

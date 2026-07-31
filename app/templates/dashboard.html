@@ -115,6 +115,16 @@
       <div class="bigstat"><div class="v">${{ '%.2f'|format(month_cost) }}</div><div class="k">AI цього місяця</div></div>
     </div>
 
+    {% if load_forecast and not load_forecast.calibrating %}
+      <div class="meta" style="margin-top:1.5rem">
+        📊 Прогноз тижня: <b>{{ load_forecast.load }}</b>
+        <span class="sep">·</span>{{ '%+d'|format(load_forecast.delta_pct) }}% до звичного
+        <span class="sep">·</span>ACWR ≈ <b class="{{ 'st-partial' if load_forecast.level == 'warn' else ('st-missed' if load_forecast.level == 'high' else '') }}">{{ load_forecast.acwr }}</b>
+        {% if load_forecast.level == 'warn' %}⚠️{% elif load_forecast.level == 'high' %}🔴{% endif %}
+        <span class="sep">·</span><a href="/plan">деталі →</a>
+      </div>
+    {% endif %}
+
     <p class="eyebrow" style="margin-top:2rem">Наступні 7 днів</p>
     {% if not plan %}
       <div class="note">Немає активної програми. <a href="/plan">Створити план →</a></div>

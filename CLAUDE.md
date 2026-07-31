@@ -982,6 +982,28 @@ run volume when `non_run_pct` is high. Not in the daily report (matches the tick
 digest scope). The seasonal-accent intake (kite-season ⇒ less run volume) is a documented future
 extension. `tests/test_multisport.py`.
 
+**Forward load forecast (NF-20)**: Garmin's own ACWR (and NF-04's injury radar) are strictly
+retrospective — they show you're *already* overloaded. `app/loadforecast.py` is a **pure-Python,
+zero-LLM** forward-looking counterpart: `session_load(session, anchor_pace)` estimates one planned
+session's TRIMP-like load as `fueling.estimate_minutes` (steps/dist_km/type — the same estimator
+NF-11's fueling advisor already trusts) × a per-type intensity weight (`easy`/`recovery` 1.5,
+`long` 2, `tempo` 3, `intervals`/`race` 4, `strength` 2; `cycling` has no fixed weight — it uses the
+highest `hr_zone` found in its own steps, falling back to 2.0 without one). `forecast_week` sums the
+CURRENT ISO week's still-`planned` sessions onto the week's already-happened actual load (a
+cancelled/`skipped` session simply isn't in that list — the forecast tracks live chat edits with
+zero extra wiring) and divides by the trailing `MIN_CHRONIC_WEEKS`=4 weeks' chronic average (a
+genuinely quiet week counts as `0.0`, not a gap in the average) for a forecast ACWR — `ok` under
+`FORECAST_ACWR_WARN`=1.4, `warn` up to `FORECAST_ACWR_HIGH`=1.6, else `high` (both in
+`app.core.config`). Calibration gate: `history_days < MIN_HISTORY_DAYS`=28 → `calibrating=true`,
+no numbers (mirrors `app.injury`'s pattern). `repository.load_forecast` (`app/garmin/repository/
+plans.py`) is the one fetch+shape wiring (reusing `weekly_activity_load`/`count_daily_metrics`/
+`typical_run_pace`/`list_workouts`) shared by all three consumers: a `/plan` block («Прогноз
+тижня (оцінка): …»), a dashboard line, and one extra line in `run_plan_adaptation`'s context
+(**not** cached — adaptation never is) with a `SYSTEM_PLAN_ADAPT` rule telling the model it's
+already-computed, not a number to re-derive. Deliberately coarse (v1, per the ticket): the
+per-type weight is a fixed table, never calibrated against a user's own actual TRIMP — display-only,
+never blocks a plan edit. `tests/test_loadforecast.py`.
+
 **Multisport activity analysis (EP-10 phase 1)**: everything used to be run-centric by
 construction — `fetch_activity_series` only ever pulled pace, `_segments`/`activity_payload`
 only ever spoke min/km, so a ride's `/activity` analysis had no series and no sport-aware

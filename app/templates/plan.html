@@ -55,6 +55,20 @@
       </div>
     {% endif %}
 
+    {% if load_forecast %}
+      {% set lf = load_forecast %}
+      <div class="meta" style="margin-top:.6rem">
+        📊 Прогноз тижня (оцінка): <b>{{ lf.load }}</b>
+        {% if lf.calibrating %}
+          <span class="sep">·</span>калібрується — мало історії
+        {% else %}
+          <span class="sep">·</span>{{ '%+d'|format(lf.delta_pct) }}% до звичного ({{ lf.typical }})
+          <span class="sep">·</span>ACWR ≈ <b class="{{ 'st-partial' if lf.level == 'warn' else ('st-missed' if lf.level == 'high' else '') }}">{{ lf.acwr }}</b>
+          {% if lf.level == 'warn' %}⚠️{% elif lf.level == 'high' %}🔴{% endif %}
+        {% endif %}
+      </div>
+    {% endif %}
+
     {# ST-22: a fully-past week renders as a shut <details> so today isn't buried under
        finished rows. The rows stay in the DOM (Ctrl+F, and the tests grep them); an
        expanded week is the same markup with `open`, so there's one code path, not two. #}
