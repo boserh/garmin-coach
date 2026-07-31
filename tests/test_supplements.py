@@ -157,18 +157,94 @@ async def test_run_supplement_advice_force_bypasses_cache(session, monkeypatch):
 def test_supplement_advice_max_tokens_scales_with_supplement_count():
     """A flat max_tokens=700 silently truncated advice for a long supplement list
     (stop_reason=max_tokens) — it must grow with the item count."""
+    valid_json = '{"items": [], "closing_note": "орієнтир"}'
     with patch.object(reports, "_complete") as mocked:
-        mocked.return_value = ("text", CallStats(kind="supplements", model="m"))
+        mocked.return_value = (valid_json, CallStats(kind="supplements", model="m"))
         reports.supplement_advice_with_stats({"supplements": [{"name": "D3"}]})
         small_tokens = mocked.call_args.kwargs["max_tokens"]
 
         mocked.reset_mock()
+        mocked.return_value = (valid_json, CallStats(kind="supplements", model="m"))
         many = [{"name": f"S{i}"} for i in range(12)]
         reports.supplement_advice_with_stats({"supplements": many})
         large_tokens = mocked.call_args.kwargs["max_tokens"]
 
     assert large_tokens > small_tokens
     assert large_tokens <= 2200  # still capped
+
+
+# --- structured SupplementAdvice: coercion, retry, parse, template building -------
+
+def test_supplement_advice_with_stats_parses_valid_json():
+    valid_json = (
+        '{"items": [{"supplement": "D3", "marker": "25-OH вітамін D", '
+        '"frequency": "раз на рік", "note": null}], "closing_note": "орієнтир"}'
+    )
+    with patch.object(reports, "_complete") as mocked:
+        mocked.return_value = (valid_json, CallStats(kind="supplements", model="m"))
+        text, _ = reports.supplement_advice_with_stats({"supplements": [{"name": "D3"}]})
+    advice = reports.parse_supplement_advice(text)
+    assert advice.items[0].marker == "25-OH вітамін D"
+    assert advice.closing_note == "орієнтир"
+    assert mocked.call_count == 1  # valid on the first try — no retry needed
+
+
+def test_supplement_advice_with_stats_retries_once_on_bad_json():
+    valid_json = '{"items": [], "closing_note": "орієнтир"}'
+    with patch.object(reports, "_complete") as mocked:
+        mocked.side_effect = [
+            ("не json взагалі", CallStats(kind="supplements", model="m")),
+            (valid_json, CallStats(kind="supplements", model="m")),
+        ]
+        text, _ = reports.supplement_advice_with_stats({"supplements": [{"name": "D3"}]})
+    assert mocked.call_count == 2
+    assert reports.parse_supplement_advice(text).closing_note == "орієнтир"
+
+
+def test_supplement_advice_with_stats_raises_after_two_bad_replies():
+    from app.analysis.client import AnalystError
+
+    with patch.object(reports, "_complete") as mocked:
+        mocked.return_value = ("не json", CallStats(kind="supplements", model="m"))
+        try:
+            reports.supplement_advice_with_stats({"supplements": [{"name": "D3"}]})
+            raise AssertionError("expected AnalystError")
+        except AnalystError:
+            pass
+    assert mocked.call_count == 2
+
+
+def test_parse_supplement_advice_none_on_legacy_prose():
+    """A ReportLog written before this JSON format shipped (plain prose) must not crash
+    the page — just stop offering structured items/a template."""
+    assert reports.parse_supplement_advice("💊 стара порада текстом, без JSON") is None
+
+
+def test_supplement_advice_to_checkup_template_dedupes_and_skips_none_markers():
+    from app.garmin.schemas import SupplementAdvice, SupplementAdviceItem
+
+    advice = SupplementAdvice(items=[
+        SupplementAdviceItem(supplement="D3", marker="25-OH вітамін D",
+                             frequency="раз на рік"),
+        SupplementAdviceItem(supplement="Кальцій", marker="25-OH вітамін D",
+                             frequency="раз на рік"),  # duplicate marker -> deduped
+        SupplementAdviceItem(supplement="Мультивітамін", marker=None,
+                             note="без специфічного показника"),
+    ])
+    tmpl = reports.supplement_advice_to_checkup_template(advice)
+    assert tmpl["title"] == "Рекомендовані аналізи (за добавками)"
+    assert [r["name"] for r in tmpl["results"]] == ["25-OH вітамін D"]
+    assert all(r["value"] == "" for r in tmpl["results"])
+    assert "D3" in tmpl["notes"]
+
+
+def test_supplement_advice_to_checkup_template_none_when_no_markers():
+    from app.garmin.schemas import SupplementAdvice, SupplementAdviceItem
+
+    advice = SupplementAdvice(items=[
+        SupplementAdviceItem(supplement="Мультивітамін", marker=None),
+    ])
+    assert reports.supplement_advice_to_checkup_template(advice) is None
 
 
 # --- /checkups/supplements routes ---------------------------------------------------
@@ -262,6 +338,81 @@ def test_analyze_route_force_regenerates(auth_client):
         # force=1 (the "Спробувати ще раз" button) bypasses that and gets fresh text
         auth_client.post("/checkups/supplements/analyze", data={"force": "1"})
     assert "друга спроба" in auth_client.get("/checkups/supplements").text
+
+
+def test_analyze_route_shows_structured_items_and_template_button(auth_client):
+    auth_client.post("/checkups/supplements", data={"name": "Залізо", "dosage": "30 мг"})
+    valid_json = (
+        '{"items": [{"supplement": "Залізо", "marker": "Феритин", '
+        '"frequency": "раз на 6 міс", "note": null}], "closing_note": "не медичне призначення"}'
+    )
+
+    def fake_with_stats(context, api_key=None):
+        return valid_json, CallStats(kind="supplements", model="m")
+
+    with patch("app.routers.checkups.load_credentials",
+              return_value=type("C", (), {"anthropic_key": "test-key"})()), \
+         patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
+        auth_client.post("/checkups/supplements/analyze")
+
+    detail = auth_client.get("/checkups/supplements").text
+    assert "Феритин" in detail and "раз на 6 міс" in detail
+    assert "не медичне призначення" in detail
+    assert "Створити шаблон аналізу" in detail
+
+
+def test_apply_template_route_creates_checkup_and_redirects(auth_client):
+    auth_client.post("/checkups/supplements", data={"name": "Залізо", "dosage": "30 мг"})
+    valid_json = (
+        '{"items": [{"supplement": "Залізо", "marker": "Феритин", '
+        '"frequency": "раз на 6 міс", "note": null}], "closing_note": "орієнтир"}'
+    )
+
+    def fake_with_stats(context, api_key=None):
+        return valid_json, CallStats(kind="supplements", model="m")
+
+    with patch("app.routers.checkups.load_credentials",
+              return_value=type("C", (), {"anthropic_key": "test-key"})()), \
+         patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
+        auth_client.post("/checkups/supplements/analyze")
+
+    r = auth_client.post("/checkups/supplements/apply-template", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/checkups/")
+
+    detail = auth_client.get(r.headers["location"]).text
+    assert "Рекомендовані аналізи" in detail
+    assert "Феритин" in detail
+
+
+def test_apply_template_route_without_advice_redirects_with_error(client):
+    # a fresh user (never called /analyze) — earlier tests share t@example.com's DB
+    # state within this module, so a prior advice for that user would false-pass this.
+    from tests.web_helpers import _seed_user
+
+    _seed_user(email="no-advice-yet@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "no-advice-yet@example.com", "password": "pw"})
+    r = client.post("/checkups/supplements/apply-template", follow_redirects=False)
+    assert r.status_code == 303 and "err=notemplate" in r.headers["location"]
+
+
+def test_apply_template_route_all_markers_none_redirects_with_error(auth_client):
+    auth_client.post("/checkups/supplements", data={"name": "Мультивітамін"})
+    valid_json = (
+        '{"items": [{"supplement": "Мультивітамін", "marker": null, '
+        '"note": "без специфічного показника"}], "closing_note": "орієнтир"}'
+    )
+
+    def fake_with_stats(context, api_key=None):
+        return valid_json, CallStats(kind="supplements", model="m")
+
+    with patch("app.routers.checkups.load_credentials",
+              return_value=type("C", (), {"anthropic_key": "test-key"})()), \
+         patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
+        auth_client.post("/checkups/supplements/analyze")
+
+    r = auth_client.post("/checkups/supplements/apply-template", follow_redirects=False)
+    assert r.status_code == 303 and "err=notemplate" in r.headers["location"]
 
 
 def test_supplements_are_isolated_per_user(client):

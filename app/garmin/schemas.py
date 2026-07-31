@@ -198,3 +198,29 @@ class PlanEdit(BaseModel):
 
 
 PlanStep.model_rebuild()  # resolve the self-referential `steps` forward ref
+
+
+class SupplementAdviceItem(BaseModel):
+    """One line of Claude's supplement → lab-marker monitoring advice. ``marker`` is the
+    specific lab test worth tracking, or ``None`` when this supplement (at its stated
+    dose) has no particular marker worth monitoring — an explicit "nothing to add" is
+    kept as its own item (not omitted) so the UI can show it as reassurance rather than
+    silence. Structured output (not prose) is what lets the "create a checkup template"
+    button turn `marker` values into pre-filled result rows without re-parsing text."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    supplement: str                    # which supplement(s) this line is about
+    marker: Optional[str] = None       # e.g. "25-OH вітамін D"; None = nothing to monitor
+    frequency: Optional[str] = None    # e.g. "раз на 6 місяців" — only set alongside marker
+    note: Optional[str] = None         # short free-text (why, or "вже відстежуєш")
+
+
+class SupplementAdvice(BaseModel):
+    """Claude's structured reply to the supplement-monitoring prompt: one item per
+    supplement (or sensible grouping) plus a mandatory closing disclaimer."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    items: List[SupplementAdviceItem] = []
+    closing_note: str = ""

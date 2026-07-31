@@ -32,6 +32,8 @@
       <div class="err" style="margin:0 0 1rem">Не вдалось отримати пораду — спробуй ще раз.</div>
     {% elif request.query_params.get('err') == 'none' %}
       <div class="err" style="margin:0 0 1rem">Немає активних добавок — спершу додай хоча б одну.</div>
+    {% elif request.query_params.get('err') == 'notemplate' %}
+      <div class="err" style="margin:0 0 1rem">Немає показників для шаблону — спершу отримай пораду.</div>
     {% endif %}
 
     <details class="fwrap">
@@ -58,17 +60,42 @@
 
     {% if supplements %}
     <form method="post" action="/checkups/supplements/analyze" style="margin:1.2rem 0">
-      {% if advice_text %}<input type="hidden" name="force" value="1">{% endif %}
+      {% if advice or advice_raw_text %}<input type="hidden" name="force" value="1">{% endif %}
       <button class="btn-ghost" type="submit">
-        {% if advice_text %}🔄 Спробувати ще раз{% else %}🔬 Порадь, які аналізи здавати{% endif %}
+        {% if advice or advice_raw_text %}🔄 Спробувати ще раз{% else %}🔬 Порадь, які аналізи здавати{% endif %}
       </button>
     </form>
     {% endif %}
 
-    {% if advice_text %}
+    {% if advice %}
     <div class="note">
       <b>💊 Порада щодо моніторингу</b>
-      <div style="margin-top:.5rem;white-space:pre-wrap;line-height:1.55">{{ advice_text }}</div>
+      <div style="margin-top:.6rem">
+        {% for item in advice.items %}
+        <div style="margin:.5rem 0">
+          {% if item.marker %}
+            <div><b>{{ item.marker }}</b>{% if item.frequency %} — {{ item.frequency }}{% endif %}</div>
+            <div class="hint" style="margin-top:.1rem">{{ item.supplement }}{% if item.note %} · {{ item.note }}{% endif %}</div>
+          {% else %}
+            <div class="hint">✅ {{ item.supplement }}{% if item.note %} — {{ item.note }}{% endif %}</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if advice.closing_note %}
+      <div class="hint" style="margin-top:.7rem;font-style:italic">{{ advice.closing_note }}</div>
+      {% endif %}
+    </div>
+    {% if advice_has_template %}
+    <form method="post" action="/checkups/supplements/apply-template" style="margin:.8rem 0 1.2rem">
+      <button class="btn-ghost" type="submit">📋 Створити шаблон аналізу з цих показників</button>
+    </form>
+    {% endif %}
+    {% elif advice_raw_text %}
+    <div class="note">
+      <b>💊 Порада щодо моніторингу</b>
+      <div style="margin-top:.5rem;white-space:pre-wrap;line-height:1.55">{{ advice_raw_text }}</div>
+      <div class="hint" style="margin-top:.6rem">Стара порада — натисни «Спробувати ще раз», щоб отримати нову зі списком показників для шаблону.</div>
     </div>
     {% endif %}
 

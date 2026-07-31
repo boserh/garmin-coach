@@ -68,7 +68,7 @@ from app.analysis.prompts import (
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
-from app.garmin.schemas import Payload
+from app.garmin.schemas import Payload, SupplementAdvice
 from app.multisport import sport_bucket
 
 logger = logging.getLogger("claude")
@@ -1358,21 +1358,86 @@ def supplement_payload(supplements: list, recent_categories: Optional[list] = No
     return data
 
 
+def _coerce_supplement_advice(text: str) -> SupplementAdvice:
+    """Parse Claude's reply into a SupplementAdvice, tolerating ``` fences / surrounding
+    prose by slicing to the outermost {...} (same trick as ``_coerce_plan``/``_coerce_edit``)."""
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    return SupplementAdvice(**json.loads(s))
+
+
 def supplement_advice_with_stats(
     context: dict, api_key: Optional[str] = None
 ) -> Tuple[str, CallStats]:
-    """Narrate which lab markers to monitor given the active supplement list (Sonnet).
-    Returns (text, stats); raises AnalystError on API failure. The dedup cache is checked
-    in :func:`run_supplement_advice`.
+    """Get Claude's structured supplement → lab-marker advice (Sonnet), one retry on a
+    parse miss (else AnalystError — same shape as ``_plan_ops_with_stats``). Returns the
+    validated ``SupplementAdvice`` serialised back to JSON (not prose) as the "text": a
+    fixed, machine-parseable shape is what lets the "create a checkup template" button
+    turn ``marker`` values into pre-filled result rows, and it's exactly what the dedup
+    cache and ``ReportLog.report_text`` end up storing. The dedup cache is checked in
+    :func:`run_supplement_advice`.
 
     ``max_tokens`` scales with the supplement count — a flat 700 was tuned for a
-    handful of items and silently truncated mid-sentence (``stop_reason=max_tokens``)
-    once a user logged a dozen supplements, since each gets its own marker+frequency
-    line. Capped so a pathological list can't runs away the cost."""
+    handful of items and silently truncated mid-JSON (``stop_reason=max_tokens``) once a
+    user logged a dozen supplements, since each gets its own marker+frequency+note.
+    Capped so a pathological list can't run away the cost."""
     n = len(context.get("supplements") or [])
-    max_tokens = min(2200, 700 + 130 * n)
-    return _complete(MODEL_SUPPLEMENTS, SYSTEM_SUPPLEMENTS, context, "supplements", api_key,
-                     max_tokens=max_tokens)
+    max_tokens = min(2200, 900 + 130 * n)
+    text, stats = _complete(MODEL_SUPPLEMENTS, SYSTEM_SUPPLEMENTS, context, "supplements",
+                            api_key, max_tokens=max_tokens)
+    try:
+        advice = _coerce_supplement_advice(text)
+    except Exception:
+        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
+        text2, stats2 = _complete(MODEL_SUPPLEMENTS, SYSTEM_SUPPLEMENTS, retry, "supplements",
+                                  api_key, max_tokens=max_tokens)
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            advice = _coerce_supplement_advice(text2)
+        except Exception as e:
+            logger.error(f"SUPPLEMENTS parse failed: {e}")
+            raise AnalystError("Не вдалось отримати пораду — спробуй ще раз.")
+    return advice.model_dump_json(), stats
+
+
+def parse_supplement_advice(text: str) -> Optional[SupplementAdvice]:
+    """Safely parse a stored ``ReportLog(kind="supplements").report_text`` back into a
+    ``SupplementAdvice`` — ``None`` on any failure, which also covers pre-existing rows
+    written before this JSON format (plain prose): those just stop showing structured
+    items/a template button rather than crashing the page."""
+    try:
+        return SupplementAdvice(**json.loads(text))
+    except Exception:
+        return None
+
+
+def supplement_advice_to_checkup_template(advice: SupplementAdvice) -> Optional[dict]:
+    """Turn a ``SupplementAdvice`` into ``app.db.checkups.create_checkup`` kwargs for a
+    ready-to-fill checkup: one empty result row per DISTINCT recommended marker (later
+    filled in by hand via the normal checkup edit form once the real lab report is back).
+    Returns ``None`` when no item carries a marker (nothing to template)."""
+    seen: dict = {}
+    for item in advice.items:
+        if not item.marker or item.marker in seen:
+            continue
+        seen[item.marker] = item
+    if not seen:
+        return None
+    notes_lines = [
+        f"- {marker}" + (f" — {item.frequency}" if item.frequency else "")
+        + (f" ({item.supplement})" if item.supplement else "")
+        for marker, item in seen.items()
+    ]
+    return {
+        "title": "Рекомендовані аналізи (за добавками)",
+        "category": "рекомендовано",
+        "results": [{"name": marker, "value": "", "unit": "", "ref_range": ""} for marker in seen],
+        "notes": "Згенеровано з поради щодо добавок:\n" + "\n".join(notes_lines),
+    }
 
 
 async def run_supplement_advice(
@@ -1383,13 +1448,15 @@ async def run_supplement_advice(
     back via ``repository.get_last_report_of_kind`` rather than stored on any one row
     (there's no single row this advice belongs to; it's regenerated whenever the
     supplement list changes). Returns ``None`` when there are no active supplements to
-    advise on — the caller shows a friendly message, never spends a Claude call.
+    advise on — the caller shows a friendly message, never spends a Claude call. The
+    returned string is the ``SupplementAdvice`` JSON — pass it through
+    :func:`parse_supplement_advice` for display/template use.
 
     ``force=True`` (mirrors ST-19's activity regenerate) skips the dedup-cache *get* —
     for an explicit "спробуй ще раз", since an unchanged supplement list would otherwise
-    always replay whatever text is already cached, truncated-and-fixed-token-budget bug
-    included. Still writes the fresh text back to the cache, so a following non-force
-    call is a hit of the new text."""
+    always replay whatever is already cached, a stale truncated response included. Still
+    writes the fresh text back to the cache, so a following non-force call is a hit of
+    the new text."""
     from app.db import checkups as checkups_db
     from app.db import supplements as supplements_db
 
