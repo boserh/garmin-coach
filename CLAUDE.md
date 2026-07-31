@@ -1918,6 +1918,36 @@ as a standing block (the same pattern EP-05's race pack uses on `/plan`). The st
 `/checkups/{checkup_id}` so "supplements" is never swallowed as a checkup id (the same
 ordering trick as `/plan/archive` vs `/plan/{plan_id}`). `tests/test_supplements.py`.
 
+**Supplement advice as structured output, and "create a checkup template"**: the advice
+originally came back as free narrated prose — good for reading, useless for wiring
+anywhere else, and a fixed `max_tokens=700` also silently truncated it mid-sentence once
+someone logged a dozen supplements (`stop_reason=max_tokens`, reported in production).
+`SYSTEM_SUPPLEMENTS` now returns **structured JSON** instead (`SupplementAdvice`/
+`SupplementAdviceItem` in `app.garmin.schemas`, same "prompt-for-JSON + Pydantic + one
+retry" recipe as `PlanEdit`/`GeneratedPlan`) — one item per supplement (or sensible
+grouping) with `marker` (the specific lab test, or `null` when nothing's worth watching
+at that dose), `frequency`, and a `note`; a mandatory `closing_note` disclaimer.
+`supplement_advice_with_stats` parses + validates via `_coerce_supplement_advice`
+(outer-`{...}` slice, tolerates ``` fences), retries once on a parse miss, then raises
+`AnalystError` — and `max_tokens` now scales with the supplement count (900 + 130/item,
+capped 2200) instead of a flat number, fixing the truncation. The validated object is
+re-serialised to JSON as the "text" `_run_cached_narration` caches/logs — a fixed,
+machine-parseable shape rather than prose is what makes the rest of this possible.
+`parse_supplement_advice(text)` safely re-parses a stored `ReportLog.report_text` back
+into a `SupplementAdvice`, returning `None` on failure — which also covers rows written
+before this format shipped (plain prose): the page falls back to showing that old text
+as-is (`advice_raw_text`) rather than crashing, just without structured items or the
+template button. **`supplement_advice_to_checkup_template(advice)`** is the pure builder
+behind **`POST /checkups/supplements/apply-template`**: one empty result row per
+DISTINCT recommended `marker` (items with no marker, or a marker already produced by an
+earlier item, are skipped) → `checkups.create_checkup(title="Рекомендовані аналізи (за
+добавками)", category="рекомендовано", results=[{name: marker, value: "", ...}], notes=
+<which supplement + frequency motivated each marker>)`, then redirects straight to the
+new checkup's `/checkups/{id}` detail page — the user just types the real values into
+the ALREADY-EXISTING edit form once the lab report is back, no new fill-in UI needed.
+Returns `None` (→ `err=notemplate`) when no item has a marker. `tests/test_supplements.py`
+(coercion/retry, `parse_supplement_advice` legacy fallback, template dedup, the route).
+
 ## TODO
 
 - OPS-10 live verification on the Pi (needs a real account — code side is done):

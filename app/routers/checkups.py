@@ -19,7 +19,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analysis.service import AnalystError, run_checkup_analysis, run_supplement_advice
+from app.analysis.service import (
+    AnalystError,
+    parse_supplement_advice,
+    run_checkup_analysis,
+    run_supplement_advice,
+    supplement_advice_to_checkup_template,
+)
 from app.core.auth import current_user
 from app.core.tz import user_today
 from app.db import checkups, supplements
@@ -103,11 +109,18 @@ async def supplements_list(
 ):
     rows = await supplements.list_supplements(session, user.id)
     advice = await repository.get_last_report_of_kind(session, user.id, "supplements")
+    parsed = parse_supplement_advice(advice[0]) if advice else None
+    template_kwargs = supplement_advice_to_checkup_template(parsed) if parsed else None
     return templates.TemplateResponse(
         request, "supplements.html",
         {
             "user": user, "supplements": rows,
-            "advice_text": advice[0] if advice else None,
+            "advice": parsed,
+            # a pre-existing prose report (before this JSON format shipped) fails to
+            # parse — show it as-is rather than losing it, just without structured
+            # items/template button.
+            "advice_raw_text": advice[0] if (advice and not parsed) else None,
+            "advice_has_template": template_kwargs is not None,
             "today": user_today(user).isoformat(),
         },
     )
@@ -158,6 +171,25 @@ async def supplements_analyze(
     if text is None:
         return RedirectResponse("/checkups/supplements?err=none", status_code=303)
     return RedirectResponse("/checkups/supplements?analyzed=1", status_code=303)
+
+
+@router.post("/checkups/supplements/apply-template")
+async def supplements_apply_template(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Turn the last generated supplement advice into a ready-to-fill checkup: one empty
+    result row per distinct recommended lab marker, so the user just types in the real
+    values once the lab report is back (via the normal /checkups/{id} edit form — no new
+    UI needed for that part). Pure DB read/write, zero Claude calls."""
+    advice = await repository.get_last_report_of_kind(session, user.id, "supplements")
+    parsed = parse_supplement_advice(advice[0]) if advice else None
+    kwargs = supplement_advice_to_checkup_template(parsed) if parsed else None
+    if kwargs is None:
+        return RedirectResponse("/checkups/supplements?err=notemplate", status_code=303)
+    row = await checkups.create_checkup(
+        session, user.id, date=user_today(user).isoformat(), **kwargs)
+    return RedirectResponse(f"/checkups/{row.id}?saved=1", status_code=303)
 
 
 @router.post("/checkups/supplements/{supplement_id}")
