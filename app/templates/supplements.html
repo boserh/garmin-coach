@@ -58,7 +58,10 @@
 
     {% if supplements %}
     <form method="post" action="/checkups/supplements/analyze" style="margin:1.2rem 0">
-      <button class="btn-ghost" type="submit">🔬 Порадь, які аналізи здавати</button>
+      {% if advice_text %}<input type="hidden" name="force" value="1">{% endif %}
+      <button class="btn-ghost" type="submit">
+        {% if advice_text %}🔄 Спробувати ще раз{% else %}🔬 Порадь, які аналізи здавати{% endif %}
+      </button>
     </form>
     {% endif %}
 

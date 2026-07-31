@@ -136,17 +136,22 @@ async def supplements_create(
 
 @router.post("/checkups/supplements/analyze")
 async def supplements_analyze(
+    request: Request,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """On-demand advice on which lab markers to track given the active supplement list
     (a real Sonnet call — only from this explicit button tap). Dedup-cached, so
-    re-tapping an unchanged list is free."""
+    re-tapping an unchanged list is free unless the form carries ``force=1`` (the
+    "спробуй ще раз" regenerate button shown once advice already exists)."""
+    form = await request.form()
+    force = (form.get("force") or "") == "1"
     creds = load_credentials(user)
     if not creds.anthropic_key:
         return RedirectResponse("/checkups/supplements?err=nokey", status_code=303)
     try:
-        text = await run_supplement_advice(session, user_id=user.id, api_key=creds.anthropic_key)
+        text = await run_supplement_advice(
+            session, user_id=user.id, api_key=creds.anthropic_key, force=force)
         await session.commit()
     except AnalystError:
         return RedirectResponse("/checkups/supplements?err=analyze", status_code=303)
