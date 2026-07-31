@@ -1825,26 +1825,53 @@ Web requests are logged by an app-level HTTP middleware in `create_app` (logger 
 project format. Per-Claude-call cost/tokens are logged (logger `claude`) **and** persisted
 to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
 
-**Health checkups / "Аналізи" tab (v1, data-entry only)**: a new nav tab, separate from
-Garmin-sourced data, for manually logging periodic medical checkups (blood panels,
-hormone tests, doctor visits) — the kind of data Garmin never sees. `HealthCheckup`
-(`app/db/models.py`, migration `7694e3a5a6aa`) is one row per checkup: `date`/`title`/
+**Health checkups / "Аналізи" tab**: a nav tab, separate from Garmin-sourced data, for
+manually logging periodic medical checkups (blood panels, hormone tests, doctor
+visits) — the kind of data Garmin never sees. `HealthCheckup` (`app/db/models.py`,
+migrations `7694e3a5a6aa` + `d9f47efc1e18`) is one row per checkup: `date`/`title`/
 `category` (free text), `results` (a compact JSON list of `{name, value, unit,
 ref_range}` — mirrors the `PlannedWorkout.steps`/`strength_plan` JSON-breakdown pattern
-rather than a child table, since nothing needs to query into individual values yet),
-`notes`, and an optional `next_due_date` captured now so a future reminder job has
-something to key off without a schema change. `app/db/checkups.py` is the user-scoped
-CRUD (list/get/create/update/delete, always filtered by `user_id` — one account can
-never read/edit another's record by guessing an id). `app/routers/checkups.py` wires
-`GET/POST /checkups` (list + add form) and `GET/POST /checkups/{id}` (+
-`POST /checkups/{id}/delete`) — plain DB reads/writes, zero Garmin/Claude calls. The
-add/edit forms take repeated `result_name`/`result_value`/`result_unit`/`result_ref`
-inputs (a few blank rows rendered server-side so it works without JS; a "+ показник"
-button progressively enhances more rows in, mirroring the EP-04/ST-05 pattern). Linked
-from `_nav.html` as "Аналізи". **Deliberately out of scope for v1** (named directly by
-the user as the next steps, not silently dropped): narrating/analysing the entered
-data with Claude, and reminders ahead of `next_due_date` — both are future work reading
-the same rows. `tests/test_checkups.py` (CRUD + cross-user isolation).
+rather than a child table, since nothing needs to query into individual values, only
+to display/narrate them), `notes`, `next_due_date`, and `analysis` (Claude's on-demand
+interpretation, see below). `app/db/checkups.py` is the user-scoped CRUD (list/get/
+create/update/delete, always filtered by `user_id` — one account can never read/edit
+another's record by guessing an id) plus two read helpers: `similar_history` (trend
+context for the interpretation) and `due_for_reminder` (candidates for the next-checkup
+nudge). `app/routers/checkups.py` wires `GET/POST /checkups` (list + add form) and
+`GET/POST /checkups/{id}` (+ `POST /checkups/{id}/delete`) — plain DB reads/writes, zero
+Garmin/Claude calls. The add/edit forms take repeated `result_name`/`result_value`/
+`result_unit`/`result_ref` inputs (a few blank rows rendered server-side so it works
+without JS; a "+ показник" button progressively enhances more rows in, mirroring the
+EP-04/ST-05 pattern). Linked from `_nav.html` as "Аналізи".
+
+**Checkup interpretation (on-demand)**: `POST /checkups/{id}/analyze` calls
+`app.analysis.reports.run_checkup_analysis` (`SYSTEM_CHECKUP`, `MODEL_CHECKUP`=Sonnet) —
+a real but cheap, explicitly user-triggered Claude call (never automatic, unlike most
+narrations in this app). `checkup_payload` feeds the checkup's own `results`/`notes`
+plus up to `CHECKUP_HISTORY_LIMIT`=3 prior same-category (or same-title) checkups via
+`checkups.similar_history`, so the model can speak to a trend ("Феритин був 60, тепер
+45"), not just a snapshot. The prompt is deliberately non-diagnostic: it flags
+out-of-range values against the given `ref_range`, never invents a norm when one isn't
+provided, and only ever suggests WHICH kind of specialist to see — never a diagnosis or
+treatment. Dedup-cached like every other narration (`_checkup_cache_key`, keyed on the
+payload incl. `history` — the README pitfall) and logged as `ReportLog(kind="checkup")`.
+`checkups.update_checkup` clears a stale `.analysis` on every edit (the old text would
+be actively misleading next to new numbers) — the detail page then shows the
+"Проаналізувати" button again instead of stale text; re-requesting unchanged data after
+an edit-and-revert is still a free cache hit. `tests/test_checkup_analysis.py`.
+
+**Checkup reminders**: a pure-Python, zero-LLM nudge off `next_due_date`
+(`app/checkup_reminders.py`, mirrors `app.gear`'s split: pure decision logic here, the
+DB read + Telegram DM in `bot.jobs._checkup_reminder_for_user`). `due()` flags a row
+within `REMINDER_LEAD_DAYS`=7 of its due date or already overdue; wired into the daily
+`plan_sync_job` (piggybacking NF-15's gear check — the cheapest place to hang another
+once-a-day check) and guarded **per-checkup, once ever** via `bot_state`
+(`checkup_reminders.REMINDER_PREFIX + <id>`) — deliberately simpler than NF-15's
+re-warn-by-step: editing `next_due_date` on the SAME row does not re-arm it in v1 (a
+genuinely rescheduled checkup needs a fresh row); documented, not hidden. The
+**`/checkups`** bot command mirrors `/records`/`/gear` (pure DB read: the 5 most recent
+checkups + up to 3 upcoming due dates) — adding/editing entries stays web-only (a
+structured lab-values form doesn't fit a chat message). `tests/test_checkup_reminders.py`.
 
 ## TODO
 
@@ -1853,5 +1880,6 @@ the same rows. `tests/test_checkups.py` (CRUD + cross-user isolation).
   the one branch recon never exercised) and one full cycle `/report` → morning job →
   `push-plan --dry-run` → a real MFA connect through `/settings`.
 - Deploy to Raspberry Pi 4 (systemd units for `bot.main` and `uvicorn`).
-- Health checkups (`app/routers/checkups.py`): narrate `HealthCheckup.results`/trends
-  with Claude, and a reminder job/DM ahead of `next_due_date`.
+- Health checkups: a genuinely rescheduled `next_due_date` on the SAME row doesn't
+  re-arm the reminder guard in v1 (see `app/checkup_reminders.py`) — a documented
+  limitation, not a bug, but worth revisiting if it turns out to matter in practice.

@@ -21,6 +21,7 @@ from app.analysis.cache import (
     _build_fitness_snapshot,
     _build_multisport,
     _cache_key,
+    _checkup_cache_key,
     _compare_cache_key,
     _digest_cache_key,
     _insights_cache_key,
@@ -30,6 +31,7 @@ from app.analysis.cache import (
 from app.analysis.client import (
     MODEL_ACTIVITY,
     MODEL_ASK,
+    MODEL_CHECKUP,
     MODEL_COMPARE,
     MODEL_DAILY,
     MODEL_DEEP,
@@ -53,6 +55,7 @@ from app.analysis.prompts import (
     SYSTEM,
     SYSTEM_ACTIVITY,
     SYSTEM_ASK_TOOLS,
+    SYSTEM_CHECKUP,
     SYSTEM_COMPARE,
     SYSTEM_DIGEST,
     SYSTEM_HEALTH,
@@ -1271,4 +1274,62 @@ async def run_health_alert(
         cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
         question=f"health:{report.level}", report_text=text,
     )
+    return text
+
+
+# ---------- HEALTH-CHECKUP INTERPRETATION (the "Аналізи" tab's analysis step) ----------
+
+CHECKUP_HISTORY_LIMIT = 3   # prior same-category checkups fed as trend context
+
+
+def checkup_payload(checkup, history: Optional[list] = None) -> dict:
+    """Compact LLM input for one ``HealthCheckup`` — its own results/notes plus, when
+    given, up to :data:`CHECKUP_HISTORY_LIMIT` prior same-category checkups (see
+    ``app.db.checkups.similar_history``) so the model can speak to a trend, not just a
+    single snapshot."""
+    data = {"date": checkup.date, "title": checkup.title}
+    if checkup.category:
+        data["category"] = checkup.category
+    if checkup.results:
+        data["results"] = checkup.results
+    if checkup.notes:
+        data["notes"] = checkup.notes
+    if history:
+        data["history"] = [
+            {"date": h.date, "title": h.title, "results": h.results}
+            for h in history if h.results
+        ]
+    return data
+
+
+def checkup_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Interpret one health checkup's results (Sonnet). Returns (text, stats); raises
+    AnalystError on API failure. The dedup cache is checked in
+    :func:`run_checkup_analysis`."""
+    return _complete(MODEL_CHECKUP, SYSTEM_CHECKUP, context, "checkup", api_key,
+                     max_tokens=700)
+
+
+async def run_checkup_analysis(
+    session, checkup, *, user_id: int, api_key: Optional[str] = None,
+) -> str:
+    """Interpret one ``HealthCheckup``'s results, store the text on the row (``analysis``)
+    for the web detail page, log a ``ReportLog(kind="checkup")``, and return the text.
+    Only ever called on an explicit user request (a button tap) — never from a background
+    job, unlike most other narrations here, since it's a real (if cheap) paid Claude call
+    the user didn't necessarily ask to repeat automatically."""
+    from app.db import checkups as checkups_db
+
+    history = await checkups_db.similar_history(
+        session, user_id, checkup, limit=CHECKUP_HISTORY_LIMIT)
+    data = checkup_payload(checkup, history)
+    q = f"checkup #{checkup.id} ({checkup.title})"
+    text = await _run_cached_narration(
+        session, user_id=user_id, kind="checkup", model=MODEL_CHECKUP, context=data,
+        cache_key=_checkup_cache_key(data, MODEL_CHECKUP),
+        with_stats_fn=checkup_with_stats, question=q, api_key=api_key,
+    )
+    checkup.analysis = text
     return text

@@ -370,15 +370,17 @@ class PlannedWorkout(Base):
 
 
 class HealthCheckup(Base):
-    """A user-entered medical checkup/lab-test record (the new "Аналізи" tab). v1 is
-    pure data entry — a place to log a blood panel, a doctor visit, or any periodic
-    checkup with its individual values, so a future step can narrate trends over them
-    and remind about upcoming checkups. ``results`` is a compact list of
-    ``{name, value, unit, ref_range}`` dicts (mirrors the JSON-breakdown pattern used by
-    ``PlannedWorkout.steps``/``strength_plan`` elsewhere) rather than a child table —
-    there is no need to query into individual values yet, only to display them.
-    ``next_due_date`` is captured now (optional) so a future reminder job has something
-    to key off without a schema change."""
+    """A user-entered medical checkup/lab-test record (the "Аналізи" tab) — a place to
+    log a blood panel, a doctor visit, or any periodic checkup, with its individual
+    values, an on-demand Claude interpretation, and a reminder for the next one.
+    ``results`` is a compact list of ``{name, value, unit, ref_range}`` dicts (mirrors
+    the JSON-breakdown pattern used by ``PlannedWorkout.steps``/``strength_plan``
+    elsewhere) rather than a child table — there is no need to query into individual
+    values, only to display/narrate them. ``next_due_date`` (optional) is what
+    ``bot.jobs`` reads to nudge about an upcoming/overdue checkup (see
+    ``app.checkup_reminders``); ``analysis`` is Claude's narration over ``results``/
+    ``notes`` (+ recent same-category history), populated on request via
+    ``run_checkup_analysis`` — never automatic, since it's a real (cheap) API call."""
 
     __tablename__ = "health_checkups"
     __table_args__ = (Index("ix_health_checkups_user_date", "user_id", "date"),)
@@ -390,7 +392,10 @@ class HealthCheckup(Base):
     category: Mapped[Optional[str]] = mapped_column(String(64))  # free-text tag
     results: Mapped[Optional[list]] = mapped_column(JSON)     # [{name, value, unit, ref_range}]
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    next_due_date: Mapped[Optional[str]] = mapped_column(String(10))  # future reminder hook
+    next_due_date: Mapped[Optional[str]] = mapped_column(String(10))  # reminder hook (bot/jobs.py)
+    # Claude's interpretation of `results`/`notes` (on-demand, see run_checkup_analysis) —
+    # out-of-range flags + trend vs prior same-category checkups. Null until requested.
+    analysis: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

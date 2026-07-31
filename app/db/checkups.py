@@ -1,6 +1,7 @@
-"""User-scoped CRUD over ``HealthCheckup`` — the "Аналізи" tab's data layer. v1 is
-plain storage (see the model docstring); analysis/reminders are future work over the
-same rows, not a schema this module needs to anticipate."""
+"""User-scoped CRUD over ``HealthCheckup`` — the "Аналізи" tab's data layer, plus the
+two read helpers its follow-up features lean on: :func:`similar_history` (trend context
+for Claude's interpretation) and :func:`due_for_reminder` (candidates for the
+next-checkup nudge, filtered further by ``app.checkup_reminders``)."""
 from typing import Optional, Sequence
 
 from sqlalchemy import select
@@ -75,6 +76,10 @@ async def update_checkup(
     row.results = results or None
     row.notes = notes or None
     row.next_due_date = next_due_date or None
+    # A stored interpretation was narrated over the OLD numbers — keep it around next to
+    # numbers that no longer match would be actively misleading, so an edit clears it (the
+    # detail page then shows the "Проаналізувати" button again instead of stale text).
+    row.analysis = None
     await session.commit()
     await session.refresh(row)
     return row
@@ -83,3 +88,40 @@ async def update_checkup(
 async def delete_checkup(session: AsyncSession, row: HealthCheckup) -> None:
     await session.delete(row)
     await session.commit()
+
+
+async def set_analysis(session: AsyncSession, row: HealthCheckup, text: str) -> None:
+    row.analysis = text
+    await session.commit()
+
+
+async def similar_history(
+    session: AsyncSession, user_id: int, row: HealthCheckup, limit: int = 3
+) -> Sequence[HealthCheckup]:
+    """Up to ``limit`` prior checkups (strictly before this one) sharing this row's
+    category — or, when it has none, the exact same title — most-recent first. Trend
+    context for :func:`app.analysis.reports.run_checkup_analysis` ("HRV was X last
+    time, now Y")."""
+    conds = [
+        HealthCheckup.user_id == user_id,
+        HealthCheckup.id != row.id,
+        HealthCheckup.date < row.date,
+    ]
+    conds.append(
+        HealthCheckup.category == row.category if row.category else HealthCheckup.title == row.title
+    )
+    rows = await session.execute(
+        select(HealthCheckup).where(*conds).order_by(HealthCheckup.date.desc()).limit(limit)
+    )
+    return rows.scalars().all()
+
+
+async def due_for_reminder(session: AsyncSession, user_id: int) -> Sequence[HealthCheckup]:
+    """This user's checkups that carry a ``next_due_date`` — the candidate set
+    :mod:`app.checkup_reminders` filters down to what's actually due/overdue."""
+    rows = await session.execute(
+        select(HealthCheckup).where(
+            HealthCheckup.user_id == user_id, HealthCheckup.next_due_date.is_not(None)
+        )
+    )
+    return rows.scalars().all()

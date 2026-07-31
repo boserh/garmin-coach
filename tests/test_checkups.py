@@ -1,5 +1,7 @@
-"""Web smoke tests for the /checkups tab (health checkups / lab results, v1 data-entry
-scope): create, list, edit, delete, and per-user isolation."""
+"""Web smoke tests for the /checkups tab (health checkups / lab results): create, list,
+edit, delete, per-user isolation, and the on-demand Claude interpretation route."""
+from unittest.mock import patch
+
 from tests.web_helpers import _seed_user, _user_id
 
 
@@ -109,6 +111,101 @@ def test_delete_checkup(auth_client):
     # a deleted (or never-owned) id just bounces back to the list, no 500
     assert auth_client.get(f"/checkups/{cid}").status_code == 200
     assert "Тимчасовий" not in auth_client.get("/checkups").text
+
+
+def _get_id_by_title(uid, title):
+    import anyio
+
+    from app.db import checkups as checkups_db
+    from app.db.base import async_session_maker
+
+    async def get_id():
+        async with async_session_maker() as s:
+            rows = await checkups_db.list_checkups(s, uid)
+            return next(r.id for r in rows if r.title == title)
+
+    return anyio.run(get_id)
+
+
+def _fake_creds():
+    """/checkups/{id}/analyze needs a truthy ``creds.anthropic_key`` — patch
+    ``load_credentials`` directly rather than round-tripping through real Fernet
+    encryption (which needs a configured APP_SECRET_KEY the test env doesn't set)."""
+    return patch("app.routers.checkups.load_credentials",
+                return_value=type("C", (), {"anthropic_key": "test-key"})())
+
+
+def test_analyze_route_stores_and_shows_text(auth_client):
+    from app.analysis import reports
+    from app.analysis.client import CallStats
+
+    auth_client.post(
+        "/checkups",
+        data={"date": "2026-07-15", "title": "Аналіз на аналіз",
+              "result_name": ["Феритин"], "result_value": ["45"],
+              "result_unit": ["нг/мл"], "result_ref": ["30-400"]},
+    )
+    uid = _user_id("t@example.com")
+    cid = _get_id_by_title(uid, "Аналіз на аналіз")
+
+    def fake_with_stats(context, api_key=None):
+        return "🔬 усе в нормі", CallStats(kind="checkup", model="m")
+
+    with _fake_creds(), patch.object(reports, "checkup_with_stats", fake_with_stats):
+        r = auth_client.post(f"/checkups/{cid}/analyze", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}?analyzed=1"
+
+    detail = auth_client.get(f"/checkups/{cid}").text
+    assert "усе в нормі" in detail
+    assert "Розібрати ще раз" in detail   # button relabels once analysis exists
+
+
+def test_analyze_route_no_claude_key_redirects(auth_client):
+    auth_client.post("/checkups", data={"date": "2026-07-15", "title": "Без ключа"})
+    uid = _user_id("t@example.com")
+    cid = _get_id_by_title(uid, "Без ключа")
+
+    with patch("app.routers.checkups.load_credentials",
+              return_value=type("C", (), {"anthropic_key": None})()):
+        r = auth_client.post(f"/checkups/{cid}/analyze", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}?err=nokey"
+
+
+def test_analyze_route_analyst_error_redirects(auth_client):
+    from app.analysis import reports
+    from app.analysis.service import AnalystError
+
+    auth_client.post("/checkups", data={"date": "2026-07-15", "title": "Помилка API"})
+    uid = _user_id("t@example.com")
+    cid = _get_id_by_title(uid, "Помилка API")
+
+    def failing_with_stats(context, api_key=None):
+        raise AnalystError("боом")
+
+    with _fake_creds(), patch.object(reports, "checkup_with_stats", failing_with_stats):
+        r = auth_client.post(f"/checkups/{cid}/analyze", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}?err=analyze"
+
+
+def test_editing_a_checkup_clears_stale_analysis(auth_client):
+    from app.analysis import reports
+    from app.analysis.client import CallStats
+
+    auth_client.post("/checkups", data={"date": "2026-07-15", "title": "Стара версія"})
+    uid = _user_id("t@example.com")
+    cid = _get_id_by_title(uid, "Стара версія")
+
+    def fake_with_stats(context, api_key=None):
+        return "стара інтерпретація", CallStats(kind="checkup", model="m")
+
+    with _fake_creds(), patch.object(reports, "checkup_with_stats", fake_with_stats):
+        auth_client.post(f"/checkups/{cid}/analyze")
+    assert "стара інтерпретація" in auth_client.get(f"/checkups/{cid}").text
+
+    auth_client.post(f"/checkups/{cid}", data={"date": "2026-07-16", "title": "Нова версія"})
+    detail = auth_client.get(f"/checkups/{cid}").text
+    assert "стара інтерпретація" not in detail
+    assert "Проаналізувати результати" not in detail  # no results yet, so no button at all
 
 
 def test_checkups_are_isolated_per_user(client):
