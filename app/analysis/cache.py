@@ -133,6 +133,15 @@ def _activity_cache_key(data: dict, model: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _checkup_cache_key(data: dict, model: str) -> str:
+    """Keys on the checkup's own payload (incl. its ``history`` slice, since that's part
+    of what the model reads — the README pitfall) + model. No ``today``/date-only key is
+    needed: a checkup's own data never changes on its own, only when edited."""
+    blob = json.dumps({"checkup": data, "model": model, "chk": True},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _context_cache_key(kind: str, context: dict, model: str, fields: tuple) -> str:
     """Generic dedup-cache key for a context-driven narration (A2): pick ``fields`` from
     ``context``, add the model and a ``{kind: True}`` marker, sha256 the JSON. Replaces the

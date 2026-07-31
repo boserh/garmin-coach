@@ -18,8 +18,14 @@
     <h1 class="title" style="font-size:1.7rem">{{ c.title }}</h1>
 
     {% if request.query_params.get('saved') == '1' %}<div class="saved">✅ Збережено.</div>{% endif %}
+    {% if request.query_params.get('analyzed') == '1' %}<div class="saved">✅ Розбір готовий.</div>{% endif %}
     {% if request.query_params.get('err') == 'required' %}
       <div class="err" style="margin:0 0 1rem">Заповни дату і назву аналізу.</div>
+    {% elif request.query_params.get('err') == 'nokey' %}
+      <div class="err" style="margin:0 0 1rem">Спершу додай Claude API ключ у
+        <a href="/settings">Налаштуваннях</a>.</div>
+    {% elif request.query_params.get('err') == 'analyze' %}
+      <div class="err" style="margin:0 0 1rem">Не вдалось розібрати — спробуй ще раз.</div>
     {% endif %}
 
     {% if c.results %}
@@ -39,6 +45,20 @@
     {% endif %}
     {% if c.notes %}<div class="hint" style="font-size:.9rem;color:var(--muted)">{{ c.notes }}</div>{% endif %}
     {% if c.next_due_date %}<div class="hint">Наступний чекап: {{ c.next_due_date }}</div>{% endif %}
+
+    {% if c.analysis %}
+    <div class="note" style="margin-top:1.3rem">
+      <b>🔬 Розбір</b>
+      <div style="margin-top:.5rem;white-space:pre-wrap;line-height:1.55">{{ c.analysis }}</div>
+    </div>
+    <form method="post" action="/checkups/{{ c.id }}/analyze" style="margin-top:.6rem">
+      <button class="btn-ghost" type="submit">🔄 Розібрати ще раз</button>
+    </form>
+    {% elif c.results %}
+    <form method="post" action="/checkups/{{ c.id }}/analyze" style="margin-top:.8rem">
+      <button class="btn-ghost" type="submit">🔬 Проаналізувати результати</button>
+    </form>
+    {% endif %}
 
     <hr class="divide">
     <h2 class="sec">Редагувати</h2>

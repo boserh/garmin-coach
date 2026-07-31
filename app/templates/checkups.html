@@ -70,7 +70,7 @@
     <div style="margin-top:1.4rem">
     {% for c in checkups %}
       <a class="listcard" href="/checkups/{{ c.id }}">
-        <div class="lg">{{ c.title }}</div>
+        <div class="lg">{{ c.title }}{% if c.analysis %} <span class="badge-an" title="є розбір">💬</span>{% endif %}</div>
         <div class="lm">
           {{ c.date }}{% if c.category %} · {{ c.category }}{% endif %}
           {% if c.results %} · {{ c.results|length }} показник{{ 'ів' if c.results|length != 1 else '' }}{% endif %}

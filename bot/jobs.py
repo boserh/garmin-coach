@@ -1209,16 +1209,44 @@ async def _gear_check_for_user(ctx, session, user: User) -> None:
         logger.info(f"GEAR warn user={user.id} gear={pair['gear_id']} km={pair['mileage_km']}")
 
 
+async def _checkup_reminder_for_user(ctx, session, user: User) -> None:
+    """"Аналізи" tab follow-up: nudge once per HealthCheckup whose ``next_due_date`` is
+    close or already past (``app.checkup_reminders``). Pure DB read, zero Garmin/Claude —
+    the cheapest possible daily check, piggybacking on the once-a-day plan_sync_job like
+    NF-15's gear check. Guarded per-checkup (not per-date): each row nudges at most once,
+    ever — editing the date on the SAME row doesn't re-arm it in v1 (see the module's own
+    note); a genuinely rescheduled checkup is a new row."""
+    if not user.telegram_chat_id:
+        return
+    from app import checkup_reminders
+    from app.db import checkups as checkups_db
+
+    rows = await checkups_db.due_for_reminder(session, user.id)
+    if not rows:
+        return
+    today = dt.datetime.now(user_tz(user)).date()
+    for row in checkup_reminders.due(rows, today):
+        guard_key = checkup_reminders.REMINDER_PREFIX + str(row.id)
+        if await repository.get_state(session, user.id, guard_key) == "1":
+            continue
+        await repository.set_state(session, user.id, guard_key, "1")
+        await ctx.bot.send_message(
+            user.telegram_chat_id, checkup_reminders.reminder_text(row, today)
+        )
+        logger.info(f"CHECKUP reminder sent user={user.id} checkup={row.id}")
+
+
 async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Once-a-day per-user Garmin calendar sync (separate from the morning report);
     scheduled by run_daily, so no further time guard is needed. Also carries the EP-05
-    race-pack auto-trigger and NF-15's gear-mileage refresh — different daily concerns,
-    but this job already runs once/day for every user, the cheapest place to hang more
-    once-a-day checks."""
+    race-pack auto-trigger, NF-15's gear-mileage refresh, and the health-checkup reminder
+    — different daily concerns, but this job already runs once/day for every user, the
+    cheapest place to hang more once-a-day checks."""
     async def worker(session, user):
         await _sync_for_user(session, user)
         await _race_pack_for_user(ctx, session, user)
         await _gear_check_for_user(ctx, session, user)
+        await _checkup_reminder_for_user(ctx, session, user)
 
     await for_each_user(worker, with_chat=False, label="PLAN sync")
 

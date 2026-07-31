@@ -60,6 +60,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("records", "Особисті рекорди"),
         BotCommand("costs", "Витрати на Claude за місяць"),
         BotCommand("gear", "Спорядження (кросівки) з пробігом"),
+        BotCommand("checkups", "Останні аналізи/чекапи + найближчі заплановані"),
         BotCommand("risk", "Травматичний радар (сигнали перевантаження)"),
         BotCommand("health", "Алерти відновлення (HRV, сон, стрес)"),
         BotCommand("plan", "Програма; /plan <текст> щоб змінити, напр. додай біг сьогодні"),
@@ -87,6 +88,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("records", handlers.records_cmd))
     app.add_handler(CommandHandler("costs", handlers.costs_cmd))
     app.add_handler(CommandHandler("gear", handlers.gear_cmd))
+    app.add_handler(CommandHandler("checkups", handlers.checkups_cmd))
     app.add_handler(CommandHandler("goal", handlers.goal_cmd))
     app.add_handler(CommandHandler("race", handlers.race_cmd))
     app.add_handler(CommandHandler("compare", handlers.compare))

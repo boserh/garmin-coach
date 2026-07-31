@@ -1,9 +1,10 @@
 """``/checkups`` — the "Аналізи" tab: user-entered medical checkups/lab results.
 
-v1 scope is deliberately just data entry (add/edit/delete, list, detail) — no LLM call,
-no reminders yet. Both are named as the next steps for this feature and will read the
-same ``HealthCheckup`` rows once they land (trend narration over ``results``, a nudge
-off ``next_due_date``); this router doesn't need to anticipate their shape."""
+Data entry (add/edit/delete, list, detail) plus an on-demand Claude interpretation
+(``POST /checkups/{id}/analyze`` → ``run_checkup_analysis``, a real but cheap Sonnet
+call — only ever triggered by an explicit button tap, never automatically). Reminders
+about an upcoming ``next_due_date`` are a separate, bot-side concern
+(``app.checkup_reminders`` + ``bot.jobs``), not this router."""
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -11,11 +12,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analysis.service import AnalystError, run_checkup_analysis
 from app.core.auth import current_user
 from app.core.tz import user_today
 from app.db import checkups
 from app.db.models import User
 from app.dependencies import get_session
+from app.garmin.credentials import load_credentials
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -121,6 +124,29 @@ async def checkup_update(
         next_due_date=(form.get("next_due_date") or "").strip() or None,
     )
     return RedirectResponse(f"/checkups/{checkup_id}?saved=1", status_code=303)
+
+
+@router.post("/checkups/{checkup_id}/analyze")
+async def checkup_analyze(
+    checkup_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """On-demand Claude interpretation of one checkup's results (a real Sonnet call —
+    only from this explicit button tap, never a background job). Dedup-cached, so
+    re-tapping without an edit in between is free (``run_checkup_analysis``)."""
+    row = await checkups.get_checkup(session, user.id, checkup_id)
+    if row is None:
+        return RedirectResponse("/checkups", status_code=303)
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return RedirectResponse(f"/checkups/{checkup_id}?err=nokey", status_code=303)
+    try:
+        await run_checkup_analysis(session, row, user_id=user.id, api_key=creds.anthropic_key)
+        await session.commit()
+    except AnalystError:
+        return RedirectResponse(f"/checkups/{checkup_id}?err=analyze", status_code=303)
+    return RedirectResponse(f"/checkups/{checkup_id}?analyzed=1", status_code=303)
 
 
 @router.post("/checkups/{checkup_id}/delete")

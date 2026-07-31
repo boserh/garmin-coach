@@ -90,7 +90,9 @@ HELP_TEXT = (
     "/gear — спорядження (кросівки) з пробігом\n\n"
     "🩺 Здоров'я\n"
     "/risk — травматичний радар (сигнали перевантаження)\n"
-    "/health — алерти відновлення (HRV, сон, стрес)\n\n"
+    "/health — алерти відновлення (HRV, сон, стрес)\n"
+    "/checkups — останні аналізи/чекапи + найближчі заплановані "
+    "(додавати — у застосунку, вкладка «Аналізи»)\n\n"
     "🗓 План\n"
     "/plan — переглянути програму\n"
     "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n"
@@ -444,6 +446,34 @@ async def gear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     if note:
         text += "\n\n" + note
     await update.message.reply_text(text)
+
+
+@bot_command
+async def checkups_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/checkups — the 5 most recent health checkups (the "Аналізи" tab), plus any
+    upcoming/overdue next_due_date. Pure DB read, no Garmin/Claude — mirrors /records
+    and /gear. Adding/editing entries stays web-only (a structured lab-values form
+    doesn't fit a chat message)."""
+    from app.db import checkups as checkups_db
+
+    logger.info("CMD /checkups")
+    rows = await checkups_db.list_checkups(session, user.id)
+    if not rows:
+        await update.message.reply_text(
+            "Ще немає жодного запису — додай перший аналіз у застосунку, вкладка «Аналізи»."
+        )
+        return
+    lines = ["🔬 Останні аналізи:"]
+    for c in rows[:5]:
+        n = f" ({len(c.results)} показ.)" if c.results else ""
+        lines.append(f"• {c.date} — {c.title}{n}")
+    due = [c for c in rows if c.next_due_date]
+    due.sort(key=lambda c: c.next_due_date)
+    upcoming = due[:3]
+    if upcoming:
+        lines.append("\nНаступні чекапи:")
+        lines += [f"• {c.next_due_date} — {c.title}" for c in upcoming]
+    await update.message.reply_text("\n".join(lines))
 
 
 @bot_command(creds="load")
