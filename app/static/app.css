@@ -10,6 +10,7 @@
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+button:disabled,input[type=submit]:disabled{opacity:.55;cursor:default}
 body{
   margin:0; color:var(--ink); line-height:1.5;
   /* A token with no break opportunity — an email in a heading, a pasted URL in chat —
