@@ -1363,20 +1363,33 @@ def supplement_advice_with_stats(
 ) -> Tuple[str, CallStats]:
     """Narrate which lab markers to monitor given the active supplement list (Sonnet).
     Returns (text, stats); raises AnalystError on API failure. The dedup cache is checked
-    in :func:`run_supplement_advice`."""
+    in :func:`run_supplement_advice`.
+
+    ``max_tokens`` scales with the supplement count — a flat 700 was tuned for a
+    handful of items and silently truncated mid-sentence (``stop_reason=max_tokens``)
+    once a user logged a dozen supplements, since each gets its own marker+frequency
+    line. Capped so a pathological list can't runs away the cost."""
+    n = len(context.get("supplements") or [])
+    max_tokens = min(2200, 700 + 130 * n)
     return _complete(MODEL_SUPPLEMENTS, SYSTEM_SUPPLEMENTS, context, "supplements", api_key,
-                     max_tokens=700)
+                     max_tokens=max_tokens)
 
 
 async def run_supplement_advice(
-    session, *, user_id: int, api_key: Optional[str] = None,
+    session, *, user_id: int, api_key: Optional[str] = None, force: bool = False,
 ) -> Optional[str]:
     """Advise which lab markers are worth tracking given the user's currently active
     supplements, and roughly how often. Logs ``ReportLog(kind="supplements")`` — read
     back via ``repository.get_last_report_of_kind`` rather than stored on any one row
     (there's no single row this advice belongs to; it's regenerated whenever the
     supplement list changes). Returns ``None`` when there are no active supplements to
-    advise on — the caller shows a friendly message, never spends a Claude call."""
+    advise on — the caller shows a friendly message, never spends a Claude call.
+
+    ``force=True`` (mirrors ST-19's activity regenerate) skips the dedup-cache *get* —
+    for an explicit "спробуй ще раз", since an unchanged supplement list would otherwise
+    always replay whatever text is already cached, truncated-and-fixed-token-budget bug
+    included. Still writes the fresh text back to the cache, so a following non-force
+    call is a hit of the new text."""
     from app.db import checkups as checkups_db
     from app.db import supplements as supplements_db
 
@@ -1389,5 +1402,5 @@ async def run_supplement_advice(
         session, user_id=user_id, kind="supplements", model=MODEL_SUPPLEMENTS, context=data,
         cache_key=_supplement_cache_key(data, MODEL_SUPPLEMENTS),
         with_stats_fn=supplement_advice_with_stats,
-        question=f"supplements:{len(active)}", api_key=api_key,
+        question=f"supplements:{len(active)}", api_key=api_key, force=force,
     )

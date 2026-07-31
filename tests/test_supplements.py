@@ -130,6 +130,47 @@ async def test_run_supplement_advice_caches_and_logs(session, monkeypatch):
     assert len(logged) == 2  # one real call + one cache hit, both logged
 
 
+async def test_run_supplement_advice_force_bypasses_cache(session, monkeypatch):
+    """A fixed max_tokens once truncated a long list mid-sentence and the bad text sat in
+    the dedup cache — force=True is the escape hatch to actually regenerate."""
+    await _supplement(session, name="D3", dosage="5000 МО")
+    calls = {"n": 0}
+
+    def fake_with_stats(context, api_key=None):
+        calls["n"] += 1
+        return f"порада #{calls['n']}", CallStats(kind="supplements", model="m")
+
+    monkeypatch.setattr(reports, "supplement_advice_with_stats", fake_with_stats)
+
+    text1 = await reports.run_supplement_advice(session, user_id=U1, api_key="k")
+    assert text1 == "порада #1" and calls["n"] == 1
+
+    text2 = await reports.run_supplement_advice(
+        session, user_id=U1, api_key="k", force=True)
+    assert text2 == "порада #2" and calls["n"] == 2
+
+    # a following non-force call is a cache hit of the FRESH text
+    text3 = await reports.run_supplement_advice(session, user_id=U1, api_key="k")
+    assert text3 == "порада #2" and calls["n"] == 2
+
+
+def test_supplement_advice_max_tokens_scales_with_supplement_count():
+    """A flat max_tokens=700 silently truncated advice for a long supplement list
+    (stop_reason=max_tokens) — it must grow with the item count."""
+    with patch.object(reports, "_complete") as mocked:
+        mocked.return_value = ("text", CallStats(kind="supplements", model="m"))
+        reports.supplement_advice_with_stats({"supplements": [{"name": "D3"}]})
+        small_tokens = mocked.call_args.kwargs["max_tokens"]
+
+        mocked.reset_mock()
+        many = [{"name": f"S{i}"} for i in range(12)]
+        reports.supplement_advice_with_stats({"supplements": many})
+        large_tokens = mocked.call_args.kwargs["max_tokens"]
+
+    assert large_tokens > small_tokens
+    assert large_tokens <= 2200  # still capped
+
+
 # --- /checkups/supplements routes ---------------------------------------------------
 
 def _get_supp_id_by_name(uid, name):
@@ -201,6 +242,26 @@ def test_analyze_route_stores_and_shows_advice(auth_client):
 
     detail = auth_client.get("/checkups/supplements").text
     assert "контролюй феритин" in detail
+    assert "Спробувати ще раз" in detail  # button relabels once advice exists
+
+
+def test_analyze_route_force_regenerates(auth_client):
+    auth_client.post("/checkups/supplements", data={"name": "Залізо", "dosage": "30 мг"})
+    responses = iter(["перша спроба", "друга спроба"])
+
+    def fake_with_stats(context, api_key=None):
+        return next(responses), CallStats(kind="supplements", model="m")
+
+    with patch("app.routers.checkups.load_credentials",
+              return_value=type("C", (), {"anthropic_key": "test-key"})()), \
+         patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
+        auth_client.post("/checkups/supplements/analyze")
+        assert "перша спроба" in auth_client.get("/checkups/supplements").text
+
+        # without force, an unchanged list would replay the cached first attempt;
+        # force=1 (the "Спробувати ще раз" button) bypasses that and gets fresh text
+        auth_client.post("/checkups/supplements/analyze", data={"force": "1"})
+    assert "друга спроба" in auth_client.get("/checkups/supplements").text
 
 
 def test_supplements_are_isolated_per_user(client):
