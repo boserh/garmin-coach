@@ -69,6 +69,7 @@ usability, керування даними). **ST-18, ST-15, ST-16, ST-17, ST-19
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
+| [EP-17](EP-17-bevel-style-dashboard-redesign.md) | 🟡 medium | Дашборд у стилі Bevel — multi-ring hero (strain/recovery/sleep) + вітринні картки | L | EP-04 ✅ |
 | [EP-16](EP-16-season-periodization.md) | ⚪ lowest | Сезонна періодизація (кілька стартів) — треба 2-й старт | XL | EP-02 ✅, EP-05; intake спільний з NF-05 |
 | [EP-10](EP-10-multisport.md) (фаза 4) | ⚪ lowest | Triathlon-ціль — окремий intake-режим (де-факто свій епік; фази 1/3 вело ✅, плавання свідомо поза скоупом) | L | немає активної triathlon-цілі |
 | [EP-06](EP-06-saas-quotas.md) | ⚪ lowest | SaaS-режим: квоти вартості · ❄️ **frozen**: чужі юзери на неофіційному API, який Garmin закриває — після OPS-01 + 3 міс. стабільності | XL | рішення про продукт |
