@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
+from app.core.config import settings
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository, service
@@ -111,6 +112,12 @@ async def dashboard(
         await repository.get_state(session, user.id, service.GARMIN_ERRORS_KEY)
     )
 
+    # OPS-08: DB backup freshness — admin-only (a per-install fact, not per-user).
+    backup = None
+    if user.is_admin:
+        from app import backup_status
+        backup = backup_status.read_status(Path(settings.BACKUP_DIR))
+
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
@@ -123,5 +130,7 @@ async def dashboard(
             "today_iso": dt.date.today().isoformat(),
             "garmin_errors": garmin_errors,
             "eff_chart": eff_chart,
+            "backup": backup,
+            "backup_warn_days": settings.BACKUP_WARN_DAYS,
         },
     )

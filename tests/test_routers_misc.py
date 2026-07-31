@@ -33,6 +33,26 @@ def test_status(auth_client):
     assert body["incomplete_days_30d"] == 0
     # OPS-04: last-morning-job field present (None until a tick has run)
     assert "last_morning_job" in body
+    # OPS-08: admin-only backup-freshness fields; no backups/ dir in the test env → None
+    assert body["backup_age_hours"] is None
+    assert body["backup_rsync_ok"] is None
+
+
+def test_status_shows_backup_age_for_admin(auth_client, tmp_path, monkeypatch):
+    import json
+    import time as _t
+
+    from app.backup_status import MARKER_NAME
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    (tmp_path / MARKER_NAME).write_text(
+        json.dumps({"ts": _t.time() - 7200, "path": "x", "size": 1, "rsync_ok": True})
+    )
+    r = auth_client.get("/status")
+    body = r.json()
+    assert body["backup_age_hours"] == 2.0
+    assert body["backup_rsync_ok"] is True
 
 
 def test_me_jobs_page_renders(auth_client):

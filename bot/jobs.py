@@ -81,6 +81,10 @@ RATE_LIMIT_NOTIFIED_PREFIX = "garmin_ratelimited:"
 # phase already recorded into bot_state — no extra Garmin request.
 GARMIN_ERR_BURST_PREFIX = "garmin_err_burst:"
 
+# OPS-08: the date (ISO) a stale-backup DM was last sent to this admin, so
+# backup_status.should_warn can apply the once/day-vs-once/BACKUP_WARN_DAYS cadence.
+BACKUP_WARN_KEY = "backup_warn_last"
+
 # A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
 # stale ones). Kept out of the morning report — different concern. Scheduled via
 # run_daily at a fixed hour (Europe/Warsaw), before the morning window.
@@ -612,6 +616,39 @@ async def _garmin_error_burst_check(ctx, session, user: User, today: str) -> Non
         logger.exception(f"OPS-05 burst check failed user={user.id}")
 
 
+async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
+    """OPS-08: DM the admin once the DB backup marker (scripts/backup_db.py) looks
+    stale — a dead systemd timer, a full disk, or a disconnected USB stick otherwise
+    fail silently until the day of a restore. Pure file stat, zero network/Garmin;
+    admin-only (a per-install fact, not a per-user one). Best-effort — never a tick
+    failure."""
+    if not getattr(user, "is_admin", False) or not user.telegram_chat_id:
+        return
+    warn_days = settings.BACKUP_WARN_DAYS
+    if warn_days <= 0:
+        return
+    try:
+        from pathlib import Path
+
+        from app import backup_status
+        b = backup_status.read_status(Path(settings.BACKUP_DIR))
+        last_warned = await repository.get_state(session, user.id, BACKUP_WARN_KEY)
+        if not backup_status.should_warn(b["age_hours"], last_warned, today, warn_days):
+            return
+        await repository.set_state(session, user.id, BACKUP_WARN_KEY, today)
+        if b["age_hours"] is None:
+            body = "маркер не знайдено — схоже, бекапи ще не налаштовані або не запускались."
+        else:
+            days = round(b["age_hours"] / 24, 1)
+            body = f"останній успішний бекап був {days} дн тому (поріг {warn_days} дн)."
+        note = (" Off-SD копіювання (rsync) останнього разу не вдалось."
+                 if b["rsync_ok"] is False else "")
+        await ctx.bot.send_message(user.telegram_chat_id, f"⚠️ Бекапу БД немає: {body}{note}")
+        logger.warning(f"OPS-08 backup-stale DM user={user.id} age_hours={b['age_hours']}")
+    except Exception:  # noqa: BLE001 — observation only, never break the tick
+        logger.exception(f"OPS-08 backup freshness check failed user={user.id}")
+
+
 async def _tick_for_user(ctx, session, user: User) -> None:
     # ST-14: window + "today" are per-user (their own timezone), not the process TZ — a
     # traveling user or a second user outside Europe/Warsaw gets their own morning, and
@@ -621,6 +658,11 @@ async def _tick_for_user(ctx, session, user: User) -> None:
     if not (MORNING_START_HOUR <= now.hour <= ACTIVITY_WATCH_END_HOUR):
         logger.debug(f"TICK skip user={user.id}: outside window (hour={now.hour})")
         return JobOutcome("skip", "outside window")   # OPS-04: routine, aggregated
+
+    # OPS-08: a pure file-stat check, zero network/Garmin — runs regardless of whether
+    # this user even has Garmin credentials, admin-only (a per-install fact).
+    await _backup_freshness_check(ctx, session, user, today)
+
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:
             if creds is None:

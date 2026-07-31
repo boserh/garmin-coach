@@ -1,5 +1,6 @@
 """Liveness (public) and per-user status (login required)."""
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
@@ -83,6 +84,15 @@ async def status(
             if (last_morning_job.finished_at or last_morning_job.started_at) else None,
         }
 
+    # OPS-08: DB backup freshness — admin-only (a per-install fact, not per-user).
+    backup_age_hours = None
+    backup_rsync_ok = None
+    if user.is_admin:
+        from app import backup_status
+        b = backup_status.read_status(Path(settings.BACKUP_DIR))
+        backup_age_hours = b["age_hours"]
+        backup_rsync_ok = b["rsync_ok"]
+
     return {
         "status": "ok",
         "provider": settings.GARMIN_PROVIDER,
@@ -98,4 +108,6 @@ async def status(
         "garmin_last_error": errors["last"],
         "incomplete_days_30d": incomplete_days_30d,
         "last_morning_job": last_morning_status,
+        "backup_age_hours": backup_age_hours,
+        "backup_rsync_ok": backup_rsync_ok,
     }

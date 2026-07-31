@@ -625,6 +625,27 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   `APP_SECRET_KEY`, so the DB copy is safe to store anywhere — but a restore can't
   decrypt creds unless `APP_SECRET_KEY`/`.env` is backed up **separately** (password
   manager / encrypted file), which must be done once, out of band.
+- **Backup freshness monitoring (OPS-08)**: OPS-02 made the backup happen; nothing
+  watched that it *keeps* happening — a dead systemd timer, a disconnected off-SD
+  stick or a full disk all fail silently until the day of a restore. A successful
+  `scripts/backup_db.py` run now writes `backups/last_ok.json`
+  (`_write_marker` — ts/path/size/`rsync_ok`); a failed **rsync** is recorded on the
+  marker (`rsync_ok: false`) rather than skipping the write, since the local backup
+  itself is still real and fresh even when the off-SD copy failed (the script still
+  exits nonzero for cron visibility). `app.backup_status` (pure, zero network/DB — one
+  JSON read) turns that into `age_hours`/`rsync_ok`, surfaced two ways: `GET /status`'s
+  admin-only fields (`backup_age_hours`/`backup_rsync_ok`, `None` for a non-admin or an
+  unconfigured install) + a matching banner on `/dashboard`, and a morning-tick DM
+  (`bot/jobs.py::_backup_freshness_check`, admin-only, `settings.BACKUP_WARN_DAYS`=3)
+  guarded via `bot_state` (`BACKUP_WARN_KEY`). Two deliberately different cadences
+  (`backup_status.should_warn`): a **known-stale** backup (marker exists, past the
+  threshold) nags once/day — it's an active, fixable failure; a **missing marker**
+  (backups never configured/run at all) only re-nags every `BACKUP_WARN_DAYS` days, so
+  a fresh install mid-setup doesn't get paged daily for something that isn't a
+  regression yet. `settings.BACKUP_DIR` must match `backup_db.py --dir` when a
+  non-default directory is used. Not in scope (per the ticket): a restore-test (still
+  the OPS-02 manual procedure) and the Postgres branch (frozen with PERF-03).
+  `tests/test_backup_status.py`, `test_backup_db.py`, `test_jobs.py`.
 - **Index audit (PERF-03 slice)**: hot user-scoped reads have composite indexes —
   `activities(user_id, date)`, `report_logs(user_id, created_at)`,
   `planned_workouts(plan_id, date)`; `daily_metrics(user_id, date)` is already covered
