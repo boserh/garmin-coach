@@ -324,6 +324,20 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 .btn-ghost:hover{filter:brightness(1.1);border-color:var(--accent,#7aa2f7)}
 .btn-ghost:active{transform:translateY(1px)}
 .btn-ghost:disabled{opacity:.55;cursor:default}
+/* Аналізи (health checkups): one lab-value row (name/value/unit/ref-range) per line */
+.result-row{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr auto;gap:.5rem;margin:.4rem 0}
+.result-row input{margin:0}
+.result-row .result-del{padding:.4rem .6rem}
+@media (max-width:640px){.result-row{grid-template-columns:1fr 1fr;grid-template-areas:"n n" "v u" "r d"}
+  .result-row input[name=result_name]{grid-area:n}
+  .result-row input[name=result_value]{grid-area:v}
+  .result-row input[name=result_unit]{grid-area:u}
+  .result-row input[name=result_ref]{grid-area:r}
+  .result-row .result-del{grid-area:d;justify-self:start}}
+.checkup-results{width:100%;border-collapse:collapse;margin:.6rem 0 1.2rem}
+.checkup-results th{text-align:left;color:var(--faint);font-size:.72rem;text-transform:uppercase;
+     letter-spacing:.05em;font-weight:600;padding:.3rem .6rem;border-bottom:1px solid var(--line-2)}
+.checkup-results td{padding:.45rem .6rem;border-bottom:1px solid var(--line-2);font-size:.9rem}
 .saved{color:var(--easy);margin:1rem 0;font-size:.9rem}
 .err{color:#f7768e;font-size:.85rem}
 

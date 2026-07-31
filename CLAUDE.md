@@ -1825,6 +1825,27 @@ Web requests are logged by an app-level HTTP middleware in `create_app` (logger 
 project format. Per-Claude-call cost/tokens are logged (logger `claude`) **and** persisted
 to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
 
+**Health checkups / "Аналізи" tab (v1, data-entry only)**: a new nav tab, separate from
+Garmin-sourced data, for manually logging periodic medical checkups (blood panels,
+hormone tests, doctor visits) — the kind of data Garmin never sees. `HealthCheckup`
+(`app/db/models.py`, migration `7694e3a5a6aa`) is one row per checkup: `date`/`title`/
+`category` (free text), `results` (a compact JSON list of `{name, value, unit,
+ref_range}` — mirrors the `PlannedWorkout.steps`/`strength_plan` JSON-breakdown pattern
+rather than a child table, since nothing needs to query into individual values yet),
+`notes`, and an optional `next_due_date` captured now so a future reminder job has
+something to key off without a schema change. `app/db/checkups.py` is the user-scoped
+CRUD (list/get/create/update/delete, always filtered by `user_id` — one account can
+never read/edit another's record by guessing an id). `app/routers/checkups.py` wires
+`GET/POST /checkups` (list + add form) and `GET/POST /checkups/{id}` (+
+`POST /checkups/{id}/delete`) — plain DB reads/writes, zero Garmin/Claude calls. The
+add/edit forms take repeated `result_name`/`result_value`/`result_unit`/`result_ref`
+inputs (a few blank rows rendered server-side so it works without JS; a "+ показник"
+button progressively enhances more rows in, mirroring the EP-04/ST-05 pattern). Linked
+from `_nav.html` as "Аналізи". **Deliberately out of scope for v1** (named directly by
+the user as the next steps, not silently dropped): narrating/analysing the entered
+data with Claude, and reminders ahead of `next_due_date` — both are future work reading
+the same rows. `tests/test_checkups.py` (CRUD + cross-user isolation).
+
 ## TODO
 
 - OPS-10 live verification on the Pi (needs a real account — code side is done):
@@ -1832,3 +1853,5 @@ to `report_logs` (browsable at `/me/report_logs` and `/ui/report_logs`).
   the one branch recon never exercised) and one full cycle `/report` → morning job →
   `push-plan --dry-run` → a real MFA connect through `/settings`.
 - Deploy to Raspberry Pi 4 (systemd units for `bot.main` and `uvicorn`).
+- Health checkups (`app/routers/checkups.py`): narrate `HealthCheckup.results`/trends
+  with Claude, and a reminder job/DM ahead of `next_due_date`.

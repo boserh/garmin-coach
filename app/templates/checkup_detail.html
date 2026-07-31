@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ c.title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+  {% set active = 'checkups' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <div class="crumb"><a href="/checkups">← Аналізи</a></div>
+    <p class="eyebrow">{{ c.date }}{% if c.category %} · {{ c.category }}{% endif %}</p>
+    <h1 class="title" style="font-size:1.7rem">{{ c.title }}</h1>
+
+    {% if request.query_params.get('saved') == '1' %}<div class="saved">✅ Збережено.</div>{% endif %}
+    {% if request.query_params.get('err') == 'required' %}
+      <div class="err" style="margin:0 0 1rem">Заповни дату і назву аналізу.</div>
+    {% endif %}
+
+    {% if c.results %}
+    <table class="checkup-results">
+      <thead><tr><th>Показник</th><th>Значення</th><th>Одиниці</th><th>Норма</th></tr></thead>
+      <tbody>
+        {% for r in c.results %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ r.value }}</td>
+          <td>{{ r.unit }}</td>
+          <td>{{ r.ref_range }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if c.notes %}<div class="hint" style="font-size:.9rem;color:var(--muted)">{{ c.notes }}</div>{% endif %}
+    {% if c.next_due_date %}<div class="hint">Наступний чекап: {{ c.next_due_date }}</div>{% endif %}
+
+    <hr class="divide">
+    <h2 class="sec">Редагувати</h2>
+    <form class="form" method="post" action="/checkups/{{ c.id }}">
+      <label for="date">Дата</label>
+      <input id="date" name="date" type="date" required value="{{ c.date }}">
+
+      <label for="title">Назва</label>
+      <input id="title" name="title" type="text" required value="{{ c.title }}">
+
+      <label for="category">Категорія</label>
+      <input id="category" name="category" type="text" value="{{ c.category or '' }}">
+
+      <label>Показники</label>
+      <div id="results-rows">
+        {% for r in (c.results or []) %}
+        <div class="result-row">
+          <input name="result_name" type="text" value="{{ r.name }}" placeholder="показник">
+          <input name="result_value" type="text" value="{{ r.value }}" placeholder="значення">
+          <input name="result_unit" type="text" value="{{ r.unit }}" placeholder="одиниці">
+          <input name="result_ref" type="text" value="{{ r.ref_range }}" placeholder="норма">
+          <button type="button" class="btn-ghost result-del" aria-label="видалити">✕</button>
+        </div>
+        {% endfor %}
+        {% for _ in range(2) %}
+        <div class="result-row">
+          <input name="result_name" type="text" placeholder="показник">
+          <input name="result_value" type="text" placeholder="значення">
+          <input name="result_unit" type="text" placeholder="одиниці">
+          <input name="result_ref" type="text" placeholder="норма">
+          <button type="button" class="btn-ghost result-del" aria-label="видалити">✕</button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-ghost" id="add-result-row">+ показник</button>
+
+      <label for="notes">Нотатки</label>
+      <textarea id="notes" name="notes" rows="3">{{ c.notes or '' }}</textarea>
+
+      <label for="next_due_date">Наступний чекап (необов'язково)</label>
+      <input id="next_due_date" name="next_due_date" type="date" value="{{ c.next_due_date or '' }}">
+
+      <button class="btn" type="submit">Зберегти</button>
+    </form>
+
+    <form method="post" action="/checkups/{{ c.id }}/delete" style="margin-top:1rem"
+          onsubmit="return confirm('Видалити цей запис?')">
+      <button class="btn-ghost" type="submit">🗑 Видалити</button>
+    </form>
+  </div>
+
+  <template id="result-row-tpl">
+    <div class="result-row">
+      <input name="result_name" type="text" placeholder="показник">
+      <input name="result_value" type="text" placeholder="значення">
+      <input name="result_unit" type="text" placeholder="одиниці">
+      <input name="result_ref" type="text" placeholder="норма">
+      <button type="button" class="btn-ghost result-del" aria-label="видалити">✕</button>
+    </div>
+  </template>
+  <script>
+    (function () {
+      var wrap = document.getElementById('results-rows');
+      var tpl = document.getElementById('result-row-tpl');
+      document.getElementById('add-result-row').addEventListener('click', function () {
+        wrap.appendChild(tpl.content.cloneNode(true));
+      });
+      wrap.addEventListener('click', function (e) {
+        if (e.target.classList.contains('result-del')) {
+          e.target.closest('.result-row').remove();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
