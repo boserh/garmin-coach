@@ -1873,6 +1873,29 @@ genuinely rescheduled checkup needs a fresh row); documented, not hidden. The
 checkups + up to 3 upcoming due dates) — adding/editing entries stays web-only (a
 structured lab-values form doesn't fit a chat message). `tests/test_checkup_reminders.py`.
 
+**Supplement tracking + lab-monitoring advice**: `GET/POST /checkups/supplements` (a
+sibling data-entry page to the checkup list, linked from it) lets a user log what
+they're currently taking — `Supplement` (`app/db/models.py`, migration `723556154431`):
+`name`/`dosage`/`frequency`/`started_date`/`notes` (all free text except `is_active`,
+which keeps a stopped supplement visible for history without it feeding advice).
+`app/db/supplements.py` is the user-scoped CRUD, list active-first-then-stopped.
+`POST /checkups/supplements/analyze` runs `app.analysis.reports.run_supplement_advice`
+(`SYSTEM_SUPPLEMENTS`, `MODEL_SUPPLEMENTS`=Sonnet) — for each active supplement (or a
+sensible grouping), which specific lab marker is worth monitoring and roughly how often,
+explicitly a MONITORING suggestion only (never dosage/dietary advice, never a diagnosis).
+`checkups.recent_categories` feeds the categories the user is already tracking (a
+365-day window) so the model doesn't recommend a test that's already being done.
+Returns `None` with zero Claude calls when there are no active supplements (the caller
+shows a friendly message). Dedup-cached (`_supplement_cache_key`, keyed on the active
+list + recent categories — the README pitfall — so adding/editing/stopping a supplement
+naturally busts the cache) and logged as `ReportLog(kind="supplements")`; unlike the
+checkup interpretation there's no single row to store the text on, so the last generated
+advice is read back via `repository.get_last_report_of_kind(..., "supplements")` and shown
+as a standing block (the same pattern EP-05's race pack uses on `/plan`). The static
+`/checkups/supplements*` routes are registered in `app/routers/checkups.py` **before**
+`/checkups/{checkup_id}` so "supplements" is never swallowed as a checkup id (the same
+ordering trick as `/plan/archive` vs `/plan/{plan_id}`). `tests/test_supplements.py`.
+
 ## TODO
 
 - OPS-10 live verification on the Pi (needs a real account — code side is done):

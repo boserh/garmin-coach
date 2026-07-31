@@ -34,6 +34,7 @@ from app.analysis.cache import (  # noqa: F401
     _digest_cache_key,
     _insights_cache_key,
     _race_cache_key,
+    _supplement_cache_key,
     _wrapped_cache_key,
 )
 from app.analysis.client import (  # noqa: F401
@@ -52,6 +53,7 @@ from app.analysis.client import (  # noqa: F401
     MODEL_PLAN_GEN,
     MODEL_PLAN_GEN_ALT,
     MODEL_RACE,
+    MODEL_SUPPLEMENTS,
     MODEL_WRAPPED,
     OPUS_4_8,
     PLAN_GEN_MODELS,
@@ -145,7 +147,10 @@ from app.analysis.reports import (  # noqa: F401
     run_injury_check,
     run_insights,
     run_race_plan,
+    run_supplement_advice,
     run_wrapped,
+    supplement_advice_with_stats,
+    supplement_payload,
     wrapped_with_stats,
 )
 from app.core.config import settings  # noqa: F401  re-exported: tests patch service.settings.*
