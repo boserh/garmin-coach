@@ -78,12 +78,14 @@ async def dashboard(
 
     plan = await repository.get_active_plan(session, user.id)
     upcoming = []
+    load_forecast = None
     if plan is not None:
         window_end = (dt.date.today() + dt.timedelta(days=PLAN_WINDOW_DAYS)).isoformat()
         upcoming = [
             w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
             if w.date <= window_end
         ]
+        load_forecast = await repository.load_forecast(session, user.id)
 
     activities = _activity_cards(await repository.list_activities(session, user.id, n=ACTIVITIES_N))
     month_cost = await repository.month_cost(session, user.id)
@@ -115,7 +117,7 @@ async def dashboard(
             "user": user, "today": today,
             "charts": charts, "first_x": first_x, "last_x": last_x,
             "has_history": bool(trend),
-            "plan": plan, "upcoming": upcoming,
+            "plan": plan, "upcoming": upcoming, "load_forecast": load_forecast,
             "activities": activities,
             "month_cost": month_cost,
             "today_iso": dt.date.today().isoformat(),

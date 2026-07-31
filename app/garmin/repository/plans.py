@@ -212,6 +212,52 @@ async def upcoming_plan_workouts(
     ).scalars().all()
 
 
+async def load_forecast(
+    session: AsyncSession, user_id: int, *, today: Optional[dt.date] = None,
+) -> Optional[dict]:
+    """NF-20: this ISO week's forecast load + forward-looking ACWR for the active plan —
+    the fetch+shape wiring around the pure ``app.loadforecast`` math, shared by ``/plan``,
+    the dashboard, and the adaptation context so all three read the identical number.
+    ``None`` when there's no active plan."""
+    from app import loadforecast
+    from app.core.config import settings
+
+    plan = await get_active_plan(session, user_id)
+    if plan is None:
+        return None
+    today = today or dt.date.today()
+    end = loadforecast.week_end(today).isoformat()
+    today_s = today.isoformat()
+    workouts = await list_workouts(session, plan.id)
+    remaining = [
+        {"type": w.type, "dist_km": w.dist_km, "steps": w.steps}
+        for w in workouts
+        if w.status == "planned" and today_s <= w.date <= end
+    ]
+
+    from app.garmin.repository.core import count_daily_metrics, typical_run_pace
+    from app.garmin.repository.stats import weekly_activity_load
+
+    history_days = await count_daily_metrics(session, user_id)
+    weekly = await weekly_activity_load(
+        session, user_id, weeks=loadforecast.MIN_CHRONIC_WEEKS + 2
+    )
+    by_week = {w["week"]: w["load"] for w in weekly}
+    this_week = today.strftime("%G-W%V")
+    done_load = by_week.get(this_week, 0.0)
+    chronic = [
+        by_week.get((today - dt.timedelta(weeks=n)).strftime("%G-W%V"), 0.0)
+        for n in range(1, loadforecast.MIN_CHRONIC_WEEKS + 1)
+    ]
+    anchor_pace = await typical_run_pace(session, user_id)
+    return loadforecast.forecast_week(
+        remaining_sessions=remaining, done_load=done_load,
+        chronic_weekly_loads=chronic, history_days=history_days,
+        anchor_pace=anchor_pace,
+        warn_acwr=settings.FORECAST_ACWR_WARN, high_acwr=settings.FORECAST_ACWR_HIGH,
+    )
+
+
 async def weekly_compliance(
     session: AsyncSession, plan_id: int
 ) -> dict:

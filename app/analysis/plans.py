@@ -822,6 +822,9 @@ async def run_plan_adaptation(
     # or partial session — feed it alongside compliance, not instead of it.
     from app import stepmatch
     step_match = stepmatch.aggregate(await repository.recent_step_match(session, plan.id))
+    # Forward load forecast (NF-20): this ISO week's forecast load/ACWR from the plan
+    # itself, already computed — the model reads it, it doesn't re-derive it.
+    load_forecast = await repository.load_forecast(session, user_id, today=today)
     context = {
         "today": today.isoformat(),
         "trigger": trigger,
@@ -838,6 +841,7 @@ async def run_plan_adaptation(
         "subjective": subjective_mod.summarize(subj_runs),
         "step_match": step_match,
         "risk": risk or None,
+        "load_forecast": load_forecast,
     }
     try:
         edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)
