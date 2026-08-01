@@ -70,6 +70,72 @@ def test_tomorrow_heavy_false_for_easy_or_empty():
     assert sleepnudge.tomorrow_is_heavy([]) is False
 
 
+# ---- NF-21: circular median / recommended_bedtime / sleep_regularity / nudge_text --
+
+def test_circular_median_two_values_across_midnight():
+    """The ticket's own example: 23:30 and 00:20 are 50 minutes apart, not ~12 hours —
+    a naive average of the minute values would land at 11:55 (afternoon!), not 23:55."""
+    result = sleepnudge._circular_median_minutes([23 * 60 + 30, 0 * 60 + 20])
+    assert result == 23 * 60 + 55
+
+
+def test_circular_median_empty_is_none():
+    assert sleepnudge._circular_median_minutes([]) is None
+
+
+def test_recommended_bedtime_uses_personal_p50_when_no_garmin_need():
+    rows = _healthy(20)   # sleep_h=7.5 every night → personal p50 = 7.5h
+    for i in range(6, 20):   # last 14 nights carry timing data
+        rows[i]["extra"] = {"sleep_end": "06:40", "sleep_start": "22:50"}
+    # wake 06:40 (400 min) − 7.5h need (450 min) − 15 min buffer = 22:55
+    assert sleepnudge.recommended_bedtime(rows) == "22:55"
+
+
+def test_recommended_bedtime_prefers_the_larger_of_garmin_need_and_personal_p50():
+    rows = _healthy(20)
+    for i in range(6, 20):
+        rows[i]["extra"] = {"sleep_end": "06:40", "sleep_start": "22:50"}
+    rows[-1]["extra"]["sleep_need_h"] = 9.0   # bigger than the 7.5h personal p50
+    # 06:40 (400) − 9h (540) − 15 = -155 % 1440 = 1285 = 21:25
+    assert sleepnudge.recommended_bedtime(rows) == "21:25"
+
+
+def test_recommended_bedtime_none_below_min_nights():
+    rows = _healthy(20)
+    for i in range(15, 20):   # only 5 nights of timing data — below TIMING_MIN_NIGHTS
+        rows[i]["extra"] = {"sleep_end": "06:40"}
+    assert sleepnudge.recommended_bedtime(rows) is None
+
+
+def test_recommended_bedtime_none_without_timing_fields():
+    """AC-gate: an unverified/changed DTO shape (fields never populated) degrades to
+    None, never a crash — the caller falls back to NF-16's original text."""
+    assert sleepnudge.recommended_bedtime(_healthy(20)) is None
+
+
+def test_sleep_regularity_zero_std_for_identical_bedtimes():
+    rows = _healthy(20)
+    for i in range(6, 20):
+        rows[i]["extra"] = {"sleep_start": "22:50"}
+    assert sleepnudge.sleep_regularity(rows) == {"std_min": 0}
+
+
+def test_sleep_regularity_none_below_min_nights():
+    assert sleepnudge.sleep_regularity(_healthy(20)) is None
+
+
+def test_nudge_text_falls_back_without_timing_data():
+    assert sleepnudge.nudge_text(_healthy(10)) == sleepnudge.NUDGE_TEXT
+
+
+def test_nudge_text_includes_concrete_bedtime_with_enough_data():
+    rows = _healthy(20)
+    for i in range(6, 20):
+        rows[i]["extra"] = {"sleep_end": "06:40", "sleep_start": "22:50"}
+    text = sleepnudge.nudge_text(rows)
+    assert "22:55" in text
+
+
 # ---- job hook: _sleep_nudge_for_user ------------------------------------------
 
 async def _make_user(session, **kw):

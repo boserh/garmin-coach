@@ -142,6 +142,8 @@ def test_parse_export_builds_day_from_multiple_files(tmp_path):
         "lightSleepSeconds": 7200, "remSleepSeconds": 5400, "awakeSleepSeconds": 600,
         "sleepScores": {"overallScore": 80}, "avgSleepStress": 18.6,
         "awakeCount": 1, "restlessMomentCount": 30,
+        # NF-21: 22:50 and 06:40 as epoch-ms "local" timestamps (UTC-as-local convention).
+        "sleepStartTimestampLocal": 1736549400000, "sleepEndTimestampLocal": 1736577600000,
     }])
     _write(f, "DI-Connect-Aggregator/a_UDSFile.json", [{
         "calendarDate": "2025-01-10", "totalSteps": 9000, "restingHeartRate": 49,
@@ -168,6 +170,7 @@ def test_parse_export_builds_day_from_multiple_files(tmp_path):
     assert d["extra"]["resting_hr"] == 49 and d["extra"]["steps"] == 9000
     assert d["extra"]["race_5k_s"] == 1500
     assert d["has_data"] is True
+    assert d["extra"]["sleep_start"] == "22:50" and d["extra"]["sleep_end"] == "06:40"
 
 
 async def test_import_export_inserts_and_is_idempotent(session, tmp_path):

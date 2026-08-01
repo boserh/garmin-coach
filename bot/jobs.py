@@ -1025,7 +1025,7 @@ async def _sleep_nudge_for_user(ctx, session, user: User, today: str) -> None:
     if not sleepnudge.has_sleep_debt(history):
         return
     await repository.set_state(session, user.id, guard_key, "1")
-    await ctx.bot.send_message(user.telegram_chat_id, sleepnudge.NUDGE_TEXT)
+    await ctx.bot.send_message(user.telegram_chat_id, sleepnudge.nudge_text(history))
     logger.info(f"SLEEP_NUDGE sent user={user.id}")
 
 

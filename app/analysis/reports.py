@@ -947,6 +947,11 @@ async def run_digest(
         await repository.runs_for_efficiency(session, user_id)
     )
 
+    # NF-21: bedtime regularity (std of sleep_start over the last 14 nights) — None below
+    # sleepnudge.TIMING_MIN_NIGHTS of timing data, same as the evening nudge itself.
+    from app import sleepnudge
+    sleep_regularity = sleepnudge.sleep_regularity(recovery)
+
     plan = await repository.get_active_plan(session, user_id)
     compliance = None
     goal = None
@@ -992,6 +997,7 @@ async def run_digest(
         "goal_projection": goal_projection,
         "efficiency": efficiency_trend,
         "records": month_records,
+        "sleep_regularity": sleep_regularity,
         "has_plan": plan is not None,
     }
 

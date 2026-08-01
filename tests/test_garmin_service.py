@@ -31,6 +31,9 @@ class FakeProvider:
                 "avgHeartRate": 52, "averageSpO2Value": 96.0,
                 "averageRespirationValue": 14.0, "sleepScoreFeedback": "POSITIVE",
                 "sleepNeed": {"actual": 480, "feedback": "STABLE"},
+                # NF-21: epoch-ms "local" timestamps → 22:50 / 06:40 wall-clock.
+                "sleepStartTimestampLocal": 1750546200000,
+                "sleepEndTimestampLocal": 1750574400000,
             }}
         if path.startswith("/hrv-service"):
             return {"hrvSummary": {"lastNightAvg": 60, "status": "BALANCED", "weeklyAvg": 55}}
@@ -78,6 +81,7 @@ def test_build_payload_shape(monkeypatch):
     # `extra` collects the unprocessed scalars + training readiness
     assert day.extra["resting_hr"] == 48
     assert day.extra["readiness_score"] == 63 and day.extra["acwr_pct"] == 95
+    assert day.extra["sleep_start"] == "22:50" and day.extra["sleep_end"] == "06:40"
     assert day.extra["sleep_need_h"] == 8.0           # 480 min / 60
     assert day.extra["spo2_avg"] == 96.0 and day.extra["hrv_weekly_avg"] == 55
     # … plus the daily summary + race predictions + endurance
@@ -92,6 +96,14 @@ def test_build_payload_shape(monkeypatch):
     assert "exercises" not in act.model_dump()
 
     assert payload.planned_runs == []
+
+
+def test_local_hhmm_degrades_on_unexpected_shape():
+    """NF-21 AC-gate: a missing/wrong-typed field must never raise — it's just absent
+    from ``extra``, and the sleep nudge falls back to its original number-free text."""
+    assert service._local_hhmm(None) is None
+    assert service._local_hhmm("not a number") is None
+    assert service._local_hhmm(float("inf")) is None
 
 
 def test_fetch_workout_detail_parses_description(monkeypatch):

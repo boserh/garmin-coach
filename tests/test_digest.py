@@ -176,6 +176,49 @@ def test_digest_efficiency_enters_cache_key():
     assert base != with_eff
 
 
+# ---------- sleep regularity (NF-21) ----------
+
+async def test_digest_context_carries_sleep_regularity(session):
+    from app.db.models import DailyMetric
+
+    today = dt.date.today().isoformat()
+    await _seed_run(session, U1, today, 6.0, activity_id=4001)   # keep the digest non-empty
+    d0 = dt.date.today()
+    for i in range(14):
+        session.add(DailyMetric(
+            user_id=U1, date=(d0 - dt.timedelta(days=13 - i)).isoformat(),
+            sleep_h=7.5, extra={"sleep_start": "22:50"}))
+    await session.commit()
+
+    stats = CallStats(kind="digest", model=service.MODEL_DIGEST)
+    with patch.object(reports, "digest_with_stats", return_value=("текст", stats)) as m:
+        await run_digest(session, user_id=U1)
+
+    ctx = m.call_args.args[0]
+    assert ctx["sleep_regularity"] == {"std_min": 0}
+
+
+async def test_digest_context_sleep_regularity_none_without_enough_timing_data(session):
+    today = dt.date.today().isoformat()
+    await _seed_run(session, U1, today, 6.0, activity_id=3001)
+
+    stats = CallStats(kind="digest", model=service.MODEL_DIGEST)
+    with patch.object(reports, "digest_with_stats", return_value=("текст", stats)) as m:
+        await run_digest(session, user_id=U1)
+
+    ctx = m.call_args.args[0]
+    assert ctx["sleep_regularity"] is None
+
+
+def test_digest_sleep_regularity_enters_cache_key():
+    from app.analysis.cache import _digest_cache_key
+
+    base = _digest_cache_key({"iso_week": "2026-W28"}, "m")
+    with_reg = _digest_cache_key(
+        {"iso_week": "2026-W28", "sleep_regularity": {"std_min": 12}}, "m")
+    assert base != with_reg
+
+
 # ---------- job hook: once-a-week guard ----------
 
 class _FakeBot:

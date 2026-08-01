@@ -156,6 +156,20 @@ def _date_range(days: int) -> List[dt.date]:
 
 # ---------- AGGREGATION ----------
 
+def _local_hhmm(ms) -> Optional[str]:
+    """A Garmin ``*TimestampLocal`` field (epoch ms, but encoded so that reading it as
+    UTC gives the correct local wall-clock time — the same convention every ``*Local``
+    timestamp in the Garmin Connect API uses) → ``"HH:MM"``. Returns None on anything
+    that isn't a plausible epoch — NF-21's AC-gate: an unverified/changed DTO shape must
+    degrade silently, never raise."""
+    if not isinstance(ms, (int, float)):
+        return None
+    try:
+        return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%H:%M")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
     """Everything useful we fetch but don't put in the typed columns — kept as a
     compact scalar dict on ``DailyMetric.extra`` (no per-minute arrays). RHR, SpO2 and
@@ -178,6 +192,9 @@ def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
         "sleep_need_h": round(need / 60, 2) if isinstance(need, (int, float)) else None,
         "sleep_need_feedback": sn.get("feedback"),
         "sleep_feedback": _g(dto, "sleepScoreFeedback"),
+        # NF-21: local clock time, for the evening nudge's concrete bedtime.
+        "sleep_start": _local_hhmm(_g(dto, "sleepStartTimestampLocal")),
+        "sleep_end": _local_hhmm(_g(dto, "sleepEndTimestampLocal")),
         # spo2 + respiration (already in the sleep DTO)
         "spo2_avg": _g(dto, "averageSpO2Value"),
         "spo2_low": _g(dto, "lowestSpO2Value"),
