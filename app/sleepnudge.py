@@ -5,9 +5,11 @@ preventive nudge is already in the DB by evening: tomorrow's plan session and th
 nights' sleep. :func:`has_sleep_debt` + :func:`tomorrow_is_heavy` fire the nudge ONLY when
 BOTH hold — tomorrow is a key session (tempo/intervals/long) AND recent sleep shows a debt
 signal, reusing NF-01's own personal percentile band as the threshold (the same "personal,
-not generic" rule EP-08 established) plus Garmin's own sleep_need vs actual gap as an
-earlier, band-free signal for a brand-new user. Either condition alone stays silent — the
-EP-13 rule: "no conflict, no message" (never "before every tempo run").
+not generic" rule EP-08 established) for BOTH sleep_h (duration) and sleep_score (quality —
+a full night with poor quality is still a debt signal), plus Garmin's own sleep_need vs
+actual gap as an earlier, band-free signal for a brand-new user. If NONE of the three hold,
+the nudge stays silent — the EP-13 rule: "no conflict, no message" (never "before every
+tempo run").
 
 NF-21 adds a concrete bedtime: once ``extra.sleep_start``/``sleep_end`` (Garmin's own sleep
 timing, ``service._local_hhmm``) has accumulated ``TIMING_MIN_NIGHTS`` nights, the nudge
@@ -58,16 +60,19 @@ def has_sleep_debt(history: Sequence[dict]) -> bool:
     """Pure detector over recent daily rows (oldest-first, as ``repository.read_history``
     returns — including its ``extra`` dict, where Garmin's ``sleep_need_h`` lives).
 
-    True when EITHER: sleep_h sat below the personal NF-01 band on at least
-    ``DEBT_MIN_NIGHTS`` of the last ``DEBT_WINDOW`` nights, OR the most recent night's
-    Garmin-estimated need outpaces actual sleep by ``NEED_GAP_H`` or more.
+    True when ANY of: sleep_h sat below the personal NF-01 band on at least
+    ``DEBT_MIN_NIGHTS`` of the last ``DEBT_WINDOW`` nights, OR sleep_score did the same
+    (duration and quality are independent failure modes — a full night with a low score
+    is still a debt signal), OR the most recent night's Garmin-estimated need outpaces
+    actual sleep by ``NEED_GAP_H`` or more.
     """
     norm = baselines.compute_baselines(list(history))
-    if norm and "sleep_h" in norm["metrics"]:
-        low = norm["metrics"]["sleep_h"]["band"][0]
-        recent = _recent(history, "sleep_h", DEBT_WINDOW)
-        if sum(1 for v in recent if v < low) >= DEBT_MIN_NIGHTS:
-            return True
+    for metric in ("sleep_h", "sleep_score"):
+        if norm and metric in norm["metrics"]:
+            low = norm["metrics"][metric]["band"][0]
+            recent = _recent(history, metric, DEBT_WINDOW)
+            if sum(1 for v in recent if v < low) >= DEBT_MIN_NIGHTS:
+                return True
 
     last = history[-1] if history else None
     if last:
