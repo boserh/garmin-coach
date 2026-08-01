@@ -51,6 +51,15 @@
     {% if c.notes %}<div class="hint" style="font-size:.9rem;color:var(--muted)">{{ c.notes }}</div>{% endif %}
     {% if c.next_due_date %}<div class="hint">Наступний чекап: {{ c.next_due_date }}</div>{% endif %}
 
+    {% if attachments %}
+    <div class="hint" style="margin-top:.8rem;display:flex;flex-wrap:wrap;gap:.6rem">
+      {% for a in attachments %}
+      <a href="/checkups/{{ c.id }}/attachments/{{ a.id }}" target="_blank" rel="noopener">
+        📎 {{ a.filename }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
     {% if c.analysis %}
     <div class="note" style="margin-top:1.3rem">
       <b>🔬 Розбір</b>

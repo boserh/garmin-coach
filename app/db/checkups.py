@@ -4,10 +4,10 @@ for Claude's interpretation) and :func:`due_for_reminder` (candidates for the
 next-checkup nudge, filtered further by ``app.checkup_reminders``)."""
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import HealthCheckup
+from app.db.models import CheckupAttachment, HealthCheckup
 
 
 async def list_checkups(session: AsyncSession, user_id: int) -> Sequence[HealthCheckup]:
@@ -86,6 +86,10 @@ async def update_checkup(
 
 
 async def delete_checkup(session: AsyncSession, row: HealthCheckup) -> None:
+    """No DB-level cascade is configured (this codebase doesn't use ORM relationships/
+    FK cascades — see the module docstring's "no need to query into individual values"
+    posture), so attachments are deleted explicitly first."""
+    await session.execute(delete(CheckupAttachment).where(CheckupAttachment.checkup_id == row.id))
     await session.delete(row)
     await session.commit()
 
@@ -125,6 +129,41 @@ async def due_for_reminder(session: AsyncSession, user_id: int) -> Sequence[Heal
         )
     )
     return rows.scalars().all()
+
+
+async def add_attachment(
+    session: AsyncSession, checkup_id: int, *, filename: str, media_type: str, data: bytes,
+) -> CheckupAttachment:
+    """Persist an uploaded file's bytes against ``checkup_id`` so the original
+    document can be pulled up later (see :class:`app.db.models.CheckupAttachment`)."""
+    row = CheckupAttachment(
+        checkup_id=checkup_id, filename=filename, media_type=media_type, data=data)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def list_attachments(session: AsyncSession, checkup_id: int) -> Sequence[CheckupAttachment]:
+    rows = await session.execute(
+        select(CheckupAttachment)
+        .where(CheckupAttachment.checkup_id == checkup_id)
+        .order_by(CheckupAttachment.id)
+    )
+    return rows.scalars().all()
+
+
+async def get_attachment(
+    session: AsyncSession, checkup_id: int, attachment_id: int
+) -> Optional[CheckupAttachment]:
+    """Scoped by ``checkup_id`` (whose ownership the caller has already checked via
+    :func:`get_checkup`) so one checkup's attachment id can't serve another's file."""
+    row = await session.execute(
+        select(CheckupAttachment).where(
+            CheckupAttachment.id == attachment_id, CheckupAttachment.checkup_id == checkup_id
+        )
+    )
+    return row.scalar_one_or_none()
 
 
 RECENT_CATEGORIES_DAYS = 365

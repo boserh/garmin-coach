@@ -1420,7 +1420,8 @@ def _coerce_checkup_ocr_batch(text: str) -> list:
     if i != -1 and j > i:
         s = s[i:j + 1]
     data = json.loads(s)
-    items = data.get("checkups") if isinstance(data, dict) and "checkups" in data else [data]
+    raw_items = data.get("checkups") if isinstance(data, dict) else None
+    items = raw_items if raw_items is not None else [data]
     return [_coerce_one_checkup(item) for item in items if isinstance(item, dict)]
 
 
@@ -1429,19 +1430,25 @@ async def run_checkup_ocr_batch(
     api_key: Optional[str] = None,
 ) -> List[HealthCheckup]:
     """Turn 1+ uploaded lab-report photos/PDFs into normal, editable ``HealthCheckup``
-    rows via ONE Claude vision call — ``files`` is ``[(file_bytes, media_type), ...]``,
-    at most :data:`CHECKUP_UPLOAD_BATCH_MAX`. Batching lets Claude tell whether several
-    files are pages of the SAME report (merged into one checkup) or separate documents
-    (one checkup each), and costs one system-prompt + one round-trip instead of N.
-    Rows are saved immediately but left fully editable — same review-before-trust
-    posture as ``supplement_advice_to_checkup_template``. Only ever triggered by an
-    explicit upload, never automatically. Not dedup-cached (each upload is a unique
-    file set, not a repeatable question) but every attempt still logs a
-    ``ReportLog(kind="checkup_ocr")`` for cost tracking, success or failure."""
+    rows via ONE Claude vision call — ``files`` is
+    ``[(file_bytes, media_type, filename), ...]``, at most
+    :data:`CHECKUP_UPLOAD_BATCH_MAX`. Batching lets Claude tell whether several files
+    are pages of the SAME report (merged into one checkup) or separate documents (one
+    checkup each), and costs one system-prompt + one round-trip instead of N.
+
+    Every file in the batch is saved as a ``CheckupAttachment`` on EVERY checkup the
+    batch produces (see that model's docstring for why per-file attribution isn't
+    recoverable from Claude's response) so the user can pull up the original document
+    later. Rows are saved immediately but left fully editable — same
+    review-before-trust posture as ``supplement_advice_to_checkup_template``. Only
+    ever triggered by an explicit upload, never automatically. Not dedup-cached (each
+    upload is a unique file set, not a repeatable question) but every attempt still
+    logs a ``ReportLog(kind="checkup_ocr")`` for cost tracking, success or failure."""
     from app.db import checkups as checkups_db
     from app.garmin import repository
 
-    b64_files = [(media_type, base64.b64encode(fb).decode("ascii")) for fb, media_type in files]
+    b64_files = [
+        (media_type, base64.b64encode(fb).decode("ascii")) for fb, media_type, _ in files]
     q = f"checkup upload (OCR, {len(files)} file{'s' if len(files) != 1 else ''})"
     try:
         text, stats = await _run_claude(checkup_ocr_with_stats, b64_files, api_key, None)
@@ -1493,8 +1500,9 @@ async def run_checkup_ocr_batch(
         raise AnalystError(
             "Не вдалось розпізнати документ(и) — спробуй чіткіше фото або введи вручну."
         )
-    return [
-        await checkups_db.create_checkup(
+    rows = []
+    for parsed in parsed_items:
+        row = await checkups_db.create_checkup(
             session, user_id,
             date=parsed["date"] or fallback_date,
             title=parsed["title"] or "Аналіз (розпізнано)",
@@ -1502,8 +1510,11 @@ async def run_checkup_ocr_batch(
             results=parsed["results"],
             notes=parsed["notes"],
         )
-        for parsed in parsed_items
-    ]
+        for file_bytes, media_type, filename in files:
+            await checkups_db.add_attachment(
+                session, row.id, filename=filename, media_type=media_type, data=file_bytes)
+        rows.append(row)
+    return rows
 
 
 # ---------- SUPPLEMENT → LAB-MONITORING ADVICE (the "Аналізи" tab's third follow-up) ----------

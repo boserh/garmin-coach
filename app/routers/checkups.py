@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile, WebSocket
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, WebSocket
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,9 +119,10 @@ async def _process_checkup_upload_job(
     job_id: str, files: list, fallback_date: str, api_key: Optional[str],
 ) -> None:
     """Run one batch's OCR off the request path, in its own DB session — same shape as
-    ``app.routers.plan._generate_plan_bg``. ``files`` is ``[(file_bytes, media_type), ...]``.
-    Never raises; the outcome lands on the job (read by a fresh GET /checkups) and goes
-    out over the websocket to any open tab."""
+    ``app.routers.plan._generate_plan_bg``. ``files`` is
+    ``[(file_bytes, media_type, filename), ...]``. Never raises; the outcome lands on
+    the job (read by a fresh GET /checkups) and goes out over the websocket to any
+    open tab."""
     job = _upload_jobs[job_id]
     job.status = "processing"
     await _broadcast_job(job)
@@ -267,7 +268,7 @@ async def checkups_upload(
         _upload_jobs[job.id] = job
         job_ids.append(job.id)
         _spawn_upload_job(
-            job, [(data, media_type) for _, data, media_type in chunk],
+            job, [(data, media_type, name) for name, data, media_type in chunk],
             today, creds.anthropic_key,
         )
     return RedirectResponse(f"/checkups?jobs={','.join(job_ids)}", status_code=303)
@@ -445,9 +446,34 @@ async def checkup_detail(
     row = await checkups.get_checkup(session, user.id, checkup_id)
     if row is None:
         return RedirectResponse("/checkups", status_code=303)
+    attachments = await checkups.list_attachments(session, row.id)
     return templates.TemplateResponse(
         request, "checkup_detail.html",
-        {"user": user, "c": row},
+        {"user": user, "c": row, "attachments": attachments},
+    )
+
+
+@router.get("/checkups/{checkup_id}/attachments/{attachment_id}")
+async def checkup_attachment(
+    checkup_id: int,
+    attachment_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Serve the original uploaded photo/PDF a checkup was parsed from, so the user
+    can double-check a value Claude may have misread. Ownership is checked via the
+    parent checkup (get_checkup is user-scoped); the attachment lookup is then scoped
+    to that checkup id, same "can't guess another owner's id" posture as everywhere
+    else in this router."""
+    row = await checkups.get_checkup(session, user.id, checkup_id)
+    if row is None:
+        return RedirectResponse("/checkups", status_code=303)
+    attachment = await checkups.get_attachment(session, row.id, attachment_id)
+    if attachment is None:
+        return RedirectResponse(f"/checkups/{checkup_id}", status_code=303)
+    return Response(
+        content=attachment.data, media_type=attachment.media_type,
+        headers={"Content-Disposition": f'inline; filename="{attachment.filename}"'},
     )
 
 
