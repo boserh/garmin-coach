@@ -37,9 +37,10 @@
       <thead><tr><th>Показник</th><th>Значення</th><th>Одиниці</th><th>Норма</th></tr></thead>
       <tbody>
         {% for r in c.results %}
-        <tr>
+        {% set oor = r.value|oor(r.ref_range) %}
+        <tr class="{{ 'oor-row' if oor }}">
           <td>{{ r.name }}</td>
-          <td>{{ r.value }}</td>
+          <td class="{{ 'oor' if oor }}">{{ r.value }}{% if oor %} <span class="oor-flag" title="поза межами норми">⚠</span>{% endif %}</td>
           <td>{{ r.unit }}</td>
           <td>{{ r.ref_range }}</td>
         </tr>
@@ -65,8 +66,9 @@
     {% endif %}
 
     <hr class="divide">
-    <h2 class="sec">Редагувати</h2>
-    <form class="form" method="post" action="/checkups/{{ c.id }}">
+    <details class="fwrap">
+      <summary class="fsum">✏️ Редагувати<span class="chev">▾</span></summary>
+      <form class="form" method="post" action="/checkups/{{ c.id }}">
       <label for="date">Дата</label>
       <input id="date" name="date" type="date" required value="{{ c.date }}">
 
@@ -106,7 +108,8 @@
       <input id="next_due_date" name="next_due_date" type="date" value="{{ c.next_due_date or '' }}">
 
       <button class="btn" type="submit">Зберегти</button>
-    </form>
+      </form>
+    </details>
 
     <form method="post" action="/checkups/{{ c.id }}/delete" style="margin-top:1rem"
           onsubmit="return confirm('Видалити цей запис?')">

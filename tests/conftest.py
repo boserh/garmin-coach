@@ -1,5 +1,6 @@
 """Test setup: point the app at a throwaway SQLite file before anything imports
 the engine, and provide an isolated in-memory session fixture."""
+import functools
 import os
 
 # Must run before any app.* import pulls in the engine from Settings.
@@ -10,6 +11,10 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_garmin.db"
 # many times in a row with the same email. Dedicated rate-limit tests build their own
 # limiter instead of relying on this default.
 os.environ["LOGIN_RATE_LIMIT"] = "0"
+# PERF-05's Garmin pacer is a real time.sleep() spacer, process-wide — against a
+# FakeProvider it's pure wall-clock waste (real Garmin is never touched in tests).
+# 0 disables it (app.core.config's own comment on GARMIN_RPS).
+os.environ["GARMIN_RPS"] = "0"
 # Cost safety (see CLAUDE.md "Cost safety"): tests must NEVER reach the real Anthropic API.
 # Hard-override the key to a dummy so even a mock that misses its target gets a 401 instead
 # of spending real money — CODE-01's refactor silently un-mocked calls and burned tokens.
@@ -24,6 +29,7 @@ for _f in ("test_garmin.db", "test_garmin.db-wal", "test_garmin.db-journal"):
         pass
 
 import anthropic  # noqa: E402
+import bcrypt  # noqa: E402
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
@@ -31,6 +37,13 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 import app.db.models  # noqa: E402,F401 — register models on Base.metadata
 from app.db.base import Base  # noqa: E402
+
+# bcrypt's default cost (12 rounds) is deliberately slow (~100-300ms/hash) — a real
+# security property in prod, pure wall-clock tax in tests, most of which seed a user
+# (hash_password) at least once per test via _seed_user. Lowering the work factor still
+# exercises the real bcrypt hash/verify round-trip, just fast; a test that specifically
+# cares about cost (none currently do) can override rounds explicitly.
+bcrypt.gensalt = functools.partial(bcrypt.gensalt, rounds=4)
 
 
 class _BlockedAnthropic:
