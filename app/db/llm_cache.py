@@ -10,7 +10,7 @@ analysis call it fronts (a failed read is a miss, a failed write is a warning).
 import logging
 import time
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import LlmCache
@@ -44,3 +44,32 @@ async def put(session: AsyncSession, key: str, value: str, ttl_s: float) -> None
             await session.rollback()  # keep the session usable for the ReportLog write
         except Exception:
             pass
+
+
+async def stats(session: AsyncSession) -> dict:
+    """Row/byte counts for the ST-20 admin cache page — total rows, how many are
+    already past ``expires_at`` (purge-eligible), and the value column's size."""
+    now = time.time()
+    total = (await session.execute(select(func.count()).select_from(LlmCache))).scalar_one()
+    expired = (await session.execute(
+        select(func.count()).select_from(LlmCache).where(LlmCache.expires_at <= now)
+    )).scalar_one()
+    bytes_ = (await session.execute(
+        select(func.coalesce(func.sum(func.length(LlmCache.value)), 0))
+    )).scalar_one()
+    return {"total": total, "expired": expired, "bytes": int(bytes_)}
+
+
+async def purge_expired(session: AsyncSession) -> int:
+    """Delete only rows past their TTL. Returns the number of rows removed."""
+    result = await session.execute(delete(LlmCache).where(LlmCache.expires_at <= time.time()))
+    await session.commit()
+    return result.rowcount or 0
+
+
+async def purge_all(session: AsyncSession) -> int:
+    """Wipe the whole dedup cache — every subsequent report/ask call becomes a paid
+    Claude call again. An explicit admin action (ST-20), never automatic."""
+    result = await session.execute(delete(LlmCache))
+    await session.commit()
+    return result.rowcount or 0

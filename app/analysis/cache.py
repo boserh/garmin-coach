@@ -174,6 +174,7 @@ def _context_cache_key(kind: str, context: dict, model: str, fields: tuple) -> s
 _DIGEST_KEY_FIELDS = (
     "iso_week", "week", "weekly_volume", "compliance", "recovery",
     "fitness", "multisport", "goal", "goal_projection", "efficiency", "records",
+    "sleep_regularity",
 )
 _INSIGHTS_KEY_FIELDS = ("window_days", "findings")
 _WRAPPED_KEY_FIELDS = ("period", "start", "end", "stats", "records")

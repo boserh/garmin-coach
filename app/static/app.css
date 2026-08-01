@@ -103,6 +103,8 @@ summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
 .match-dist{font-size:.68rem;color:var(--muted);font-weight:500}
 .match-link{text-decoration:none;border-bottom:1px dotted var(--muted)}
 .match-link:hover{color:var(--accent);border-bottom-color:var(--accent)}
+.sync-badge{font-size:.68rem;font-weight:600}
+.sync-badge.on{color:var(--easy)} .sync-badge.pending{color:var(--muted)}
 .compliance{font-size:.72rem;font-weight:600;color:var(--muted);margin-left:auto}
 .desc{color:#cbd2dc;font-size:.92rem;line-height:1.55}
 .dist{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:1rem;

@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import threading
 import time as _time
 from typing import Optional
@@ -296,6 +297,84 @@ def cache_del(key: str) -> None:
         pass
     except Exception as e:
         logger.warning(f"GCACHE delete failed: {e}")
+
+
+# Cache keys scoped to a single activity — used by ``cache_del_activity`` (ST-20) to
+# wipe everything Garmin ever cached about one activity without touching siblings.
+_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v2", "splits:v1", "gear_link:v1")
+_CACHE_FILE_RE = re.compile(r"^(.+_v\d+)_.+$")
+
+
+def cache_stats() -> dict:
+    """File count + total bytes on disk, grouped by cache-key prefix (``series:v2``,
+    ``exercise:v3``, ...) — the ST-20 admin cache page's Garmin-side summary. Reads the
+    directory directly (not the in-process memo) so it reflects what's actually on disk,
+    including entries written by the other process (bot vs. web)."""
+    by_prefix: dict = {}
+    total_files = 0
+    total_bytes = 0
+    try:
+        names = os.listdir(GARMIN_CACHE_DIR)
+    except FileNotFoundError:
+        names = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(GARMIN_CACHE_DIR, name)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        # filename is "<prefix>_v<N>_<id>.json" (colons → underscores); group by
+        # everything through the version tag ("gear_stats_v1", not just "gear_stats" —
+        # multi-word prefixes like gear_stats/gear_link have an underscore of their own).
+        stem = name[:-5]
+        m = _CACHE_FILE_RE.match(stem)
+        prefix = m.group(1) if m else stem
+        entry = by_prefix.setdefault(prefix, {"count": 0, "bytes": 0})
+        entry["count"] += 1
+        entry["bytes"] += size
+        total_files += 1
+        total_bytes += size
+    return {"by_prefix": by_prefix, "total_files": total_files, "total_bytes": total_bytes}
+
+
+def cache_purge_expired() -> int:
+    """Delete every on-disk entry past its TTL. Returns the number of files removed.
+    Parses each file's stored ``expires_at`` directly — cheaper than round-tripping
+    through ``_cache_get`` for files never touched by this process."""
+    now = _time.time()
+    removed = 0
+    try:
+        names = os.listdir(GARMIN_CACHE_DIR)
+    except FileNotFoundError:
+        return 0
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(GARMIN_CACHE_DIR, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                entry = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(entry, list) and len(entry) == 2 and entry[1] <= now:
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        _memo.clear()  # a stale memo entry could otherwise outlive its just-deleted file
+    return removed
+
+
+def cache_del_activity(activity_id) -> None:
+    """Drop every cache key scoped to one activity (exercises/series/splits/gear link) —
+    ST-20's per-activity purge button, e.g. after re-editing exercises in Garmin and
+    wanting a clean slate rather than waiting out the TTL."""
+    for prefix in _ACTIVITY_KEY_PREFIXES:
+        cache_del(f"{prefix}:{activity_id}")
 
 
 # ---------- FETCHERS ----------

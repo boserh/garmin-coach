@@ -56,6 +56,26 @@
       </div>
     {% endif %}
 
+    {% if not readonly and user.garmin_sync_enabled %}
+      <div class="meta" style="margin-top:.6rem">
+        {% if sync_summary %}
+          Останній синк: <b>{{ sync_summary.when }}</b>
+          {% if sync_summary.errors %}
+            <span class="sync-badge pending">⚠️ {{ sync_summary.errors|length }} помилок</span>
+          {% else %}
+            <span class="sync-badge on">ok</span>
+          {% endif %}
+          <span class="sep">·</span>+{{ sync_summary.pushed }} / -{{ sync_summary.removed }}
+        {% else %}
+          Синк ще не запускався.
+        {% endif %}
+        {% if synced == 'wait' %}<span class="sep">·</span>щойно синкали — зачекай трохи{% endif %}
+        <form class="inline" method="post" action="/plan/sync" style="display:inline">
+          <button class="abtn toggle" type="submit">🔄 Синхронізувати зараз</button>
+        </form>
+      </div>
+    {% endif %}
+
     {% if load_forecast %}
       {% set lf = load_forecast %}
       <div class="meta" style="margin-top:.6rem">
@@ -128,6 +148,9 @@
                 <span class="match-dist">{{ '%.1f'|format(w.match_info.actual_dist_km) }} км факт</span>
               {%- endif %}
             {% endif %}
+            {% set sb = (sync_badges or {}).get(w.id) %}
+            {% if sb == 'on_watch' %}<span class="sync-badge on">⌚ на годиннику</span>
+            {% elif sb == 'pending' %}<span class="sync-badge pending">— не запушено</span>{% endif %}
           </div>
           {% set ma = (manual_actions or {}).get(w.id) %}
           {% if not readonly and ma %}

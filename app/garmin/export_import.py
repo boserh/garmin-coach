@@ -61,6 +61,17 @@ def _int(v):
     return round(v) if isinstance(v, (int, float)) else None
 
 
+def _local_hhmm(ms) -> Optional[str]:
+    """Mirrors ``service._local_hhmm`` (NF-21) — the export's flat sleep record carries the
+    same ``*TimestampLocal`` fields as the live DTO."""
+    if not isinstance(ms, (int, float)):
+        return None
+    try:
+        return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%H:%M")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _metric(health: dict, mtype: str) -> dict:
     """One metric (HRV/HR/SPO2/…) from a healthStatusData record's ``metrics`` list."""
     for m in health.get("metrics") or []:
@@ -122,6 +133,9 @@ def _build_day(date, sleep, uds, readiness, vo2, race, endurance, health) -> dic
         "awake_count": sleep.get("awakeCount"),
         "restless_moments": sleep.get("restlessMomentCount"),
         "breathing_disruption_sev": sleep.get("breathingDisruptionSeverity"),
+        # NF-21
+        "sleep_start": _local_hhmm(sleep.get("sleepStartTimestampLocal")),
+        "sleep_end": _local_hhmm(sleep.get("sleepEndTimestampLocal")),
         "vo2max": vo2.get("vo2MaxValue"),
         "fitness_age": vo2.get("fitnessAge"),
         "race_5k_s": race.get("raceTime5K"),

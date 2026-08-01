@@ -59,12 +59,8 @@ NF-18 (вузька диференціація від NF-09) та виправи
 
 ST-10…ST-14 закрито (див. Done). Відкрита партія BA-аудиту 2026-07-23 (кат. A —
 usability, керування даними). **ST-18, ST-15, ST-16, ST-17, ST-19, ST-21 закрито**
-(2026-07-24, див. Done) — лишилась лише ST-20 (**ST-22 закрито 2026-07-26**,
-**ST-23 закрито 2026-07-27**):
-
-| ID | Пріор. | Назва | Оцінка | Залежності |
-| --- | --- | --- | --- | --- |
-| [ST-20](ST-20-cache-admin-ui.md) | 🟢 low | Інвалідація кешів з UI (/admin/cache) | S | — (OPS-06 — та сама сторінка) |
+(2026-07-24, див. Done); **ST-22 закрито 2026-07-26**, **ST-23 закрито 2026-07-27**,
+**ST-20 закрито 2026-08-01** (див. Done) — немає відкритих.
 
 ## Епіки (L/XL)
 
@@ -88,13 +84,13 @@ NF-15's gear-endpoint recon довершено живим акаунтом 2026-
 
 ### Нові фічі — BA-аудит 2026-07-23
 
-**NF-17, NF-19, NF-20 закрито** (NF-20 — 2026-07-31, див. Done):
+**NF-17, NF-19, NF-20 закрито** (NF-20 — 2026-07-31, див. Done); **NF-21 закрито**
+(2026-08-01, див. Done; live-верифікація полів DTO лишається desk-only — деталі в Done):
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [NF-21](NF-21-sleep-timing-bedtime.md) | 🟡 medium | Час сну (відбій/підйом) → конкретний bedtime у nudge | M | NF-16 ✅; ⚠️ верифікація полів DTO — перший AC |
 | [NF-18](NF-18-auto-sickness-trigger.md) | ⚪ lowest | Автотригер хвороби (пропуски+аномалії; тригер перевизначено §7 для диф. від NF-09) | M | NF-03 ✅, EP-08 ✅, NF-09 ✅ |
-| [NF-22](NF-22-race-week-countdown.md) | 🟢 low | Race-week countdown (T-3 чекліст, T-1 бріф) | S | EP-05 ✅; синергія NF-17/NF-21 |
+| [NF-22](NF-22-race-week-countdown.md) | 🟢 low | Race-week countdown (T-3 чекліст, T-1 бріф) | S | EP-05 ✅; синергія NF-17/NF-21 ✅ |
 
 ## Перфоманс
 
@@ -107,12 +103,11 @@ NF-15's gear-endpoint recon довершено живим акаунтом 2026-
 
 Відкрита партія BA-аудиту 2026-07-23 (кат. B — спостережуваність і надійність).
 **OPS-05, OPS-04 закрито** (2026-07-24, див. Done); **OPS-08 закрито** (2026-07-31,
-див. Done):
+див. Done); **OPS-09 закрито** (2026-08-01, див. Done):
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [OPS-09](OPS-09-calendar-push-audit.md) | 🟡 medium | Аудит пушів у Garmin-календар + «Синк зараз» | M | — |
-| [OPS-06](OPS-06-cache-metrics-page.md) | 🟢 low | Метрики кешів (hit-rate, розміри) | S | ST-20 (та сама сторінка) |
+| [OPS-06](OPS-06-cache-metrics-page.md) | 🟢 low | Метрики кешів (hit-rate, розміри) | S | ST-20 ✅ (та сама сторінка) |
 | [OPS-07](OPS-07-morning-report-watchdog.md) | ⚪ lowest | Watchdog жорсткого Garmin-збою о deadline (пере-скоуплено §7; кандидат злиття в OPS-05) | S | OPS-05 |
 
 Обидві сторі первісного розділу зроблено (2026-07) — див. Done (SEC-01, OPS-02).
@@ -170,6 +165,9 @@ EP-10 (фаза 4 — triathlon-ціль; фази 1/3 вело ✅ зробле
 
 | ID | Назва | Де реалізовано |
 | --- | --- | --- |
+| [NF-21](NF-21-sleep-timing-bedtime.md) | Час сну (відбій/підйом) → конкретний bedtime у nudge + регулярність у дайджесті | `service._local_hhmm`/`export_import._local_hhmm` — `dailySleepDTO`'s `sleepStart/EndTimestampLocal` (epoch ms, Garmin's own "read-as-UTC-for-local-clock" convention) → `extra.sleep_start`/`sleep_end` ("HH:MM"); desk-only, не перевірено живим акаунтом (AC-гейт) — неочікуваний shape просто лишає поля відсутніми, нуль падінь, `app.sleepnudge` природно деградує в стару поведінку без чисел. `app/sleepnudge.py`: `recommended_bedtime` — типовий підйом (кругова медіана `sleep_end` за 14 ночей, стійка до переходу через північ) мінус `max(Garmin sleep_need_h, персональна NF-01 p50 sleep_h)` мінус 15 хв запасу; None нижче 7 ночей timing-даних → `nudge_text` повертає стару фразу без числа. `sleep_regularity` — кругове std відбою за 14 ночей, у контексті `run_digest` (+ `_DIGEST_KEY_FIELDS`, кеш-ключ) і `SYSTEM_DIGEST`. `tests/test_sleep_nudge.py`, `test_digest.py`, `test_garmin_service.py`, `test_export_import.py` |
+| [OPS-09](OPS-09-calendar-push-audit.md) | Аудит пушів у Garmin-календар + «Синхронізувати зараз» | `plan_sync.push_workout(..., errors=...)` збирає збої (`{workout_id, step, msg}`) замість тихого ковтання/прокидання винятку — одна невдала сесія більше не рве решту forward-проходу; `sync_plan_to_garmin` повертає `{pushed, removed, errors}` і зберігає підсумок у `bot_state` (`repository.set_plan_sync_summary`/`get_plan_sync_summary`, ключ `plan_sync_last:<plan_id>` — усі виклики `sync_plan_to_garmin` пишуть його безкоштовно, без правок по кожному хуку). `/plan`: бейдж на кожній сесії («⌚ на годиннику» / «— не запушено», `_sync_badges` через наявний `select_forward`), блок «Останній синк: коли — ok/⚠️ N помилок · +N/-N», кнопка `POST /plan/sync` (гейт `garmin_sync_enabled`, guard 1/5 хв, MFA → наявний 409-флоу через `user_runtime`). `tests/test_plan_sync.py`, `test_ops09_plan_sync_router.py` |
+| [ST-20](ST-20-cache-admin-ui.md) | Інвалідація кешів з UI (`/admin/cache`) | `app/db/llm_cache.py`: `stats`/`purge_expired`/`purge_all`. `app/garmin/client.py`: `cache_stats()` (файли/байти по префіксу ключа), `cache_purge_expired()`, `cache_del_activity(id)` (знімає `exercise:v3`/`series:v2`/`splits:v1`/`gear_link:v1` саме цієї активності). `GET/POST /admin/cache` (admin-only, кожна дія — POST, повна очистка llm_cache — з confirm і попередженням «наступні виклики платні»). `tests/test_admin_cache.py` |
 | [EP-17](EP-17-bevel-style-dashboard-redesign.md) | Дашборд у стилі Bevel — multi-ring hero (навантаження/відновлення/сон) + вітринні картки | Новий `app/templates/_hero_rings.html` — три кільця в один ряд у одній картці замість `_hero_ring.html` (той лишається незмінним для `/me`); `app/routers/dashboard.py` — три чисті функції поруч із наявними хелперами: `_load_ring` (ACWR% з `extra.acwr_pct`, чесний ACWR замість вигаданого Bevel-style «strain»), `_recovery_ring` (позиція сьогоднішнього HRV у NF-01 персональному band `p25..p75` навколо `p50`, а не сирий HRV як псевдовідсоток — `baselines.compute_baselines` за 90-денне вікно), `_sleep_ring` (сьогоднішній `sleep_score`, вже 0–100). Кожне кільце — свій колір з наявної CSS-палітри (`--tempo`/`--recovery`/`--long`), порожній стан (немає ACWR / <14 днів HRV-історії / немає сну цього дня) — нейтральний сірий контур і «—», без нуля/помилки. Нижче кілець — `.stat-grid` із компактними картками (HRV, пульс спокою, Body Battery, стрес) замість старих `.hs`-рядків; стрес показує лише avg/max (`stress_min` не документоване поле Garmin DTO — не вигадується). Кільця анімуються наявним `.ring-anim`/CSS-only трюком, нової JS-залежності нема. `/dashboard` уже в `tests/test_mobile_layout.py`. `tests/test_dashboard.py` |
 | [OPS-08](OPS-08-backup-freshness-monitoring.md) | Моніторинг свіжості бекапів БД | `scripts/backup_db.py` пише маркер `backups/last_ok.json` (ts/шлях/розмір/`rsync_ok`) лише після успішного бекапу; фейл rsync фіксується в маркері окремо (`rsync_ok: false`), не ховаючи успіх локальної копії, і все одно проброшується назовні (ненульовий код виходу для крону). `app/backup_status.py` — чистий парсер маркера (нуль мережі/БД): `read_status` → `age_hours`/`rsync_ok` (чесний `None`, якщо маркера нема), `should_warn` — дві каденції нагадувань: **відомий застарілий** бекап (маркер є, вік за порогом) нагадує раз/добу, **відсутній маркер** (бекапи ще не налаштовані) — раз на `BACKUP_WARN_DAYS`=3, щоб свіжий інстал не спамило нагадуваннями під час першого налаштування. `GET /status` (адмін-поля `backup_age_hours`/`backup_rsync_ok`, `None` для не-адміна) + банер на `/dashboard`; ранковий тік DM-ить лише адмінам (`bot/jobs.py::_backup_freshness_check`, гард `bot_state` `backup_warn_last`) — чистий stat-файлу, нуль мережі. `tests/test_backup_status.py`, `test_backup_db.py`, `test_jobs.py` |
 | [NF-20](NF-20-forward-load-forecast.md) | Прогноз навантаження вперед (forward-looking ACWR по плану) | `app/loadforecast.py` — чистий (нуль LLM) модуль: `session_load` оцінює TRIMP планової сесії = `fueling.estimate_minutes` (steps/dist_km/тип, той самий естіматор NF-11) × ваговий коефіцієнт типу (easy/recovery 1.5, long 2, tempo 3, intervals 4, strength 2; cycling — по найвищій `hr_zone` у кроках, інакше фолбек); `forecast_week` = сума ще-`planned` сесій поточного ISO-тижня (скасована відразу зникає — фільтр статусу в самому виклику) + факт уже прожитих днів тижня (`multisport.weekly_load`'s поточний тиждень), а прогнозна ACWR = це число / хронічне середнє за останні `MIN_CHRONIC_WEEKS`=4 завершені тижні (справжній тихий тиждень рахується як 0.0, не пропускається — реальний сигнал відпочинку, а не діра в даних); калібраційний гейт `history_days < MIN_HISTORY_DAYS`=28 → `calibrating=true`, нуль чисел. `repository.load_forecast` (`app/garmin/repository/plans.py`) — фетч+збірка (перевикористовує `weekly_activity_load`/`count_daily_metrics`/`typical_run_pace`/`list_workouts`), пороги `FORECAST_ACWR_WARN`=1.4/`FORECAST_ACWR_HIGH`=1.6 з `app.core.config`. Три споживачі того самого числа: блок на `/plan` (label «оцінка»), рядок на дашборді, і рядок контексту `run_plan_adaptation` (**не кешується** — adapt ніколи не кешується) з реченням у `SYSTEM_PLAN_ADAPT`, що це вже готове число, не здогад. Не блокує редагування плану — тільки показ. `tests/test_loadforecast.py` |

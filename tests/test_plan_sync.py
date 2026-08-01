@@ -35,7 +35,7 @@ async def test_sync_pushes_upcoming_and_stores_ids(session):
          patch.object(plan_sync.client, "schedule_workout",
                       return_value={"workoutScheduleId": 222}):
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
-    assert res == {"pushed": 1, "removed": 0}
+    assert res == {"pushed": 1, "removed": 0, "errors": []}
     ws = await repository.list_workouts(session, plan.id)
     assert ws[0].garmin_workout_id == 111 and ws[0].garmin_schedule_id == 222
 
@@ -51,7 +51,7 @@ async def test_sync_skips_rest_and_already_pushed(session):
     with patch.object(plan_sync, "get_provider", return_value=_prov()), \
          patch.object(plan_sync.client, "create_workout") as create:
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
-    assert res == {"pushed": 0, "removed": 0}
+    assert res == {"pushed": 0, "removed": 0, "errors": []}
     create.assert_not_called()
 
 
@@ -69,7 +69,7 @@ async def test_push_clones_strength_template_not_build(session):
                       return_value={"workoutScheduleId": 556}), \
          patch.object(plan_sync.workout_export, "build_workout") as build:
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
-    assert res == {"pushed": 1, "removed": 0}
+    assert res == {"pushed": 1, "removed": 0, "errors": []}
     fetch.assert_called_once_with(931013083)   # cloned the template
     build.assert_not_called()                   # not built from steps
     (w,) = await repository.list_pushed_workouts(session, U1)
@@ -85,7 +85,7 @@ async def test_sync_removes_pushed_from_archived_plan(session):
     with patch.object(plan_sync, "get_provider", return_value=_prov()), \
          patch.object(plan_sync.client, "delete_workout") as dele:
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
-    assert res == {"pushed": 0, "removed": 1}
+    assert res == {"pushed": 0, "removed": 1, "errors": []}
     dele.assert_called_once_with(999)
     assert await repository.list_pushed_workouts(session, U1) == []   # ids cleared
 
@@ -159,7 +159,7 @@ async def test_today_done_workout_stays_on_calendar(session):
          patch.object(plan_sync.client, "delete_workout") as dele, \
          patch.object(plan_sync.client, "create_workout") as create:
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
-    assert res == {"pushed": 0, "removed": 0}
+    assert res == {"pushed": 0, "removed": 0, "errors": []}
     dele.assert_not_called()
     create.assert_not_called()
     # ids still set on the row
@@ -207,6 +207,38 @@ async def test_select_pushed_and_only_date(session):
     assert await plan_sync.select_pushed(session, plan.id, only_date=d2) == []
 
 
+async def test_sync_collects_push_error_and_continues(session):
+    """OPS-09: a failing push must not abort the rest of the forward pass, and the
+    failure must show up in the returned/persisted summary instead of being lost."""
+    fut1 = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    fut2 = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut1, week=1, type="easy", dist_km=5.0, status="planned"),
+        dict(date=fut2, week=1, type="easy", dist_km=6.0, status="planned"),
+    ])
+    workouts = await repository.list_workouts(session, plan.id)
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "create_workout",
+                      side_effect=[RuntimeError("garmin 500"), {"workoutId": 42}]), \
+         patch.object(plan_sync.client, "schedule_workout", return_value={"workoutScheduleId": 43}):
+        res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
+    assert res["pushed"] == 1
+    assert res["removed"] == 0
+    assert len(res["errors"]) == 1
+    assert res["errors"][0]["step"] == "push"
+    assert "garmin 500" in res["errors"][0]["msg"]
+    # the one that failed never got an id; the other one did
+    ws = {w.id: w for w in await repository.list_workouts(session, plan.id)}
+    failed_id = res["errors"][0]["workout_id"]
+    assert ws[failed_id].garmin_workout_id is None
+    other_id = next(w.id for w in workouts if w.id != failed_id)
+    assert ws[other_id].garmin_workout_id == 42
+
+    summary = await repository.get_plan_sync_summary(session, U1, plan.id)
+    assert summary["pushed"] == 1 and summary["removed"] == 0
+    assert len(summary["errors"]) == 1
+
+
 async def test_sync_removes_past_and_pushes_future(session):
     past = (dt.date.today() - dt.timedelta(days=2)).isoformat()
     fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
@@ -221,5 +253,5 @@ async def test_sync_removes_past_and_pushes_future(session):
          patch.object(plan_sync.client, "schedule_workout",
                       return_value={"workoutScheduleId": 222}):
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
-    assert res == {"pushed": 1, "removed": 1}
+    assert res == {"pushed": 1, "removed": 1, "errors": []}
     dele.assert_called_once_with(999)

@@ -34,6 +34,7 @@ from app.analysis.service import (
 )
 from app.core.auth import current_user
 from app.core.config import settings
+from app.core.tz import user_tz
 from app.db.base import async_session_maker
 from app.db.models import ActivityRecord, User
 from app.dependencies import get_session
@@ -662,6 +663,29 @@ async def _manual_actions(session, user, workouts, today: str) -> dict:
     return out
 
 
+# OPS-09: manual "Синхронізувати зараз" — one push+cleanup pass, guarded against a
+# double-tap. In-process/per-user, best-effort like every other rate guard here.
+_SYNC_MIN_INTERVAL_S = 300
+_sync_guard: dict = {}
+
+
+async def _sync_badges(session, plan_id: int, workouts) -> dict:
+    """OPS-09: per-workout push status for ``/plan`` — ``"on_watch"`` (has a stored
+    ``garmin_workout_id``), ``"pending"`` (in the push window and would be pushed on the
+    next sync but isn't yet), or missing (out of window / not pushable — no badge)."""
+    pending_ids = {
+        w.id for w in await plan_sync.select_forward(
+            session, plan_id, days=plan_sync.PLAN_SYNC_WINDOW_DAYS)
+    }
+    badges = {}
+    for w in workouts:
+        if w.garmin_workout_id:
+            badges[w.id] = "on_watch"
+        elif w.id in pending_ids:
+            badges[w.id] = "pending"
+    return badges
+
+
 @router.get("/plan", response_class=HTMLResponse)
 async def plan_page(
     request: Request,
@@ -702,10 +726,17 @@ async def plan_page(
     today_iso = dt.date.today().isoformat()
     manual_actions = await _manual_actions(session, user, workouts, today_iso)
     load_forecast = await repository.load_forecast(session, user.id)
+    sync_badges = await _sync_badges(session, plan.id, workouts)
+    sync_summary = await repository.get_plan_sync_summary(session, user.id, plan.id)
+    if sync_summary:
+        when = dt.datetime.fromtimestamp(sync_summary["ts"], tz=user_tz(user))
+        sync_summary = dict(sync_summary, when=when.strftime("%d.%m %H:%M"))
     return templates.TemplateResponse(
         request, "plan.html",
         {"user": user, "plan": plan, "weeks": _by_week(workouts, today_iso),
          "manual_actions": manual_actions,
+         "sync_badges": sync_badges, "sync_summary": sync_summary,
+         "synced": request.query_params.get("synced"),
          "weekdays": WEEKDAYS, "today": dt.date.today().isoformat(),
          "strength_view": strength_view, "strength_names": strength_names,
          "compliance": compliance, "anchor_pace": anchor_pace,
@@ -918,6 +949,29 @@ async def plan_create(
                 f"sync={user.garmin_sync_enabled}")
     _spawn_plan_generation(user.id, params)
     return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/plan/sync")
+async def plan_sync_now(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """OPS-09: manual "Синхронізувати зараз" — runs the same forward+cleanup pass as the
+    daily job, on demand. Gated on ``garmin_sync_enabled`` (same toggle as the automatic
+    sync) and a 5-minute per-user guard against a double-tap. An MFA gate raised inside
+    ``user_runtime`` propagates to the app-level handler (409), never a 500."""
+    if not user.garmin_sync_enabled:
+        return RedirectResponse("/plan", status_code=303)
+    now = time.monotonic()
+    last = _sync_guard.get(user.id)
+    if last is not None and now - last < _SYNC_MIN_INTERVAL_S:
+        return RedirectResponse("/plan?synced=wait", status_code=303)
+    _sync_guard[user.id] = now
+    async with user_runtime(session, user):
+        res = await plan_sync.sync_plan_to_garmin(session, user.id)
+    logger.info(f"PLAN manual sync user={user.id}: {res}")
+    status = "err" if res["errors"] else "ok"
+    return RedirectResponse(f"/plan?synced={status}", status_code=303)
 
 
 @router.post("/plan/adjust-level")

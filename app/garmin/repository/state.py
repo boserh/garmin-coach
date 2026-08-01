@@ -1,6 +1,7 @@
 """BotState key/value + the DB-backed pending-plan-edit state (EP-11). Split out of
 the flat ``repository.py`` (B1)."""
 import json
+import time
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,3 +93,30 @@ async def pop_pending_plan_edit(session: AsyncSession, user_id: int) -> Optional
         return None
     await set_state(session, user_id, PENDING_PLAN_EDIT_KEY, "")
     return json.loads(raw)
+
+
+# ---------- OPS-09: last Garmin calendar sync summary ----------
+# One row per plan (``plan_sync_last:<plan_id>``) so an archived plan keeps its own
+# last-known sync result independent of whatever plan is active now — the read-only
+# archive view (``GET /plan/{id}``) can show it too, not just the live ``/plan`` page.
+
+def _plan_sync_key(plan_id: int) -> str:
+    return f"plan_sync_last:{plan_id}"
+
+
+async def set_plan_sync_summary(
+    session: AsyncSession, user_id: int, plan_id: int, pushed: int, removed: int,
+    errors: list,
+) -> None:
+    await set_state(
+        session, user_id, _plan_sync_key(plan_id),
+        json.dumps({"ts": time.time(), "pushed": pushed, "removed": removed,
+                    "errors": errors}, ensure_ascii=False),
+    )
+
+
+async def get_plan_sync_summary(
+    session: AsyncSession, user_id: int, plan_id: int
+) -> Optional[dict]:
+    raw = await get_state(session, user_id, _plan_sync_key(plan_id))
+    return json.loads(raw) if raw else None
