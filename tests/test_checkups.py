@@ -239,7 +239,9 @@ def test_editing_a_checkup_clears_stale_analysis(auth_client):
     assert "Проаналізувати результати" not in detail  # no results yet, so no button at all
 
 
-def test_upload_route_spawns_background_job_per_file(auth_client):
+def test_upload_route_spawns_one_job_for_a_batch_of_files(auth_client):
+    """Up to CHECKUP_UPLOAD_BATCH_MAX files in one submission become ONE job — one
+    Claude call for the whole batch, not one per file."""
     from app.routers import checkups as checkups_router
 
     with _fake_creds(), patch.object(checkups_router, "_spawn_upload_job") as spawn:
@@ -254,13 +256,33 @@ def test_upload_route_spawns_background_job_per_file(auth_client):
     job_ids: list = []
     try:
         assert r.status_code == 303
-        assert spawn.call_count == 2
+        assert spawn.call_count == 1
         location = r.headers["location"]
         assert location.startswith("/checkups?jobs=")
         job_ids = location.split("=", 1)[1].split(",")
-        assert len(job_ids) == 2
+        assert len(job_ids) == 1
+        job = checkups_router._upload_jobs[job_ids[0]]
+        assert job.status == "queued"
+        assert job.filenames == ["lab1.jpg", "lab2.pdf"]
+    finally:
         for jid in job_ids:
-            assert checkups_router._upload_jobs[jid].status == "queued"
+            checkups_router._upload_jobs.pop(jid, None)
+
+
+def test_upload_route_splits_more_than_batch_max_into_multiple_jobs(auth_client):
+    from app.routers import checkups as checkups_router
+
+    n = checkups_router.CHECKUP_UPLOAD_BATCH_MAX + 2
+    files = [("file", (f"lab{i}.jpg", b"bytes", "image/jpeg")) for i in range(n)]
+    with _fake_creds(), patch.object(checkups_router, "_spawn_upload_job") as spawn:
+        r = auth_client.post("/checkups/upload", files=files, follow_redirects=False)
+    job_ids: list = []
+    try:
+        assert spawn.call_count == 2  # BATCH_MAX + 2 -> one full batch, one partial
+        job_ids = r.headers["location"].split("=", 1)[1].split(",")
+        assert len(job_ids) == 2
+        sizes = sorted(len(checkups_router._upload_jobs[jid].filenames) for jid in job_ids)
+        assert sizes == [2, checkups_router.CHECKUP_UPLOAD_BATCH_MAX]
     finally:
         for jid in job_ids:
             checkups_router._upload_jobs.pop(jid, None)
@@ -313,8 +335,8 @@ def test_checkups_list_shows_upload_job_status(auth_client):
     from app.routers import checkups as checkups_router
 
     job = checkups_router.UploadJob(
-        id="testjob1", user_id=_user_id("t@example.com"), filename="lab.jpg",
-        status="done", checkup_id=123,
+        id="testjob1", user_id=_user_id("t@example.com"), filenames=["lab.jpg"],
+        status="done", checkup_ids=[123],
     )
     checkups_router._upload_jobs[job.id] = job
     try:
@@ -329,7 +351,7 @@ def test_checkups_list_ignores_other_users_jobs(auth_client):
     from app.routers import checkups as checkups_router
 
     other_uid = _user_id("t@example.com") + 999
-    job = checkups_router.UploadJob(id="testjob2", user_id=other_uid, filename="secret.jpg")
+    job = checkups_router.UploadJob(id="testjob2", user_id=other_uid, filenames=["secret.jpg"])
     checkups_router._upload_jobs[job.id] = job
     try:
         page = auth_client.get("/checkups?jobs=testjob2").text

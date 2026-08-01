@@ -179,26 +179,28 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
 
 
 def _complete_vision(
-    model: str, system: str, kind: str, media_type: str, data_b64: str,
-    api_key: Optional[str], max_tokens: int = 1200,
+    model: str, system: str, kind: str, files: list, api_key: Optional[str],
+    max_tokens: int = 1200,
 ) -> Tuple[str, CallStats]:
-    """One Claude completion over an uploaded image/PDF → (text, stats). Sibling of
-    ``_complete`` for the checkup-upload OCR path (a photo or PDF instead of a JSON
-    payload): the user turn carries a single ``image``/``document`` content block
-    (base64) instead of a text blob — everything else (thinking disabled, usage
-    accounting, error mapping) mirrors ``_complete``."""
+    """One Claude completion over 1+ uploaded images/PDFs → (text, stats). Sibling of
+    ``_complete`` for the checkup-upload OCR path (photos/PDFs instead of a JSON
+    payload): the user turn carries one ``image``/``document`` content block per
+    ``(media_type, data_b64)`` pair in ``files`` — several files in ONE request (up to
+    CHECKUP_UPLOAD_BATCH_MAX) so Claude can tell whether they're pages of the same
+    report or separate documents, instead of guessing that page-by-page. Everything
+    else (thinking disabled, usage accounting, error mapping) mirrors ``_complete``."""
     from anthropic import APIConnectionError, APIStatusError
 
-    block_type = "document" if media_type == "application/pdf" else "image"
+    content = [
+        {
+            "type": "document" if media_type == "application/pdf" else "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data_b64},
+        }
+        for media_type, data_b64 in files
+    ]
     kwargs = dict(
         model=model, max_tokens=max_tokens, system=system,
-        messages=[{
-            "role": "user",
-            "content": [{
-                "type": block_type,
-                "source": {"type": "base64", "media_type": media_type, "data": data_b64},
-            }],
-        }],
+        messages=[{"role": "user", "content": content}],
     )
     if model != FABLE_5:
         kwargs["thinking"] = {"type": "disabled"}

@@ -11,7 +11,7 @@ import base64
 import datetime as dt
 import json
 import logging
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 from app import daterel, gap
 from app.analysis.cache import (
@@ -1351,32 +1351,44 @@ async def run_checkup_analysis(
 
 # ---------- CHECKUP UPLOAD (photo/PDF → structured checkup, "Аналізи" entry shortcut) ----------
 
-CHECKUP_OCR_MAX_TOKENS = 4096       # a full blood panel can run 30-50 result rows
-CHECKUP_OCR_RETRY_MAX_TOKENS = 8192 # retry budget after a truncated first attempt
+CHECKUP_UPLOAD_BATCH_MAX = 5  # files per Claude call — one request beats N (see below)
+
+# Per-file token budget: scales with batch size (more files → more possible output),
+# capped so a pathological batch can't run away the cost. A single file keeps the
+# exact same numbers as before batching existed (4096/8192) — no regression there.
+CHECKUP_OCR_MAX_TOKENS_PER_FILE = 4096
+CHECKUP_OCR_MAX_TOKENS_CAP = 16000
+CHECKUP_OCR_RETRY_MAX_TOKENS_PER_FILE = 8192
+CHECKUP_OCR_RETRY_MAX_TOKENS_CAP = 32000
+
+
+def _ocr_max_tokens(n_files: int) -> int:
+    return min(CHECKUP_OCR_MAX_TOKENS_PER_FILE * max(1, n_files), CHECKUP_OCR_MAX_TOKENS_CAP)
+
+
+def _ocr_retry_max_tokens(n_files: int) -> int:
+    return min(
+        CHECKUP_OCR_RETRY_MAX_TOKENS_PER_FILE * max(1, n_files), CHECKUP_OCR_RETRY_MAX_TOKENS_CAP)
 
 
 def checkup_ocr_with_stats(
-    data_b64: str, media_type: str, api_key: Optional[str] = None,
-    max_tokens: int = CHECKUP_OCR_MAX_TOKENS,
+    files: list, api_key: Optional[str] = None, max_tokens: Optional[int] = None,
 ) -> Tuple[str, CallStats]:
-    """Read an uploaded lab-report photo/PDF (Sonnet vision) and return raw JSON text;
-    parsing lives in :func:`_coerce_checkup_ocr`, called from :func:`run_checkup_ocr`."""
+    """Read 1+ uploaded lab-report photos/PDFs in ONE Claude vision call (``files`` —
+    ``[(media_type, data_b64), ...]``, up to :data:`CHECKUP_UPLOAD_BATCH_MAX`) and
+    return raw JSON text; parsing lives in :func:`_coerce_checkup_ocr_batch`, called
+    from :func:`run_checkup_ocr_batch`."""
     return _complete_vision(
-        MODEL_CHECKUP_OCR, SYSTEM_CHECKUP_OCR, "checkup_ocr", media_type, data_b64,
-        api_key, max_tokens=max_tokens,
+        MODEL_CHECKUP_OCR, SYSTEM_CHECKUP_OCR, "checkup_ocr", files,
+        api_key, max_tokens=max_tokens or _ocr_max_tokens(len(files)),
     )
 
 
-def _coerce_checkup_ocr(text: str) -> dict:
-    """Parse Claude's OCR JSON into ``create_checkup``-shaped kwargs, tolerating ```
-    fences / surrounding prose (same outermost-``{...}`` slice as ``_coerce_supplement_advice``).
-    Drops any result row with no name rather than raising — a partially-legible document
-    should still produce a usable (if incomplete) checkup."""
-    s = text.strip()
-    i, j = s.find("{"), s.rfind("}")
-    if i != -1 and j > i:
-        s = s[i:j + 1]
-    data = json.loads(s)
+def _coerce_one_checkup(data: dict) -> dict:
+    """Field-level extraction shared by every item in the batch — one Claude-returned
+    checkup object → ``create_checkup``-shaped kwargs. Drops any result row with no
+    name rather than raising: a partially-legible document should still produce a
+    usable (if incomplete) checkup."""
     results = []
     for r in (data.get("results") or []):
         name = str(r.get("name") or "").strip()
@@ -1397,25 +1409,42 @@ def _coerce_checkup_ocr(text: str) -> dict:
     }
 
 
-async def run_checkup_ocr(
-    session, *, user_id: int, file_bytes: bytes, media_type: str, fallback_date: str,
+def _coerce_checkup_ocr_batch(text: str) -> list:
+    """Parse Claude's OCR JSON into a list of ``create_checkup``-shaped kwargs,
+    tolerating ``` fences / surrounding prose (same outermost-``{...}`` slice as
+    ``_coerce_supplement_advice``). The schema is ``{"checkups": [...]}``; a model
+    that (against instructions) returns one bare checkup object instead of the array
+    is still accepted as a single-item batch rather than failing the whole upload."""
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    data = json.loads(s)
+    items = data.get("checkups") if isinstance(data, dict) and "checkups" in data else [data]
+    return [_coerce_one_checkup(item) for item in items if isinstance(item, dict)]
+
+
+async def run_checkup_ocr_batch(
+    session, *, user_id: int, files: list, fallback_date: str,
     api_key: Optional[str] = None,
-) -> HealthCheckup:
-    """Turn an uploaded lab-report photo/PDF into a normal, editable ``HealthCheckup``
-    row: a vision Claude call reads the document into structured results, which are
-    saved immediately but left fully editable — same review-before-trust posture as
-    ``supplement_advice_to_checkup_template`` (the user corrects/confirms via the
-    ordinary checkup edit form, nothing here is presented as final). Only ever
-    triggered by an explicit upload, never automatically. Not dedup-cached (each
-    upload is a unique file, not a repeatable question) but every attempt still logs a
+) -> List[HealthCheckup]:
+    """Turn 1+ uploaded lab-report photos/PDFs into normal, editable ``HealthCheckup``
+    rows via ONE Claude vision call — ``files`` is ``[(file_bytes, media_type), ...]``,
+    at most :data:`CHECKUP_UPLOAD_BATCH_MAX`. Batching lets Claude tell whether several
+    files are pages of the SAME report (merged into one checkup) or separate documents
+    (one checkup each), and costs one system-prompt + one round-trip instead of N.
+    Rows are saved immediately but left fully editable — same review-before-trust
+    posture as ``supplement_advice_to_checkup_template``. Only ever triggered by an
+    explicit upload, never automatically. Not dedup-cached (each upload is a unique
+    file set, not a repeatable question) but every attempt still logs a
     ``ReportLog(kind="checkup_ocr")`` for cost tracking, success or failure."""
     from app.db import checkups as checkups_db
     from app.garmin import repository
 
-    data_b64 = base64.b64encode(file_bytes).decode("ascii")
-    q = "checkup upload (OCR)"
+    b64_files = [(media_type, base64.b64encode(fb).decode("ascii")) for fb, media_type in files]
+    q = f"checkup upload (OCR, {len(files)} file{'s' if len(files) != 1 else ''})"
     try:
-        text, stats = await _run_claude(checkup_ocr_with_stats, data_b64, media_type, api_key)
+        text, stats = await _run_claude(checkup_ocr_with_stats, b64_files, api_key, None)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="checkup_ocr", model=MODEL_CHECKUP_OCR, ok=False,
@@ -1423,16 +1452,15 @@ async def run_checkup_ocr(
         )
         raise
     try:
-        parsed = _coerce_checkup_ocr(text)
+        parsed_items = _coerce_checkup_ocr_batch(text)
     except Exception as e:
         # A parse failure here is almost always the reply getting cut off mid-JSON by
-        # hitting CHECKUP_OCR_MAX_TOKENS on a big panel (stop_reason=max_tokens) —
-        # one retry with a much larger budget recovers it instead of losing the upload.
+        # hitting the token budget on a big batch (stop_reason=max_tokens) — one retry
+        # with a much larger budget recovers it instead of losing the whole upload.
         logger.warning(f"CHECKUP_OCR parse failed, retrying with larger budget: {e}")
         try:
             text2, stats2 = await _run_claude(
-                checkup_ocr_with_stats, data_b64, media_type, api_key,
-                CHECKUP_OCR_RETRY_MAX_TOKENS,
+                checkup_ocr_with_stats, b64_files, api_key, _ocr_retry_max_tokens(len(files)),
             )
         except AnalystError as e2:
             await repository.log_report(
@@ -1444,7 +1472,7 @@ async def run_checkup_ocr(
         stats.output_tokens += stats2.output_tokens
         stats.cost_usd += stats2.cost_usd
         try:
-            parsed = _coerce_checkup_ocr(text2)
+            parsed_items = _coerce_checkup_ocr_batch(text2)
             text = text2
         except Exception as e2:
             logger.error(f"CHECKUP_OCR parse failed after retry: {e2}")
@@ -1454,21 +1482,28 @@ async def run_checkup_ocr(
                 cost_usd=stats.cost_usd, ok=False, question=q, error="parse failed",
             )
             raise AnalystError(
-                "Не вдалось розпізнати документ — спробуй чіткіше фото або введи вручну."
+                "Не вдалось розпізнати документ(и) — спробуй чіткіше фото або введи вручну."
             )
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
         cost_usd=stats.cost_usd, ok=True, question=q, report_text=text,
     )
-    return await checkups_db.create_checkup(
-        session, user_id,
-        date=parsed["date"] or fallback_date,
-        title=parsed["title"] or "Аналіз (розпізнано)",
-        category=parsed["category"],
-        results=parsed["results"],
-        notes=parsed["notes"],
-    )
+    if not parsed_items:
+        raise AnalystError(
+            "Не вдалось розпізнати документ(и) — спробуй чіткіше фото або введи вручну."
+        )
+    return [
+        await checkups_db.create_checkup(
+            session, user_id,
+            date=parsed["date"] or fallback_date,
+            title=parsed["title"] or "Аналіз (розпізнано)",
+            category=parsed["category"],
+            results=parsed["results"],
+            notes=parsed["notes"],
+        )
+        for parsed in parsed_items
+    ]
 
 
 # ---------- SUPPLEMENT → LAB-MONITORING ADVICE (the "Аналізи" tab's third follow-up) ----------
