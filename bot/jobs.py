@@ -1207,8 +1207,10 @@ async def _race_pack_for_user(ctx, session, user: User) -> None:
 async def _sync_gear_roster(session, user: User) -> list:
     """Refresh this user's gear roster + Garmin's own per-gear mileage (NF-15) into a
     ``gear.STATE_KEY`` bot_state JSON blob, so ``/gear`` reads it back without a live
-    fetch. Best-effort: an unparseable/missing gear item is just dropped by
-    ``gear.parse_item`` (logged once), never a broken sync."""
+    fetch. ``client.fetch_gear`` (v2/list) already carries each item's lifetime distance
+    in the same response — no separate per-item stats fetch needed. Best-effort: an
+    unparseable/missing gear item is just dropped by ``gear.parse_item`` (logged once),
+    never a broken sync."""
     from app.garmin import client
 
     raw_items = await run_in_threadpool(client.fetch_gear)
@@ -1217,9 +1219,8 @@ async def _sync_gear_roster(session, user: User) -> list:
         item = gear.parse_item(raw)
         if item is None:
             continue
-        stats = await run_in_threadpool(client.fetch_gear_stats, item["gear_id"])
-        item["mileage_km"] = gear.parse_mileage_km(stats)
-        item["last_used"] = gear.parse_last_used(stats)
+        item["mileage_km"] = gear.parse_mileage_km(raw)
+        item["last_used"] = gear.parse_last_used(raw)
         pairs.append(item)
     await repository.set_state(session, user.id, gear.STATE_KEY, json.dumps(pairs))
     return pairs

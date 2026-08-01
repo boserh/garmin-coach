@@ -9,18 +9,22 @@ persisted by ``bot.jobs._gear_check_for_user`` (a Garmin-fetch concern, like eve
 client.py orchestration) into a ``bot_state`` JSON blob (:data:`STATE_KEY`), so ``/gear``
 itself is a plain, fast DB read afterwards rather than a live fetch on every tap.
 
-**Recon note (this ticket's own AC #1 — a blocker, not a detail):** neither endpoint's
-exact response shape has been verified against a live Garmin account in this codebase.
-``app.garmin.client``'s GEAR section documents what's known from the community
-``python-garminconnect`` library (``get_gear``/``get_gear_stats``, no activity→gear link
-method at all). Every parse function here is defensive — an unrecognised shape is logged
-once (``GEAR ... shape unrecognised``) and treated as "no data" rather than guessed at, so
-a wrong field name can never produce a false wear warning; it can only under-report.
-Deliberately deviates from the ticket's original "sum our own ActivityRecord rows per
-gear_id" design for the same reason: no confirmed activity→gear link endpoint exists, so
-mileage comes straight from Garmin's own per-gear stats total (already shown as a shoe's
-lifetime distance in the Connect UI) — no migration column, no backfill CLI, no risk of
-undercounting before a backfill runs.
+**Recon note (this ticket's own AC #1, now closed):** live-verified against a real account
+2026-08-01. The community ``python-garminconnect`` library's ``get_gear()`` — the shape
+this module originally assumed — hits ``/gear-service/gear/filterGear`` (v1), which is a
+permanent 403 for a third-party token even on an account with real gear (confirmed: same
+session writing to workout-service seconds earlier). The Connect web UI itself calls
+``/gear-service/gear/v2/list`` instead, which works and returns each item's lifetime
+distance/activity-count/dates in one response (see ``app.garmin.client.fetch_gear``) — no
+separate per-item stats call, and no documented activity→gear link endpoint either way, so
+this module still deliberately deviates from the ticket's original "sum our own
+ActivityRecord rows per gear_id" design: mileage comes straight from Garmin's own per-gear
+total (already shown as a shoe's lifetime distance in the Connect UI), not a migration
+column we'd have to backfill. Every parse function here stays defensive regardless — an
+unrecognised shape is logged once (``GEAR ... shape unrecognised``) and treated as "no
+data" rather than guessed at, so a wrong field name can never produce a false wear warning;
+it can only under-report. Known gap: retired gear isn't fetched (``fetch_gear`` queries
+``gearStatuses=ACTIVE`` only — no live-verified query shape for retired gear yet).
 """
 import logging
 from typing import List, Optional
@@ -44,28 +48,33 @@ def _warn_once(tag: str, shape) -> None:
 
 
 def parse_item(raw: dict) -> Optional[dict]:
-    """One ``filterGear`` row -> ``{gear_id, name, type, retired}``, or None for a row we
-    can't identify (never guesses at a missing id)."""
+    """One gear-list row (v2's ``brand``/``gearType``/``status``, or the older v1
+    ``filterGear`` field names, kept for shape-safety) -> ``{gear_id, name, type,
+    retired}``, or None for a row we can't identify (never guesses at a missing id)."""
     if not isinstance(raw, dict):
         return None
     gid = raw.get("uuid") or raw.get("gearPk") or raw.get("gearUUID") or raw.get("gearId")
     if gid is None:
         _warn_once("item", raw)
         return None
-    name = (raw.get("displayName") or raw.get("customMakeModel")
+    name = (raw.get("brand") or raw.get("displayName") or raw.get("customMakeModel")
             or raw.get("gearMakeName") or "Спорядження")
-    gtype = raw.get("gearTypeName") or raw.get("typeName") or ""
-    retired = bool(raw.get("retired")) or (raw.get("gearStatusName") or "").lower() == "retired"
+    gtype = raw.get("gearType") or raw.get("gearTypeName") or raw.get("typeName") or ""
+    retired = (bool(raw.get("retired"))
+               or (raw.get("gearStatusName") or "").lower() == "retired"
+               or (raw.get("status") or "").upper() == "RETIRED")
     return {"gear_id": str(gid), "name": str(name), "type": str(gtype), "retired": retired}
 
 
 def parse_mileage_km(stats: dict) -> Optional[float]:
-    """A gear-stats dict's lifetime distance in km, or None when nothing recognisable is
-    there. Garmin's distance fields are metres elsewhere in this app (``service.py``'s
+    """A gear item's lifetime distance in km, or None when nothing recognisable is there.
+    ``distanceUsedMeters`` is v2's field (the same dict as ``parse_item`` — v2/list already
+    carries mileage per item, no separate stats call); the others are v1/stats fallbacks.
+    Garmin's distance fields are metres elsewhere in this app (``service.py``'s
     ``totalDistanceMeters``) — the same convention is assumed here."""
     if not isinstance(stats, dict):
         return None
-    for key in ("totalDistance", "totalDistanceInMeters", "distance"):
+    for key in ("distanceUsedMeters", "totalDistance", "totalDistanceInMeters", "distance"):
         v = stats.get(key)
         if isinstance(v, (int, float)) and v > 0:
             return round(v / 1000.0, 1)
@@ -75,7 +84,10 @@ def parse_mileage_km(stats: dict) -> Optional[float]:
 
 
 def parse_last_used(stats: dict) -> Optional[str]:
-    """A gear-stats dict's last-used date (ISO, first 10 chars), or None."""
+    """A gear-stats dict's last-used date (ISO, first 10 chars), or None. v2/list carries
+    no last-used field (only ``firstUseDate``/``createdDate``, a different thing — never
+    substituted here), so this is always None for the current fetch path; kept for a
+    future endpoint/shape that does carry it."""
     if not isinstance(stats, dict):
         return None
     for key in ("lastActivityDate", "lastUsedDate", "endDate"):
