@@ -28,14 +28,6 @@
     {% elif request.query_params.get('err') == 'nokey' %}
       <div class="err" style="margin:0 0 1rem">Спершу додай Claude API ключ у
         <a href="/settings">Налаштуваннях</a>.</div>
-    {% elif request.query_params.get('err') == 'filetype' %}
-      <div class="err" style="margin:0 0 1rem">Непідтримуваний формат файлу — лише фото
-        (JPEG/PNG/GIF/WebP) або PDF.</div>
-    {% elif request.query_params.get('err') == 'filesize' %}
-      <div class="err" style="margin:0 0 1rem">Файл завеликий (максимум 15 МБ) або порожній.</div>
-    {% elif request.query_params.get('err') == 'ocr' %}
-      <div class="err" style="margin:0 0 1rem">Не вдалось розпізнати документ — спробуй чіткіше
-        фото або введи результати вручну.</div>
     {% endif %}
 
     <details class="fwrap" open>
@@ -43,12 +35,57 @@
       <form class="form" method="post" action="/checkups/upload" enctype="multipart/form-data">
         <div class="hint" style="margin:0 0 .5rem">
           Claude розпізнає показники з фото чи PDF і створить запис — перевір і виправ значення
-          перед тим, як довіряти їм.
+          перед тим, як довіряти їм. Можна вибрати відразу декілька файлів.
         </div>
-        <input name="file" type="file" accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" required>
-        <button class="btn" type="submit">Розпізнати і створити запис</button>
+        <input name="file" type="file" multiple
+               accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" required>
+        <button class="btn" type="submit">Розпізнати і створити запис(и)</button>
       </form>
     </details>
+
+    {% if upload_jobs %}
+    <div id="upload-jobs" class="fwrap" style="padding:1rem 1.2rem">
+      {% for j in upload_jobs %}
+      <div class="upload-job" data-job-id="{{ j.job_id }}" data-status="{{ j.status }}"
+           style="display:flex;justify-content:space-between;gap:1rem;padding:.35rem 0">
+        <span class="uj-name">{{ j.filename }}</span>
+        <span class="uj-status">
+          {% if j.status == 'done' %}✅ <a href="/checkups/{{ j.checkup_id }}?ocr=1">переглянути</a>
+          {% elif j.status == 'error' %}❌ {{ j.error }}
+          {% elif j.status == 'processing' %}⏳ розпізнаю…
+          {% else %}⏳ у черзі…
+          {% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    <script>
+      (function () {
+        var pendingSel = '.upload-job[data-status="queued"], .upload-job[data-status="processing"]';
+        if (!document.querySelector(pendingSel)) return;
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var ws = new WebSocket(proto + '//' + location.host + '/checkups/ws');
+        ws.onmessage = function (e) {
+          var msg = JSON.parse(e.data);
+          var el = document.querySelector('.upload-job[data-job-id="' + msg.job_id + '"]');
+          if (!el) return;
+          el.dataset.status = msg.status;
+          var statusEl = el.querySelector('.uj-status');
+          if (msg.status === 'done') {
+            statusEl.innerHTML = '✅ <a href="/checkups/' + msg.checkup_id + '?ocr=1">переглянути</a>';
+          } else if (msg.status === 'error') {
+            statusEl.textContent = '❌ ' + (msg.error || 'помилка');
+          } else if (msg.status === 'processing') {
+            statusEl.textContent = '⏳ розпізнаю…';
+          }
+          if (!document.querySelector(pendingSel)) {
+            ws.close();
+            location.reload();
+          }
+        };
+      })();
+    </script>
+    {% endif %}
 
     <details class="fwrap">
       <summary class="fsum">➕ Додати аналіз вручну<span class="chev">▾</span></summary>
