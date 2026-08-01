@@ -1351,17 +1351,19 @@ async def run_checkup_analysis(
 
 # ---------- CHECKUP UPLOAD (photo/PDF → structured checkup, "Аналізи" entry shortcut) ----------
 
-CHECKUP_OCR_MAX_TOKENS = 1200
+CHECKUP_OCR_MAX_TOKENS = 4096       # a full blood panel can run 30-50 result rows
+CHECKUP_OCR_RETRY_MAX_TOKENS = 8192 # retry budget after a truncated first attempt
 
 
 def checkup_ocr_with_stats(
-    data_b64: str, media_type: str, api_key: Optional[str] = None
+    data_b64: str, media_type: str, api_key: Optional[str] = None,
+    max_tokens: int = CHECKUP_OCR_MAX_TOKENS,
 ) -> Tuple[str, CallStats]:
     """Read an uploaded lab-report photo/PDF (Sonnet vision) and return raw JSON text;
     parsing lives in :func:`_coerce_checkup_ocr`, called from :func:`run_checkup_ocr`."""
     return _complete_vision(
         MODEL_CHECKUP_OCR, SYSTEM_CHECKUP_OCR, "checkup_ocr", media_type, data_b64,
-        api_key, max_tokens=CHECKUP_OCR_MAX_TOKENS,
+        api_key, max_tokens=max_tokens,
     )
 
 
@@ -1423,14 +1425,37 @@ async def run_checkup_ocr(
     try:
         parsed = _coerce_checkup_ocr(text)
     except Exception as e:
-        logger.error(f"CHECKUP_OCR parse failed: {e}")
-        await repository.log_report(
-            session, user_id=user_id, kind=stats.kind, model=stats.model, ok=False,
-            question=q, error="parse failed",
-        )
-        raise AnalystError(
-            "Не вдалось розпізнати документ — спробуй чіткіше фото або введи вручну."
-        )
+        # A parse failure here is almost always the reply getting cut off mid-JSON by
+        # hitting CHECKUP_OCR_MAX_TOKENS on a big panel (stop_reason=max_tokens) —
+        # one retry with a much larger budget recovers it instead of losing the upload.
+        logger.warning(f"CHECKUP_OCR parse failed, retrying with larger budget: {e}")
+        try:
+            text2, stats2 = await _run_claude(
+                checkup_ocr_with_stats, data_b64, media_type, api_key,
+                CHECKUP_OCR_RETRY_MAX_TOKENS,
+            )
+        except AnalystError as e2:
+            await repository.log_report(
+                session, user_id=user_id, kind="checkup_ocr", model=MODEL_CHECKUP_OCR, ok=False,
+                question=q, error=str(e2)[:512],
+            )
+            raise
+        stats.input_tokens += stats2.input_tokens
+        stats.output_tokens += stats2.output_tokens
+        stats.cost_usd += stats2.cost_usd
+        try:
+            parsed = _coerce_checkup_ocr(text2)
+            text = text2
+        except Exception as e2:
+            logger.error(f"CHECKUP_OCR parse failed after retry: {e2}")
+            await repository.log_report(
+                session, user_id=user_id, kind=stats.kind, model=stats.model,
+                input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+                cost_usd=stats.cost_usd, ok=False, question=q, error="parse failed",
+            )
+            raise AnalystError(
+                "Не вдалось розпізнати документ — спробуй чіткіше фото або введи вручну."
+            )
     await repository.log_report(
         session, user_id=user_id, kind=stats.kind, model=stats.model,
         input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
