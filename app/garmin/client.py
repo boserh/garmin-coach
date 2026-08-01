@@ -789,3 +789,23 @@ def fetch_gear_stats(gear_uuid: str) -> dict:
     stats = d if isinstance(d, dict) and "_error" not in d else {}
     _cache_put(key, stats, GEAR_STATS_TTL_S)
     return stats
+
+
+def fetch_activity_gear(activity_id, force: bool = False) -> list:
+    """Which gear (if any) Garmin has linked to this activity — a real activity->gear
+    link endpoint, confirmed live 2026-08-01 (not documented by `python-garminconnect`
+    at all, found by inspecting Connect's own web traffic). Returns the linked item(s)
+    in the same v2 shape as ``fetch_gear``'s roster rows — [] when nothing's linked.
+    Immutable per activity like exercise sets/series (a gear assignment essentially
+    never changes after the fact) — 365-day cache; ``force=True`` bypasses it for a
+    manual resync (ST-15/ST-16 pattern)."""
+    key = f"gear_link:v1:{activity_id}"
+    cached = None if force else _cache_get(key)
+    if cached is not None:
+        return cached
+    r = _safe(_api, f"/gear-service/activity/v2/{activity_id}")
+    if isinstance(r, dict) and "_error" in r:
+        return []  # transient error — don't cache
+    items = r if isinstance(r, list) else []
+    _cache_put(key, items, EXERCISE_TTL_S)
+    return items

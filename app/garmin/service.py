@@ -22,7 +22,7 @@ from weakref import WeakValueDictionary
 
 from fastapi.concurrency import run_in_threadpool
 
-from app import completeness
+from app import completeness, gear
 from app.core.config import settings
 from app.garmin import client
 from app.garmin.client import _g
@@ -336,6 +336,10 @@ def _attach_detail(row: dict, activity_id, force: bool = False) -> bool:
         sr = client.fetch_activity_series(activity_id, sport="running", force=force)
         if sr:
             row["series"] = sr
+        # NF-15: which shoe (if any) Garmin has linked to this run.
+        gid = gear.parse_activity_gear(client.fetch_activity_gear(activity_id, force=force))
+        if gid:
+            row["gear_id"] = gid
         return True
     if sport_bucket(typ) == "bike":
         sr = client.fetch_activity_series(activity_id, sport="cycling", force=force)

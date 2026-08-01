@@ -162,6 +162,9 @@ class ActivityRecord(Base):
     # list / aggregate / record / plan-match and stays hidden after the next Garmin sync
     # (upsert_activity never resets it). Kept, not deleted, so a resync can't resurrect it.
     is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NF-15: the Garmin gear uuid linked to this activity (run-type only, v2 activity->gear
+    # link endpoint) — null when nothing's linked or the activity predates this field.
+    gear_id: Mapped[Optional[str]] = mapped_column(String(64))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
