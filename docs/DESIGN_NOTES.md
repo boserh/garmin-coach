@@ -324,8 +324,8 @@ when there's something to say.
 ## Evening sleep-debt nudge (NF-16)
 
 Pure-Python (`app/sleepnudge.py`), fired the night BEFORE a heavy session:
-`has_sleep_debt` (NF-01 band, ≥2 of last 3 nights below it, OR Garmin's own
-`sleep_need_h` gap ≥`NEED_GAP_H`) AND `tomorrow_is_heavy` — both required.
+`has_sleep_debt` (NF-01 band on `sleep_h` OR `sleep_score`, ≥2 of last 3 nights below it,
+OR Garmin's own `sleep_need_h` gap ≥`NEED_GAP_H`) AND `tomorrow_is_heavy` — both required.
 `sleep_nudge_job` (`SLEEP_NUDGE_HOUR`=21) guarded once/evening. Toggles: `alerts_enabled`
 + process `SLEEP_NUDGE`. **v1 limitation**: no bedtime clock time (nothing stored gives
 a wake-time to count back from).

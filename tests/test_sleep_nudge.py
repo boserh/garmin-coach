@@ -12,7 +12,7 @@ BASE = dt.date(2026, 6, 1)
 
 def _row(i, **kw):
     d = (BASE + dt.timedelta(days=i)).isoformat()
-    return {"date": d, "sleep_h": 7.5, "extra": {}, **kw}
+    return {"date": d, "sleep_h": 7.5, "sleep_score": 80, "extra": {}, **kw}
 
 
 def _healthy(n=30):
@@ -36,6 +36,15 @@ def test_no_debt_for_single_bad_night():
     rows = _healthy(30)
     rows[29]["sleep_h"] = 4.5   # one dip is a blip, not sustained
     assert sleepnudge.has_sleep_debt(rows) is False
+
+
+def test_debt_when_recent_sleep_score_below_personal_band():
+    """Duration alone can look fine while quality (sleep_score) is the actual debt signal —
+    a full night of poor-quality sleep should still trip the nudge."""
+    rows = _healthy(30)
+    for i in (27, 28, 29):   # last 3 nights: normal duration, terrible score
+        rows[i]["sleep_score"] = 30
+    assert sleepnudge.has_sleep_debt(rows) is True
 
 
 def test_debt_from_sleep_need_gap_without_history():
