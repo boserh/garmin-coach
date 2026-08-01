@@ -74,6 +74,18 @@ def test_expected_endpoint_flagged():
     assert e["kind"] == "403" and e["expected"] is True
 
 
+def test_gear_service_403_flagged_expected():
+    """NF-15: gear-service is a confirmed permanent 403 on a real account (same shape as
+    biometric-service) — must not inflate the OPS-05 degradation counter."""
+    def boom(path, **kw):
+        raise Exception("API Error 403 - Unauthorized request for gear.")
+
+    client._safe(boom, "/gear-service/gear/filterGear", params={"userProfilePk": "1"})
+    e = client.recent_errors()[0]
+    assert e["endpoint"] == "/gear-service/gear"
+    assert e["kind"] == "403" and e["expected"] is True
+
+
 def test_buffer_capped():
     for i in range(client._ERROR_BUFFER_MAX + 20):
         client._record_error(f"/svc/x/{i}", Exception("boom"))

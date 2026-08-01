@@ -66,7 +66,12 @@ _error_lock = threading.Lock()
 # Endpoint suffixes whose failures are EXPECTED (Garmin refuses them for this account —
 # the long-standing resting-HR 403, say) — kept in the buffer for the record but flagged
 # ``expected`` so the burst DM counter can exclude them and not cry wolf.
-_EXPECTED_ERROR_SUFFIXES = ("/biometric-service/",)
+# ``/gear-service/`` (NF-15): confirmed live 403 on a real account, same shape as
+# biometric-service — the profile-id lookup (``/userprofile-service/...``) that gates it
+# succeeds, so this is Garmin denying the gear endpoint itself to this token, not a
+# transient fault. ``client.fetch_gear`` already degrades to ``[]`` best-effort, so NF-15
+# (gear mileage / shoe-wear DM) is simply inert for this account — nothing to fix here.
+_EXPECTED_ERROR_SUFFIXES = ("/biometric-service/", "/gear-service/")
 
 
 def _classify_error(exc: Exception) -> str:
