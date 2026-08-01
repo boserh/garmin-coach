@@ -15,6 +15,7 @@ Two passes:
 """
 import datetime as dt
 import logging
+from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -22,6 +23,11 @@ from app.garmin import client, repository, workout_export
 from app.garmin.providers import get_provider
 
 logger = logging.getLogger("garmin")
+
+# The rolling push window every caller uses (all default ``days=`` to this) — a named
+# constant so /plan's badge logic (OPS-09: "in window but not pushed yet" vs "out of
+# window, nothing expected") can share the exact same cutoff instead of a second literal.
+PLAN_SYNC_WINDOW_DAYS = 14
 
 # rest/cross sessions carry no structure — don't push them to the watch. "strength" is
 # excluded here too: it only becomes pushable via garmin_template_id/strength_plan below,
@@ -85,11 +91,17 @@ async def select_pushed(session, plan_id: int, *, only_date: str = None):
             and (only_date is None or w.date == only_date)]
 
 
-async def push_workout(session, w):
+async def push_workout(session, w, errors: Optional[list] = None):
     """Create + schedule one workout, store its Garmin ids, commit. Returns the id (or
     None if a strength template couldn't be cloned). A strength session carries a
     ``garmin_template_id`` — we clone that saved workout into our own copy instead of
-    building from ``steps``; runs build from ``steps``."""
+    building from ``steps``; runs build from ``steps``.
+
+    ``errors`` (OPS-09): when given, every failure appends ``{"workout_id", "step":
+    "push", "msg"}`` to it and returns None instead of raising — the daily
+    ``sync_plan_to_garmin`` passes a list so one session's push failure doesn't abort the
+    rest of the batch. Callers that don't pass it (CLI ``push-plan``) keep the old
+    behaviour: an unexpected exception still propagates."""
     if w.strength_plan:
         sp = w.strength_plan
         # EP-03: the week suffix must survive even when the session carries its own
@@ -102,7 +114,10 @@ async def push_workout(session, w):
     elif w.garmin_template_id:
         raw = await run_in_threadpool(client.fetch_workout_full, w.garmin_template_id)
         if not raw:
-            logger.warning(f"GARMIN push: template {w.garmin_template_id} unavailable — skip")
+            msg = f"template {w.garmin_template_id} unavailable"
+            logger.warning(f"GARMIN push: {msg} — skip")
+            if errors is not None:
+                errors.append({"workout_id": w.id, "step": "push", "msg": msg})
             return None
         name = f"🏋️ {w.description or 'Силова'}" + (f" · W{w.week}" if w.week else "")
         payload = workout_export.clone_workout(raw, name)
@@ -115,8 +130,10 @@ async def push_workout(session, w):
         created = await run_in_threadpool(client.create_workout, payload)
         wid = created.get("workoutId") if isinstance(created, dict) else None
         if not wid:
-            logger.error(f"GARMIN push FAILED workout={w.id} date={w.date}: "
-                         f"create_workout returned no workoutId: {created!r}")
+            msg = f"create_workout returned no workoutId: {created!r}"
+            logger.error(f"GARMIN push FAILED workout={w.id} date={w.date}: {msg}")
+            if errors is not None:
+                errors.append({"workout_id": w.id, "step": "push", "msg": msg})
             return None
         sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
     except Exception as exc:
@@ -129,6 +146,9 @@ async def push_workout(session, w):
         logger.error(f"GARMIN push FAILED workout={w.id} date={w.date} "
                      f"payload={payload!r} response_body={body!r}")
         logger.exception(f"GARMIN push FAILED workout={w.id} date={w.date}")
+        if errors is not None:
+            errors.append({"workout_id": w.id, "step": "push", "msg": str(exc)[:300]})
+            return None
         raise
     w.garmin_workout_id = wid
     w.garmin_schedule_id = sched.get("workoutScheduleId") if isinstance(sched, dict) else None
@@ -153,9 +173,14 @@ async def remove_workout(session, w) -> bool:
     return deleted
 
 
-async def sync_plan_to_garmin(session, user_id: int, *, days: int = 14) -> dict:
+async def sync_plan_to_garmin(session, user_id: int, *, days: int = PLAN_SYNC_WINDOW_DAYS) -> dict:
     """Reconcile the calendar with the user's plan (cleanup + forward). Requires a bound
-    user provider. Returns ``{"pushed": n, "removed": n}``."""
+    user provider. Returns ``{"pushed": n, "removed": n, "errors": [...]}``.
+
+    OPS-09: a failing push no longer aborts the rest of the batch — ``push_workout``
+    collects failures into ``errors`` instead. The full summary (including a failing
+    run's) is persisted to ``bot_state`` under the active plan's id so ``/plan`` can show
+    "last sync: ok / ⚠️ N errors" instead of the result being silently discarded."""
     await run_in_threadpool(get_provider().login)
     today = dt.date.today().isoformat()
     active = await repository.get_active_plan(session, user_id)
@@ -173,14 +198,19 @@ async def sync_plan_to_garmin(session, user_id: int, *, days: int = 14) -> dict:
 
     # forward: active plan's upcoming, in-window, unpushed, pushable sessions.
     pushed = 0
+    errors: list = []
     if active_id is not None:
         for w in await select_forward(session, active_id, days=days):
-            if await push_workout(session, w):
+            if await push_workout(session, w, errors=errors):
                 pushed += 1
+        await repository.set_plan_sync_summary(
+            session, user_id, active_id, pushed, removed, errors
+        )
 
-    if pushed or removed:
-        logger.info(f"GARMIN sync user={user_id}: +{pushed} pushed, -{removed} removed")
-    return {"pushed": pushed, "removed": removed}
+    if pushed or removed or errors:
+        logger.info(f"GARMIN sync user={user_id}: +{pushed} pushed, -{removed} removed, "
+                    f"{len(errors)} error(s)")
+    return {"pushed": pushed, "removed": removed, "errors": errors}
 
 
 async def unpush_all(session, user_id: int) -> int:
