@@ -51,6 +51,7 @@ MODEL_PLAN = SONNET_5        # plan edits (/plan <text>): small, mechanical → 
 MODEL_RACE = OPUS_4_8        # race pack (EP-05): reasoning-heavy synthesis, once per race
 MODEL_CHECKUP = SONNET_5     # health-checkup interpretation: small, on explicit user request
 MODEL_SUPPLEMENTS = SONNET_5 # supplement → lab-monitoring advice: small, on explicit user request
+MODEL_CHECKUP_OCR = SONNET_5 # lab-report photo/PDF → structured checkup: vision, on upload
 
 # Which models the plan-setup form may pick from, keyed by the form's short slug.
 PLAN_GEN_MODELS = {"opus": MODEL_PLAN_GEN, "fable": MODEL_PLAN_GEN_ALT}
@@ -153,6 +154,52 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
     # stop_reason=max_tokens). These are mechanical/narration calls that never wanted
     # thinking, so disable it explicitly. Fable 5 rejects an explicit disable (400) but
     # always thinks regardless, so it's excluded here.
+    if model != FABLE_5:
+        kwargs["thinking"] = {"type": "disabled"}
+
+    try:
+        msg = _get_client(api_key).messages.create(**kwargs)
+        stats = CallStats(kind=kind, model=model)
+        usage = getattr(msg, "usage", None)
+        if usage:
+            pin, pout = PRICES.get(model, (0, 0))
+            stats.input_tokens = usage.input_tokens
+            stats.output_tokens = usage.output_tokens
+            stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
+            logger.info(
+                f"CLAUDE OK  {model} ({kind})  in={usage.input_tokens} "
+                f"out={usage.output_tokens} ~${stats.cost_usd:.4f}"
+            )
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        return text, stats
+    except APIStatusError as e:
+        raise _status_error(e)
+    except APIConnectionError:
+        raise AnalystError("🌐 Не вдалось з'єднатися з API. Перевір інтернет і спробуй ще.")
+
+
+def _complete_vision(
+    model: str, system: str, kind: str, media_type: str, data_b64: str,
+    api_key: Optional[str], max_tokens: int = 1200,
+) -> Tuple[str, CallStats]:
+    """One Claude completion over an uploaded image/PDF → (text, stats). Sibling of
+    ``_complete`` for the checkup-upload OCR path (a photo or PDF instead of a JSON
+    payload): the user turn carries a single ``image``/``document`` content block
+    (base64) instead of a text blob — everything else (thinking disabled, usage
+    accounting, error mapping) mirrors ``_complete``."""
+    from anthropic import APIConnectionError, APIStatusError
+
+    block_type = "document" if media_type == "application/pdf" else "image"
+    kwargs = dict(
+        model=model, max_tokens=max_tokens, system=system,
+        messages=[{
+            "role": "user",
+            "content": [{
+                "type": block_type,
+                "source": {"type": "base64", "media_type": media_type, "data": data_b64},
+            }],
+        }],
+    )
     if model != FABLE_5:
         kwargs["thinking"] = {"type": "disabled"}
 

@@ -7,6 +7,7 @@ wrapper. Split out of the old flat ``analysis.service`` (CODE-01). The plan-adap
 helpers ``_days_to_target``/``_recent_compliance`` are reused from ``plans`` for the
 weekly digest's goal + compliance slices.
 """
+import base64
 import datetime as dt
 import json
 import logging
@@ -33,6 +34,7 @@ from app.analysis.client import (
     MODEL_ACTIVITY,
     MODEL_ASK,
     MODEL_CHECKUP,
+    MODEL_CHECKUP_OCR,
     MODEL_COMPARE,
     MODEL_DAILY,
     MODEL_DEEP,
@@ -48,6 +50,7 @@ from app.analysis.client import (
     CallStats,
     _complete,
     _complete_tools,
+    _complete_vision,
     _get_client,
     _run_claude,
     _status_error,
@@ -58,6 +61,7 @@ from app.analysis.prompts import (
     SYSTEM_ACTIVITY,
     SYSTEM_ASK_TOOLS,
     SYSTEM_CHECKUP,
+    SYSTEM_CHECKUP_OCR,
     SYSTEM_COMPARE,
     SYSTEM_DIGEST,
     SYSTEM_HEALTH,
@@ -68,6 +72,7 @@ from app.analysis.prompts import (
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
+from app.db.models import HealthCheckup
 from app.garmin.schemas import Payload, SupplementAdvice
 from app.multisport import sport_bucket
 
@@ -1342,6 +1347,103 @@ async def run_checkup_analysis(
     )
     checkup.analysis = text
     return text
+
+
+# ---------- CHECKUP UPLOAD (photo/PDF → structured checkup, "Аналізи" entry shortcut) ----------
+
+CHECKUP_OCR_MAX_TOKENS = 1200
+
+
+def checkup_ocr_with_stats(
+    data_b64: str, media_type: str, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Read an uploaded lab-report photo/PDF (Sonnet vision) and return raw JSON text;
+    parsing lives in :func:`_coerce_checkup_ocr`, called from :func:`run_checkup_ocr`."""
+    return _complete_vision(
+        MODEL_CHECKUP_OCR, SYSTEM_CHECKUP_OCR, "checkup_ocr", media_type, data_b64,
+        api_key, max_tokens=CHECKUP_OCR_MAX_TOKENS,
+    )
+
+
+def _coerce_checkup_ocr(text: str) -> dict:
+    """Parse Claude's OCR JSON into ``create_checkup``-shaped kwargs, tolerating ```
+    fences / surrounding prose (same outermost-``{...}`` slice as ``_coerce_supplement_advice``).
+    Drops any result row with no name rather than raising — a partially-legible document
+    should still produce a usable (if incomplete) checkup."""
+    s = text.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j > i:
+        s = s[i:j + 1]
+    data = json.loads(s)
+    results = []
+    for r in (data.get("results") or []):
+        name = str(r.get("name") or "").strip()
+        if not name:
+            continue
+        results.append({
+            "name": name,
+            "value": str(r.get("value") or "").strip(),
+            "unit": str(r.get("unit") or "").strip(),
+            "ref_range": str(r.get("ref_range") or "").strip(),
+        })
+    return {
+        "title": (str(data.get("title") or "").strip() or None),
+        "date": (str(data.get("date") or "").strip() or None),
+        "category": (str(data.get("category") or "").strip() or None),
+        "results": results or None,
+        "notes": (str(data.get("notes") or "").strip() or None),
+    }
+
+
+async def run_checkup_ocr(
+    session, *, user_id: int, file_bytes: bytes, media_type: str, fallback_date: str,
+    api_key: Optional[str] = None,
+) -> HealthCheckup:
+    """Turn an uploaded lab-report photo/PDF into a normal, editable ``HealthCheckup``
+    row: a vision Claude call reads the document into structured results, which are
+    saved immediately but left fully editable — same review-before-trust posture as
+    ``supplement_advice_to_checkup_template`` (the user corrects/confirms via the
+    ordinary checkup edit form, nothing here is presented as final). Only ever
+    triggered by an explicit upload, never automatically. Not dedup-cached (each
+    upload is a unique file, not a repeatable question) but every attempt still logs a
+    ``ReportLog(kind="checkup_ocr")`` for cost tracking, success or failure."""
+    from app.db import checkups as checkups_db
+    from app.garmin import repository
+
+    data_b64 = base64.b64encode(file_bytes).decode("ascii")
+    q = "checkup upload (OCR)"
+    try:
+        text, stats = await _run_claude(checkup_ocr_with_stats, data_b64, media_type, api_key)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="checkup_ocr", model=MODEL_CHECKUP_OCR, ok=False,
+            question=q, error=str(e)[:512],
+        )
+        raise
+    try:
+        parsed = _coerce_checkup_ocr(text)
+    except Exception as e:
+        logger.error(f"CHECKUP_OCR parse failed: {e}")
+        await repository.log_report(
+            session, user_id=user_id, kind=stats.kind, model=stats.model, ok=False,
+            question=q, error="parse failed",
+        )
+        raise AnalystError(
+            "Не вдалось розпізнати документ — спробуй чіткіше фото або введи вручну."
+        )
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, question=q, report_text=text,
+    )
+    return await checkups_db.create_checkup(
+        session, user_id,
+        date=parsed["date"] or fallback_date,
+        title=parsed["title"] or "Аналіз (розпізнано)",
+        category=parsed["category"],
+        results=parsed["results"],
+        notes=parsed["notes"],
+    )
 
 
 # ---------- SUPPLEMENT → LAB-MONITORING ADVICE (the "Аналізи" tab's third follow-up) ----------

@@ -14,7 +14,7 @@ taken. Its static routes are registered BEFORE ``/checkups/{checkup_id}`` so
 ``/plan/archive`` vs ``/plan/{plan_id}``)."""
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from app.analysis.service import (
     AnalystError,
     parse_supplement_advice,
     run_checkup_analysis,
+    run_checkup_ocr,
     run_supplement_advice,
     supplement_advice_to_checkup_template,
 )
@@ -38,6 +39,11 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 router = APIRouter(tags=["checkups"])
+
+# Anthropic's vision/document input accepts these; anything else is rejected up front
+# rather than spending a Claude call that would fail anyway.
+CHECKUP_UPLOAD_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"}
+CHECKUP_UPLOAD_MAX_BYTES = 15 * 1024 * 1024  # comfortably under Anthropic's per-file limits
 
 
 def _parse_results(form) -> list:
@@ -95,6 +101,36 @@ async def checkups_create(
         next_due_date=(form.get("next_due_date") or "").strip() or None,
     )
     return RedirectResponse("/checkups?saved=1", status_code=303)
+
+
+@router.post("/checkups/upload")
+async def checkups_upload(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Upload a photo or PDF of a lab report; Claude vision (``run_checkup_ocr``) reads
+    it into a normal, editable checkup row (a real Sonnet call — only from this explicit
+    upload, never automatic). Redirects straight to the new row's detail/edit page so the
+    user reviews and corrects the parsed values before treating them as the real record,
+    same posture as the supplement→checkup template button above."""
+    content_type = (file.content_type or "").lower()
+    if content_type not in CHECKUP_UPLOAD_TYPES:
+        return RedirectResponse("/checkups?err=filetype", status_code=303)
+    data = await file.read()
+    if not data or len(data) > CHECKUP_UPLOAD_MAX_BYTES:
+        return RedirectResponse("/checkups?err=filesize", status_code=303)
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return RedirectResponse("/checkups?err=nokey", status_code=303)
+    try:
+        row = await run_checkup_ocr(
+            session, user_id=user.id, file_bytes=data, media_type=content_type,
+            fallback_date=user_today(user).isoformat(), api_key=creds.anthropic_key,
+        )
+    except AnalystError:
+        return RedirectResponse("/checkups?err=ocr", status_code=303)
+    return RedirectResponse(f"/checkups/{row.id}?saved=1&ocr=1", status_code=303)
 
 
 def _parse_date_or_none(v: str) -> "str | None":
