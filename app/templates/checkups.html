@@ -63,8 +63,31 @@
       (function () {
         var pendingSel = '.upload-job[data-status="queued"], .upload-job[data-status="processing"]';
         if (!document.querySelector(pendingSel)) return;
+
+        // Fallback for when the websocket can't reach us (e.g. a reverse proxy in
+        // front that doesn't forward the Upgrade/Connection headers) — same "just
+        // reload until it's done" posture as plan_generating.html, so the feature
+        // still works, just without the instant push.
+        var pollTimer = null;
+        function startPolling() {
+          if (pollTimer) return;
+          pollTimer = setInterval(function () {
+            if (document.querySelector(pendingSel)) location.reload();
+          }, 4000);
+        }
+
         var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var ws = new WebSocket(proto + '//' + location.host + '/checkups/ws');
+        var ws;
+        try {
+          ws = new WebSocket(proto + '//' + location.host + '/checkups/ws');
+        } catch (e) {
+          startPolling();
+          return;
+        }
+        ws.onerror = startPolling;
+        ws.onclose = function () {
+          if (document.querySelector(pendingSel)) startPolling();
+        };
         ws.onmessage = function (e) {
           var msg = JSON.parse(e.data);
           var el = document.querySelector('.upload-job[data-job-id="' + msg.job_id + '"]');
@@ -79,6 +102,7 @@
             statusEl.textContent = '⏳ розпізнаю…';
           }
           if (!document.querySelector(pendingSel)) {
+            if (pollTimer) clearInterval(pollTimer);
             ws.close();
             location.reload();
           }
