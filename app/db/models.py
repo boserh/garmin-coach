@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -429,3 +430,26 @@ class HealthCheckup(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class CheckupAttachment(Base):
+    """The original photo/PDF a ``HealthCheckup`` was parsed from (the checkup-upload
+    OCR flow), kept so the user can pull up the source document later — e.g. to
+    double-check a value Claude may have misread. Stored as a DB blob rather than on
+    disk: this app's only backup story (``scripts/backup_db.py``) is a SQLite
+    ``VACUUM INTO``, so a blob column rides along for free instead of needing a second,
+    separately-backed-up directory. A multi-file upload batch attaches EVERY file in
+    that batch to EVERY checkup the batch produced — Claude's output doesn't say which
+    input file(s) informed which output object, so per-file attribution isn't
+    recoverable; the common case (one report's pages -> one checkup) still gets
+    exactly the right files, and a batch split across several documents just shows a
+    few extra."""
+
+    __tablename__ = "checkup_attachments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    checkup_id: Mapped[int] = mapped_column(ForeignKey("health_checkups.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    media_type: Mapped[str] = mapped_column(String(64))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

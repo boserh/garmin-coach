@@ -72,7 +72,8 @@ async def test_run_checkup_ocr_batch_creates_one_checkup_per_item(session, monke
 
     rows = await reports.run_checkup_ocr_batch(
         session, user_id=U1,
-        files=[(b"fake-bytes-1", "image/jpeg"), (b"fake-bytes-2", "image/jpeg")],
+        files=[(b"fake-bytes-1", "image/jpeg", "lab1.jpg"),
+               (b"fake-bytes-2", "image/jpeg", "lab2.jpg")],
         fallback_date="2026-07-20", api_key="k",
     )
     assert len(rows) == 2
@@ -87,6 +88,14 @@ async def test_run_checkup_ocr_batch_creates_one_checkup_per_item(session, monke
     ids = {r.id for r in db_rows}
     assert rows[0].id in ids and rows[1].id in ids
 
+    # both uploaded files are attached to BOTH resulting checkups (Claude's response
+    # doesn't say which input file informed which output object — see
+    # CheckupAttachment's docstring for why per-file attribution isn't recoverable)
+    for row in rows:
+        attachments = await checkups_db.list_attachments(session, row.id)
+        assert {a.filename for a in attachments} == {"lab1.jpg", "lab2.jpg"}
+        assert {a.data for a in attachments} == {b"fake-bytes-1", b"fake-bytes-2"}
+
 
 async def test_run_checkup_ocr_batch_uses_fallback_date_when_missing(session, monkeypatch):
     def fake_with_stats(files, api_key=None, max_tokens=None):
@@ -95,7 +104,7 @@ async def test_run_checkup_ocr_batch_uses_fallback_date_when_missing(session, mo
     monkeypatch.setattr(reports, "checkup_ocr_with_stats", fake_with_stats)
 
     rows = await reports.run_checkup_ocr_batch(
-        session, user_id=U1, files=[(b"x", "application/pdf")],
+        session, user_id=U1, files=[(b"x", "application/pdf", "lab.pdf")],
         fallback_date="2026-07-20", api_key="k",
     )
     assert rows[0].date == "2026-07-20"
@@ -110,7 +119,7 @@ async def test_run_checkup_ocr_batch_raises_on_claude_failure(session, monkeypat
 
     with pytest.raises(AnalystError):
         await reports.run_checkup_ocr_batch(
-            session, user_id=U1, files=[(b"x", "image/png")],
+            session, user_id=U1, files=[(b"x", "image/png", "lab.png")],
             fallback_date="2026-07-20", api_key="k",
         )
 
@@ -123,7 +132,7 @@ async def test_run_checkup_ocr_batch_raises_on_unparseable_reply(session, monkey
 
     with pytest.raises(AnalystError):
         await reports.run_checkup_ocr_batch(
-            session, user_id=U1, files=[(b"x", "image/png")],
+            session, user_id=U1, files=[(b"x", "image/png", "lab.png")],
             fallback_date="2026-07-20", api_key="k",
         )
 
@@ -153,7 +162,7 @@ async def test_run_checkup_ocr_batch_retries_with_larger_budget_on_truncated_rep
     monkeypatch.setattr(reports, "checkup_ocr_with_stats", fake_with_stats)
 
     rows = await reports.run_checkup_ocr_batch(
-        session, user_id=U1, files=[(b"x", "image/jpeg")],
+        session, user_id=U1, files=[(b"x", "image/jpeg", "lab.jpg")],
         fallback_date="2026-07-20", api_key="k",
     )
     assert calls == [None, reports._ocr_retry_max_tokens(1)]
@@ -170,7 +179,7 @@ async def test_run_checkup_ocr_batch_raises_after_retry_also_fails(session, monk
 
     with pytest.raises(AnalystError):
         await reports.run_checkup_ocr_batch(
-            session, user_id=U1, files=[(b"x", "image/png")],
+            session, user_id=U1, files=[(b"x", "image/png", "lab.png")],
             fallback_date="2026-07-20", api_key="k",
         )
 

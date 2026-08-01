@@ -27,7 +27,10 @@ async def test_process_checkup_upload_job_success(monkeypatch):
     monkeypatch.setattr(checkups_router, "run_checkup_ocr_batch", AsyncMock(return_value=fake_rows))
     try:
         await checkups_router._process_checkup_upload_job(
-            job.id, [(b"bytes1", "image/jpeg"), (b"bytes2", "image/jpeg")], "2026-07-20", "k")
+            job.id,
+            [(b"bytes1", "image/jpeg", "lab1.jpg"), (b"bytes2", "image/jpeg", "lab2.jpg")],
+            "2026-07-20", "k",
+        )
         assert job.status == "done"
         assert job.checkup_ids == [42, 43]
     finally:
@@ -40,7 +43,7 @@ async def test_process_checkup_upload_job_analyst_error(monkeypatch):
         checkups_router, "run_checkup_ocr_batch", AsyncMock(side_effect=AnalystError("боом")))
     try:
         await checkups_router._process_checkup_upload_job(
-            job.id, [(b"bytes", "image/jpeg")], "2026-07-20", "k")
+            job.id, [(b"bytes", "image/jpeg", "lab.jpg")], "2026-07-20", "k")
         assert job.status == "error"
         assert job.error == "боом"
     finally:
@@ -55,7 +58,7 @@ async def test_process_checkup_upload_job_unexpected_crash_is_caught(monkeypatch
         checkups_router, "run_checkup_ocr_batch", AsyncMock(side_effect=RuntimeError("boom")))
     try:
         await checkups_router._process_checkup_upload_job(
-            job.id, [(b"bytes", "image/jpeg")], "2026-07-20", "k")
+            job.id, [(b"bytes", "image/jpeg", "lab.jpg")], "2026-07-20", "k")
         assert job.status == "error"
         assert job.error == "Внутрішня помилка."
     finally:
@@ -76,7 +79,7 @@ async def test_process_checkup_upload_job_broadcasts_status_over_websocket(monke
     checkups_router._ws_by_user[U1] = {FakeWs()}
     try:
         await checkups_router._process_checkup_upload_job(
-            job.id, [(b"bytes", "image/jpeg")], "2026-07-20", "k")
+            job.id, [(b"bytes", "image/jpeg", "lab.jpg")], "2026-07-20", "k")
     finally:
         checkups_router._ws_by_user.pop(U1, None)
         checkups_router._upload_jobs.pop(job.id, None)

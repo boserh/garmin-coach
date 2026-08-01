@@ -88,6 +88,76 @@ def test_checkup_detail_highlights_out_of_range_result(auth_client):
     assert "oor-row" in detail and 'class="oor"' in detail
 
 
+def test_checkup_detail_shows_and_serves_attachments(auth_client):
+    import anyio
+
+    from app.db import checkups as checkups_db
+    from app.db.base import async_session_maker
+
+    uid = _user_id("t@example.com")
+
+    async def make_checkup_with_attachment():
+        async with async_session_maker() as s:
+            c = await checkups_db.create_checkup(s, uid, date="2026-07-15", title="З файлом")
+            a = await checkups_db.add_attachment(
+                s, c.id, filename="lab.jpg", media_type="image/jpeg", data=b"fake-jpg-bytes")
+            return c.id, a.id
+
+    cid, aid = anyio.run(make_checkup_with_attachment)
+
+    detail = auth_client.get(f"/checkups/{cid}").text
+    assert f"/checkups/{cid}/attachments/{aid}" in detail
+    assert "lab.jpg" in detail
+
+    r = auth_client.get(f"/checkups/{cid}/attachments/{aid}")
+    assert r.status_code == 200
+    assert r.content == b"fake-jpg-bytes"
+    assert r.headers["content-type"] == "image/jpeg"
+    assert "lab.jpg" in r.headers["content-disposition"]
+
+
+def test_checkup_attachment_missing_id_redirects(auth_client):
+    import anyio
+
+    from app.db import checkups as checkups_db
+    from app.db.base import async_session_maker
+
+    uid = _user_id("t@example.com")
+
+    async def make_checkup():
+        async with async_session_maker() as s:
+            c = await checkups_db.create_checkup(s, uid, date="2026-07-15", title="Без файлу")
+            return c.id
+
+    cid = anyio.run(make_checkup)
+    r = auth_client.get(f"/checkups/{cid}/attachments/999999", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}"
+
+
+def test_checkup_attachment_isolated_per_user(client):
+    from app.db import checkups as checkups_db
+    from app.db.base import async_session_maker
+
+    _seed_user(email="alice2@example.com", password="pw", is_admin=False)
+    _seed_user(email="bob2@example.com", password="pw", is_admin=False)
+    alice_uid = _user_id("alice2@example.com")
+
+    async def make_alice_attachment():
+        async with async_session_maker() as s:
+            c = await checkups_db.create_checkup(s, alice_uid, date="2026-07-15", title="Alice")
+            a = await checkups_db.add_attachment(
+                s, c.id, filename="secret.jpg", media_type="image/jpeg", data=b"alice-only")
+            return c.id, a.id
+
+    import anyio
+    cid, aid = anyio.run(make_alice_attachment)
+
+    client.post("/login", data={"email": "bob2@example.com", "password": "pw"})
+    r = client.get(f"/checkups/{cid}/attachments/{aid}", follow_redirects=False)
+    # bob doesn't own the checkup at all -> get_checkup returns None -> bounced to /checkups
+    assert r.status_code == 303 and r.headers["location"] == "/checkups"
+
+
 def test_update_checkup(auth_client):
     auth_client.post(
         "/checkups",
