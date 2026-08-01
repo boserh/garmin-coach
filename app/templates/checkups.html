@@ -28,6 +28,8 @@
     {% elif request.query_params.get('err') == 'nokey' %}
       <div class="err" style="margin:0 0 1rem">Спершу додай Claude API ключ у
         <a href="/settings">Налаштуваннях</a>.</div>
+    {% elif request.query_params.get('err') == 'mergecount' %}
+      <div class="err" style="margin:0 0 1rem">Обери щонайменше 2 записи для об'єднання.</div>
     {% endif %}
 
     <details class="fwrap">
@@ -157,19 +159,44 @@
     {% if not checkups %}
       <div class="empty" style="margin-top:1.4rem">Ще немає жодного запису — додай перший аналіз вище.</div>
     {% endif %}
+    <form method="post" action="/checkups/merge" id="merge-form">
     <div style="margin-top:1.4rem">
     {% for c in checkups %}
-      <a class="listcard" href="/checkups/{{ c.id }}">
-        <div class="lg">{{ c.title }}{% if c.analysis %} <span class="badge-an" title="є розбір">💬</span>{% endif %}</div>
-        <div class="lm">
-          {{ c.date }}{% if c.category %} · {{ c.category }}{% endif %}
-          {% if c.results %} · {{ c.results|length }} показник{{ 'ів' if c.results|length != 1 else '' }}{% endif %}
-          {% if c.next_due_date %} · наступний чекап {{ c.next_due_date }}{% endif %}
-        </div>
-      </a>
+      <div style="display:flex;align-items:center;gap:.6rem;margin:.5rem 0">
+        <input type="checkbox" name="checkup_ids" value="{{ c.id }}" class="merge-cb"
+               aria-label="вибрати для об'єднання">
+        <a class="listcard" href="/checkups/{{ c.id }}" style="flex:1;margin:0">
+          <div class="lg">{{ c.title }}{% if c.analysis %} <span class="badge-an" title="є розбір">💬</span>{% endif %}</div>
+          <div class="lm">
+            {{ c.date }}{% if c.category %} · {{ c.category }}{% endif %}
+            {% if c.results %} · {{ c.results|length }} показник{{ 'ів' if c.results|length != 1 else '' }}{% endif %}
+            {% if c.next_due_date %} · наступний чекап {{ c.next_due_date }}{% endif %}
+          </div>
+        </a>
+      </div>
     {% endfor %}
     </div>
+    {% if checkups %}
+    <button type="submit" class="btn-ghost" id="merge-btn" disabled style="margin-top:.5rem">
+      🔗 Об'єднати вибрані
+    </button>
+    {% endif %}
+    </form>
   </div>
+
+  <script>
+    (function () {
+      var boxes = document.querySelectorAll('.merge-cb');
+      var btn = document.getElementById('merge-btn');
+      if (!boxes.length || !btn) return;
+      function update() {
+        var n = document.querySelectorAll('.merge-cb:checked').length;
+        btn.disabled = n < 2;
+        btn.textContent = n >= 2 ? "🔗 Об'єднати вибрані (" + n + ")" : "🔗 Об'єднати вибрані";
+      }
+      boxes.forEach(function (b) { b.addEventListener('change', update); });
+    })();
+  </script>
 
   <template id="result-row-tpl">
     <div class="result-row">
