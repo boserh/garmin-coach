@@ -214,6 +214,27 @@ async def checkups_create(
     return RedirectResponse("/checkups?saved=1", status_code=303)
 
 
+@router.post("/checkups/merge")
+async def checkups_merge(
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Merge 2+ selected checkups (checkboxes on the /checkups list) into the newest
+    one — see ``app.db.checkups.merge_checkups`` for the field-conflict rule (newest
+    wins on date/title/category/next_due_date; results/notes are combined). Registered
+    before ``/checkups/{checkup_id}`` so "merge" is never swallowed as a checkup id
+    (same ordering trick as ``/checkups/supplements``/``/checkups/upload``)."""
+    form = await request.form()
+    ids = [int(v) for v in form.getlist("checkup_ids") if v.isdigit()]
+    if len(ids) < 2:
+        return RedirectResponse("/checkups?err=mergecount", status_code=303)
+    survivor = await checkups.merge_checkups(session, user.id, ids)
+    if survivor is None:
+        return RedirectResponse("/checkups?err=mergecount", status_code=303)
+    return RedirectResponse(f"/checkups/{survivor.id}?merged=1", status_code=303)
+
+
 @router.post("/checkups/upload")
 async def checkups_upload(
     file: list[UploadFile] = File(...),

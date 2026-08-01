@@ -122,6 +122,84 @@ def test_missing_required_fields_redirects_with_error(auth_client):
     assert r.status_code == 303 and "err=required" in r.headers["location"]
 
 
+def test_merge_route_combines_two_checkups(auth_client):
+    auth_client.post("/checkups", data={
+        "date": "2026-06-01", "title": "Старий",
+        "result_name": ["Феритин"], "result_value": ["60"],
+    })
+    auth_client.post("/checkups", data={
+        "date": "2026-07-15", "title": "Новий",
+        "result_name": ["ТТГ"], "result_value": ["2.0"],
+    })
+    uid = _user_id("t@example.com")
+    old_id = _get_id_by_title(uid, "Старий")
+    new_id = _get_id_by_title(uid, "Новий")
+
+    r = auth_client.post(
+        "/checkups/merge", data={"checkup_ids": [str(old_id), str(new_id)]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == f"/checkups/{new_id}?merged=1"
+
+    detail = auth_client.get(f"/checkups/{new_id}?merged=1").text
+    assert "Феритин" in detail and "ТТГ" in detail  # combined results
+    assert "Об'єднано" in detail
+
+    listing = auth_client.get("/checkups").text
+    assert "Старий" not in listing  # merged-away row is gone
+
+
+def test_merge_route_requires_at_least_two_ids(auth_client):
+    auth_client.post("/checkups", data={"date": "2026-07-15", "title": "Один"})
+    uid = _user_id("t@example.com")
+    cid = _get_id_by_title(uid, "Один")
+
+    r = auth_client.post(
+        "/checkups/merge", data={"checkup_ids": [str(cid)]}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=mergecount"
+
+
+def test_merge_route_ignores_ids_not_owned_by_user(client):
+    _seed_user(email="alice3@example.com", password="pw", is_admin=False)
+    _seed_user(email="bob3@example.com", password="pw", is_admin=False)
+
+    client.post("/login", data={"email": "alice3@example.com", "password": "pw"})
+    client.post("/checkups", data={"date": "2026-07-01", "title": "Alice checkup"})
+    alice_uid = _user_id("alice3@example.com")
+    alice_cid = _get_id_by_title(alice_uid, "Alice checkup")
+    client.post("/logout")
+
+    client.post("/login", data={"email": "bob3@example.com", "password": "pw"})
+    client.post("/checkups", data={"date": "2026-07-02", "title": "Bob checkup"})
+    bob_uid = _user_id("bob3@example.com")
+    bob_cid = _get_id_by_title(bob_uid, "Bob checkup")
+
+    # bob tries to merge his own checkup with alice's id -> only 1 owned id -> rejected
+    r = client.post(
+        "/checkups/merge", data={"checkup_ids": [str(bob_cid), str(alice_cid)]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=mergecount"
+
+    # alice's record is untouched
+    client.post("/logout")
+    client.post("/login", data={"email": "alice3@example.com", "password": "pw"})
+    assert "Alice checkup" in client.get("/checkups").text
+
+
+def test_checkups_list_shows_merge_checkboxes(auth_client):
+    auth_client.post("/checkups", data={"date": "2026-07-01", "title": "Перший чекбокс"})
+    auth_client.post("/checkups", data={"date": "2026-07-02", "title": "Другий чекбокс"})
+    uid = _user_id("t@example.com")
+    cid1 = _get_id_by_title(uid, "Перший чекбокс")
+    cid2 = _get_id_by_title(uid, "Другий чекбокс")
+
+    page = auth_client.get("/checkups").text
+    assert f'name="checkup_ids" value="{cid1}"' in page
+    assert f'name="checkup_ids" value="{cid2}"' in page
+    assert 'id="merge-btn"' in page
+
+
 def test_delete_checkup(auth_client):
     auth_client.post("/checkups", data={"date": "2026-07-01", "title": "Тимчасовий"})
     import anyio

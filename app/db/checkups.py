@@ -90,6 +90,48 @@ async def delete_checkup(session: AsyncSession, row: HealthCheckup) -> None:
     await session.commit()
 
 
+async def merge_checkups(
+    session: AsyncSession, user_id: int, checkup_ids: list
+) -> Optional[HealthCheckup]:
+    """Merge 2+ checkups into one: the newest (by date, then id as a tiebreak) survives
+    and keeps its id, date/title/category/next_due_date — the others' results/notes are
+    absorbed into it (oldest-to-newest reading order, exact-duplicate result rows
+    skipped) and those other rows are then deleted. A stale ``analysis`` (narrated over
+    the pre-merge numbers) is cleared, same as a plain edit. ``checkup_ids`` not owned
+    by ``user_id`` are silently dropped (can't merge another account's records); returns
+    ``None`` if fewer than 2 owned ids remain — nothing to merge."""
+    rows = []
+    for cid in checkup_ids:
+        row = await get_checkup(session, user_id, cid)
+        if row is not None:
+            rows.append(row)
+    if len(rows) < 2:
+        return None
+
+    rows.sort(key=lambda r: (r.date, r.id))  # oldest ... newest
+    survivor = rows[-1]
+    others = rows[:-1]
+
+    combined_results: list = []
+    combined_notes = []
+    for r in rows:
+        for item in (r.results or []):
+            if item not in combined_results:
+                combined_results.append(item)
+        if r.notes:
+            combined_notes.append(r.notes)
+
+    survivor.results = combined_results or None
+    survivor.notes = "\n\n".join(combined_notes) or None
+    survivor.analysis = None
+
+    for other in others:
+        await session.delete(other)
+    await session.commit()
+    await session.refresh(survivor)
+    return survivor
+
+
 async def set_analysis(session: AsyncSession, row: HealthCheckup, text: str) -> None:
     row.analysis = text
     await session.commit()
