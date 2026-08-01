@@ -27,10 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 
 from app.analysis.service import (
+    CHECKUP_UPLOAD_BATCH_MAX,
     AnalystError,
     parse_supplement_advice,
     run_checkup_analysis,
-    run_checkup_ocr,
+    run_checkup_ocr_batch,
     run_supplement_advice,
     supplement_advice_to_checkup_template,
 )
@@ -60,26 +61,30 @@ CHECKUP_UPLOAD_MAX_BYTES = 15 * 1024 * 1024  # comfortably under Anthropic's per
 
 # ---------- upload jobs: background OCR + live status over a websocket ----------
 #
-# Each uploaded file becomes an in-memory job (per-process, same "TTL'd module dict"
-# posture as the MFA login bridge in app.garmin.mfa) so POST /checkups/upload returns
-# immediately instead of blocking on a slow vision call, and several files upload
-# concurrently instead of one at a time. GET /checkups renders each job's CURRENT state
-# (covers a hard refresh or a JS-disabled browser); GET /checkups/ws pushes updates as
-# they land so an open tab doesn't have to poll.
+# Each upload is grouped into batches of up to CHECKUP_UPLOAD_BATCH_MAX files, one
+# Claude call per batch (app.analysis.reports.run_checkup_ocr_batch) rather than one
+# call per file — cheaper (one system prompt instead of N) and lets Claude tell
+# whether several files are pages of the SAME report or separate documents. Each batch
+# becomes an in-memory job (per-process, same "TTL'd module dict" posture as the MFA
+# login bridge in app.garmin.mfa) so POST /checkups/upload returns immediately instead
+# of blocking on the vision call, and several batches upload concurrently. GET
+# /checkups renders each job's CURRENT state (covers a hard refresh or a JS-disabled
+# browser); GET /checkups/ws pushes updates as they land so an open tab doesn't have
+# to poll.
 
 @dataclass
 class UploadJob:
     id: str
     user_id: int
-    filename: str
+    filenames: list
     status: str = "queued"  # queued -> processing -> done | error
-    checkup_id: Optional[int] = None
+    checkup_ids: list = field(default_factory=list)
     error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
     def to_json(self) -> dict:
-        return {"job_id": self.id, "filename": self.filename, "status": self.status,
-                "checkup_id": self.checkup_id, "error": self.error}
+        return {"job_id": self.id, "filenames": self.filenames, "status": self.status,
+                "checkup_ids": self.checkup_ids, "error": self.error}
 
 
 _upload_jobs: dict = {}          # job id -> UploadJob
@@ -111,22 +116,22 @@ async def _broadcast_job(job: "UploadJob") -> None:
 
 
 async def _process_checkup_upload_job(
-    job_id: str, file_bytes: bytes, media_type: str, fallback_date: str,
-    api_key: Optional[str],
+    job_id: str, files: list, fallback_date: str, api_key: Optional[str],
 ) -> None:
-    """Run one upload's OCR off the request path, in its own DB session — same shape as
-    ``app.routers.plan._generate_plan_bg``. Never raises; the outcome lands on the job
-    (read by a fresh GET /checkups) and goes out over the websocket to any open tab."""
+    """Run one batch's OCR off the request path, in its own DB session — same shape as
+    ``app.routers.plan._generate_plan_bg``. ``files`` is ``[(file_bytes, media_type), ...]``.
+    Never raises; the outcome lands on the job (read by a fresh GET /checkups) and goes
+    out over the websocket to any open tab."""
     job = _upload_jobs[job_id]
     job.status = "processing"
     await _broadcast_job(job)
     async with async_session_maker() as session:
         try:
-            row = await run_checkup_ocr(
-                session, user_id=job.user_id, file_bytes=file_bytes, media_type=media_type,
+            rows = await run_checkup_ocr_batch(
+                session, user_id=job.user_id, files=files,
                 fallback_date=fallback_date, api_key=api_key,
             )
-            job.status, job.checkup_id = "done", row.id
+            job.status, job.checkup_ids = "done", [row.id for row in rows]
         except AnalystError as e:
             job.status, job.error = "error", str(e)
         except Exception:
@@ -136,13 +141,12 @@ async def _process_checkup_upload_job(
 
 
 def _spawn_upload_job(
-    job: "UploadJob", file_bytes: bytes, media_type: str, fallback_date: str,
-    api_key: Optional[str],
+    job: "UploadJob", files: list, fallback_date: str, api_key: Optional[str],
 ) -> None:
     """Fire-and-forget the background OCR, keeping a reference so it isn't GC'd (same
     pattern as ``app.routers.plan._spawn_plan_generation``)."""
     task = asyncio.create_task(
-        _process_checkup_upload_job(job.id, file_bytes, media_type, fallback_date, api_key))
+        _process_checkup_upload_job(job.id, files, fallback_date, api_key))
     _upload_bg_tasks.add(task)
     task.add_done_callback(_upload_bg_tasks.discard)
 
@@ -215,32 +219,57 @@ async def checkups_upload(
     file: list[UploadFile] = File(...),
     user: User = Depends(current_user),
 ):
-    """Upload one or several photos/PDFs of lab reports at once. Each becomes its own
-    background OCR job (``run_checkup_ocr`` — a real Sonnet vision call, only from this
-    explicit upload, never automatic): the request returns immediately instead of
-    blocking on however many slow vision calls that takes, and the files process
-    concurrently. Redirects to /checkups?jobs=... , which shows live per-file status
-    (see the upload-jobs section above) until each lands as a normal, editable checkup
-    row the user reviews before trusting."""
+    """Upload one or several photos/PDFs of lab reports at once. Valid files are
+    grouped into batches of up to CHECKUP_UPLOAD_BATCH_MAX and each batch becomes ONE
+    background OCR job — one Claude vision call per batch (``run_checkup_ocr_batch``,
+    only from this explicit upload, never automatic), not one per file: cheaper, and
+    lets Claude tell whether several files are pages of the same report or separate
+    documents. The request returns immediately instead of blocking on however many
+    slow vision calls that takes. Redirects to /checkups?jobs=... , which shows live
+    per-batch status (see the upload-jobs section above) until each lands as normal,
+    editable checkup row(s) the user reviews before trusting."""
     creds = load_credentials(user)
     if not creds.anthropic_key:
         return RedirectResponse("/checkups?err=nokey", status_code=303)
     _prune_upload_jobs()
     today = user_today(user).isoformat()
     job_ids = []
+
+    valid = []  # (filename, file_bytes, media_type)
     for f in file:
-        job = UploadJob(id=uuid.uuid4().hex[:12], user_id=user.id, filename=f.filename or "файл")
-        _upload_jobs[job.id] = job
-        job_ids.append(job.id)
+        name = f.filename or "файл"
         content_type = (f.content_type or "").lower()
         if content_type not in CHECKUP_UPLOAD_TYPES:
-            job.status, job.error = "error", "Непідтримуваний формат файлу."
+            job = UploadJob(
+                id=uuid.uuid4().hex[:12], user_id=user.id, filenames=[name],
+                status="error", error="Непідтримуваний формат файлу.",
+            )
+            _upload_jobs[job.id] = job
+            job_ids.append(job.id)
             continue
         data = await f.read()
         if not data or len(data) > CHECKUP_UPLOAD_MAX_BYTES:
-            job.status, job.error = "error", "Файл завеликий (>15 МБ) або порожній."
+            job = UploadJob(
+                id=uuid.uuid4().hex[:12], user_id=user.id, filenames=[name],
+                status="error", error="Файл завеликий (>15 МБ) або порожній.",
+            )
+            _upload_jobs[job.id] = job
+            job_ids.append(job.id)
             continue
-        _spawn_upload_job(job, data, content_type, today, creds.anthropic_key)
+        valid.append((name, data, content_type))
+
+    for i in range(0, len(valid), CHECKUP_UPLOAD_BATCH_MAX):
+        chunk = valid[i:i + CHECKUP_UPLOAD_BATCH_MAX]
+        job = UploadJob(
+            id=uuid.uuid4().hex[:12], user_id=user.id,
+            filenames=[name for name, _, _ in chunk],
+        )
+        _upload_jobs[job.id] = job
+        job_ids.append(job.id)
+        _spawn_upload_job(
+            job, [(data, media_type) for _, data, media_type in chunk],
+            today, creds.anthropic_key,
+        )
     return RedirectResponse(f"/checkups?jobs={','.join(job_ids)}", status_code=303)
 
 

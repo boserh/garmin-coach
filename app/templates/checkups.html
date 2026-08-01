@@ -30,12 +30,13 @@
         <a href="/settings">Налаштуваннях</a>.</div>
     {% endif %}
 
-    <details class="fwrap" open>
+    <details class="fwrap">
       <summary class="fsum">📄 Завантажити фото/PDF аналізу<span class="chev">▾</span></summary>
       <form class="form" method="post" action="/checkups/upload" enctype="multipart/form-data">
         <div class="hint" style="margin:0 0 .5rem">
           Claude розпізнає показники з фото чи PDF і створить запис — перевір і виправ значення
-          перед тим, як довіряти їм. Можна вибрати відразу декілька файлів.
+          перед тим, як довіряти їм. Можна вибрати відразу декілька файлів (сторінки одного
+          звіту об'єднаються в один запис, різні документи — в окремі).
         </div>
         <input name="file" type="file" multiple
                accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" required>
@@ -48,9 +49,10 @@
       {% for j in upload_jobs %}
       <div class="upload-job" data-job-id="{{ j.job_id }}" data-status="{{ j.status }}"
            style="display:flex;justify-content:space-between;gap:1rem;padding:.35rem 0">
-        <span class="uj-name">{{ j.filename }}</span>
+        <span class="uj-name">{{ j.filenames|join(', ') }}</span>
         <span class="uj-status">
-          {% if j.status == 'done' %}✅ <a href="/checkups/{{ j.checkup_id }}?ocr=1">переглянути</a>
+          {% if j.status == 'done' %}✅
+            {% for cid in j.checkup_ids %}<a href="/checkups/{{ cid }}?ocr=1">переглянути{% if j.checkup_ids|length > 1 %} ({{ loop.index }}){% endif %}</a>{% if not loop.last %}, {% endif %}{% endfor %}
           {% elif j.status == 'error' %}❌ {{ j.error }}
           {% elif j.status == 'processing' %}⏳ розпізнаю…
           {% else %}⏳ у черзі…
@@ -95,7 +97,10 @@
           el.dataset.status = msg.status;
           var statusEl = el.querySelector('.uj-status');
           if (msg.status === 'done') {
-            statusEl.innerHTML = '✅ <a href="/checkups/' + msg.checkup_id + '?ocr=1">переглянути</a>';
+            statusEl.innerHTML = '✅ ' + msg.checkup_ids.map(function (cid, i) {
+              var label = 'переглянути' + (msg.checkup_ids.length > 1 ? ' (' + (i + 1) + ')' : '');
+              return '<a href="/checkups/' + cid + '?ocr=1">' + label + '</a>';
+            }).join(', ');
           } else if (msg.status === 'error') {
             statusEl.textContent = '❌ ' + (msg.error || 'помилка');
           } else if (msg.status === 'processing') {
