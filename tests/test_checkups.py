@@ -2,6 +2,9 @@
 edit, delete, per-user isolation, and the on-demand Claude interpretation route."""
 from unittest.mock import patch
 
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
 from tests.web_helpers import _seed_user, _user_id
 
 
@@ -208,55 +211,63 @@ def test_editing_a_checkup_clears_stale_analysis(auth_client):
     assert "Проаналізувати результати" not in detail  # no results yet, so no button at all
 
 
-def test_upload_route_creates_checkup_from_parsed_ocr(auth_client):
-    import json
+def test_upload_route_spawns_background_job_per_file(auth_client):
+    from app.routers import checkups as checkups_router
 
-    from app.analysis import reports
-    from app.analysis.client import CallStats
-
-    def fake_with_stats(data_b64, media_type, api_key=None):
-        return (
-            json.dumps({
-                "title": "Розпізнаний аналіз", "date": "2026-07-12", "category": "кров",
-                "results": [{"name": "Феритин", "value": "45", "unit": "нг/мл",
-                             "ref_range": "30-400"}],
-                "notes": None,
-            }),
-            CallStats(kind="checkup_ocr", model="m"),
-        )
-
-    with _fake_creds(), patch.object(reports, "checkup_ocr_with_stats", fake_with_stats):
+    with _fake_creds(), patch.object(checkups_router, "_spawn_upload_job") as spawn:
         r = auth_client.post(
             "/checkups/upload",
-            files={"file": ("lab.jpg", b"fake-image-bytes", "image/jpeg")},
+            files=[
+                ("file", ("lab1.jpg", b"bytes1", "image/jpeg")),
+                ("file", ("lab2.pdf", b"bytes2", "application/pdf")),
+            ],
             follow_redirects=False,
         )
-    assert r.status_code == 303
-    uid = _user_id("t@example.com")
-    cid = _get_id_by_title(uid, "Розпізнаний аналіз")
-    assert r.headers["location"] == f"/checkups/{cid}?saved=1&ocr=1"
-
-    detail = auth_client.get(f"/checkups/{cid}").text
-    assert "Феритин" in detail and "45" in detail
-
-
-def test_upload_route_rejects_bad_file_type(auth_client):
-    r = auth_client.post(
-        "/checkups/upload",
-        files={"file": ("notes.txt", b"hello", "text/plain")},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=filetype"
+    job_ids: list = []
+    try:
+        assert r.status_code == 303
+        assert spawn.call_count == 2
+        location = r.headers["location"]
+        assert location.startswith("/checkups?jobs=")
+        job_ids = location.split("=", 1)[1].split(",")
+        assert len(job_ids) == 2
+        for jid in job_ids:
+            assert checkups_router._upload_jobs[jid].status == "queued"
+    finally:
+        for jid in job_ids:
+            checkups_router._upload_jobs.pop(jid, None)
 
 
-def test_upload_route_rejects_oversized_file(auth_client):
+def test_upload_route_bad_filetype_creates_error_job_without_spawning(auth_client):
+    from app.routers import checkups as checkups_router
+
+    with _fake_creds(), patch.object(checkups_router, "_spawn_upload_job") as spawn:
+        r = auth_client.post(
+            "/checkups/upload",
+            files={"file": ("notes.txt", b"hello", "text/plain")},
+            follow_redirects=False,
+        )
+    assert spawn.call_count == 0
+    job_id = r.headers["location"].split("=", 1)[1]
+    job = checkups_router._upload_jobs.pop(job_id)
+    assert job.status == "error"
+    assert "формат" in job.error.lower()
+
+
+def test_upload_route_oversized_creates_error_job_without_spawning(auth_client):
+    from app.routers import checkups as checkups_router
+
     big = b"x" * (15 * 1024 * 1024 + 1)
-    r = auth_client.post(
-        "/checkups/upload",
-        files={"file": ("lab.jpg", big, "image/jpeg")},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=filesize"
+    with _fake_creds(), patch.object(checkups_router, "_spawn_upload_job") as spawn:
+        r = auth_client.post(
+            "/checkups/upload",
+            files={"file": ("lab.jpg", big, "image/jpeg")},
+            follow_redirects=False,
+        )
+    assert spawn.call_count == 0
+    job_id = r.headers["location"].split("=", 1)[1]
+    job = checkups_router._upload_jobs.pop(job_id)
+    assert job.status == "error"
 
 
 def test_upload_route_no_claude_key_redirects(auth_client):
@@ -270,20 +281,44 @@ def test_upload_route_no_claude_key_redirects(auth_client):
     assert r.status_code == 303 and r.headers["location"] == "/checkups?err=nokey"
 
 
-def test_upload_route_ocr_failure_redirects(auth_client):
-    from app.analysis import reports
-    from app.analysis.service import AnalystError
+def test_checkups_list_shows_upload_job_status(auth_client):
+    from app.routers import checkups as checkups_router
 
-    def failing_with_stats(data_b64, media_type, api_key=None):
-        raise AnalystError("боом")
+    job = checkups_router.UploadJob(
+        id="testjob1", user_id=_user_id("t@example.com"), filename="lab.jpg",
+        status="done", checkup_id=123,
+    )
+    checkups_router._upload_jobs[job.id] = job
+    try:
+        page = auth_client.get("/checkups?jobs=testjob1").text
+        assert "lab.jpg" in page
+        assert "/checkups/123?ocr=1" in page
+    finally:
+        checkups_router._upload_jobs.pop(job.id, None)
 
-    with _fake_creds(), patch.object(reports, "checkup_ocr_with_stats", failing_with_stats):
-        r = auth_client.post(
-            "/checkups/upload",
-            files={"file": ("lab.jpg", b"fake-image-bytes", "image/jpeg")},
-            follow_redirects=False,
-        )
-    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=ocr"
+
+def test_checkups_list_ignores_other_users_jobs(auth_client):
+    from app.routers import checkups as checkups_router
+
+    other_uid = _user_id("t@example.com") + 999
+    job = checkups_router.UploadJob(id="testjob2", user_id=other_uid, filename="secret.jpg")
+    checkups_router._upload_jobs[job.id] = job
+    try:
+        page = auth_client.get("/checkups?jobs=testjob2").text
+        assert "secret.jpg" not in page
+    finally:
+        checkups_router._upload_jobs.pop(job.id, None)
+
+
+def test_checkups_ws_rejects_unauthenticated(client):
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/checkups/ws"):
+            pass
+
+
+def test_checkups_ws_accepts_authenticated_user(auth_client):
+    with auth_client.websocket_connect("/checkups/ws"):
+        pass
 
 
 def test_checkups_are_isolated_per_user(client):
