@@ -307,6 +307,71 @@ def test_activity_strength_renders_garmin_style_cards(client):
     assert "1 підхід" in html                                     # correct singular plural
 
 
+def test_activity_detail_shows_linked_gear_name(client):
+    """NF-15: a run with a gear_id resolves against the synced gear_roster bot_state and
+    shows the shoe's name on the activity detail page — not just the bare id."""
+    import json
+
+    import anyio
+    from sqlalchemy import select
+
+    from app import gear
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+    from app.garmin import repository
+
+    _seed_user(email="gearshow@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "gearshow@example.com", "password": "pw"})
+
+    async def seed():
+        from app.db import users
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "gearshow@example.com")
+            roster = [{"gear_id": "c0871305-675c-4e9e-883f-8b69ef5a385e",
+                       "name": "Nike vomero18", "type": "SHOES", "retired": False,
+                       "mileage_km": 263.3, "last_used": None}]
+            await repository.set_state(s, u.id, gear.STATE_KEY, json.dumps(roster))
+            s.add(ActivityRecord(
+                user_id=u.id, activity_id=777, date="2026-07-23", type="running",
+                dist_km=8.0, dur_min=45.0,
+                gear_id="c0871305-675c-4e9e-883f-8b69ef5a385e"))
+            await s.commit()
+            return (await s.execute(
+                select(ActivityRecord.id).where(ActivityRecord.user_id == u.id)
+            )).scalar_one()
+
+    rid = anyio.run(seed)
+    html = client.get(f"/me/activities/{rid}").text
+    assert "Nike vomero18" in html
+
+
+def test_activity_detail_no_gear_badge_without_link(client):
+    _seed_user(email="gearshow2@example.com", password="pw", is_admin=False)
+    client.post("/login", data={"email": "gearshow2@example.com", "password": "pw"})
+
+    import anyio
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import ActivityRecord
+
+    async def seed():
+        from app.db import users
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "gearshow2@example.com")
+            s.add(ActivityRecord(
+                user_id=u.id, activity_id=778, date="2026-07-23", type="running",
+                dist_km=8.0, dur_min=45.0))
+            await s.commit()
+            return (await s.execute(
+                select(ActivityRecord.id).where(ActivityRecord.user_id == u.id)
+            )).scalar_one()
+
+    rid = anyio.run(seed)
+    html = client.get(f"/me/activities/{rid}").text
+    assert "👟" not in html
+
+
 
 
 def test_filter_summary_labels_active_choices():
