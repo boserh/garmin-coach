@@ -23,12 +23,19 @@ def test_parse_item_accepts_several_key_shapes():
         "gear_id": "abc", "name": "Nike Pegasus", "type": "Running", "retired": False}
     assert gear.parse_item({"gearPk": 42, "gearMakeName": "Hoka"})["gear_id"] == "42"
     assert gear.parse_item({"gearUUID": "x"})["name"] == "Спорядження"
+    # v2/list shape (confirmed live 2026-08-01): brand/gearType/status, not
+    # displayName/gearTypeName/gearStatusName.
+    assert gear.parse_item({"uuid": "c087", "brand": "Nike vomero18",
+                            "gearType": "SHOES", "status": "ACTIVE"}) == {
+        "gear_id": "c087", "name": "Nike vomero18", "type": "SHOES", "retired": False}
 
 
 def test_parse_item_retired_flag():
     assert gear.parse_item({"uuid": "a", "retired": True})["retired"] is True
     assert gear.parse_item({"uuid": "a", "gearStatusName": "Retired"})["retired"] is True
     assert gear.parse_item({"uuid": "a", "gearStatusName": "Active"})["retired"] is False
+    assert gear.parse_item({"uuid": "a", "status": "RETIRED"})["retired"] is True
+    assert gear.parse_item({"uuid": "a", "status": "ACTIVE"})["retired"] is False
 
 
 def test_parse_item_unrecognised_shape_returns_none():
@@ -38,6 +45,7 @@ def test_parse_item_unrecognised_shape_returns_none():
 
 
 def test_parse_mileage_km_variants_and_conversion():
+    assert gear.parse_mileage_km({"distanceUsedMeters": 263_300.26}) == 263.3  # v2/list
     assert gear.parse_mileage_km({"totalDistance": 700_000}) == 700.0     # metres -> km
     assert gear.parse_mileage_km({"totalDistanceInMeters": 12_345}) == 12.3
     assert gear.parse_mileage_km({"distance": 1_000}) == 1.0
@@ -112,14 +120,16 @@ def test_fetch_gear_resolves_profile_and_caches(cache_dir, monkeypatch):
         calls.append((path, params))
         if path == "/userprofile-service/socialProfile":
             return {"id": 999, "userName": "u"}
-        if path == "/gear-service/gear/filterGear":
-            return [{"uuid": "shoe1", "displayName": "Pegasus"}]
+        if path == "/gear-service/gear/v2/list":
+            return [{"uuid": "shoe1", "brand": "Pegasus"}]
         return {"_error": "unexpected"}
 
     monkeypatch.setattr(client, "_safe", fake_safe)
     items = client.fetch_gear()
-    assert items == [{"uuid": "shoe1", "displayName": "Pegasus"}]
-    assert ("/gear-service/gear/filterGear", {"userProfilePk": "999"}) in calls
+    assert items == [{"uuid": "shoe1", "brand": "Pegasus"}]
+    assert ("/gear-service/gear/v2/list", {
+        "start": 0, "limit": 100, "gearStatuses": "ACTIVE", "sortOrder": "firstUseDate_desc",
+    }) in calls
 
     # second call hits the disk cache — no further fetches
     calls.clear()

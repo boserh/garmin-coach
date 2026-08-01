@@ -66,12 +66,11 @@ _error_lock = threading.Lock()
 # Endpoint suffixes whose failures are EXPECTED (Garmin refuses them for this account —
 # the long-standing resting-HR 403, say) — kept in the buffer for the record but flagged
 # ``expected`` so the burst DM counter can exclude them and not cry wolf.
-# ``/gear-service/`` (NF-15): confirmed live 403 on a real account, same shape as
-# biometric-service — the profile-id lookup (``/userprofile-service/...``) that gates it
-# succeeds, so this is Garmin denying the gear endpoint itself to this token, not a
-# transient fault. ``client.fetch_gear`` already degrades to ``[]`` best-effort, so NF-15
-# (gear mileage / shoe-wear DM) is simply inert for this account — nothing to fix here.
-_EXPECTED_ERROR_SUFFIXES = ("/biometric-service/", "/gear-service/")
+# (NF-15: `/gear-service/gear/filterGear` — the community library's endpoint — was
+# briefly whitelisted here as an expected 403; turned out to be the wrong endpoint, not a
+# permission gap (`/gear-service/gear/v2/list` works fine) — `client.fetch_gear` was fixed
+# to call v2 instead, so a gear-service failure now means something real again.)
+_EXPECTED_ERROR_SUFFIXES = ("/biometric-service/",)
 
 
 def _classify_error(exc: Exception) -> str:
@@ -712,17 +711,18 @@ def fetch_workout_detail(workout_id) -> dict:
 
 
 # ---------- GEAR (NF-15) ----------
-# NB the gear endpoints below are the two methods `python-garminconnect` exposes
-# (get_gear / get_gear_stats; since OPS-10 that library is also our auth engine, but these
-# paths are still called through our own `_api`) — this codebase has no live-verified recon
-# against a real account yet (the ticket's own AC #1 flags this as a blocker, not a
-# detail: docs/backlog/NF-15-shoe-mileage-tracker.md). There is also no documented
-# activity→gear link endpoint in that reference library, so — deliberately deviating from
-# the ticket's original "sum our own activities' distance per gear_id" design — mileage
-# comes straight from Garmin's own per-gear ``stats`` total (which the Connect UI already
-# shows as a shoe's lifetime distance), never from an ActivityRecord column we'd have to
-# backfill and could easily get wrong. Every parse is defensive (``app.gear``): an
-# unrecognised shape is logged once and treated as "no gear data" rather than guessed at.
+# NB `python-garminconnect`'s own `get_gear()` hits `/gear-service/gear/filterGear` (v1) —
+# confirmed live 2026-08-01 that this is a permanent 403 for a third-party token on a real
+# account (roster non-empty, same session writing to workout-service seconds earlier), while
+# the Connect web UI itself calls `/gear-service/gear/v2/list`, which works and returns each
+# item's lifetime distance/activity-count/dates in the SAME response — no separate per-item
+# `stats` call needed (``fetch_gear_stats`` below is kept for on-demand single-item refresh,
+# just no longer called from the roster sync). There is still no documented activity→gear
+# link endpoint, so — deliberately deviating from the ticket's original "sum our own
+# activities' distance per gear_id" design — mileage comes straight from Garmin's own
+# per-gear total rather than an ActivityRecord column we'd have to backfill and could easily
+# get wrong. Every parse is defensive (``app.gear``): an unrecognised shape is logged once
+# and treated as "no gear data" rather than guessed at.
 GEAR_TTL_S = 7 * 24 * 3600         # a gear list barely changes day to day, like workout:v2
 GEAR_STATS_TTL_S = 24 * 3600       # a shoe's total distance grows with every run — refresh daily
 
@@ -755,17 +755,23 @@ def _profile_pk():
 
 
 def fetch_gear() -> list:
-    """The user's saved Garmin gear (shoes/other equipment) — best-effort, [] on any
-    failure or when the profile id can't be resolved (never breaks the sync tick). 7-day
-    disk cache, keyed on the profile id (a gear ROSTER rarely changes day to day)."""
+    """The user's saved Garmin gear (shoes/other equipment), each item already carrying
+    its lifetime distance/activity-count/dates — best-effort, [] on any failure or when
+    the profile id can't be resolved (never breaks the sync tick). Active gear only (no
+    live-verified query shape for retired gear yet — a documented gap, not a guess).
+    7-day disk cache, keyed on the profile id (a gear ROSTER rarely changes day to day);
+    the cache key carries a ``v2`` tag so a stale empty result cached under the old
+    (permanently-403) ``filterGear`` endpoint is never served instead of a fresh fetch."""
     pk = _profile_pk()
     if pk is None:
         return []
-    key = f"gear:v1:{pk}"
+    key = f"gear:v2:{pk}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
-    r = _safe(_api, "/gear-service/gear/filterGear", params={"userProfilePk": pk})
+    r = _safe(_api, "/gear-service/gear/v2/list", params={
+        "start": 0, "limit": 100, "gearStatuses": "ACTIVE", "sortOrder": "firstUseDate_desc",
+    })
     items = r if isinstance(r, list) else []
     _cache_put(key, items, GEAR_TTL_S)
     return items
