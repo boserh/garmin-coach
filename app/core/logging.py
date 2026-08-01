@@ -4,9 +4,29 @@ Moved from the old flat ``logging_setup.py``; now reads paths/levels from Settin
 Call :func:`setup` once at process start, before any module-level loggers are used.
 """
 import logging
+import sys
+import threading
 from logging.handlers import RotatingFileHandler
 
+from app.core.alerts import TelegramAlertHandler
 from app.core.config import settings
+
+_crash_logger = logging.getLogger("crash")
+
+
+def _log_uncaught(exc_type, exc_value, exc_tb) -> None:
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    _crash_logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+def _log_uncaught_thread(args: "threading.ExceptHookArgs") -> None:
+    _crash_logger.critical(
+        f"Uncaught exception in thread {args.thread.name!r}",
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
 
 
 def setup() -> None:
@@ -29,6 +49,18 @@ def setup() -> None:
     root.handlers.clear()
     root.addHandler(fh)
     root.addHandler(ch)
+
+    # mirror WARNING+ from every process to the admin bot's owner chat (best-effort,
+    # deduped — see app.core.alerts). Off when no admin bot token is configured.
+    if settings.TELEGRAM_ADMIN_BOT_TOKEN:
+        root.addHandler(TelegramAlertHandler())
+
+    # rescue: log (and thus forward) exceptions that would otherwise escape unseen —
+    # a crash in the main thread or in a bare `threading.Thread` target. Asyncio task
+    # exceptions already reach here via asyncio's own default handler logging through
+    # the "asyncio" logger, which propagates to root like everything else.
+    sys.excepthook = _log_uncaught
+    threading.excepthook = _log_uncaught_thread
 
     # silence noisy libraries
     for noisy in ("httpx", "httpcore", "telegram", "apscheduler", "uvicorn.access"):
