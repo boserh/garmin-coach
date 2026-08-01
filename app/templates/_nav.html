@@ -20,6 +20,7 @@
   <a href="/info"{% if active == 'info' %} class="active"{% endif %}>Інфо</a>
   {% if user and user.is_admin %}
   <a href="/ui"{% if active == 'ui' %} class="active"{% endif %}>База даних</a>
+  <a href="/admin/cache"{% if active == 'cache' %} class="active"{% endif %}>Кеші</a>
   <a href="/admin/users"{% if active == 'users' %} class="active"{% endif %}>Користувачі</a>
   {% endif %}
   <form method="post" action="/logout" class="logout-form">

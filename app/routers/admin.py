@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.charts import run_charts as _run_charts
 from app.charts import series as _series
 from app.core.auth import require_admin
+from app.db import llm_cache
 from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog, User
 from app.dependencies import get_session
+from app.garmin import client as garmin_client
 from app.garmin import repository
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -168,6 +170,56 @@ async def ui_row(
             "analysis": getattr(obj, "analysis", None),
             "token": request.query_params.get("token", ""),
         },
+    )
+
+
+@router.get("/admin/cache", response_class=HTMLResponse)
+async def admin_cache(
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """ST-20: llm_cache + Garmin disk-cache summary, with purge actions below."""
+    llm = await llm_cache.stats(session)
+    garmin = garmin_client.cache_stats()
+    return templates.TemplateResponse(
+        request, "cache.html",
+        {"user": user, "base": "/ui", "title": "Кеші",
+         "token": request.query_params.get("token", ""),
+         "llm": llm, "garmin": garmin,
+         "msg": request.query_params.get("msg", "")},
+    )
+
+
+@router.post("/admin/cache/llm/purge_expired")
+async def admin_cache_llm_purge_expired(session: AsyncSession = Depends(get_session)):
+    n = await llm_cache.purge_expired(session)
+    return RedirectResponse(
+        f"/admin/cache?msg=Видалено+{n}+прострочених+llm_cache", status_code=303
+    )
+
+
+@router.post("/admin/cache/llm/purge_all")
+async def admin_cache_llm_purge_all(session: AsyncSession = Depends(get_session)):
+    n = await llm_cache.purge_all(session)
+    return RedirectResponse(
+        f"/admin/cache?msg=Видалено+{n}+рядків+llm_cache+повністю", status_code=303
+    )
+
+
+@router.post("/admin/cache/garmin/purge_expired")
+async def admin_cache_garmin_purge_expired():
+    n = garmin_client.cache_purge_expired()
+    return RedirectResponse(
+        f"/admin/cache?msg=Видалено+{n}+прострочених+файлів+garmin-кешу", status_code=303
+    )
+
+
+@router.post("/admin/cache/garmin/del_activity")
+async def admin_cache_garmin_del_activity(activity_id: str = Form(...)):
+    garmin_client.cache_del_activity(activity_id)
+    return RedirectResponse(
+        f"/admin/cache?msg=Видалено+garmin-кеш+активності+{activity_id}", status_code=303
     )
 
 

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Кеші</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=4">
+  <script defer src="/static/app.js?v=1"></script>
+</head>
+<body>
+  {% set active = 'cache' %}
+  {% include "_nav.html" %}
+  <div class="wrap" style="max-width:56rem">
+    <p class="eyebrow">Адміністрування</p>
+    <h1 class="title" style="font-size:1.7rem">Кеші</h1>
+
+    {% if msg %}<div class="pill ok" style="display:inline-block;margin-bottom:1rem">{{ msg }}</div>{% endif %}
+
+    <h2 class="sec" style="font-size:1.1rem">Claude dedup (llm_cache)</h2>
+    <table class="dtable">
+      <tr><th>рядків усього</th><th>прострочених</th><th>розмір (value)</th></tr>
+      <tr>
+        <td>{{ llm.total }}</td>
+        <td>{{ llm.expired }}</td>
+        <td>{{ "%.1f"|format(llm.bytes / 1024) }} КБ</td>
+      </tr>
+    </table>
+    <p style="margin:.8rem 0">
+      <form class="inline" method="post" action="/admin/cache/llm/purge_expired">
+        <button class="abtn toggle" type="submit">Purge прострочених</button>
+      </form>
+      <form class="inline" method="post" action="/admin/cache/llm/purge_all"
+            onsubmit="return confirm('Видалити ВЕСЬ llm_cache? Наступні виклики Claude знову стануть платними.');">
+        <button class="abtn del" type="submit">Видалити повністю</button>
+      </form>
+    </p>
+
+    <h2 class="sec" style="font-size:1.1rem">Garmin disk cache</h2>
+    <table class="dtable">
+      <tr><th>ключ</th><th>файлів</th><th>розмір</th></tr>
+      {% for prefix, s in garmin.by_prefix.items() %}
+      <tr>
+        <td>{{ prefix }}</td>
+        <td>{{ s.count }}</td>
+        <td>{{ "%.1f"|format(s.bytes / 1024) }} КБ</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td><b>всього</b></td>
+        <td><b>{{ garmin.total_files }}</b></td>
+        <td><b>{{ "%.1f"|format(garmin.total_bytes / 1024) }} КБ</b></td>
+      </tr>
+    </table>
+    <p style="margin:.8rem 0">
+      <form class="inline" method="post" action="/admin/cache/garmin/purge_expired">
+        <button class="abtn toggle" type="submit">Purge прострочених файлів</button>
+      </form>
+    </p>
+
+    <h2 class="sec" style="font-size:1.1rem">Видалити кеш активності</h2>
+    <form class="form" method="post" action="/admin/cache/garmin/del_activity">
+      <label for="activity_id">Activity ID</label>
+      <input id="activity_id" name="activity_id" type="text" required>
+      <button class="btn" type="submit">Видалити (exercises/series/splits/gear)</button>
+    </form>
+  </div>
+</body>
+</html>
