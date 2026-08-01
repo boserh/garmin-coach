@@ -18,7 +18,10 @@
     <p class="eyebrow">{{ c.date }}{% if c.category %} · {{ c.category }}{% endif %}</p>
     <h1 class="title" style="font-size:1.7rem">{{ c.title }}</h1>
 
-    {% if request.query_params.get('saved') == '1' %}<div class="saved">✅ Збережено.</div>{% endif %}
+    {% if request.query_params.get('ocr') == '1' %}
+    <div class="hint" style="margin-bottom:1rem">📄 Розпізнано з файлу — перевір значення нижче
+      перед тим, як довіряти їм, і виправ, якщо щось прочиталось неправильно.</div>
+    {% elif request.query_params.get('saved') == '1' %}<div class="saved">✅ Збережено.</div>{% endif %}
     {% if request.query_params.get('analyzed') == '1' %}<div class="saved">✅ Розбір готовий.</div>{% endif %}
     {% if request.query_params.get('err') == 'required' %}
       <div class="err" style="margin:0 0 1rem">Заповни дату і назву аналізу.</div>

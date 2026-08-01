@@ -208,6 +208,84 @@ def test_editing_a_checkup_clears_stale_analysis(auth_client):
     assert "Проаналізувати результати" not in detail  # no results yet, so no button at all
 
 
+def test_upload_route_creates_checkup_from_parsed_ocr(auth_client):
+    import json
+
+    from app.analysis import reports
+    from app.analysis.client import CallStats
+
+    def fake_with_stats(data_b64, media_type, api_key=None):
+        return (
+            json.dumps({
+                "title": "Розпізнаний аналіз", "date": "2026-07-12", "category": "кров",
+                "results": [{"name": "Феритин", "value": "45", "unit": "нг/мл",
+                             "ref_range": "30-400"}],
+                "notes": None,
+            }),
+            CallStats(kind="checkup_ocr", model="m"),
+        )
+
+    with _fake_creds(), patch.object(reports, "checkup_ocr_with_stats", fake_with_stats):
+        r = auth_client.post(
+            "/checkups/upload",
+            files={"file": ("lab.jpg", b"fake-image-bytes", "image/jpeg")},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    uid = _user_id("t@example.com")
+    cid = _get_id_by_title(uid, "Розпізнаний аналіз")
+    assert r.headers["location"] == f"/checkups/{cid}?saved=1&ocr=1"
+
+    detail = auth_client.get(f"/checkups/{cid}").text
+    assert "Феритин" in detail and "45" in detail
+
+
+def test_upload_route_rejects_bad_file_type(auth_client):
+    r = auth_client.post(
+        "/checkups/upload",
+        files={"file": ("notes.txt", b"hello", "text/plain")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=filetype"
+
+
+def test_upload_route_rejects_oversized_file(auth_client):
+    big = b"x" * (15 * 1024 * 1024 + 1)
+    r = auth_client.post(
+        "/checkups/upload",
+        files={"file": ("lab.jpg", big, "image/jpeg")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=filesize"
+
+
+def test_upload_route_no_claude_key_redirects(auth_client):
+    with patch("app.routers.checkups.load_credentials",
+              return_value=type("C", (), {"anthropic_key": None})()):
+        r = auth_client.post(
+            "/checkups/upload",
+            files={"file": ("lab.jpg", b"fake-image-bytes", "image/jpeg")},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=nokey"
+
+
+def test_upload_route_ocr_failure_redirects(auth_client):
+    from app.analysis import reports
+    from app.analysis.service import AnalystError
+
+    def failing_with_stats(data_b64, media_type, api_key=None):
+        raise AnalystError("боом")
+
+    with _fake_creds(), patch.object(reports, "checkup_ocr_with_stats", failing_with_stats):
+        r = auth_client.post(
+            "/checkups/upload",
+            files={"file": ("lab.jpg", b"fake-image-bytes", "image/jpeg")},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303 and r.headers["location"] == "/checkups?err=ocr"
+
+
 def test_checkups_are_isolated_per_user(client):
     _seed_user(email="alice@example.com", password="pw", is_admin=False)
     _seed_user(email="bob@example.com", password="pw", is_admin=False)
