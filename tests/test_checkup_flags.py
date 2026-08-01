@@ -1,30 +1,33 @@
-"""`is_out_of_range`: best-effort out-of-range flag for the checkups results table —
-handles a plain range (either order), a `<`/`>`/`<=`/`>=` bound, and European decimal
-commas; anything else (missing/unparseable) stays `None` (no opinion, no highlight)."""
+"""`out_of_range_severity`: best-effort out-of-range flag for the checkups results
+table, graded by how far past the boundary the value falls — a plain range (either
+order), a `<`/`>`/`<=`/`>=` bound, and European decimal commas; anything else
+(missing/unparseable) stays `None` (no opinion, no highlight)."""
 import pytest
 
-from app.checkup_flags import is_out_of_range
+from app.checkup_flags import out_of_range_severity
 
 
 @pytest.mark.parametrize("value, ref_range, expected", [
-    ("45", "30-400", False),
-    ("15", "30-400", True),
-    ("500", "30-400", True),
-    ("45", "400-30", False),         # reversed range, still handled
-    ("3.2", "3,5-5,5", True),        # comma-decimal ref_range
-    ("4,0", "3.5-5.5", False),       # comma-decimal value
-    ("6", "<5.0", True),
-    ("4.9", "<5.0", False),
-    ("5", "<=5", False),
-    ("5.1", "<=5", True),
-    ("3", ">10", True),
-    ("11", ">10", False),
-    ("10", ">=10", False),
-    ("9.9", ">=10", True),
-    ("45 (high)", "30-400", False),  # leading number extracted from prose
+    ("15", "10-20", None),        # within range
+    ("9", "10-20", "minor"),      # 1 below lo, range width 10 -> 10% past the edge
+    ("8", "10-20", "major"),      # 2 below lo -> 20% past the edge
+    ("21", "10-20", "minor"),     # 1 above hi
+    ("25", "10-20", "major"),     # 5 above hi -> 50% past the edge
+    ("45", "400-30", None),       # reversed range, still handled (value in range)
+    ("4.9", "<5.0", None),
+    ("5.5", "<5.0", "minor"),     # bound 5.0, 0.5 past -> 10%
+    ("6", "<5.0", "major"),       # 1 past -> 20%
+    ("5", "<=5", None),           # boundary itself is still "in range"
+    ("5.5", "<=5", "minor"),
+    ("11", ">10", None),
+    ("9", ">10", "minor"),
+    ("5", ">10", "major"),
+    ("6", "5-5", "major"),        # zero-width range can't express a fraction -> major
+    ("0.1", "<0", "major"),       # zero bound, same reasoning
+    ("45 (high)", "30-400", None),  # leading number extracted from prose, in range
 ])
-def test_is_out_of_range_recognized_shapes(value, ref_range, expected):
-    assert is_out_of_range(value, ref_range) is expected
+def test_out_of_range_severity_recognized_shapes(value, ref_range, expected):
+    assert out_of_range_severity(value, ref_range) == expected
 
 
 @pytest.mark.parametrize("value, ref_range", [
@@ -36,5 +39,5 @@ def test_is_out_of_range_recognized_shapes(value, ref_range, expected):
     ("45", "normal"),                # prose ref_range, no recognizable bound
     ("45", "30 to 400"),             # unrecognized range spelling
 ])
-def test_is_out_of_range_unrecognized_returns_none(value, ref_range):
-    assert is_out_of_range(value, ref_range) is None
+def test_out_of_range_severity_unrecognized_returns_none(value, ref_range):
+    assert out_of_range_severity(value, ref_range) is None

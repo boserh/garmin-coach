@@ -37,10 +37,10 @@
       <thead><tr><th>Показник</th><th>Значення</th><th>Одиниці</th><th>Норма</th></tr></thead>
       <tbody>
         {% for r in c.results %}
-        {% set oor = r.value|oor(r.ref_range) %}
-        <tr class="{{ 'oor-row' if oor }}">
+        {% set sev = r.value|oor(r.ref_range) %}
+        <tr class="{{ 'oor-row oor-' ~ sev if sev }}">
           <td>{{ r.name }}</td>
-          <td class="{{ 'oor' if oor }}">{{ r.value }}{% if oor %} <span class="oor-flag" title="поза межами норми">⚠</span>{% endif %}</td>
+          <td class="{{ 'oor oor-' ~ sev if sev }}">{{ r.value }}{% if sev %} <span class="oor-flag" title="{{ 'помірне' if sev == 'minor' else 'значне' }} відхилення від норми">⚠</span>{% endif %}</td>
           <td>{{ r.unit }}</td>
           <td>{{ r.ref_range }}</td>
         </tr>

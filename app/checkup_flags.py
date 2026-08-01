@@ -1,4 +1,5 @@
-"""Best-effort "is this lab result out of range?" flag for the checkups UI.
+"""Best-effort "is this lab result out of range, and how badly?" flag for the checkups
+UI.
 
 ``value``/``ref_range`` are free text — typed by hand or OCR'd off a lab report — so
 exact parsing is impossible in general. This only ever drives a visual highlight, never
@@ -13,6 +14,11 @@ _RANGE_RE = re.compile(rf"^\s*({_NUM})\s*[-–—]\s*({_NUM})\s*$")
 _LT_RE = re.compile(rf"^\s*[<≤]=?\s*({_NUM})\s*$")
 _GT_RE = re.compile(rf"^\s*[>≥]=?\s*({_NUM})\s*$")
 
+# A value past the boundary by no more than this fraction of the range's width (or, for
+# a one-sided bound, of the bound's own magnitude) reads as "borderline" (orange) rather
+# than "clearly abnormal" (red) — a rough rule of thumb, not a clinical threshold.
+MINOR_DEVIATION_FRACTION = 0.15
+
 
 def _num(s: str) -> Optional[float]:
     try:
@@ -21,12 +27,20 @@ def _num(s: str) -> Optional[float]:
         return None
 
 
-def is_out_of_range(value: Optional[str], ref_range: Optional[str]) -> Optional[bool]:
-    """True/False when ``value``'s leading number is outside ``ref_range``, ``None``
-    when either is missing or doesn't match a recognized shape. Handles a plain range
-    ("30-400", either order), a bound ("<5.0", ">=10", "≤7"), and European decimal
-    commas. Anything else (a non-numeric value, a prose ref_range) is left unhighlighted
-    rather than guessed at."""
+def _severity(deviation: float, scale: float) -> str:
+    """``deviation`` and ``scale`` are both non-negative; ``scale`` of 0 (a zero-width
+    range, or a bound of 0) can't express a fraction, so any deviation there is major."""
+    frac = deviation / scale if scale > 0 else float("inf")
+    return "minor" if frac <= MINOR_DEVIATION_FRACTION else "major"
+
+
+def out_of_range_severity(value: Optional[str], ref_range: Optional[str]) -> Optional[str]:
+    """``None`` (in range, or ``value``/``ref_range`` missing/unrecognized), ``"minor"``
+    (just past the edge) or ``"major"`` (well outside) — same best-effort parsing as a
+    plain in/out check, now graded by how far past the boundary the value falls so a
+    borderline result doesn't read as alarming as a wildly abnormal one. Handles a plain
+    range ("30-400", either order), a bound ("<5.0", ">=10", "≤7"), and European decimal
+    commas; anything else is left unhighlighted rather than guessed at."""
     if not value or not ref_range:
         return None
     vm = _VALUE_RE.search(value)
@@ -44,16 +58,24 @@ def is_out_of_range(value: Optional[str], ref_range: Optional[str]) -> Optional[
             return None
         if lo > hi:
             lo, hi = hi, lo
-        return v < lo or v > hi
+        if v < lo:
+            return _severity(lo - v, hi - lo)
+        if v > hi:
+            return _severity(v - hi, hi - lo)
+        return None
 
     m = _LT_RE.match(ref)
     if m:
         bound = _num(m.group(1))
-        return None if bound is None else v > bound
+        if bound is None or v <= bound:
+            return None
+        return _severity(v - bound, abs(bound))
 
     m = _GT_RE.match(ref)
     if m:
         bound = _num(m.group(1))
-        return None if bound is None else v < bound
+        if bound is None or v >= bound:
+            return None
+        return _severity(bound - v, abs(bound))
 
     return None

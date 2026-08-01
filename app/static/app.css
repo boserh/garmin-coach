@@ -341,8 +341,10 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 .checkup-results th{text-align:left;color:var(--faint);font-size:.72rem;text-transform:uppercase;
      letter-spacing:.05em;font-weight:600;padding:.3rem .6rem;border-bottom:1px solid var(--line-2)}
 .checkup-results td{padding:.45rem .6rem;border-bottom:1px solid var(--line-2);font-size:.9rem}
-.checkup-results tr.oor-row{background:color-mix(in srgb, var(--intervals) 8%, transparent)}
-.checkup-results td.oor{color:var(--intervals);font-weight:650}
+.checkup-results tr.oor-minor{background:color-mix(in srgb, var(--tempo) 8%, transparent)}
+.checkup-results tr.oor-major{background:color-mix(in srgb, var(--intervals) 8%, transparent)}
+.checkup-results td.oor-minor{color:var(--tempo);font-weight:650}
+.checkup-results td.oor-major{color:var(--intervals);font-weight:650}
 .checkup-results .oor-flag{font-size:.8rem}
 .saved{color:var(--easy);margin:1rem 0;font-size:.9rem}
 .err{color:#f7768e;font-size:.85rem}
