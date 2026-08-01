@@ -57,8 +57,19 @@
         готовність і тренди. А поки що можна <a href="/settings">перевірити налаштування</a>.
       </div>
     {% else %}
-      {% set hero = today %}
-      {% include "_hero_ring.html" %}
+      {% include "_hero_rings.html" %}
+
+      {% if stat_cards %}
+      <div class="stat-grid">
+        {% for c in stat_cards %}
+        <div class="stile">
+          <div class="sv">{{ c.value }}</div>
+          <div class="sl">{{ c.label }}</div>
+          {% if c.sub %}<div class="ssub">{{ c.sub }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
 
       {% if charts %}
       <div class="charts">

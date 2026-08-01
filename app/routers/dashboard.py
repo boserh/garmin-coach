@@ -8,19 +8,21 @@ row markup, activity cards) rather than growing a parallel chart/markup stack.
 """
 import datetime as dt
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import baselines
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
 from app.core.config import settings
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository, service
-from app.routers.me import _act_meta, _latest_ring, _pace_str
+from app.routers.me import _act_meta, _nice_date, _pace_str, _ring_geom
 from app.routers.plan import _dm, _dow
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -67,6 +69,73 @@ def _activity_cards(rows: list) -> list:
     return out
 
 
+# EP-17: multi-ring hero (Bevel-style Strain/Recovery/Sleep) — replaces the single
+# _hero_ring.html on /dashboard only; _hero_ring.html/_recovery_ring stay in app/routers/me.py
+# unchanged for /me, which doesn't get this upgrade yet.
+_RING_R_SM = 34
+_LOAD_COLOR = "#e0af68"      # --tempo
+_RECOVERY_COLOR = "#73daca"  # --recovery
+_SLEEP_COLOR = "#7dcfff"     # --long
+
+
+def _load_ring(extra: dict) -> dict:
+    """Навантаження ring: today's ACWR% straight from Garmin's readiness endpoint — not
+    the RICE 'strain' Bevel shows (see EP-17 pitfalls), an honest ACWR% instead. Empty
+    until Garmin has enough load history to compute it."""
+    acwr = (extra or {}).get("acwr_pct")
+    if acwr is None:
+        return {"empty": True, "label": "Навантаження", "color": _LOAD_COLOR}
+    return {
+        "empty": False, "label": "Навантаження", "color": _LOAD_COLOR,
+        "value": round(acwr), "unit": "%", **_ring_geom(acwr, _RING_R_SM),
+    }
+
+
+def _recovery_ring(norm: Optional[dict]) -> dict:
+    """Recovery ring: today's HRV mapped onto its NF-01 personal band (p25..p75 around
+    p50) — a position within your own normal, not a raw HRV number pretending to be a
+    percentage. p50 lands at 50%, p25/p75 at 15%/85%, clamped beyond that."""
+    hrv = ((norm or {}).get("metrics") or {}).get("hrv_avg")
+    if not hrv:
+        return {"empty": True, "label": "Відновлення", "color": _RECOVERY_COLOR}
+    lo, hi = hrv["band"]
+    frac = 50.0 if hi <= lo else 15 + 70 * (hrv["cur"] - lo) / (hi - lo)
+    return {
+        "empty": False, "label": "Відновлення", "color": _RECOVERY_COLOR,
+        "value": int(round(hrv["cur"])), "unit": "", **_ring_geom(frac, _RING_R_SM),
+    }
+
+
+def _sleep_ring(day: dict) -> dict:
+    """Sleep ring: today's Garmin sleep score — already 0-100, no mapping needed."""
+    score = (day or {}).get("sleep_score")
+    if score is None:
+        return {"empty": True, "label": "Сон", "color": _SLEEP_COLOR}
+    return {
+        "empty": False, "label": "Сон", "color": _SLEEP_COLOR,
+        "value": int(score), "unit": "%", **_ring_geom(score, _RING_R_SM),
+    }
+
+
+def _stat_cards(day: dict) -> list:
+    """Compact HRV/RHR/Body Battery/Stress tiles for the stat-grid below the rings —
+    replaces the old `.hs` line list. A metric this user doesn't have that day is
+    omitted, not zero-filled. Stress shows avg/max only: Garmin's dailyStress DTO has no
+    documented minimum field, so a "Lowest" number would be fabricated (EP-17 note)."""
+    extra = (day or {}).get("extra") or {}
+    cards = []
+    if day.get("hrv_avg") is not None:
+        cards.append({"label": "HRV", "value": day["hrv_avg"], "sub": None})
+    if extra.get("resting_hr") is not None:
+        cards.append({"label": "Пульс спокою", "value": extra["resting_hr"], "sub": None})
+    if day.get("bb_charged") is not None:
+        cards.append({"label": "Body Battery", "value": day["bb_charged"], "sub": None})
+    if day.get("stress_avg") is not None:
+        sub = f"макс {day['stress_max']}" if day.get("stress_max") is not None else None
+        cards.append({"label": "Стрес", "value": day["stress_avg"], "sub": sub})
+    return cards
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
@@ -74,8 +143,22 @@ async def dashboard(
     session: AsyncSession = Depends(get_session),
 ):
     trend = await repository.read_history(session, user.id, days=TREND_DAYS)
-    today = await _latest_ring(session, user.id)
     charts, first_x, last_x = _trend_charts(trend)
+
+    # EP-17: multi-ring hero, built from the latest day in `trend` (already carries
+    # sleep_score/extra) + a 90-day baselines window for the recovery ring's HRV band.
+    today_row = trend[-1] if trend else None
+    rings = None
+    stat_cards = []
+    if today_row is not None:
+        history90 = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)
+        norm = baselines.compute_baselines(history90)
+        rings = {
+            "date": _nice_date(today_row["date"]),
+            "list": [_load_ring(today_row.get("extra") or {}), _recovery_ring(norm),
+                     _sleep_ring(today_row)],
+        }
+        stat_cards = _stat_cards(today_row)
 
     plan = await repository.get_active_plan(session, user.id)
     upcoming = []
@@ -121,7 +204,7 @@ async def dashboard(
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
-            "user": user, "today": today,
+            "user": user, "rings": rings, "stat_cards": stat_cards,
             "charts": charts, "first_x": first_x, "last_x": last_x,
             "has_history": bool(trend),
             "plan": plan, "upcoming": upcoming, "load_forecast": load_forecast,

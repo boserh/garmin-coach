@@ -383,6 +383,33 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .hero-side .hk{color:var(--muted);font-size:.82rem}
 .hero-date{color:var(--faint);font-size:.8rem;margin-bottom:.2rem;text-transform:capitalize}
 
+/* ---- multi-ring hero (EP-17, Bevel-style: Strain/Recovery/Sleep in one row) ---- */
+.hero-rings{margin:1.7rem 0 .6rem;padding:1.5rem 1.7rem;border-radius:22px;
+  border:1px solid var(--line-2);
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 20px 46px -22px rgba(0,0,0,.85)}
+.hero-rings-date{color:var(--faint);font-size:.8rem;margin-bottom:1.1rem;text-transform:capitalize}
+.ringrow{display:flex;justify-content:space-between;gap:.5rem}
+.ringcol{display:flex;flex-direction:column;align-items:center;gap:.5rem;min-width:0;flex:1 1 0}
+.ringbox-sm{position:relative;width:4.6rem;height:4.6rem;flex:none}
+.ringbox-sm svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ringc-sm{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.ringv-sm{font-size:1.05rem;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.ringv-sm small{font-size:.6rem;font-weight:700;margin-left:.03rem}
+.ringl-sm{font-size:.66rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  color:var(--muted);text-align:center}
+
+/* ---- compact stat-grid (EP-17: replaces the .hs sidebar list on /dashboard) ---- */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(6.5rem,1fr));
+  gap:.7rem;margin:1rem 0 .6rem}
+.stile{padding:.85rem 1rem;border:1px solid var(--line-2);border-radius:14px;
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 8px 24px -14px rgba(0,0,0,.75)}
+.stile .sv{font-size:1.5rem;font-weight:750;letter-spacing:-.02em;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.stile .sl{color:var(--muted);font-size:.78rem;margin-top:.2rem}
+.stile .ssub{color:var(--faint);font-size:.72rem;margin-top:.15rem}
+
 /* ---- activity filters ---- */
 /* The bar is collapsed by default (its sport pills alone run two phone screens); the
    summary is a pill that names the active filters and highlights when any are on. */

@@ -90,6 +90,43 @@ async def test_dashboard_with_data(client):
     assert "0.01" in r.text   # this month's AI cost
     assert "Ще немає історії" not in r.text
 
+    # EP-17: the three rings always render, even when a metric behind one is missing —
+    # only 5 days of history here, so the load ring (needs Garmin's acwr_pct, never
+    # seeded) and the recovery ring (needs >=14 baseline samples) show the empty "—"
+    # state instead of a fabricated number.
+    assert "Навантаження" in r.text and "Відновлення" in r.text and "Сон" in r.text
+    assert "HRV" in r.text and "Body Battery" in r.text and "Стрес" in r.text
+
+
+async def test_dashboard_rings_with_full_data(client):
+    """EP-17: enough history (>=14 days) for the recovery ring's NF-01 band, plus an
+    ACWR + resting-HR day, so all three rings and every stat tile render real values."""
+    await _seed_user_async("dash-rings@example.com", "pw")
+    _login(client, email="dash-rings@example.com")
+
+    async with async_session_maker() as session:
+        user = await users.get_by_email(session, "dash-rings@example.com")
+        today = dt.date.today()
+        for i in range(20):
+            d = (today - dt.timedelta(days=i)).isoformat()
+            summary = DailySummary(
+                date=d, hrv_avg=45 + i % 10, sleep_h=7.0, sleep_score=82,
+                stress_avg=28, stress_max=55, bb_charged=64, has_data=True,
+            )
+            if i == 0:
+                summary.extra = {"resting_hr": 48, "acwr_pct": 92}
+            await repository.upsert_daily(session, user.id, summary)
+        await session.commit()
+
+    r = client.get("/dashboard")
+    assert r.status_code == 200
+    assert "82" in r.text          # sleep score
+    assert "92" in r.text          # ACWR%
+    assert "48" in r.text          # resting HR tile
+    assert "64" in r.text          # body battery tile
+    assert "28" in r.text          # stress avg
+    assert "макс 55" in r.text     # stress max, no fabricated "min"
+
 
 async def test_dashboard_shows_upcoming_plan(client):
     await _seed_user_async("dash3@example.com", "pw")
