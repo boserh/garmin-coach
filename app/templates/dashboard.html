@@ -38,6 +38,19 @@
       </div>
     {% endif %}
 
+    {% if backup and (backup.age_hours is none or backup.age_hours >= backup_warn_days * 24 or backup.rsync_ok == false) %}
+      <div class="note" style="border-color:#e0af68;background:rgba(224,175,104,.08)">
+        ⚠️ Бекап БД:
+        {% if backup.age_hours is none %}
+          маркер не знайдено — схоже, бекапи ще не налаштовані/не запускались.
+        {% else %}
+          останній {{ (backup.age_hours / 24) | round(1) }} дн тому.
+        {% endif %}
+        {% if backup.rsync_ok == false %}Off-SD копіювання (rsync) останнього разу не вдалось.{% endif %}
+        Дивись <a href="/status">/status</a>.
+      </div>
+    {% endif %}
+
     {% if not has_history %}
       <div class="note">
         Ще немає історії відновлення — після першого синку Garmin тут з'явиться сьогоднішня

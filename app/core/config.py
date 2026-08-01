@@ -156,6 +156,16 @@ class Settings(BaseSettings):
     HEALTH_MIN_HISTORY_DAYS: int = 7      # no alert until at least a week of history (cold-start)
     HEALTH_ALERT_COOLDOWN_DAYS: int = 3   # same alert kind at most once per this many days
 
+    # --- Backup freshness monitoring (OPS-08) ---
+    # Where scripts/backup_db.py writes its rotated copies + the last_ok.json marker
+    # app.backup_status reads (must match --dir when backup_db is invoked with a
+    # non-default one, e.g. --dir /mnt/usb).
+    BACKUP_DIR: str = "backups"
+    # How many days of marker age count as "backups have stopped happening" — the
+    # admin-only /status field + morning-tick DM threshold. 0 disables the DM (the
+    # /status field still shows the raw age).
+    BACKUP_WARN_DAYS: int = 3
+
     # --- Remote deploy from Telegram (OPS-03) ---
     # Master off-switch for the admin-only /deploy bot command (app.deploy: git pull +
     # systemctl restart via scripts/restart_services.sh). Off by default — flip it on

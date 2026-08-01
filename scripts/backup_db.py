@@ -28,17 +28,27 @@ Notes / pitfalls (see docs/backlog/OPS-02):
   so the DB copy is safe to store alongside untrusted hosts — but that also means a
   restored backup can't decrypt creds unless ``.env``/``APP_SECRET_KEY`` is backed up
   **separately** (password manager / encrypted file). Do that once, out of band.
+- **OPS-08 freshness marker**: a successful run writes ``backups/last_ok.json``
+  (ts/path/size/rsync_ok) via ``_write_marker`` — the one thing ``app.backup_status``
+  reads to answer "is the backup actually still happening" from ``/status`` and the
+  morning tick, without either of them touching the SD card themselves. Only a
+  successful ``make_backup`` refreshes it; a failed rsync is recorded on it
+  (``rsync_ok: false``) rather than skipping the write, since the *local* backup is
+  still real and fresh even when the off-SD copy failed.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 
+from app.backup_status import MARKER_NAME
 from app.core.config import settings
 
 _BACKUP_RE = re.compile(r"^garmin-(\d{4}-\d{2}-\d{2})\.db$")
@@ -124,6 +134,23 @@ def _rsync(backup_dir: Path, dest: str) -> None:
     subprocess.run(["rsync", "-a", "--delete", f"{backup_dir}/", dest], check=True)
 
 
+def _write_marker(backup_dir: Path, dest: Path, *, rsync_ok: bool | None) -> None:
+    """OPS-08: record that a backup just succeeded, so a freshness check elsewhere
+    (``/status``, the morning tick) can tell "keeps happening" from "happened once,
+    a year ago". Written only on a successful ``make_backup`` — a failed backup must
+    never refresh this, or the freshness monitor would report a dead backup as fine.
+    Atomic replace so a reader never observes a half-written file."""
+    marker = {
+        "ts": time.time(),
+        "path": str(dest),
+        "size": dest.stat().st_size,
+        "rsync_ok": rsync_ok,
+    }
+    tmp = backup_dir / f"{MARKER_NAME}.tmp"
+    tmp.write_text(json.dumps(marker))
+    tmp.replace(backup_dir / MARKER_NAME)
+
+
 def run(
     backup_dir: Path,
     *,
@@ -140,8 +167,23 @@ def run(
     dest = backup_dir / f"garmin-{stamp}.db"
     make_backup(src, dest)
     rotate(backup_dir, daily=daily, weekly=weekly)
+
+    # OPS-08: an rsync failure is recorded in the marker, separately from the backup
+    # itself — the local backup is real and fresh even when the off-SD copy failed
+    # (dead USB stick, network blip), so the marker must say both things independently.
+    rsync_ok: bool | None = None
+    rsync_error: Exception | None = None
     if rsync_dest:
-        _rsync(backup_dir, rsync_dest)  # mirror the rotated set, not just today's file
+        try:
+            _rsync(backup_dir, rsync_dest)  # mirror the rotated set, not just today's file
+            rsync_ok = True
+        except Exception as exc:  # noqa: BLE001 — captured in the marker, re-raised below
+            rsync_ok = False
+            rsync_error = exc
+
+    _write_marker(backup_dir, dest, rsync_ok=rsync_ok)
+    if rsync_error is not None:
+        raise rsync_error
     return dest
 
 

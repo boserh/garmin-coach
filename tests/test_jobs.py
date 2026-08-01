@@ -78,6 +78,48 @@ async def test_garmin_error_burst_below_threshold_silent(session, monkeypatch):
     assert ctx.bot.sent == []
 
 
+async def test_backup_freshness_dm_admin_only(session, tmp_path, monkeypatch):
+    """OPS-08: a stale/missing backup DMs only admins, once/day while stale."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(settings, "BACKUP_WARN_DAYS", 3, raising=False)
+
+    admin = SimpleNamespace(id=901, telegram_chat_id=555, is_admin=True)
+    non_admin = SimpleNamespace(id=902, telegram_chat_id=556, is_admin=False)
+
+    ctx = _FakeCtx()
+    await jobs_module._backup_freshness_check(ctx, session, non_admin, "2026-07-31")
+    assert ctx.bot.sent == []  # non-admin never gets this DM
+
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-07-31")
+    assert len(ctx.bot.sent) == 1
+    assert "Бекап" in ctx.bot.sent[0][1]
+
+    # same day again → guard silences the repeat
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-07-31")
+    assert len(ctx.bot.sent) == 1
+
+
+async def test_backup_freshness_silent_when_fresh(session, tmp_path, monkeypatch):
+    import json
+    import time as _t
+
+    from app.backup_status import MARKER_NAME
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(settings, "BACKUP_WARN_DAYS", 3, raising=False)
+    (tmp_path / MARKER_NAME).write_text(
+        json.dumps({"ts": _t.time(), "path": "x", "size": 1, "rsync_ok": True})
+    )
+
+    admin = SimpleNamespace(id=903, telegram_chat_id=557, is_admin=True)
+    ctx = _FakeCtx()
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-07-31")
+    assert ctx.bot.sent == []
+
+
 def test_recovery_synced_requires_hrv_and_sleep():
     full = _payload(DailySummary(date=TODAY, hrv_avg=60, sleep_score=80, has_data=True))
     assert _recovery_synced(full, TODAY) is True

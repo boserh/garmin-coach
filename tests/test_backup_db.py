@@ -70,6 +70,56 @@ def test_run_writes_dated_file(tmp_path, monkeypatch):
     assert dest.exists()
 
 
+def test_run_writes_freshness_marker(tmp_path, monkeypatch):
+    """OPS-08: a successful run writes last_ok.json — the source app.backup_status reads."""
+    import json
+
+    from app.backup_status import MARKER_NAME
+
+    src = tmp_path / "garmin.db"
+    _make_db(src, 1)
+    monkeypatch.setattr(
+        backup_db.settings, "DATABASE_URL", f"sqlite:///{src}", raising=False
+    )
+    out = tmp_path / "backups"
+    dest = backup_db.run(out, on_date=date(2026, 7, 11))
+
+    marker = json.loads((out / MARKER_NAME).read_text())
+    assert marker["path"] == str(dest)
+    assert marker["size"] > 0
+    assert marker["rsync_ok"] is None  # no --rsync-dest given
+    assert isinstance(marker["ts"], float)
+
+
+def test_run_marks_rsync_failure_without_losing_local_success(tmp_path, monkeypatch):
+    """A failed off-SD rsync must not hide that the local backup itself succeeded —
+    the marker records both independently, and the failure still propagates (nonzero
+    exit for cron) rather than being silently swallowed."""
+    import json
+
+    import pytest
+
+    from app.backup_status import MARKER_NAME
+
+    src = tmp_path / "garmin.db"
+    _make_db(src, 1)
+    monkeypatch.setattr(
+        backup_db.settings, "DATABASE_URL", f"sqlite:///{src}", raising=False
+    )
+
+    def _boom(backup_dir, dest):
+        raise RuntimeError("rsync unreachable")
+
+    monkeypatch.setattr(backup_db, "_rsync", _boom)
+    out = tmp_path / "backups"
+    with pytest.raises(RuntimeError):
+        backup_db.run(out, rsync_dest="user@host:/backups/", on_date=date(2026, 7, 11))
+
+    marker = json.loads((out / MARKER_NAME).read_text())
+    assert marker["rsync_ok"] is False
+    assert (out / "garmin-2026-07-11.db").exists()  # the local backup is still there
+
+
 def _touch_backup(d: Path, iso: str) -> Path:
     p = d / f"garmin-{iso}.db"
     p.write_bytes(b"x")
