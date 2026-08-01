@@ -75,6 +75,17 @@ async def test_upsert_activity_is_idempotent(session):
     assert rec.exercises == {"active_sets": 12, "sets": {"присідання": 4}}
 
 
+async def test_upsert_activity_stores_gear_id(session):
+    row = {"date": "2026-06-20", "type": "running", "dist_km": 8.0,
+           "gear_id": "c0871305-675c-4e9e-883f-8b69ef5a385e"}
+    await repository.upsert_activity(session, U1, 700, row)
+    await session.commit()
+    rec = (await session.execute(
+        select(ActivityRecord).where(ActivityRecord.activity_id == 700)
+    )).scalar_one()
+    assert rec.gear_id == "c0871305-675c-4e9e-883f-8b69ef5a385e"
+
+
 async def test_upsert_activity_skips_when_no_id(session):
     rec = await repository.upsert_activity(session, U1, None, {"date": "2026-06-20"})
     await session.commit()

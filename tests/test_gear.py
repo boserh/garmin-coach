@@ -44,6 +44,17 @@ def test_parse_item_unrecognised_shape_returns_none():
     assert gear.parse_item(None) is None
 
 
+def test_parse_activity_gear_extracts_first_id():
+    assert gear.parse_activity_gear([{"uuid": "c0871305-675c-4e9e-883f-8b69ef5a385e",
+                                      "brand": "Nike vomero18"}]) == \
+        "c0871305-675c-4e9e-883f-8b69ef5a385e"
+    assert gear.parse_activity_gear([{"gearPk": 42}, {"uuid": "second"}]) == "42"  # first wins
+    assert gear.parse_activity_gear([]) is None            # nothing linked
+    assert gear.parse_activity_gear([{"someField": 1}]) is None   # unrecognised shape
+    assert gear.parse_activity_gear("not a list") is None
+    assert gear.parse_activity_gear(None) is None
+
+
 def test_parse_mileage_km_variants_and_conversion():
     assert gear.parse_mileage_km({"distanceUsedMeters": 263_300.26}) == 263.3  # v2/list
     assert gear.parse_mileage_km({"totalDistance": 700_000}) == 700.0     # metres -> km
@@ -154,6 +165,35 @@ def test_fetch_gear_stats_caches_and_handles_error(cache_dir, monkeypatch):
     calls.clear()
     assert client.fetch_gear_stats("shoe1") == {"totalDistance": 5000}   # cached
     assert calls == []
+
+
+def test_fetch_activity_gear_caches_and_handles_error(cache_dir, monkeypatch):
+    calls = []
+
+    def fake_safe(_fn, path, **kw):
+        calls.append(path)
+        if "999" in path:
+            return [{"uuid": "shoe1", "brand": "Pegasus"}]
+        return {"_error": "boom"}
+
+    monkeypatch.setattr(client, "_safe", fake_safe)
+    assert client.fetch_activity_gear(999) == [{"uuid": "shoe1", "brand": "Pegasus"}]
+    assert calls == ["/gear-service/activity/v2/999"]
+
+    # second call hits the disk cache — no further fetches
+    calls.clear()
+    assert client.fetch_activity_gear(999) == [{"uuid": "shoe1", "brand": "Pegasus"}]
+    assert calls == []
+
+    # force=True bypasses the cache
+    assert client.fetch_activity_gear(999, force=True) == [{"uuid": "shoe1", "brand": "Pegasus"}]
+    assert calls == ["/gear-service/activity/v2/999"]
+
+
+def test_fetch_activity_gear_error_not_cached(cache_dir, monkeypatch):
+    monkeypatch.setattr(client, "_safe", lambda _fn, path, **kw: {"_error": "boom"})
+    assert client.fetch_activity_gear(111) == []
+    assert client.fetch_activity_gear(111) == []   # still [] — never cached the failure
 
 
 # --- bot/jobs.py daily sync + warn guard -----------------------------------------

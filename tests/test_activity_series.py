@@ -35,6 +35,34 @@ def test_fetch_activity_series_empty_on_error():
         assert client.fetch_activity_series(123) == []
 
 
+# ---------- NF-15: activity->gear link, attached alongside the series ----------
+
+def test_attach_detail_links_gear_on_a_run():
+    row = {"type": "running"}
+    with patch.object(client, "fetch_activity_series", return_value=[{"d": 0.1}]), \
+         patch.object(client, "fetch_activity_gear",
+                       return_value=[{"uuid": "shoe1", "brand": "Pegasus"}]):
+        made_call = service._attach_detail(row, 123)
+    assert made_call is True
+    assert row["gear_id"] == "shoe1"
+
+
+def test_attach_detail_no_gear_id_when_nothing_linked():
+    row = {"type": "running"}
+    with patch.object(client, "fetch_activity_series", return_value=[{"d": 0.1}]), \
+         patch.object(client, "fetch_activity_gear", return_value=[]):
+        service._attach_detail(row, 123)
+    assert "gear_id" not in row
+
+
+def test_attach_detail_gear_not_fetched_for_non_run():
+    row = {"type": "strength_training"}
+    with patch.object(client, "fetch_exercise_summary", return_value={"active_sets": 1}), \
+         patch.object(client, "fetch_activity_gear") as gear_fetch:
+        service._attach_detail(row, 123)
+    gear_fetch.assert_not_called()
+
+
 # ---------- EP-15: elevation ----------
 
 _DETAILS_WITH_ELEVATION = {

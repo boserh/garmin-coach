@@ -66,6 +66,19 @@ def parse_item(raw: dict) -> Optional[dict]:
     return {"gear_id": str(gid), "name": str(name), "type": str(gtype), "retired": retired}
 
 
+def parse_activity_gear(items: list) -> Optional[str]:
+    """The linked gear's id from an ``activity->gear`` response (a list; the first item
+    is used when more than one comes back), or None when nothing's linked. Same
+    id-extraction rule as ``parse_item`` — never guesses at a missing id."""
+    if not isinstance(items, list) or not items:
+        return None
+    first = items[0]
+    if not isinstance(first, dict):
+        return None
+    gid = first.get("uuid") or first.get("gearPk") or first.get("gearUUID") or first.get("gearId")
+    return str(gid) if gid is not None else None
+
+
 def parse_mileage_km(stats: dict) -> Optional[float]:
     """A gear item's lifetime distance in km, or None when nothing recognisable is there.
     ``distanceUsedMeters`` is v2's field (the same dict as ``parse_item`` — v2/list already
