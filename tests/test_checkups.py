@@ -58,6 +58,34 @@ def test_create_list_and_view_checkup(auth_client):
     assert "Феритин" in detail and "45" in detail and "нг/мл" in detail and "30-400" in detail
     assert "все в нормі" in detail
     assert "2027-01-15" in detail
+    assert "✏️ Редагувати" in detail  # edit form is a collapsed <details>, not always shown
+    assert 'class="oor"' not in detail  # 45 is within 30-400 — nothing to flag
+
+
+def test_checkup_detail_highlights_out_of_range_result(auth_client):
+    import anyio
+
+    from app.db import checkups as checkups_db
+    from app.db.base import async_session_maker
+
+    auth_client.post(
+        "/checkups",
+        data={
+            "date": "2026-07-15", "title": "Аналіз з відхиленням",
+            "result_name": ["Феритин"], "result_value": ["15"],
+            "result_unit": ["нг/мл"], "result_ref": ["30-400"],
+        },
+    )
+    uid = _user_id("t@example.com")
+
+    async def get_id():
+        async with async_session_maker() as s:
+            rows = await checkups_db.list_checkups(s, uid)
+            return next(r.id for r in rows if r.title == "Аналіз з відхиленням")
+
+    cid = anyio.run(get_id)
+    detail = auth_client.get(f"/checkups/{cid}").text
+    assert "oor-row" in detail and 'class="oor"' in detail
 
 
 def test_update_checkup(auth_client):

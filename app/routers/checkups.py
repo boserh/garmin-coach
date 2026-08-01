@@ -34,6 +34,7 @@ from app.analysis.service import (
     run_supplement_advice,
     supplement_advice_to_checkup_template,
 )
+from app.checkup_flags import is_out_of_range
 from app.core.auth import current_user
 from app.core.tz import user_today
 from app.db import checkups, supplements
@@ -47,6 +48,7 @@ logger = logging.getLogger("checkups")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["oor"] = is_out_of_range  # {{ r.value|oor(r.ref_range) }} -> bool|None
 
 router = APIRouter(tags=["checkups"])
 
