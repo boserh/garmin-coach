@@ -20,6 +20,7 @@ EXERCISE_NAMES = {
     "TRX_INVERTED_ROW": "горизонтальні підтягування (TRX)",
     "V_UP": "складка",
     "WEIGHTED_LEG_CURL": "згинання ніг з вагою",
+    "WEIGHTED_SEATED_CALF_RAISE": "підйоми на носки сидячи з вагою",
     "WIDE_GRIP_LAT_PULLDOWN": "тяга верхнього блоку широким хватом",
     "_90_DEGREE_STATIC_HOLD": "статичне утримання 90°",
 }

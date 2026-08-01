@@ -19,6 +19,9 @@ os.environ["GARMIN_RPS"] = "0"
 # Hard-override the key to a dummy so even a mock that misses its target gets a 401 instead
 # of spending real money — CODE-01's refactor silently un-mocked calls and burned tokens.
 os.environ["ANTHROPIC_API_KEY"] = "test-dummy-key-not-real"
+# Same reasoning: a real TELEGRAM_ADMIN_BOT_TOKEN in .env must never make tests fire
+# real Telegram alerts (app.core.alerts.TelegramAlertHandler forwards WARNING+ logs).
+os.environ["TELEGRAM_ADMIN_BOT_TOKEN"] = ""
 
 # Start from a clean schema each run — init_db() only create_all's, it won't ALTER a
 # stale file left over from an older schema.
