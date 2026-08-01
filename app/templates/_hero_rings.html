@@ -1,0 +1,28 @@
+{% if rings %}
+<div class="hero-rings">
+  <div class="hero-rings-date">{{ rings.date }}</div>
+  <div class="ringrow">
+    {% for ring in rings.list %}
+    <div class="ringcol">
+      <div class="ringbox-sm">
+        <svg viewBox="0 0 88 88" style="{% if not ring.empty %}filter:drop-shadow(0 0 9px {{ ring.color }}66){% endif %}">
+          <circle cx="44" cy="44" r="34" fill="none" stroke="#252b37" stroke-width="8"/>
+          {% if not ring.empty %}
+          <circle cx="44" cy="44" r="34" fill="none" stroke="{{ ring.color }}" stroke-width="8"
+                  stroke-linecap="round" class="ring-anim"
+                  stroke-dasharray="{{ ring.circ }}" stroke-dashoffset="{{ ring.circ - ring.dash }}"
+                  style="--from:{{ ring.circ }};--to:{{ ring.circ - ring.dash }}"/>
+          {% endif %}
+        </svg>
+        <div class="ringc-sm">
+          <div class="ringv-sm" style="color:{{ ring.color if not ring.empty else 'var(--muted)' }}">
+            {% if ring.empty %}—{% else %}{{ ring.value }}{% if ring.unit %}<small>{{ ring.unit }}</small>{% endif %}{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="ringl-sm">{{ ring.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
