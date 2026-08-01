@@ -79,6 +79,17 @@ def parse_activity_gear(items: list) -> Optional[str]:
     return str(gid) if gid is not None else None
 
 
+def name_for(gear_id: Optional[str], roster: list) -> Optional[str]:
+    """This gear id's display name from an already-parsed roster (``STATE_KEY``'s list
+    of ``parse_item`` pairs), or None when unlinked/not found in the roster."""
+    if not gear_id or not isinstance(roster, list):
+        return None
+    return next(
+        (p.get("name") for p in roster if isinstance(p, dict) and p.get("gear_id") == gear_id),
+        None,
+    )
+
+
 def parse_mileage_km(stats: dict) -> Optional[float]:
     """A gear item's lifetime distance in km, or None when nothing recognisable is there.
     ``distanceUsedMeters`` is v2's field (the same dict as ``parse_item`` — v2/list already

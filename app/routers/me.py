@@ -1012,6 +1012,15 @@ async def me_row(
     if table == "activities":
         emoji, color = _act_meta(obj.type)
         runwalk = (obj.type or "").lower() in _RUNWALK
+        gear_name = None
+        if obj.gear_id:
+            from app import gear as gear_mod
+            roster_json = await repository.get_state(session, user.id, gear_mod.STATE_KEY)
+            try:
+                roster = json.loads(roster_json) if roster_json else []
+            except (ValueError, TypeError):
+                roster = []
+            gear_name = gear_mod.name_for(obj.gear_id, roster)
         a = {
             "id": obj.id, "emoji": emoji, "color": color,
             "label": (obj.type or "—").replace("_", " ").capitalize(),
@@ -1025,6 +1034,7 @@ async def me_row(
             "pain": (obj.subjective or {}).get("note") or (obj.subjective or {}).get("pain"),
             "step_badge": stepmatch.badge(obj.step_match),
             "is_hidden": bool(obj.is_hidden),
+            "gear_name": gear_name,
         }
         strain = None
         if obj.load:
