@@ -59,10 +59,12 @@ def test_create_list_and_view_checkup(auth_client):
     assert "все в нормі" in detail
     assert "2027-01-15" in detail
     assert "✏️ Редагувати" in detail  # edit form is a collapsed <details>, not always shown
-    assert 'class="oor"' not in detail  # 45 is within 30-400 — nothing to flag
+    assert "oor-row" not in detail  # 45 is within 30-400 — nothing to flag
 
 
-def test_checkup_detail_highlights_out_of_range_result(auth_client):
+def test_checkup_detail_highlights_minor_out_of_range_result(auth_client):
+    """A value just past the edge (30-400, value 15 -> 15 below lo out of a 370-wide
+    range, ~4%) is flagged "minor" (orange), not "major" (red)."""
     import anyio
 
     from app.db import checkups as checkups_db
@@ -71,7 +73,7 @@ def test_checkup_detail_highlights_out_of_range_result(auth_client):
     auth_client.post(
         "/checkups",
         data={
-            "date": "2026-07-15", "title": "Аналіз з відхиленням",
+            "date": "2026-07-15", "title": "Незначне відхилення",
             "result_name": ["Феритин"], "result_value": ["15"],
             "result_unit": ["нг/мл"], "result_ref": ["30-400"],
         },
@@ -81,11 +83,40 @@ def test_checkup_detail_highlights_out_of_range_result(auth_client):
     async def get_id():
         async with async_session_maker() as s:
             rows = await checkups_db.list_checkups(s, uid)
-            return next(r.id for r in rows if r.title == "Аналіз з відхиленням")
+            return next(r.id for r in rows if r.title == "Незначне відхилення")
 
     cid = anyio.run(get_id)
     detail = auth_client.get(f"/checkups/{cid}").text
-    assert "oor-row" in detail and 'class="oor"' in detail
+    assert "oor-row oor-minor" in detail and 'class="oor oor-minor"' in detail
+    assert "oor-major" not in detail
+
+
+def test_checkup_detail_highlights_major_out_of_range_result(auth_client):
+    """A value well past the edge (30-400, value 1000) is flagged "major" (red)."""
+    import anyio
+
+    from app.db import checkups as checkups_db
+    from app.db.base import async_session_maker
+
+    auth_client.post(
+        "/checkups",
+        data={
+            "date": "2026-07-15", "title": "Значне відхилення",
+            "result_name": ["Феритин"], "result_value": ["1000"],
+            "result_unit": ["нг/мл"], "result_ref": ["30-400"],
+        },
+    )
+    uid = _user_id("t@example.com")
+
+    async def get_id():
+        async with async_session_maker() as s:
+            rows = await checkups_db.list_checkups(s, uid)
+            return next(r.id for r in rows if r.title == "Значне відхилення")
+
+    cid = anyio.run(get_id)
+    detail = auth_client.get(f"/checkups/{cid}").text
+    assert "oor-row oor-major" in detail and 'class="oor oor-major"' in detail
+    assert "oor-minor" not in detail
 
 
 def test_checkup_detail_shows_and_serves_attachments(auth_client):
