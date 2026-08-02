@@ -200,6 +200,33 @@ async def test_step_match_none_without_any_scored_sessions(session):
     assert seen["step_match"] is None
 
 
+# ---------- weekly compliance window (bug: future weeks read as "0 done") --------
+
+async def test_compliance_excludes_weeks_that_have_not_happened_yet(session):
+    """``weekly_compliance`` buckets every week the plan schedules, future ones
+    included (needed for the /plan view). ``_recent_compliance`` used to take the
+    lexically-last N weeks of that dict, which for a plan scheduled months ahead
+    grabbed upcoming, not-yet-run weeks (always 0/N) instead of the real recent
+    past — falsely reporting a compliance collapse. Seed one completed past week
+    plus a run of future weeks and check only the past week survives."""
+    today = dt.date.today()
+    past = (today - dt.timedelta(days=10)).isoformat()
+    future_dates = [(today + dt.timedelta(weeks=w)).isoformat() for w in range(2, 8)]
+    workouts = [dict(date=past, type="easy", status="done")]
+    workouts += [dict(date=d, type="easy", status="planned") for d in future_dates]
+    await _seed_plan(session, workouts=workouts)
+
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1)
+
+    current_week = today.strftime("%G-W%V")
+    assert seen["compliance"]
+    assert all(week <= current_week for week in seen["compliance"])
+    past_week = dt.date.fromisoformat(past).strftime("%G-W%V")
+    assert seen["compliance"][past_week]["done"] == 1
+
+
 async def test_taper_allows_only_minimal_easing(session):
     today = dt.date.today()
     tomorrow = (today + dt.timedelta(days=1)).isoformat()
