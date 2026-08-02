@@ -159,12 +159,17 @@
     {% if not checkups %}
       <div class="empty" style="margin-top:1.4rem">Ще немає жодного запису — додай перший аналіз вище.</div>
     {% endif %}
+    {% if checkups %}
+    <div id="merge-toggle-wrap" style="margin-top:1.4rem">
+      <button type="button" class="btn-ghost" id="merge-toggle">🔗 Об'єднати аналізи</button>
+    </div>
+    {% endif %}
     <form method="post" action="/checkups/merge" id="merge-form">
-    <div style="margin-top:1.4rem">
+    <div style="margin-top:.6rem" id="checkup-list">
     {% for c in checkups %}
-      <div style="display:flex;align-items:center;gap:.6rem;margin:.5rem 0">
+      <div class="checkup-row" style="display:flex;align-items:center;gap:.6rem;margin:.5rem 0">
         <input type="checkbox" name="checkup_ids" value="{{ c.id }}" class="merge-cb"
-               aria-label="вибрати для об'єднання">
+               aria-label="вибрати для об'єднання" style="display:none;flex:none">
         <a class="listcard" href="/checkups/{{ c.id }}" style="flex:1;margin:0">
           <div class="lg">{{ c.title }}{% if c.analysis %} <span class="badge-an" title="є розбір">💬</span>{% endif %}</div>
           <div class="lm">
@@ -177,24 +182,63 @@
     {% endfor %}
     </div>
     {% if checkups %}
-    <button type="submit" class="btn-ghost" id="merge-btn" disabled style="margin-top:.5rem">
-      🔗 Об'єднати вибрані
-    </button>
+    <div id="merge-actions" style="display:none;gap:.6rem;margin-top:.5rem">
+      <button type="submit" class="btn-ghost" id="merge-btn" disabled>
+        🔗 Об'єднати вибрані
+      </button>
+      <button type="button" class="btn-ghost" id="merge-cancel">Скасувати</button>
+    </div>
     {% endif %}
     </form>
   </div>
 
   <script>
     (function () {
+      var toggle = document.getElementById('merge-toggle');
+      var toggleWrap = document.getElementById('merge-toggle-wrap');
+      var actions = document.getElementById('merge-actions');
+      var cancel = document.getElementById('merge-cancel');
       var boxes = document.querySelectorAll('.merge-cb');
       var btn = document.getElementById('merge-btn');
-      if (!boxes.length || !btn) return;
+      var list = document.getElementById('checkup-list');
+      if (!toggle || !boxes.length || !btn) return;
+
       function update() {
         var n = document.querySelectorAll('.merge-cb:checked').length;
         btn.disabled = n < 2;
         btn.textContent = n >= 2 ? "🔗 Об'єднати вибрані (" + n + ")" : "🔗 Об'єднати вибрані";
       }
+
+      function enterSelectMode() {
+        list.classList.add('selecting');
+        boxes.forEach(function (b) { b.style.display = ''; });
+        toggleWrap.style.display = 'none';
+        actions.style.display = 'flex';
+        update();
+      }
+
+      function exitSelectMode() {
+        list.classList.remove('selecting');
+        boxes.forEach(function (b) { b.style.display = 'none'; b.checked = false; });
+        toggleWrap.style.display = '';
+        actions.style.display = 'none';
+        update();
+      }
+
+      toggle.addEventListener('click', enterSelectMode);
+      cancel.addEventListener('click', exitSelectMode);
       boxes.forEach(function (b) { b.addEventListener('change', update); });
+
+      // In select mode, tapping the card toggles the checkbox instead of navigating.
+      list.addEventListener('click', function (e) {
+        if (!list.classList.contains('selecting')) return;
+        var link = e.target.closest('.listcard');
+        if (!link) return;
+        e.preventDefault();
+        var cb = link.closest('.checkup-row').querySelector('.merge-cb');
+        cb.checked = !cb.checked;
+        update();
+      });
     })();
   </script>
 
