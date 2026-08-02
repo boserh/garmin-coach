@@ -735,10 +735,18 @@ def _filter_ops_to_level(ops: list, level: str, dist_by_date: dict, days_to_targ
 
 def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS) -> dict:
     """Slice a ``weekly_compliance`` dict down to the most recent ``weeks`` ISO weeks
-    (week strings sort lexically in date order)."""
+    (week strings sort lexically in date order).
+
+    ``weekly_compliance`` buckets every week the plan touches, future ones included
+    (needed for the ``/plan`` week-by-week view) — so without a cutoff, "last N keys"
+    on a plan scheduled months ahead grabs upcoming, not-yet-run weeks (always 0 done)
+    instead of the actually-recent past. Drop anything after the current ISO week first.
+    """
     if not compliance:
         return {}
-    return dict(sorted(compliance.items())[-weeks:])
+    current_week = dt.date.today().strftime("%G-W%V")
+    past = {k: v for k, v in compliance.items() if k <= current_week}
+    return dict(sorted(past.items())[-weeks:])
 
 
 def _in_adapt_window(date_s, today: dt.date, window_days: int) -> bool:
