@@ -50,6 +50,87 @@ def test_plan_setup_then_view(auth_client):
     assert "Перші 5 км" in view and "тестовий підхід" in view and "легкий біг" in view
 
 
+def _fernet_key(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from app.core import crypto
+
+    monkeypatch.setattr(crypto.settings, "APP_SECRET_KEY", Fernet.generate_key().decode())
+    monkeypatch.setattr(crypto, "_fernet", None)
+
+
+async def test_strength_workouts_cached_across_calls(session, monkeypatch):
+    """The setup-form picker used to hit Garmin live on every /plan page view —
+    now it's cached in bot_state so a second call within the TTL never touches
+    Garmin at all."""
+    _fernet_key(monkeypatch)
+    from app.core.crypto import encrypt, hash_password
+    from app.db.models import User
+    from app.garmin import providers
+    from app.routers import plan as plan_router
+
+    user = User(
+        email="strength@e.com", password_hash=hash_password("pw"),
+        garmin_email_enc=encrypt("e@x.com"), garmin_password_enc=encrypt("p"),
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    calls = {"n": 0}
+
+    class FakeProvider:
+        new_token = None
+
+        def login(self):
+            calls["n"] += 1
+
+    monkeypatch.setattr(providers, "build_user_provider", lambda creds: FakeProvider())
+    monkeypatch.setattr(
+        "app.garmin.client.fetch_workouts",
+        lambda limit=400: [{"id": 1, "name": "Day 1", "sport": "strength_training"}],
+    )
+
+    first = await plan_router._strength_workouts(session, user)
+    assert first == [{"id": 1, "name": "Day 1", "sport": "strength_training"}]
+    assert calls["n"] == 1
+
+    second = await plan_router._strength_workouts(session, user)
+    assert second == first
+    assert calls["n"] == 1   # cache hit — no second Garmin login
+
+
+async def test_strength_workouts_timeout_falls_back_to_empty(session, monkeypatch):
+    """A slow/hanging Garmin fetch must not hang the whole /plan page — it's
+    capped at STRENGTH_WORKOUTS_TIMEOUT_S and degrades to []."""
+    _fernet_key(monkeypatch)
+    from app.core.crypto import encrypt, hash_password
+    from app.db.models import User
+    from app.garmin import providers
+    from app.routers import plan as plan_router
+
+    user = User(
+        email="slow@e.com", password_hash=hash_password("pw"),
+        garmin_email_enc=encrypt("e@x.com"), garmin_password_enc=encrypt("p"),
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    class HangingProvider:
+        new_token = None
+
+        def login(self):
+            import time as _t
+            _t.sleep(0.2)   # stand-in for a hung Garmin round trip
+
+    monkeypatch.setattr(providers, "build_user_provider", lambda creds: HangingProvider())
+    monkeypatch.setattr(plan_router, "STRENGTH_WORKOUTS_TIMEOUT_S", 0.01)
+
+    workouts = await plan_router._strength_workouts(session, user)
+    assert workouts == []
+
+
 def test_strength_preview_route_renders_fragment(auth_client):
 
     from app.routers import plan as plan_router
