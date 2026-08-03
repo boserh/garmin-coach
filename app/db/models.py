@@ -59,6 +59,13 @@ class User(Base):
 
     telegram_chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, index=True)
 
+    @property
+    def has_garmin_setup(self) -> bool:
+        """Whether this account has any usable Garmin credential stored — an
+        email+password pair or a resumable garth session. Used to route a fresh
+        registration to /settings instead of an empty /dashboard."""
+        return bool((self.garmin_email_enc and self.garmin_password_enc) or self.garth_token_enc)
+
     # Location for the morning report's weather lookup. ``weather_location`` is the
     # geocoded display name ("City, Country"); lat/lon are resolved once on save (see
     # app.weather.geocode) so the morning job needs no extra geocoding. Null → no weather.

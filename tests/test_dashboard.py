@@ -22,10 +22,17 @@ def client():
 
 async def _seed_user_async(email, password):
     async with async_session_maker() as session:
-        if not await users.get_by_email(session, email):
-            await users.create_user(
+        user = await users.get_by_email(session, email)
+        if not user:
+            user = await users.create_user(
                 session, email=email, password_hash=hash_password(password), is_admin=False,
             )
+        # These tests are about /dashboard content, not onboarding — give the user
+        # some Garmin creds so login lands there. Not real Fernet tokens: nothing in
+        # this flow decrypts them, only checks presence (see User.has_garmin_setup).
+        user.garmin_email_enc = "dummy"
+        user.garmin_password_enc = "dummy"
+        await session.commit()
 
 
 def _seed_user_sync(email, password):
@@ -47,6 +54,19 @@ def test_dashboard_requires_login(client):
 def test_non_admin_login_redirects_to_dashboard(client):
     _seed_user_sync("dash@example.com", "pw")
     _login(client)
+
+
+def test_login_without_garmin_creds_redirects_to_settings(client):
+    async def _seed_bare():
+        async with async_session_maker() as session:
+            await users.create_user(
+                session, email="bare@example.com", password_hash=hash_password("pw"),
+                is_admin=False,
+            )
+    anyio.run(_seed_bare)
+    r = client.post("/login", data={"email": "bare@example.com", "password": "pw"},
+                     follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings"
 
 
 def test_dashboard_empty_state(client):

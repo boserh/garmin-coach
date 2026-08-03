@@ -140,7 +140,8 @@ def test_admin_approves_then_user_can_login(auth_client):
         follow_redirects=False,
     )
     assert login.status_code == 303
-    assert login.headers["location"] == "/dashboard"  # non-admin lands on the dashboard
+    # non-admin with no Garmin creds yet lands on /settings, not an empty dashboard
+    assert login.headers["location"] == "/settings"
 
 
 def test_admin_deletes_user(auth_client):
