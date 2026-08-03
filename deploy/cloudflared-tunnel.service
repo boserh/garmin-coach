@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare quick tunnel — garmin-web (random *.trycloudflare.com URL)
+After=network.target garmin-web.service
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:8000
+StandardOutput=append:/home/pi/garmin_bot/cloudflared_tunnel.log
+StandardError=append:/home/pi/garmin_bot/cloudflared_tunnel.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
