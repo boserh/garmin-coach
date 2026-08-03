@@ -35,6 +35,7 @@ from app.db.base import async_session_maker
 from app.db.models import User
 from app.garmin import plan_sync, repository, service
 from app.garmin.mfa import MFARequired
+from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from app.garmin.schemas import PlanOp
 
@@ -67,6 +68,10 @@ MFA_REQUIRED_MSG = (
 GARMIN_RATE_LIMITED_MSG = (
     "🚦 Garmin тимчасово заблокував запити (забагато звернень). Пробую рідше — "
     "нічого робити не потрібно, дані підтягнуться пізніше."
+)
+GARMIN_AUTH_INVALID_MSG = (
+    "🔑 Garmin не приймає збережені email/пароль. Онови їх у Налаштуваннях "
+    "веб-кабінету — синк відновиться сам, щойно збережеш робочі креди."
 )
 
 HELP_TEXT = (
@@ -1384,6 +1389,10 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"MFA required user={err.user_id}")
         if isinstance(update, Update) and update.effective_message:
             await update.effective_message.reply_text(MFA_REQUIRED_MSG)
+    elif isinstance(err, GarminAuthFailed):
+        logger.warning(f"Garmin creds invalid user={err.user_id}")
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(GARMIN_AUTH_INVALID_MSG)
     else:
         logger.exception("Unhandled bot error", exc_info=err)
     # A failed inline-button tap (plan/adapt/checkin callbacks) otherwise leaves the

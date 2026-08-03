@@ -376,6 +376,15 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 - **Per-user runtime**: `app.garmin.runtime.user_runtime(session, user)` binds that
   user's Garmin provider via a ContextVar and yields decrypted creds. All reads/writes
   scoped by `user_id`. An MFA gate raises `MFARequired` rather than hanging.
+- **Invalid Garmin creds**: a login that fails with a clear 401/"authentication" signal
+  (not MFA, not a network/429/5xx blip — see `providers._is_auth_failure`) raises
+  `app.garmin.providers.GarminAuthFailed`; `user_runtime` persists `User.garmin_creds_invalid`
+  and every following call short-circuits with the same exception *before* touching
+  Garmin again (no retry storm against a known-bad password — a Cloudflare-ban risk).
+  Surfaced once via a Telegram DM (`bot/jobs.py`'s `GARMIN_AUTH_INVALID_NOTIFIED_KEY`
+  guard) + a red `/dashboard`/`/settings` banner; FastAPI covers JSON endpoints with a
+  409, same pattern as `MFARequired`. Saving a changed Garmin email/password in
+  `/settings` clears both the flag and the notify guard, so the next fetch tries again.
 - **Remote MFA re-login**: `app.garmin.mfa` bridges the blocking `login(prompt_mfa=...)`
   callback into a two-request web flow — `start_login` runs login on a background thread
   parked on a `queue.Queue`; on the MFA gate it raises `MFARequired(user_id)` and leaves

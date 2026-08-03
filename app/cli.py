@@ -514,6 +514,7 @@ async def _create_user(
 
         if backfill_month:
             from app.garmin.credentials import load_credentials
+            from app.garmin.providers import GarminAuthFailed
             from app.garmin.runtime import user_runtime
             from app.garmin.service import build_payload_cached
 
@@ -523,13 +524,19 @@ async def _create_user(
                       "(pass --seed-env or set them up first).")
             else:
                 print("Fetching last 30 days of Garmin activities/data...")
-                async with user_runtime(session, user):
-                    payload, new_activities = await build_payload_cached(
-                        session, user.id, days=30, activity_limit=60,
-                    )
-                await session.commit()
-                print(f"Backfilled {len(payload.daily)} day(s), "
-                      f"{len(new_activities)} activit{'y' if len(new_activities) == 1 else 'ies'}.")
+                try:
+                    async with user_runtime(session, user):
+                        payload, new_activities = await build_payload_cached(
+                            session, user.id, days=30, activity_limit=60,
+                        )
+                except GarminAuthFailed:
+                    print("Garmin rejected the stored email/password — backfill "
+                          "skipped. Fix the creds and re-run, or push through /settings.")
+                else:
+                    await session.commit()
+                    print(f"Backfilled {len(payload.daily)} day(s), "
+                          f"{len(new_activities)} activit"
+                          f"{'y' if len(new_activities) == 1 else 'ies'}.")
 
         print(f"Created user {email} (id={user.id}, admin={is_admin}).")
     return 0

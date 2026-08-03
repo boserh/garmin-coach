@@ -46,6 +46,33 @@ def test_settings_saves_encrypted_credentials(auth_client, crypto_key):
     anyio.run(check)
 
 
+def test_settings_save_clears_invalid_garmin_creds_flag(auth_client, crypto_key):
+    """Saving a changed Garmin email/password clears User.garmin_creds_invalid — the
+    only way out of the 'account parked, Garmin not retried' state (see
+    app.garmin.runtime.user_runtime)."""
+    async def mark_invalid():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            u.garmin_creds_invalid = True
+            await s.commit()
+
+    anyio.run(mark_invalid)
+
+    r = auth_client.post(
+        "/settings",
+        data={"garmin_email": "fixed@example.com", "garmin_password": "newpass"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    async def check():
+        async with async_session_maker() as s:
+            u = await users.get_by_email(s, "t@example.com")
+            assert u.garmin_creds_invalid is False
+
+    anyio.run(check)
+
+
 def test_settings_saves_valid_timezone(auth_client, crypto_key):
 
     r = auth_client.post(

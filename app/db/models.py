@@ -57,6 +57,13 @@ class User(Base):
     anthropic_key_enc: Mapped[Optional[str]] = mapped_column(Text)
     garth_token_enc: Mapped[Optional[str]] = mapped_column(Text)  # dumped garth session
 
+    # Set when a live Garmin login fails with a credentials error (not MFA, not a
+    # transient/network blip). While True, every Garmin-touching flow short-circuits
+    # instead of retrying against Garmin with a known-bad password (see
+    # app.garmin.runtime.user_runtime) — cleared automatically the next time the user
+    # saves a changed Garmin email/password in /settings.
+    garmin_creds_invalid: Mapped[bool] = mapped_column(Boolean, default=False)
+
     telegram_chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, index=True)
 
     @property

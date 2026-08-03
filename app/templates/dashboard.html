@@ -30,6 +30,13 @@
     <p class="eyebrow">Дашборд</p>
     <h1 class="title" style="font-size:1.7rem">Привіт{% if user.email %}, {{ user.email.split('@')[0] }}{% endif %}</h1>
 
+    {% if user.garmin_creds_invalid %}
+      <div class="note" style="border-color:#f7768e;background:rgba(247,118,142,.08)">
+        🔑 Garmin не приймає збережені email/пароль — синк зупинено. Онови їх у
+        <a href="/settings">Налаштуваннях</a>.
+      </div>
+    {% endif %}
+
     {% if garmin_errors and garmin_errors.count_24h %}
       <div class="note" style="border-color:#e0af68;background:rgba(224,175,104,.08)">
         ⚠️ Garmin API: {{ garmin_errors.count_24h }} збоїв за 24 год

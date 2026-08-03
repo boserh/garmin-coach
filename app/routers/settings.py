@@ -20,7 +20,7 @@ from app.core.crypto import decrypt, encrypt, hash_password_async, verify_passwo
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
-from app.garmin import mfa, plan_sync, providers
+from app.garmin import mfa, plan_sync, providers, repository
 from app.garmin.credentials import load_credentials
 from app.garmin.mfa import MFANotPending, MFARequired
 from app.garmin.runtime import user_runtime
@@ -155,6 +155,12 @@ async def settings_save(
         user.garth_token_enc = None  # new password → re-login next time
     if garmin_email or garmin_password.strip():
         mfa.cancel(user.id)  # any pending MFA login was for the old creds
+        if user.garmin_creds_invalid:
+            # Fresh creds — clear the flag so the next fetch actually tries Garmin
+            # again instead of short-circuiting on the old failure.
+            user.garmin_creds_invalid = False
+            await repository.set_state(
+                session, user.id, repository.GARMIN_AUTH_INVALID_NOTIFIED_KEY, "")
     if anthropic_key.strip():
         user.anthropic_key_enc = encrypt(anthropic_key.strip())
 

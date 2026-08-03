@@ -23,6 +23,13 @@ logger = logging.getLogger("garmin")
 
 @asynccontextmanager
 async def user_runtime(session, user: User):
+    if user.garmin_creds_invalid:
+        # A previous login already failed with a bad-credentials error — don't touch
+        # Garmin again (repeatedly retrying a known-bad password risks a Cloudflare
+        # block) until the user re-saves working creds in /settings, which clears
+        # this flag. Same exception type as a fresh failure below, so every caller
+        # handles both the same way.
+        raise providers.GarminAuthFailed(user.id)
     creds = load_credentials(user)
     provider = providers.build_user_provider(creds)
     token = providers.set_current_provider(provider)
@@ -30,6 +37,10 @@ async def user_runtime(session, user: User):
         # A login that hits Garmin's MFA gate raises MFARequired (app.garmin.mfa) —
         # deliberately not caught here, so routers/bot handlers can react to it.
         yield creds
+    except providers.GarminAuthFailed:
+        user.garmin_creds_invalid = True
+        await session.commit()
+        raise
     finally:
         providers.reset_current_provider(token)
         # A fresh login produced a new session token — store it (encrypted) so the

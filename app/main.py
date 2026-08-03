@@ -26,6 +26,7 @@ from app.db.base import dispose_db, init_db
 from app.db.models import User
 from app.db.session import get_session
 from app.garmin.mfa import MFARequired
+from app.garmin.providers import GarminAuthFailed
 from app.routers import admin, auth, chat, checkups, dashboard, health, history, me, plan, reports
 from app.routers import settings as settings_router
 
@@ -105,6 +106,18 @@ def create_app() -> FastAPI:
             {
                 "error": "garmin_mfa_required",
                 "message": "Garmin просить код підтвердження — заверши вхід у Налаштуваннях.",
+                "settings_url": "/settings",
+            },
+            status_code=409,
+        )
+
+    @app.exception_handler(GarminAuthFailed)
+    async def _garmin_auth_failed(request: Request, exc: GarminAuthFailed):
+        return JSONResponse(
+            {
+                "error": "garmin_creds_invalid",
+                "message": "Garmin не приймає збережені email/пароль — онови їх у "
+                           "Налаштуваннях.",
                 "settings_url": "/settings",
             },
             status_code=409,
