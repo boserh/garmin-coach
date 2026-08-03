@@ -41,6 +41,34 @@ _LEGACY_TOKEN_DIR = os.path.expanduser("~/.garth")
 _GCONN_TOKEN_DIR = os.path.expanduser("~/.garminconnect")
 
 
+class GarminAuthFailed(Exception):
+    """Raised when a fresh login fails because the stored email/password is wrong —
+    not an MFA gate, not a transient network/rate-limit blip. The caller should mark
+    the account (``User.garmin_creds_invalid``) and stop retrying until the user
+    re-saves working credentials in /settings (see ``app.garmin.runtime.user_runtime``,
+    the single place this is caught and persisted)."""
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        super().__init__(f"Garmin credentials invalid for user {user_id}")
+
+
+def _is_auth_failure(exc: Exception) -> bool:
+    """Conservative check: only a clear 401/'authentication' signal counts as bad
+    credentials. Everything else (403, 5xx, network, Cloudflare blocks) is left as a
+    transient failure that retries next time — misclassifying THOSE as bad creds would
+    wrongly park a working account and blame the wrong thing. Same defensive shape as
+    ``app.garmin.client._classify_error`` (kept separate to avoid a client<->providers
+    import cycle)."""
+    for obj in (exc, getattr(exc, "error", None)):
+        resp = getattr(obj, "response", None)
+        code = getattr(resp, "status_code", None)
+        if isinstance(code, int):
+            return code == 401
+    text = str(exc).lower()
+    return "401" in text or "unauthorized" in text or "authentication" in text
+
+
 class _GarthProvider:
     """Legacy single-user garth provider — **rollback only** since OPS-10 (reachable
     with ``GARMIN_PROVIDER=garth`` once ``pip install -e ".[garth]"`` puts garth back).
@@ -246,9 +274,16 @@ class _UserGarthProvider:
         email, password = self._creds.garmin_email, self._creds.garmin_password
         if not email or not password:
             raise RuntimeError("No Garmin credentials configured for this user.")
-        from app.garmin.mfa import start_login  # local import: avoid a cycle at module load
+        from app.garmin.mfa import MFARequired, start_login  # local: avoid a module-load cycle
 
-        start_login(self._creds.user_id, self._client, email, password)
+        try:
+            start_login(self._creds.user_id, self._client, email, password)
+        except MFARequired:
+            raise
+        except Exception as exc:
+            if _is_auth_failure(exc):
+                raise GarminAuthFailed(self._creds.user_id) from exc
+            raise
         self._logged_in = True
         self.new_token = self._client.dumps()
 
@@ -334,9 +369,16 @@ class _UserGConnProvider(_GConnBase):
         email, password = self._creds.garmin_email, self._creds.garmin_password
         if not email or not password:
             raise RuntimeError("No Garmin credentials configured for this user.")
-        from app.garmin.mfa import start_login  # local import: avoid a cycle at module load
+        from app.garmin.mfa import MFARequired, start_login  # local: avoid a module-load cycle
 
-        start_login(self._creds.user_id, self._client, email, password)
+        try:
+            start_login(self._creds.user_id, self._client, email, password)
+        except MFARequired:
+            raise
+        except Exception as exc:
+            if _is_auth_failure(exc):
+                raise GarminAuthFailed(self._creds.user_id) from exc
+            raise
         self._logged_in = True
 
     @property

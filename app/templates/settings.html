@@ -17,6 +17,13 @@
     <p class="eyebrow">Налаштування</p>
     <h1 class="title" style="font-size:1.7rem">{{ user.email }}</h1>
 
+    {% if user.garmin_creds_invalid %}
+    <div class="note" style="border-color:#f7768e;background:rgba(247,118,142,.08)">
+      🔑 <b>Garmin не приймає збережені email/пароль.</b> Онови їх нижче — синк
+      відновиться сам, щойно збережеш робочі креди.
+    </div>
+    {% endif %}
+
     {% set configured = has_garmin_password and has_anthropic and telegram_chat_id %}
     {% if not configured %}
     <div class="note">

@@ -49,9 +49,11 @@ from app.garmin import matching, plan_sync, repository, service
 from app.garmin.client import GarminRateLimited
 from app.garmin.credentials import load_credentials
 from app.garmin.mfa import MFARequired
+from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from bot.handlers import (
     CHECKIN_PROMPT,
+    GARMIN_AUTH_INVALID_MSG,
     GARMIN_RATE_LIMITED_MSG,
     MFA_REQUIRED_MSG,
     PENDING_ADAPT_KEY,
@@ -768,6 +770,17 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                 await ctx.bot.send_message(user.telegram_chat_id, MFA_REQUIRED_MSG)
         logger.warning(f"TICK MFA required user={user.id}")
         return JobOutcome("skip", "MFARequired", notable=True)
+    except GarminAuthFailed:
+        # user_runtime already marked the account (User.garmin_creds_invalid) and
+        # will short-circuit every following tick without touching Garmin again —
+        # DM once, not every tick, until /settings clears the flag.
+        guard_key = repository.GARMIN_AUTH_INVALID_NOTIFIED_KEY
+        if await repository.get_state(session, user.id, guard_key) != "1":
+            await repository.set_state(session, user.id, guard_key, "1")
+            if user.telegram_chat_id:
+                await ctx.bot.send_message(user.telegram_chat_id, GARMIN_AUTH_INVALID_MSG)
+        logger.warning(f"TICK Garmin creds invalid user={user.id}")
+        return JobOutcome("skip", "GarminAuthFailed", notable=True)
     except Exception:
         logger.exception(f"TICK failed for user={user.id}")
         return JobOutcome("error", _traceback_tail(), notable=True)

@@ -12,6 +12,11 @@ from app.db.models import (
 
 # ---------- BOT STATE ----------
 
+# Shared between bot/jobs.py (sets it, once, when a Garmin login fails with bad
+# creds) and app/routers/settings.py (clears it when the user saves a changed
+# Garmin email/password) — a neutral home so neither imports the other.
+GARMIN_AUTH_INVALID_NOTIFIED_KEY = "garmin_auth_invalid_notified"
+
 async def get_state(session: AsyncSession, user_id: int, key: str) -> Optional[str]:
     m = await session.get(BotState, (user_id, key))
     return m.value if m else None

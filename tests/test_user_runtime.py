@@ -148,6 +148,44 @@ def test_provider_without_credentials_raises(fake_gconn):
         p.login()
 
 
+class Resp401:
+    status_code = 401
+
+
+class AuthError(Exception):
+    response = Resp401()
+
+
+def test_login_with_bad_password_raises_garmin_auth_failed(monkeypatch, fake_gconn):
+    """A wrong Garmin email/password must surface as GarminAuthFailed (401), not the
+    raw underlying exception — the caller (user_runtime) parks the account on it
+    instead of retrying with a known-bad password."""
+    class BadPasswordClient(FakeGConnClient):
+        def login(self, email, password, prompt_mfa=None):
+            raise AuthError("Authentication error")
+
+    monkeypatch.setattr(providers, "_gconn_client_cls", lambda: BadPasswordClient)
+    creds = UserCredentials(user_id=9, garmin_email="e@x.com", garmin_password="wrong")
+    p = providers.build_user_provider(creds)
+    with pytest.raises(providers.GarminAuthFailed) as exc_info:
+        p.login()
+    assert exc_info.value.user_id == 9
+
+
+def test_login_with_transient_error_does_not_raise_auth_failed(monkeypatch, fake_gconn):
+    """A network blip / 5xx / unrelated failure must NOT be misclassified as bad
+    creds — that would wrongly park a working account until a manual re-save."""
+    class FlakyClient(FakeGConnClient):
+        def login(self, email, password, prompt_mfa=None):
+            raise RuntimeError("502 Bad Gateway")
+
+    monkeypatch.setattr(providers, "_gconn_client_cls", lambda: FlakyClient)
+    creds = UserCredentials(user_id=1, garmin_email="e@x.com", garmin_password="p")
+    p = providers.build_user_provider(creds)
+    with pytest.raises(RuntimeError, match="502 Bad Gateway"):
+        p.login()
+
+
 def test_connectapi_logs_in_lazily(fake_gconn):
     # ST-09: a flow that reaches Garmin without build_payload_cached (e.g. plan
     # generation's strength snapshot) must still authenticate — connectapi logs in itself.
@@ -298,3 +336,54 @@ async def test_user_runtime_persists_fresh_token(session, key, monkeypatch):
     assert providers._current_provider.get() is None   # unbound after the block
     await session.refresh(user)
     assert crypto.decrypt(user.garth_token_enc) == "minted-token"
+
+
+async def test_user_runtime_marks_account_on_auth_failure(session, key, monkeypatch):
+    """A GarminAuthFailed raised anywhere inside the block gets persisted onto the
+    user (User.garmin_creds_invalid) and still propagates — the caller (bot tick /
+    web route) reacts to it, same as it always did for MFARequired."""
+    user = User(
+        email="bad@e.com", password_hash="h",
+        garmin_email_enc=crypto.encrypt("g@e.com"),
+        garmin_password_enc=crypto.encrypt("wrong"),
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    class FakeProvider:
+        new_token = None
+
+    monkeypatch.setattr(providers, "build_user_provider", lambda creds: FakeProvider())
+
+    with pytest.raises(providers.GarminAuthFailed):
+        async with runtime.user_runtime(session, user):
+            raise providers.GarminAuthFailed(user.id)
+
+    await session.refresh(user)
+    assert user.garmin_creds_invalid is True
+
+
+async def test_user_runtime_short_circuits_when_already_invalid(session, key, monkeypatch):
+    """Once flagged, user_runtime must raise immediately — no provider built, no
+    Garmin contact — so a background tick every few minutes can't hammer Garmin
+    with a known-bad password (Cloudflare-ban risk)."""
+    user = User(
+        email="bad2@e.com", password_hash="h",
+        garmin_email_enc=crypto.encrypt("g@e.com"),
+        garmin_password_enc=crypto.encrypt("wrong"),
+        garmin_creds_invalid=True,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    built = []
+    monkeypatch.setattr(
+        providers, "build_user_provider", lambda creds: built.append(1))
+
+    with pytest.raises(providers.GarminAuthFailed):
+        async with runtime.user_runtime(session, user):
+            pass  # pragma: no cover - never reached
+
+    assert built == []
