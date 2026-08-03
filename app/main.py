@@ -13,15 +13,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core import logging as app_logging
 from app.core.auth import RequiresLogin
 from app.core.config import settings
 from app.db.base import dispose_db, init_db
+from app.db.models import User
+from app.db.session import get_session
 from app.garmin.mfa import MFARequired
 from app.routers import admin, auth, chat, checkups, dashboard, health, history, me, plan, reports
 from app.routers import settings as settings_router
@@ -108,11 +111,17 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/")
-    async def root(request: Request):
-        if request.session.get("user_id"):
-            # EP-04: the dashboard is the product home (was /me).
-            return RedirectResponse("/dashboard", status_code=303)
-        return RedirectResponse("/login", status_code=303)
+    async def root(request: Request, session: AsyncSession = Depends(get_session)):
+        uid = request.session.get("user_id")
+        if uid is None:
+            return RedirectResponse("/login", status_code=303)
+        user = await session.get(User, uid)
+        if user is None:
+            return RedirectResponse("/login", status_code=303)
+        if not user.is_admin and not user.has_garmin_setup:
+            return RedirectResponse("/settings", status_code=303)
+        # EP-04: the dashboard is the product home (was /me).
+        return RedirectResponse("/dashboard", status_code=303)
 
     app.include_router(auth.router)
     app.include_router(settings_router.router)

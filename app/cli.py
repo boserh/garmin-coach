@@ -5,7 +5,10 @@ Garmin/Claude/Telegram credentials from the existing ``.env``::
 
     ./venv/bin/python -m app.cli create-user --email me@example.com --admin --seed-env
 
-``--seed-env`` requires ``APP_SECRET_KEY`` (the creds are encrypted at rest).
+``--seed-env`` requires ``APP_SECRET_KEY`` (the creds are encrypted at rest). Add
+``--backfill-month`` to immediately pull the last 30 days of Garmin activities/daily
+data for the new user (real Garmin API calls — no Anthropic cost, but needs the
+account's Garmin creds present, e.g. via ``--seed-env``).
 """
 import argparse
 import asyncio
@@ -467,7 +470,9 @@ async def _token_expiry() -> int:
     return 0
 
 
-async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool) -> int:
+async def _create_user(
+    email: str, password: str, is_admin: bool, seed_env: bool, backfill_month: bool
+) -> int:
     await init_db()  # zero-config safety; Alembic remains the source of truth
     async with async_session_maker() as session:
         if await users.get_by_email(session, email):
@@ -506,6 +511,26 @@ async def _create_user(email: str, password: str, is_admin: bool, seed_env: bool
             await session.commit()
             print("Seeded Garmin/Claude/Telegram credentials from .env (encrypted).")
             print(f"Claimed {claimed} pre-existing data rows for this user.")
+
+        if backfill_month:
+            from app.garmin.credentials import load_credentials
+            from app.garmin.runtime import user_runtime
+            from app.garmin.service import build_payload_cached
+
+            creds = load_credentials(user)
+            if not creds.has_garmin:
+                print("No Garmin credentials on this user — skipping backfill "
+                      "(pass --seed-env or set them up first).")
+            else:
+                print("Fetching last 30 days of Garmin activities/data...")
+                async with user_runtime(session, user):
+                    payload, new_activities = await build_payload_cached(
+                        session, user.id, days=30, activity_limit=60,
+                    )
+                await session.commit()
+                print(f"Backfilled {len(payload.daily)} day(s), "
+                      f"{len(new_activities)} activit{'y' if len(new_activities) == 1 else 'ies'}.")
+
         print(f"Created user {email} (id={user.id}, admin={is_admin}).")
     return 0
 
@@ -521,6 +546,11 @@ def main(argv=None) -> int:
     cu.add_argument(
         "--seed-env", action="store_true",
         help="encrypt Garmin/Claude/Telegram creds from .env into this user",
+    )
+    cu.add_argument(
+        "--backfill-month", action="store_true",
+        help="after creation, fetch+store the last 30 days of Garmin activities/daily "
+             "data (needs Garmin creds on the user, e.g. via --seed-env)",
     )
 
     igt = sub.add_parser("import-garth-token", help="Import a garth token dir into a user record")
@@ -589,7 +619,8 @@ def main(argv=None) -> int:
         password = args.password or getpass.getpass("Password: ")
         if not password:
             parser.error("password must not be empty")
-        return _run(_create_user(args.email, password, args.admin, args.seed_env))
+        return _run(_create_user(
+            args.email, password, args.admin, args.seed_env, args.backfill_month))
     if args.cmd == "import-garth-token":
         return _run(_import_garth_token(args.email, args.path))
     if args.cmd == "backfill-series":

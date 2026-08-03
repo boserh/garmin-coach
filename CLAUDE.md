@@ -391,7 +391,10 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 - **Bot**: one global `TELEGRAM_BOT_TOKEN`; chat mapped to user by `telegram_chat_id`
   (`_resolve_user`). `morning_job` loops every user with chat id + Garmin creds, guarded
   once-a-day via per-user `bot_state`.
-- **CLI** (`app.cli`): `create-user [--admin] [--seed-env]`, `import-garth-token`,
+- **CLI** (`app.cli`): `create-user [--admin] [--seed-env] [--backfill-month]`
+  (`--backfill-month` fetches+stores the new user's last 30 days of Garmin
+  activities/daily data right away — real Garmin calls, no Anthropic cost, needs
+  Garmin creds on the user), `import-garth-token`,
   `backfill-series`, `import-export --path [--since] [--overwrite]` (GDPR export
   offline backfill, merge-fill only), `import-fit-series` (pace/HR series from FIT
   files), `push-plan [--days 14] [--dry-run]` (writes plan to Garmin calendar, idempotent
