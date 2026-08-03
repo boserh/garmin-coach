@@ -474,14 +474,32 @@ def _spawn_plan_generation(user_id: int, params: dict) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+STRENGTH_WORKOUTS_CACHE_KEY = "strength_workouts_cache"
+STRENGTH_WORKOUTS_CACHE_TTL_S = 6 * 3600  # the picker only needs to be roughly fresh
+STRENGTH_WORKOUTS_TIMEOUT_S = 8  # cap a slow/degraded Garmin so the page can't hang
+
+
 async def _strength_workouts(session, user):
     """The user's saved Garmin strength workouts (Day 1/Day 2) for the setup picker.
-    Best-effort — no creds / a Garmin outage just yields [] (strength option hidden)."""
+
+    Cached in ``bot_state`` for ``STRENGTH_WORKOUTS_CACHE_TTL_S`` — this runs on
+    *every* GET /plan while there's no active plan (the setup form), so an
+    uncached live call there made the page slow on each visit. The live fetch is
+    also capped at ``STRENGTH_WORKOUTS_TIMEOUT_S``: best-effort — no creds, a
+    Garmin outage, or a timeout just yields [] (strength option hidden) rather
+    than hanging the page."""
+    cached = await repository.get_state(session, user.id, STRENGTH_WORKOUTS_CACHE_KEY)
+    if cached:
+        entry = json.loads(cached)
+        if time.time() - entry["ts"] < STRENGTH_WORKOUTS_CACHE_TTL_S:
+            return entry["workouts"]
+
     from fastapi.concurrency import run_in_threadpool
 
     from app.garmin import client
     from app.garmin.providers import get_provider
-    try:
+
+    async def _fetch():
         async with user_runtime(session, user) as creds:
             if not creds.has_garmin:
                 return []
@@ -490,9 +508,19 @@ async def _strength_workouts(session, user):
             # stripping " manual" collapsed them into one label, hiding the distinction.
             return [w for w in await run_in_threadpool(client.fetch_workouts)
                     if (w.get("sport") or "") == "strength_training"]
-    except Exception:
-        logger.exception(f"strength workouts fetch failed user={user.id}")
+
+    try:
+        workouts = await asyncio.wait_for(_fetch(), timeout=STRENGTH_WORKOUTS_TIMEOUT_S)
+    except Exception as exc:
+        # Expected-ish (rate limit, MFA gate, timeout, outage) — a warning, not an
+        # error page-load worth paging about; the picker is a convenience, not core.
+        logger.warning(f"strength workouts fetch failed user={user.id}: {exc!r}")
         return []
+    await repository.set_state(
+        session, user.id, STRENGTH_WORKOUTS_CACHE_KEY,
+        json.dumps({"ts": time.time(), "workouts": workouts}),
+    )
+    return workouts
 
 
 async def _strength_details(session, user, workouts):
