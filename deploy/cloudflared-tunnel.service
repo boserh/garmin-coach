@@ -4,10 +4,10 @@ After=network.target garmin-web.service
 
 [Service]
 Type=simple
-User=pi
+User=sergiwez
 ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:8000
-StandardOutput=append:/home/pi/garmin_bot/cloudflared_tunnel.log
-StandardError=append:/home/pi/garmin_bot/cloudflared_tunnel.log
+StandardOutput=append:/home/sergiwez/projects/garmin-coach/cloudflared_tunnel.log
+StandardError=append:/home/sergiwez/projects/garmin-coach/cloudflared_tunnel.log
 Restart=on-failure
 RestartSec=5
 
