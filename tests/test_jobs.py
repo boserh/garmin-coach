@@ -120,8 +120,9 @@ async def test_backup_freshness_silent_when_fresh(session, tmp_path, monkeypatch
     assert ctx.bot.sent == []
 
 
-def test_recovery_synced_requires_hrv_and_sleep():
-    full = _payload(DailySummary(date=TODAY, hrv_avg=60, sleep_score=80, has_data=True))
+def test_recovery_synced_requires_hrv_sleep_and_body_battery():
+    full = _payload(DailySummary(date=TODAY, hrv_avg=60, sleep_score=80, bb_charged=50,
+                                  has_data=True))
     assert _recovery_synced(full, TODAY) is True
 
 
@@ -136,8 +137,16 @@ def test_recovery_not_synced_with_hrv_but_no_sleep():
     assert _recovery_synced(partial, TODAY) is False
 
 
+def test_recovery_not_synced_without_body_battery():
+    # HRV + sleep landed but body battery hasn't finished syncing yet — Garmin can
+    # settle these independently, so a still-partial bb_charged must not fire the report
+    no_bb = _payload(DailySummary(date=TODAY, hrv_avg=60, sleep_score=80, has_data=True))
+    assert _recovery_synced(no_bb, TODAY) is False
+
+
 def test_recovery_not_synced_when_no_today_row():
-    other = _payload(DailySummary(date="2026-06-23", hrv_avg=60, sleep_score=80, has_data=True))
+    other = _payload(DailySummary(date="2026-06-23", hrv_avg=60, sleep_score=80,
+                                   bb_charged=50, has_data=True))
     assert _recovery_synced(other, TODAY) is False
 
 

@@ -237,11 +237,15 @@ async def user_garmin_runtime(session, user: User, *, skip_label: Optional[str] 
 
 
 def _recovery_synced(payload, today: str) -> bool:
-    """True only when today's recovery data is actually in — both HRV and sleep.
-    Garmin can sync stress earlier than HRV/sleep, so ``payload.synced_today`` (any
-    field) is too loose for the morning report; we wait for the recovery essentials."""
+    """True only when today's recovery data is actually in — HRV, sleep, and body
+    battery. Garmin syncs these independently (stress and HRV/sleep can land before
+    body battery's overnight charge is fully in), so ``payload.synced_today`` (any
+    field) is too loose for the morning report; we wait for the recovery essentials.
+    Without the bb_charged check, the report can fire on a still-partial overnight
+    charge (e.g. "11" mid-sync) instead of the final value Garmin later settles on."""
     row = next((d for d in payload.daily if d.date == today), None)
-    return bool(row and row.hrv_avg is not None and row.sleep_score is not None)
+    return bool(row and row.hrv_avg is not None and row.sleep_score is not None
+                and row.bb_charged is not None)
 
 
 async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.datetime,
