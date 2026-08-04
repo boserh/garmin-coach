@@ -4,11 +4,24 @@ Whitelisted models only (no arbitrary SQL). Token-gated like the other data
 endpoints; the token can be passed as ``?token=`` so plain browser links work.
 """
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    and_,
+    cast,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.charts import run_charts as _run_charts
@@ -75,13 +88,90 @@ async def _count(session: AsyncSession, model, where=None) -> int:
 def _search_filter(model, search: str):
     """Substring match (case-insensitive) across every column, cast to text.
 
-    Lets one search box cover every table without per-table filter config.
+    Secondary catch-all (e.g. a report's question text) on top of the real
+    per-column filters below — lets one search box cover every table without
+    per-table filter config.
     """
     if not search:
         return None
     like = f"%{search}%"
     cols = [c for c in model.__table__.columns if c.name != "data"]  # skip blob columns
     return or_(*(cast(c, String).ilike(like) for c in cols))
+
+
+# Max distinct values for a column to be offered as a dropdown filter — beyond
+# this it's not a meaningful "category" (e.g. hrv_avg has ~60 distinct ints).
+ENUM_FILTER_MAX_DISTINCT = 25
+
+# Stands in for SQL NULL as a dropdown option's URL value — real values collide
+# with this only in theory (no column here holds the literal string "__none__").
+NULL_FILTER_VALUE = "__none__"
+
+
+def _filter_candidate_columns(model):
+    """Short scalar columns worth checking for dropdown-filter eligibility —
+    excludes PKs, FKs, the ``date`` column (has its own range filter), and any
+    blob/JSON/long-text field."""
+    cols = []
+    for c in model.__table__.columns:
+        if c.primary_key or c.name.endswith("_id") or c.name == "date":
+            continue
+        if isinstance(c.type, (JSON, Text, LargeBinary)):
+            continue
+        if isinstance(c.type, String) and (c.type.length is None or c.type.length > 64):
+            continue
+        cols.append(c)
+    return cols
+
+
+async def _enum_filter_options(session: AsyncSession, model) -> dict:
+    """{column_name: [(url_value, label), ...]} for every candidate column whose
+    distinct values (over the whole table, ignoring any currently-active filter —
+    so the dropdown never disappears once picked) fit within ENUM_FILTER_MAX_DISTINCT."""
+    options = {}
+    for c in _filter_candidate_columns(model):
+        rows = (
+            await session.execute(
+                select(c).distinct().limit(ENUM_FILTER_MAX_DISTINCT + 1)
+            )
+        ).scalars().all()
+        if 0 < len(rows) <= ENUM_FILTER_MAX_DISTINCT:
+            rows.sort(key=lambda v: (v is None, str(v)))
+            options[c.name] = [
+                (NULL_FILTER_VALUE, "— порожньо —") if v is None else (str(v), str(v))
+                for v in rows
+            ]
+    return options
+
+
+def _coerce_filter_value(col, value: str):
+    """A dropdown option's value round-trips through the URL as a string —
+    put it back into the column's Python type so ``col == value`` compares
+    correctly (SQLite in particular won't match `1` against `"True"`)."""
+    if isinstance(col.type, Boolean):
+        return value in ("True", "true", "1")
+    if isinstance(col.type, Integer):
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _column_filters(model, active: dict):
+    """Exact-match conditions for the ``f_<col>=<value>`` query params picked
+    from the dropdowns built by ``_enum_filter_options``."""
+    table_cols = model.__table__.columns
+    conds = []
+    for name, value in active.items():
+        if name not in table_cols or value == "":
+            continue
+        col = table_cols[name]
+        if value == NULL_FILTER_VALUE:
+            conds.append(col.is_(None))
+        else:
+            conds.append(col == _coerce_filter_value(col, value))
+    return conds
 
 
 async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
@@ -139,6 +229,8 @@ async def ui_table(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     search: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -154,25 +246,51 @@ async def ui_table(
     order_col = next(
         (table_cols[c] for c in ("date", "created_at") if c in table_cols), pk
     )
-    where = _search_filter(model, search.strip())
+    date_col = table_cols["date"] if "date" in table_cols else None
+
+    active_filters = {
+        k[2:]: v for k, v in request.query_params.items() if k.startswith("f_")
+    }
+    conds = _column_filters(model, active_filters)
+    if date_col is not None:
+        if date_from:
+            conds.append(date_col >= date_from)
+        if date_to:
+            conds.append(date_col <= date_to)
+    search_cond = _search_filter(model, search.strip())
+    if search_cond is not None:
+        conds.append(search_cond)
+    where = and_(*conds) if conds else None
+
     stmt = select(model).order_by(order_col.desc()).limit(limit).offset(offset)
     if where is not None:
         stmt = stmt.where(where)
     result = await session.execute(stmt)
     rows = [[getattr(r, c) for c in cols] for r in result.scalars().all()]
     total = await _count(session, model, where)
+    enum_options = await _enum_filter_options(session, model)
 
     charts = first_date = last_date = None
     if table == "daily_metrics":
         charts, first_date, last_date = await _daily_charts(session, user.id)
+
+    token = request.query_params.get("token", "")
+    # Every active filter, preserved across pagination links (offset/limit are
+    # set explicitly by those links, so they're excluded here).
+    preserved = {"token": token, "search": search, "date_from": date_from, "date_to": date_to,
+                 **{f"f_{k}": v for k, v in active_filters.items()}}
+    page_qs = urlencode({k: v for k, v in preserved.items() if v})
 
     return templates.TemplateResponse(
         request, "table.html",
         {
             "table": table, "cols": cols, "rows": rows, "user": user,
             "limit": limit, "offset": offset, "total": total, "search": search,
-            "tables": list(TABLES), "token": request.query_params.get("token", ""),
+            "tables": list(TABLES), "token": token, "page_qs": page_qs,
             "charts": charts, "first_date": first_date, "last_date": last_date,
+            "enum_options": enum_options, "active_filters": active_filters,
+            "has_date_col": date_col is not None,
+            "date_from": date_from, "date_to": date_to,
         },
     )
 
