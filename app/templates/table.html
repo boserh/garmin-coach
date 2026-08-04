@@ -89,6 +89,18 @@
       {% if token %}<input type="hidden" name="token" value="{{ token }}">{% endif %}
       <input type="hidden" name="limit" value="{{ limit }}">
 
+      {% if user_options %}
+        <label class="ffield">
+          <span>користувач</span>
+          <select name="f_user_id" onchange="this.form.submit()">
+            <option value="">Всі</option>
+            {% for uid, email in user_options %}
+              <option value="{{ uid }}"{{ ' selected' if active_filters.get('user_id') == uid else '' }}>{{ email }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      {% endif %}
+
       {% if enum_options %}
         {% for col, opts in enum_options.items() %}
           <label class="ffield">
