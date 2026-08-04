@@ -16,6 +16,11 @@
 # a plain restart (few seconds offline, auto-reconnects) is fine for those.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# systemd-run gives this script a WorkingDirectory of "/" by default, not REPO_ROOT —
+# alembic needs to find alembic.ini, so cd there explicitly rather than relying on
+# whatever cwd we happened to inherit (silently failed with "No 'script_location' key
+# found in configuration" before this line existed).
+cd "$REPO_ROOT"
 # This script runs as root (see sudoers-garmin-deploy) — drop back to the checkout's own
 # owner (whichever user the services actually run as) so alembic doesn't leave root-owned
 # files in the repo/DB. Derived rather than hardcoded: a hardcoded "pi" here silently broke
