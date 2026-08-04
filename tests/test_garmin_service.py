@@ -159,12 +159,13 @@ def test_auto_activities_tolerates_malformed_fields():
 
 def test_daily_summary_includes_auto_activities(monkeypatch):
     fp = FakeProvider()
+    base_connectapi = FakeProvider.connectapi
 
     def connectapi(self, path, **kwargs):
         if "dailyEvents" in path:
             return [{"activityType": {"typeKey": "cycling"}, "durationInSeconds": 1800,
                       "startTimestampLocal": "2026-06-21T20:00:00.0"}]
-        return FakeProvider.connectapi(self, path, **kwargs)
+        return base_connectapi(self, path, **kwargs)
 
     monkeypatch.setattr(FakeProvider, "connectapi", connectapi)
     monkeypatch.setattr(client, "get_provider", lambda: fp)
