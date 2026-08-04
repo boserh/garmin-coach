@@ -18,7 +18,6 @@ from telegram.ext import ContextTypes
 
 from app import deploy as deploy_ops
 from app import records, weather
-from app import tunnel as tunnel_ops
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
@@ -278,20 +277,6 @@ async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, u
     lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
     lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
-
-
-@bot_command
-async def tunnel_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
-    """/url — the current Cloudflare quick-tunnel address for the web app. Random,
-    changes every time cloudflared restarts (see deploy/cloudflared-tunnel.service)."""
-    logger.info("CMD /url")
-    url = tunnel_ops.get_tunnel_url()
-    if url is None:
-        await update.message.reply_text(
-            "Тунель не знайдено — перевір `systemctl status cloudflared-tunnel` на хості."
-        )
-        return
-    await update.message.reply_text(f"🌐 {url}")
 
 
 _COST_KIND_UK = {

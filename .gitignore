@@ -2,7 +2,6 @@
 venv/
 bot.log
 bot.log.*
-cloudflared_tunnel.log
 claude_cache.json
 claude_cache.json.tmp
 state.json
