@@ -12,6 +12,7 @@
   <script defer src="/static/app.js?v=1"></script>
 </head>
 <body class="auth">
+  <div style="display:flex;flex-direction:column;gap:1rem">
   <form class="authcard" method="post" action="/login">
     <h1 class="brand">Garmin → Claude</h1>
     <div class="sub">Увійди, щоб побачити звіти й програму тренувань.</div>
@@ -25,9 +26,10 @@
     {% if info %}<div class="info">{{ info }}</div>{% endif %}
     <div class="alt">Немає акаунта? <a href="/register">Зареєструватись</a></div>
   </form>
-  <form class="authcard" method="post" action="/demo-login" style="margin-top:1rem">
+  <form class="authcard" method="post" action="/demo-login">
     <button class="btn btn-ghost" type="submit">Спробувати демо (без реєстрації)</button>
     <div class="sub" style="margin-top:.5rem">Фейкові дані для перегляду — без звернень до Garmin чи Claude.</div>
   </form>
+  </div>
 </body>
 </html>
