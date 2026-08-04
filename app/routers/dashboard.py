@@ -64,6 +64,7 @@ def _activity_cards(rows: list) -> list:
         out.append({
             "id": a["id"], "date": a["date"], "type": a["type"], "emoji": emoji, "color": color,
             "dist_km": a["dist_km"], "dur_min": a["dur_min"], "avg_hr": a["avg_hr"],
+            "load": a["load"], "rpe": a["rpe"],
             "pace": _pace_str(a["dist_km"], a["dur_min"]),
         })
     return out
