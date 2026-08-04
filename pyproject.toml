@@ -12,6 +12,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
+    "gunicorn",  # prod-only: N uvicorn workers under one master, SIGHUP = zero-downtime reload
     "jinja2",
     "pydantic",
     "pydantic-settings",

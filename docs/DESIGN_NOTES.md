@@ -41,8 +41,8 @@ missing/undecodable token, or a native refresh token that isn't a JWT, is a sile
 (`bot/admin_main.py` → `garmin-admin-bot.service`), off the main coaching bot. Same
 handler code, codebase, DB — only token/process differ. Gated by `_owner_only` (locked
 to the lowest `users.id`). `deploy/garmin-admin-bot.service`; `scripts/
-restart_services.sh` restarts all three units (`garmin-bot`, `garmin-web`,
-`garmin-admin-bot`).
+restart_services.sh` migrates then reloads `garmin-web` and restarts `garmin-bot` +
+`garmin-admin-bot`.
 
 ## Remote deploy from Telegram (OPS-03)
 
@@ -56,6 +56,21 @@ deploy-restart --collect ...` so the script runs as a PID1 child in its own cgro
 `bot/handlers.py::deploy`/`deploy_callback`: admin-only, `DEPLOY_ENABLED` master switch
 (off by default), explicit ✅/❌ confirm before anything runs; every call logged
 server-side regardless of what reaches Telegram.
+
+**Zero-downtime web reload**: `garmin-web.service` runs `gunicorn "app.main:create_app()"
+-k uvicorn.workers.UvicornWorker --workers 2` instead of bare `uvicorn` — the gunicorn
+master owns the listen socket for the unit's whole life. `restart_services.sh` sends it
+`systemctl reload` (→ `ExecReload=kill -HUP $MAINPID`), which makes gunicorn spawn fresh
+workers (re-importing `app.main`, so new code) and only THEN gracefully drain+kill the
+old ones — the socket never closes, so `/dashboard`/`/report.json`/etc. never 502 mid-
+deploy. `reload` does **not** run `ExecStartPre`, so the script runs `alembic upgrade
+head` itself (as `sudo -u pi`, since the script itself runs as root) before reloading.
+`garmin-bot`/`garmin-admin-bot` stay plain `systemctl restart --no-block` — they're
+single-process Telegram long-pollers with no in-flight HTTP request to protect, so a
+few seconds offline is harmless (auto-reconnects). Multiple gunicorn workers meant
+`app/db/base.py` now sets `PRAGMA journal_mode=WAL` + `busy_timeout=5000` on every
+sqlite connection (was previously journaled/rollback, fine for a single process) so
+concurrent workers don't trip "database is locked".
 
 ## Recovery signal foundations
 
