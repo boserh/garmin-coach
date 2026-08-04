@@ -78,6 +78,34 @@ def _no_real_anthropic(monkeypatch):
         pass
 
 
+class _BlockedGConnClient:
+    """Mirrors _BlockedAnthropic for the native Garmin client. Without this, a POST
+    /settings that flips garmin_sync_enabled (default True — see User model) runs
+    plan_sync.unpush_all/sync_plan_to_garmin against a REAL garminconnect.Client before
+    a test gets a chance to mock providers._gconn_client_cls itself — a real, slow
+    (10-20s anti-WAF sleep + retries), flaky call out to actual Garmin/Cloudflare."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, name):
+        raise AssertionError(
+            f"Real garminconnect.Client used in a test (accessed {name!r}) — a Garmin "
+            "mock is missing its target. Patch providers._gconn_client_cls (the "
+            "designated import seam); the suite must never hit the live Garmin API."
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_garmin(monkeypatch):
+    """Block the real native Garmin client in every test (see _BlockedGConnClient).
+    Tests that need specific provider behavior override providers._gconn_client_cls
+    themselves, which takes precedence over this default."""
+    from app.garmin import providers
+
+    monkeypatch.setattr(providers, "_gconn_client_cls", lambda: _BlockedGConnClient)
+
+
 @pytest.fixture
 def client():
     """A FastAPI TestClient with Garmin login mocked — shared by the test_routers_* split
