@@ -16,8 +16,12 @@
 # a plain restart (few seconds offline, auto-reconnects) is fine for those.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# This script runs as root (see sudoers-garmin-deploy) — `sudo -u pi` drops back to the
-# service's own user so alembic doesn't leave root-owned files in the pi-owned repo/DB.
-sudo -u pi "$REPO_ROOT/venv/bin/python" -m alembic upgrade head
+# This script runs as root (see sudoers-garmin-deploy) — drop back to the checkout's own
+# owner (whichever user the services actually run as) so alembic doesn't leave root-owned
+# files in the repo/DB. Derived rather than hardcoded: a hardcoded "pi" here silently broke
+# every /deploy on a host where the real user is something else (set -e aborts right here,
+# before the restart below ever runs — see OPS-03 postmortem).
+REPO_OWNER="$(stat -c '%U' "$REPO_ROOT")"
+sudo -u "$REPO_OWNER" "$REPO_ROOT/venv/bin/python" -m alembic upgrade head
 /bin/systemctl reload garmin-web.service
 exec /bin/systemctl restart --no-block garmin-bot.service garmin-admin-bot.service
