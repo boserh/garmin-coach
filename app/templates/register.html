@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="uk">
 <head>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Реєстрація — Garmin</title>
@@ -22,6 +23,10 @@
     <button class="btn" type="submit">Зареєструватись</button>
     {% if error %}<div class="err">{{ error }}</div>{% endif %}
     <div class="alt">Вже є акаунт? <a href="/login">Увійти</a></div>
+  </form>
+  <form class="authcard" method="post" action="/demo-login" style="margin-top:1rem">
+    <button class="btn btn-ghost" type="submit">Спробувати демо (без реєстрації)</button>
+    <div class="sub" style="margin-top:.5rem">Фейкові дані для перегляду — без звернень до Garmin чи Claude.</div>
   </form>
 </body>
 </html>

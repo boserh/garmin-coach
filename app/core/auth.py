@@ -9,6 +9,7 @@ back to a :class:`User`; when there is no valid session it raises
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.demo import IS_DEMO
 from app.db.models import User
 from app.db.session import get_session
 
@@ -24,6 +25,10 @@ async def current_user(
     if uid is not None:
         user = await session.get(User, uid)
         if user is not None:
+            # The demo account's kill switch (see app.core.demo) — set for the rest of
+            # this request so user_runtime/_get_client refuse any real network call,
+            # even from a code path a router guard missed.
+            IS_DEMO.set(user.is_demo)
             return user
     raise RequiresLogin()
 

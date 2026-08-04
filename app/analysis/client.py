@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from app.core.config import settings
+from app.core.demo import DEMO_DISABLED_MSG, IS_DEMO
 
 logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -91,7 +92,14 @@ _clients: dict = {}
 def _get_client(api_key: Optional[str] = None):
     """Lazily build (and cache per key) an Anthropic client, so importing this
     module never requires a key. ``api_key`` is the per-user key; it falls back to
-    the global .env key for the legacy single-user path."""
+    the global .env key for the legacy single-user path.
+
+    The demo account's kill switch (``app.core.demo.IS_DEMO``) is checked FIRST, before
+    that fallback — a demo user has no ``anthropic_key_enc`` of its own, and without this
+    check it would silently inherit the operator's real global key and make a real paid
+    call the moment a router guard was missed."""
+    if IS_DEMO.get():
+        raise AnalystError(DEMO_DISABLED_MSG)
     key = api_key or settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")

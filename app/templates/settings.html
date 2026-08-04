@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="uk">
 <head>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Налаштування</title>
@@ -122,7 +123,8 @@
     {% elif garmin == "fail" %}<div class="err" style="margin:1rem 0">Не вдалось увійти — перевір email/пароль.</div>
     {% elif garmin == "badcode" %}<div class="err" style="margin:1rem 0">Невірний код або сесія протухла. Спробуй ще раз.</div>
     {% elif garmin == "expired" %}<div class="err" style="margin:1rem 0">Час на введення коду вийшов. Спробуй підключення ще раз.</div>
-    {% elif garmin == "nocreds" %}<div class="err" style="margin:1rem 0">Спершу збережи Garmin email і пароль вище.</div>{% endif %}
+    {% elif garmin == "nocreds" %}<div class="err" style="margin:1rem 0">Спершу збережи Garmin email і пароль вище.</div>
+    {% elif garmin == "demo" %}<div class="err" style="margin:1rem 0">🎭 Демо-акаунт: підключення до Garmin вимкнено.</div>{% endif %}
 
     <hr class="divide">
     <h2 class="sec">Зміна пароля</h2>

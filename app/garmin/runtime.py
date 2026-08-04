@@ -21,8 +21,16 @@ from app.garmin.credentials import load_credentials
 logger = logging.getLogger("garmin")
 
 
+class DemoModeUnavailable(Exception):
+    """Raised instead of touching Garmin for the demo account (``User.is_demo``, see
+    ``app.core.demo``) — its routes are expected to guard earlier and never reach here;
+    this is the last-resort net, not the normal path."""
+
+
 @asynccontextmanager
 async def user_runtime(session, user: User):
+    if user.is_demo:
+        raise DemoModeUnavailable(user.id)
     if user.garmin_creds_invalid:
         # A previous login already failed with a bad-credentials error — don't touch
         # Garmin again (repeatedly retrying a known-bad password risks a Cloudflare

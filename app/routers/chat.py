@@ -39,6 +39,7 @@ from app.analysis.client import AnalystError
 from app.analysis.plans import run_plan_edit
 from app.analysis.reports import run_ask
 from app.core.auth import current_user
+from app.core.demo import DEMO_DISABLED_MSG
 from app.core.tz import user_tz as core_user_tz
 from app.db.models import User
 from app.dependencies import get_session
@@ -134,6 +135,8 @@ async def chat_send(
     text = message.strip()
     if not text:
         return RedirectResponse("/chat", status_code=303)
+    if user.is_demo:
+        return RedirectResponse(f"/chat?err={quote(DEMO_DISABLED_MSG)}", status_code=303)
     pending = await repository.get_pending_plan_edit(session, user.id) if refine else None
     creds = load_credentials(user)
     try:
@@ -191,7 +194,7 @@ async def chat_confirm(
                 affected = await repository.apply_plan_ops(
                     session, plan_obj, [PlanOp(**o) for o in ops_data]
                 )
-                if user.garmin_sync_enabled:
+                if user.garmin_sync_enabled and not user.is_demo:
                     try:
                         async with user_runtime(session, user):
                             await plan_sync.resync_workouts(session, user.id, affected)

@@ -8,8 +8,22 @@ User=pi
 WorkingDirectory=/home/pi/garmin_bot
 EnvironmentFile=/home/pi/garmin_bot/.env
 ExecStartPre=/home/pi/garmin_bot/venv/bin/python -m alembic upgrade head
-ExecStart=/home/pi/garmin_bot/venv/bin/python -m uvicorn app.main:create_app \
-    --factory --host 0.0.0.0 --port 8000
+# gunicorn master owns the listen socket; -k uvicorn.workers.UvicornWorker runs the
+# ASGI app under it. SIGHUP tells the master to spawn fresh workers (re-importing
+# app.main, so new code + a fresh create_app() lifespan) and only THEN gracefully
+# retire the old ones — the socket never closes, so no request is ever refused during
+# a deploy. --graceful-timeout bounds how long an old worker gets to drain in-flight
+# requests before a hard kill.
+ExecStart=/home/pi/garmin_bot/venv/bin/gunicorn "app.main:create_app()" \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 2 \
+    --bind 0.0.0.0:8000 \
+    --graceful-timeout 30 \
+    --timeout 60
+# systemctl reload garmin-web.service → this signal → zero-downtime rolling restart.
+# ExecStartPre does NOT run again on reload (only on a full start/restart), which is
+# why scripts/restart_services.sh runs `alembic upgrade head` itself before reloading.
+ExecReload=/bin/kill -s HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 

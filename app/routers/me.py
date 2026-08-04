@@ -805,6 +805,8 @@ async def me_regenerate_analysis(
     act = await repository.get_activity(session, user.id, row_id)
     if act is None:
         raise HTTPException(status_code=404, detail="Activity not found")
+    if user.is_demo:
+        return RedirectResponse(f"/me/activities/{row_id}?regen=demo", status_code=303)
     creds = load_credentials(user)
     if not creds.anthropic_key:
         return RedirectResponse(f"/me/activities/{row_id}?regen=nokey", status_code=303)

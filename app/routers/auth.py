@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.crypto import hash_password_async, verify_password_async
 from app.core.ratelimit import RateLimiter
 from app.db import users
+from app.demo import ensure_demo_user
 from app.dependencies import get_session
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -134,3 +135,18 @@ async def register_submit(
         request,
         info="Реєстрацію надіслано. Увійти можна буде після підтвердження адміністратором.",
     )
+
+
+@router.post("/demo-login")
+async def demo_login(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """One-click walkthrough with seeded fake data — no registration, no real Garmin/
+    Claude call ever (see app.core.demo + app.demo). Reuses the login rate limiter
+    (per-IP) so it can't be hammered into repeated DB writes."""
+    if not _login_limiter.allow(f"ip:{_client_ip(request)}"):
+        return _login_page(request, error=_RATE_LIMIT_MSG, status_code=429)
+    user = await ensure_demo_user(session)
+    login_session(request, user)
+    return RedirectResponse("/dashboard", status_code=303)

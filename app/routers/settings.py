@@ -85,6 +85,11 @@ async def garmin_connect(
 ):
     """Try (re)connecting this user's Garmin session now, in this process — the only
     way to actually reach the MFA gate and park on it for /settings/garmin-mfa."""
+    if user.is_demo:
+        # This is the one place in the app that calls Garmin directly instead of
+        # through user_runtime (see app.core.demo) — guard it explicitly so the demo
+        # account can never be used as a live Garmin-login oracle.
+        return RedirectResponse("/settings?garmin=demo", status_code=303)
     creds = load_credentials(user)
     if not (creds.garmin_email and creds.garmin_password):
         return RedirectResponse("/settings?garmin=nocreds", status_code=303)
@@ -108,6 +113,8 @@ async def garmin_mfa_submit(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if user.is_demo:
+        return RedirectResponse("/settings?garmin=demo", status_code=303)
     try:
         token = await run_in_threadpool(mfa.submit_code, user.id, code.strip())
     except MFANotPending:

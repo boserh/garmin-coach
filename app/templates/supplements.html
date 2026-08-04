@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="uk">
 <head>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Добавки</title>
@@ -35,6 +36,8 @@
       <div class="err" style="margin:0 0 1rem">Немає активних добавок — спершу додай хоча б одну.</div>
     {% elif request.query_params.get('err') == 'notemplate' %}
       <div class="err" style="margin:0 0 1rem">Немає показників для шаблону — спершу отримай пораду.</div>
+    {% elif request.query_params.get('err') == 'demo' %}
+      <div class="err" style="margin:0 0 1rem">🎭 Демо-акаунт: Claude-порада вимкнена.</div>
     {% endif %}
 
     <details class="fwrap">

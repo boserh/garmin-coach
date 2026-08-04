@@ -27,6 +27,7 @@ from app.db.models import User
 from app.db.session import get_session
 from app.garmin.mfa import MFARequired
 from app.garmin.providers import GarminAuthFailed
+from app.garmin.runtime import DemoModeUnavailable
 from app.routers import admin, auth, chat, checkups, dashboard, health, history, me, plan, reports
 from app.routers import settings as settings_router
 
@@ -121,6 +122,17 @@ def create_app() -> FastAPI:
                 "settings_url": "/settings",
             },
             status_code=409,
+        )
+
+    @app.exception_handler(DemoModeUnavailable)
+    async def _demo_mode_unavailable(request: Request, exc: DemoModeUnavailable):
+        # Last-resort net for the demo account (see app.core.demo): every route that can
+        # reach user_runtime is expected to guard earlier with a friendlier response, so
+        # this should be unreachable in practice — it exists only to guarantee no path
+        # ever silently falls through to a real Garmin call.
+        return JSONResponse(
+            {"error": "demo_mode", "message": "🎭 Демо-акаунт: недоступно."},
+            status_code=403,
         )
 
     @app.get("/")

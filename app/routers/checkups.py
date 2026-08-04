@@ -250,6 +250,8 @@ async def checkups_upload(
     slow vision calls that takes. Redirects to /checkups?jobs=... , which shows live
     per-batch status (see the upload-jobs section above) until each lands as normal,
     editable checkup row(s) the user reviews before trusting."""
+    if user.is_demo:
+        return RedirectResponse("/checkups?err=demo", status_code=303)
     creds = load_credentials(user)
     if not creds.anthropic_key:
         return RedirectResponse("/checkups?err=nokey", status_code=303)
@@ -384,6 +386,8 @@ async def supplements_analyze(
     (a real Sonnet call — only from this explicit button tap). Dedup-cached, so
     re-tapping an unchanged list is free unless the form carries ``force=1`` (the
     "спробуй ще раз" regenerate button shown once advice already exists)."""
+    if user.is_demo:
+        return RedirectResponse("/checkups/supplements?err=demo", status_code=303)
     form = await request.form()
     force = (form.get("force") or "") == "1"
     creds = load_credentials(user)
@@ -537,6 +541,8 @@ async def checkup_analyze(
     row = await checkups.get_checkup(session, user.id, checkup_id)
     if row is None:
         return RedirectResponse("/checkups", status_code=303)
+    if user.is_demo:
+        return RedirectResponse(f"/checkups/{checkup_id}?err=demo", status_code=303)
     creds = load_credentials(user)
     if not creds.anthropic_key:
         return RedirectResponse(f"/checkups/{checkup_id}?err=nokey", status_code=303)

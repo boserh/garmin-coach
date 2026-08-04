@@ -11,8 +11,10 @@ async def eligible_users(
     session: AsyncSession, *, with_chat: bool = False
 ) -> Sequence[User]:
     """Active + approved users — the recipient set every scheduled per-user job loops
-    over. ``with_chat`` additionally requires a Telegram chat id (jobs that DM)."""
-    conds = [User.is_active.is_(True), User.is_approved.is_(True)]
+    over. ``with_chat`` additionally requires a Telegram chat id (jobs that DM). Always
+    excludes the demo account (``User.is_demo``) — it has no real Garmin/Claude creds and
+    must never receive a background job (morning report, plan sync/adapt, alerts, ...)."""
+    conds = [User.is_active.is_(True), User.is_approved.is_(True), User.is_demo.is_(False)]
     if with_chat:
         conds.append(User.telegram_chat_id.is_not(None))
     return (await session.execute(select(User).where(*conds))).scalars().all()
