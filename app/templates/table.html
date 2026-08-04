@@ -33,13 +33,24 @@
     .xaxis { display: flex; justify-content: space-between; }
     button.del { padding: .15rem .55rem; border: 0; border-radius: 6px; cursor: pointer;
                  background: rgba(247,118,142,.12); color: #f7768e; font-size: .82rem; }
-    .search { display: flex; gap: .4rem; align-items: center; }
-    .search input[type=search] { background: #151a23; border: 1px solid #313a49; border-radius: 8px;
-      color: #eef1f5; padding: .32rem .6rem; font-size: .85rem; min-width: 16rem; }
-    .search input[type=search]:focus { outline: none; border-color: #7aa2f7; }
-    .search button { padding: .32rem .7rem; border: 1px solid #313a49; border-radius: 8px; cursor: pointer;
-      background: #1a2029; color: #eef1f5; font-size: .85rem; }
-    .search a.clear { color: #909aa8; font-size: .85rem; }
+    .fwrap { margin: .6rem 0; }
+    .fsum { cursor: pointer; color: #b6bfca; font-size: .85rem; padding: .4rem 0; list-style: none; }
+    .fsum::-webkit-details-marker { display: none; }
+    .fsum.on { color: #7aa2f7; }
+    .fsum .chev { display: inline-block; margin-left: .3rem; font-size: .7rem; }
+    .fbar { display: flex; flex-wrap: wrap; gap: .9rem; align-items: end; padding: .7rem 0 .3rem; }
+    .fgroup { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; }
+    .ffield { display: flex; flex-direction: column; gap: .2rem; font-size: .72rem; color: #909aa8; }
+    .ffield select, .dp-input, .fbar input[type=search] {
+      background: #151a23; border: 1px solid #313a49; border-radius: 8px;
+      color: #eef1f5; padding: .3rem .55rem; font-size: .85rem; }
+    .ffield select:focus, .dp-input:focus, .fbar input[type=search]:focus { outline: none; border-color: #7aa2f7; }
+    .dp-label { display: flex; flex-direction: column; gap: .2rem; font-size: .72rem; color: #909aa8; }
+    .dp-sep { align-self: end; padding-bottom: .4rem; color: #909aa8; }
+    .fbar input[type=search] { min-width: 14rem; }
+    .fbar button { padding: .32rem .7rem; border: 1px solid #313a49; border-radius: 8px; cursor: pointer;
+      background: #1a2029; color: #eef1f5; font-size: .85rem; align-self: end; }
+    .fbar a.clear { color: #909aa8; font-size: .82rem; align-self: end; padding-bottom: .45rem; }
   </style>
 </head>
 <body>
@@ -47,7 +58,9 @@
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
   {% set search = search or '' %}
-  {% set q = ('&token=' ~ token if token else '') ~ ('&search=' ~ search|urlencode if search else '') %}
+  {% set active_filters = active_filters or {} %}
+  {% set active_count = active_filters|length + (1 if date_from or date_to else 0) + (1 if search else 0) %}
+  {% set q = '&' ~ page_qs if page_qs else '' %}
   {% set qf = '?token=' ~ token if token else '' %}
   {% set NICE = {"daily_metrics": "Відновлення", "activities": "Тренування",
                  "report_logs": "Звіти", "users": "Користувачі", "bot_state": "Стан бота",
@@ -62,7 +75,7 @@
   </div>
   <div class="bar">
     <b>{{ NICE.get(table, table) }}</b>
-    <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}{% if search %} (фільтр: "{{ search }}"){% endif %}</span>
+    <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}{% if active_count %} (з фільтром){% endif %}</span>
     {% if offset > 0 %}
       <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
     {% endif %}
@@ -70,15 +83,46 @@
       <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
     {% endif %}
   </div>
-  <div class="bar search">
-    <form method="get" action="{{ base }}/{{ table }}" class="search">
+  <details class="fwrap"{% if active_count %} open{% endif %}>
+    <summary class="fsum{{ ' on' if active_count }}">🔎 Фільтри{% if active_count %} ({{ active_count }}){% endif %}<span class="chev">▾</span></summary>
+    <form method="get" action="{{ base }}/{{ table }}" class="fbar">
       {% if token %}<input type="hidden" name="token" value="{{ token }}">{% endif %}
       <input type="hidden" name="limit" value="{{ limit }}">
-      <input type="search" name="search" value="{{ search }}" placeholder="Фільтр по всіх колонках…">
-      <button type="submit">Фільтрувати</button>
-      {% if search %}<a class="clear" href="{{ base }}/{{ table }}{{ qf }}">✕ скинути</a>{% endif %}
+
+      {% if enum_options %}
+        {% for col, opts in enum_options.items() %}
+          <label class="ffield">
+            <span>{{ col }}</span>
+            <select name="f_{{ col }}" onchange="this.form.submit()">
+              <option value="">Всі</option>
+              {% for value, label in opts %}
+                <option value="{{ value }}"{{ ' selected' if active_filters.get(col) == value else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        {% endfor %}
+      {% endif %}
+
+      {% if has_date_col %}
+        <label class="dp-label">Дата від
+          <input class="dp-input" type="date" name="date_from" value="{{ date_from }}"
+                 max="{{ date_to or '' }}" onchange="this.form.submit()">
+        </label>
+        <span class="dp-sep">—</span>
+        <label class="dp-label">до
+          <input class="dp-input" type="date" name="date_to" value="{{ date_to }}"
+                 min="{{ date_from or '' }}" onchange="this.form.submit()">
+        </label>
+      {% endif %}
+
+      <label class="ffield">
+        <span>текст</span>
+        <input type="search" name="search" value="{{ search }}" placeholder="підрядок у будь-якій колонці…">
+      </label>
+      <button type="submit">Застосувати</button>
+      {% if active_count %}<a class="clear" href="{{ base }}/{{ table }}{{ qf }}">✕ скинути все</a>{% endif %}
     </form>
-  </div>
+  </details>
   {% if charts %}
     <div class="charts">
       {% for c in charts %}
