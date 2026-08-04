@@ -73,7 +73,7 @@ ACTIVITY_WATCH_END_HOUR = 23
 # backfill (which doesn't go through build_payload_cached anyway) and never a huge
 # first-ever fetch for a long-idle user.
 ACTIVITY_FRESH_DAYS = 2
-CHECK_INTERVAL_MIN = 5
+CHECK_INTERVAL_MIN = 15
 MORNING_STATE_KEY = "morning_sent_date"
 MFA_NOTIFIED_PREFIX = "mfa_notified:"
 RATE_LIMIT_NOTIFIED_PREFIX = "garmin_ratelimited:"
@@ -197,7 +197,7 @@ async def for_each_user(worker, *, with_chat: bool, label: str,
     The three jobs reduce to a single call; PERF-01 will parallelize only this loop.
 
     OPS-04: every per-user branch leaves exactly one job-run row (ok/skip/error + reason).
-    ``aggregate=True`` (the 20-min morning tick) folds routine ok/skip runs into one row per
+    ``aggregate=True`` (the 15-min morning tick) folds routine ok/skip runs into one row per
     user/day so it doesn't flood the log — notable outcomes and errors still get their own
     rows. A worker may return a :class:`JobOutcome`; ``None`` means plain ok."""
     try:
@@ -393,7 +393,7 @@ def _within_guard(last: Optional[str], today: str, days: int) -> bool:
 class _RiskCache:
     """Per-tick memo for the two risk detectors (D1). ``_deload``/``_injury``/``_health``
     each need ``build_injury_assessment`` and/or ``build_health_alerts``, and all three can
-    run in one 20-min tick — each detector is its own set of ~90-day history reads
+    run in one 15-min tick — each detector is its own set of ~90-day history reads
     (read_load_history / recent_subjective_runs / read_history / count_daily_metrics). This
     computes each at most once per tick and shares it, WITHOUT changing any guard: the compute
     still happens lazily, the first time a hook actually reaches the point of needing it, so a
@@ -705,7 +705,7 @@ async def _tick_for_user(ctx, session, user: User) -> None:
 
             # D1: the injury/health detectors (each a set of ~90-day history reads) belong to
             # the morning report, so gate the risk block to the morning window rather than
-            # recomputing it on every 20-min tick right through the evening. Their DMs are
+            # recomputing it on every 15-min tick right through the evening. Their DMs are
             # per-day guarded and the first morning tick already fires them, so this only sheds
             # the wasted afternoon churn — no advisory that would have gone out is lost. One
             # _RiskCache memo is still shared across the three hooks so each detector runs at
@@ -1299,7 +1299,7 @@ async def _sync_gear_roster(session, user: User) -> list:
 async def _gear_check_for_user(ctx, session, user: User) -> None:
     """NF-15: refresh the gear roster/mileage and warn once (then every
     ``settings.GEAR_REWARN_KM`` further) per pair past ``settings.GEAR_WEAR_KM``. Runs
-    from the daily ``plan_sync_job`` rather than every 20-min tick — a live gear fetch
+    from the daily ``plan_sync_job`` rather than every 15-min tick — a live gear fetch
     isn't cheap enough to repeat that often, and mileage barely moves within a day."""
     async with user_garmin_runtime(session, user, skip_label="GEAR") as creds:
         if creds is None:
@@ -1413,5 +1413,5 @@ async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
     async def worker(session, user):
         return await _tick_for_user(ctx, session, user)
 
-    # OPS-04: aggregate the 20-min tick's routine ok/skip into one row per user/day.
+    # OPS-04: aggregate the 15-min tick's routine ok/skip into one row per user/day.
     await for_each_user(worker, with_chat=True, label="MORNING", aggregate=True)
