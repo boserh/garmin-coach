@@ -10,8 +10,6 @@ Usage:
 import argparse
 import asyncio
 
-from sqlalchemy import select
-
 from app.db.base import async_session_maker, init_db
 from app.db.models import User
 from app.garmin.credentials import load_credentials
@@ -33,7 +31,8 @@ async def _run(user_id: int) -> int:
             print("No Garmin credentials on this user — set them up in /settings first.")
             return 1
 
-        print(f"Fetching last 30 days of Garmin activities/data for user {user_id} ({user.email})...")
+        print(f"Fetching last 30 days of Garmin activities/data for "
+              f"user {user_id} ({user.email})...")
         try:
             async with user_runtime(session, user):
                 payload, new_activities = await build_payload_cached(
