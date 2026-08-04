@@ -85,12 +85,13 @@ NF-15's gear-endpoint recon довершено живим акаунтом 2026-
 ### Нові фічі — BA-аудит 2026-07-23
 
 **NF-17, NF-19, NF-20 закрито** (NF-20 — 2026-07-31, див. Done); **NF-21 закрито**
-(2026-08-01, див. Done; live-верифікація полів DTO лишається desk-only — деталі в Done):
+(2026-08-01, див. Done; live-верифікація полів DTO лишається desk-only — деталі в Done);
+**NF-22 закрито** (2026-08-04, див. Done). NF-18 лишається відкритим, але §7-ревізія
+рекомендує НЕ робити його окремо зараз (кандидат №1 у «не робити зараз», BA-AUDIT §5):
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
 | [NF-18](NF-18-auto-sickness-trigger.md) | ⚪ lowest | Автотригер хвороби (пропуски+аномалії; тригер перевизначено §7 для диф. від NF-09) | M | NF-03 ✅, EP-08 ✅, NF-09 ✅ |
-| [NF-22](NF-22-race-week-countdown.md) | 🟢 low | Race-week countdown (T-3 чекліст, T-1 бріф) | S | EP-05 ✅; синергія NF-17/NF-21 ✅ |
 
 ## Перфоманс
 
@@ -103,11 +104,12 @@ NF-15's gear-endpoint recon довершено живим акаунтом 2026-
 
 Відкрита партія BA-аудиту 2026-07-23 (кат. B — спостережуваність і надійність).
 **OPS-05, OPS-04 закрито** (2026-07-24, див. Done); **OPS-08 закрито** (2026-07-31,
-див. Done); **OPS-09 закрито** (2026-08-01, див. Done):
+див. Done); **OPS-09 закрито** (2026-08-01, див. Done); **OPS-06 закрито**
+(2026-08-04, див. Done). OPS-07 лишається відкритим, але §7-ревізія рекомендує не
+робити його окремо — реальний залишок покриває OPS-05 (BA-AUDIT §5/§7):
 
 | ID | Пріор. | Назва | Оцінка | Залежності |
 | --- | --- | --- | --- | --- |
-| [OPS-06](OPS-06-cache-metrics-page.md) | 🟢 low | Метрики кешів (hit-rate, розміри) | S | ST-20 ✅ (та сама сторінка) |
 | [OPS-07](OPS-07-morning-report-watchdog.md) | ⚪ lowest | Watchdog жорсткого Garmin-збою о deadline (пере-скоуплено §7; кандидат злиття в OPS-05) | S | OPS-05 |
 
 Обидві сторі первісного розділу зроблено (2026-07) — див. Done (SEC-01, OPS-02).
@@ -165,6 +167,8 @@ EP-10 (фаза 4 — triathlon-ціль; фази 1/3 вело ✅ зробле
 
 | ID | Назва | Де реалізовано |
 | --- | --- | --- |
+| [NF-22](NF-22-race-week-countdown.md) | Race-week countdown — T-3 чекліст, T-1 вечірній бріф поверх race pack | `app/race.py`: `STAGE_PACK`/`STAGE_CHECKLIST`/`STAGE_BRIEF` (7/3/1 днів) + `stage_for(days_left)` (pack — точний день, як і було; checklist/brief — 2-денне вікно "наздоганяння" пропущеного тіку, guard по (plan, stage) все одно гарантує рівно один DM), `checklist_text`/`brief_text` — детерміновані (нуль LLM) шаблони. `bot/jobs.py::_race_pack_for_user` — три стадії, спільний форкаст-хелпер `_race_forecast_for_target` (реюз `weather.fetch_forecast_week`), T-1 цитує збережений pack через `repository.get_last_report_of_kind(kind="race")` (без regex-парсингу темпу — ризик тікета обійдено, просто вставляється весь текст) + `sleepnudge.recommended_bedtime` для конкретного часу відбою (деградує до загальної фрази без NF-21-даних). Guard-ключ під час апгрейду змінився з `race_pack_sent:<plan_id>` на `race_pack_sent:<plan_id>:pack` — план, що вже отримав pack до цього PR, може отримати його ще раз (одноразово, як version-bump кеш-ключів деінде в проєкті). `tests/test_race.py` |
+| [OPS-06](OPS-06-cache-metrics-page.md) | Метрики кешів (hit-rate по kind, розміри, вік найстарішого файлу) | `app/garmin/repository/stats.py::cache_hit_stats(session, days)` — один GROUP BY по `report_logs.kind`/`cached` за вікно; викликається двічі (7/30 дн) з `/admin/cache`. `app/garmin/client.py::cache_stats()` розширено `oldest_age_days` (найстаріший mtime серед файлів кешу, одним проходом каталогу — той самий, що вже рахував розміри/файли для ST-20, жодного другого обходу). `cache.html` — нова таблиця hit-rate по kind (7/30 дн поруч) + рядок віку найстарішого garmin-файлу. `tests/test_admin_cache.py`, `tests/test_repository.py` |
 | [NF-21](NF-21-sleep-timing-bedtime.md) | Час сну (відбій/підйом) → конкретний bedtime у nudge + регулярність у дайджесті | `service._local_hhmm`/`export_import._local_hhmm` — `dailySleepDTO`'s `sleepStart/EndTimestampLocal` (epoch ms, Garmin's own "read-as-UTC-for-local-clock" convention) → `extra.sleep_start`/`sleep_end` ("HH:MM"); desk-only, не перевірено живим акаунтом (AC-гейт) — неочікуваний shape просто лишає поля відсутніми, нуль падінь, `app.sleepnudge` природно деградує в стару поведінку без чисел. `app/sleepnudge.py`: `recommended_bedtime` — типовий підйом (кругова медіана `sleep_end` за 14 ночей, стійка до переходу через північ) мінус `max(Garmin sleep_need_h, персональна NF-01 p50 sleep_h)` мінус 15 хв запасу; None нижче 7 ночей timing-даних → `nudge_text` повертає стару фразу без числа. `sleep_regularity` — кругове std відбою за 14 ночей, у контексті `run_digest` (+ `_DIGEST_KEY_FIELDS`, кеш-ключ) і `SYSTEM_DIGEST`. `tests/test_sleep_nudge.py`, `test_digest.py`, `test_garmin_service.py`, `test_export_import.py` |
 | [OPS-09](OPS-09-calendar-push-audit.md) | Аудит пушів у Garmin-календар + «Синхронізувати зараз» | `plan_sync.push_workout(..., errors=...)` збирає збої (`{workout_id, step, msg}`) замість тихого ковтання/прокидання винятку — одна невдала сесія більше не рве решту forward-проходу; `sync_plan_to_garmin` повертає `{pushed, removed, errors}` і зберігає підсумок у `bot_state` (`repository.set_plan_sync_summary`/`get_plan_sync_summary`, ключ `plan_sync_last:<plan_id>` — усі виклики `sync_plan_to_garmin` пишуть його безкоштовно, без правок по кожному хуку). `/plan`: бейдж на кожній сесії («⌚ на годиннику» / «— не запушено», `_sync_badges` через наявний `select_forward`), блок «Останній синк: коли — ok/⚠️ N помилок · +N/-N», кнопка `POST /plan/sync` (гейт `garmin_sync_enabled`, guard 1/5 хв, MFA → наявний 409-флоу через `user_runtime`). `tests/test_plan_sync.py`, `test_ops09_plan_sync_router.py` |
 | [ST-20](ST-20-cache-admin-ui.md) | Інвалідація кешів з UI (`/admin/cache`) | `app/db/llm_cache.py`: `stats`/`purge_expired`/`purge_all`. `app/garmin/client.py`: `cache_stats()` (файли/байти по префіксу ключа), `cache_purge_expired()`, `cache_del_activity(id)` (знімає `exercise:v3`/`series:v2`/`splits:v1`/`gear_link:v1` саме цієї активності). `GET/POST /admin/cache` (admin-only, кожна дія — POST, повна очистка llm_cache — з confirm і попередженням «наступні виклики платні»). `tests/test_admin_cache.py` |

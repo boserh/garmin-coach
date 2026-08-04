@@ -11,11 +11,17 @@ from typing import List
 # (a negative day-count below is still "due", just overdue).
 REMINDER_LEAD_DAYS = 7
 
-# bot_state key prefix, + the checkup's own DB id: a reminder is sent AT MOST ONCE per
-# checkup, ever (unlike NF-15's gear re-warn) — editing `next_due_date` on the same row
-# doesn't create a new id, so a deliberate reschedule needs a fresh checkup entry to
-# re-arm; that's an acceptable v1 trade-off for a feature this infrequent.
+# bot_state key prefix, + the checkup's own DB id AND its current `next_due_date`: a
+# reminder is sent at most once per (checkup, due date) pair — editing `next_due_date`
+# on the same row changes the guard key, so a deliberate reschedule re-arms the
+# reminder instead of staying silent forever.
 REMINDER_PREFIX = "checkup_reminder:"
+
+
+def guard_key(row) -> str:
+    """The per-(checkup, due date) bot_state guard key — bumping `next_due_date` on an
+    existing row naturally re-arms the reminder since it changes this key."""
+    return f"{REMINDER_PREFIX}{row.id}:{row.next_due_date}"
 
 
 def due(rows: list, today: dt.date, lead_days: int = REMINDER_LEAD_DAYS) -> List:

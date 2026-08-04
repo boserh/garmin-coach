@@ -313,6 +313,7 @@ def cache_stats() -> dict:
     by_prefix: dict = {}
     total_files = 0
     total_bytes = 0
+    oldest_mtime = None
     try:
         names = os.listdir(GARMIN_CACHE_DIR)
     except FileNotFoundError:
@@ -322,9 +323,10 @@ def cache_stats() -> dict:
             continue
         path = os.path.join(GARMIN_CACHE_DIR, name)
         try:
-            size = os.path.getsize(path)
+            st = os.stat(path)
         except OSError:
             continue
+        size = st.st_size
         # filename is "<prefix>_v<N>_<id>.json" (colons → underscores); group by
         # everything through the version tag ("gear_stats_v1", not just "gear_stats" —
         # multi-word prefixes like gear_stats/gear_link have an underscore of their own).
@@ -336,7 +338,13 @@ def cache_stats() -> dict:
         entry["bytes"] += size
         total_files += 1
         total_bytes += size
-    return {"by_prefix": by_prefix, "total_files": total_files, "total_bytes": total_bytes}
+        if oldest_mtime is None or st.st_mtime < oldest_mtime:
+            oldest_mtime = st.st_mtime
+    oldest_age_days = (_time.time() - oldest_mtime) / 86400 if oldest_mtime else None
+    return {
+        "by_prefix": by_prefix, "total_files": total_files, "total_bytes": total_bytes,
+        "oldest_age_days": round(oldest_age_days, 1) if oldest_age_days is not None else None,
+    }
 
 
 def cache_purge_expired() -> int:

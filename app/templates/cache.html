@@ -19,6 +19,28 @@
 
     {% if msg %}<div class="pill ok" style="display:inline-block;margin-bottom:1rem">{{ msg }}</div>{% endif %}
 
+    <h2 class="sec" style="font-size:1.1rem">Hit-rate дедуп-кешу за kind</h2>
+    <table class="dtable">
+      <tr><th>kind</th><th>7 дн: викликів</th><th>7 дн: hit-rate</th><th>30 дн: викликів</th><th>30 дн: hit-rate</th></tr>
+      {% set hit_30_by_kind = {} %}
+      {% for r in hit_30 %}{% set _ = hit_30_by_kind.update({r.kind: r}) %}{% endfor %}
+      {% set hit_7_by_kind = {} %}
+      {% for r in hit_7 %}{% set _ = hit_7_by_kind.update({r.kind: r}) %}{% endfor %}
+      {% for kind in hit_30_by_kind.keys() %}
+      {% set r30 = hit_30_by_kind[kind] %}
+      {% set r7 = hit_7_by_kind.get(kind) %}
+      <tr>
+        <td>{{ kind }}</td>
+        <td>{{ r7.total if r7 else 0 }}</td>
+        <td>{{ r7.hit_rate if r7 else 0 }}%</td>
+        <td>{{ r30.total }}</td>
+        <td>{{ r30.hit_rate }}%</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">Немає викликів за 30 днів</td></tr>
+      {% endfor %}
+    </table>
+
     <h2 class="sec" style="font-size:1.1rem">Claude dedup (llm_cache)</h2>
     <table class="dtable">
       <tr><th>рядків усього</th><th>прострочених</th><th>розмір (value)</th></tr>
@@ -54,6 +76,9 @@
         <td><b>{{ "%.1f"|format(garmin.total_bytes / 1024) }} КБ</b></td>
       </tr>
     </table>
+    {% if garmin.oldest_age_days is not none %}
+    <p class="muted">Найстаріший файл: {{ garmin.oldest_age_days }} дн. тому</p>
+    {% endif %}
     <p style="margin:.8rem 0">
       <form class="inline" method="post" action="/admin/cache/garmin/purge_expired">
         <button class="abtn toggle" type="submit">Purge прострочених файлів</button>

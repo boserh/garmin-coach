@@ -81,14 +81,37 @@ async def test_checkup_reminder_sent_once(session):
     await jobs._checkup_reminder_for_user(ctx, session, user)
     ctx.bot.send_message.assert_called_once()
     assert "Кров" in ctx.bot.send_message.call_args.args[1]
-    guard = await repository.get_state(
-        session, user.id, checkup_reminders.REMINDER_PREFIX + str(row.id))
+    guard = await repository.get_state(session, user.id, checkup_reminders.guard_key(row))
     assert guard == "1"
 
     # a second tick never re-sends the same checkup's reminder
     ctx.bot.send_message.reset_mock()
     await jobs._checkup_reminder_for_user(ctx, session, user)
     ctx.bot.send_message.assert_not_called()
+
+
+async def test_checkup_reminder_rearms_on_reschedule(session):
+    """Bumping `next_due_date` on the same row is a deliberate reschedule — it must
+    re-arm the reminder rather than staying silent forever (the v1 limitation this
+    guard-key fix closes)."""
+    from bot import jobs
+
+    user = await _mk_user(session)
+    today = dt.datetime.now(jobs.user_tz(user)).date()
+    row = await _mk_checkup(
+        session, user.id,
+        next_due_date=(today - dt.timedelta(days=3)).isoformat(),
+    )
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    await jobs._checkup_reminder_for_user(ctx, session, user)
+    ctx.bot.send_message.assert_called_once()
+
+    # user reschedules the checkup to a new, still-due date on the SAME row
+    ctx.bot.send_message.reset_mock()
+    row.next_due_date = (today - dt.timedelta(days=1)).isoformat()
+    await session.commit()
+    await jobs._checkup_reminder_for_user(ctx, session, user)
+    ctx.bot.send_message.assert_called_once()
 
 
 async def test_checkup_reminder_skips_far_future(session):

@@ -179,14 +179,17 @@ async def admin_cache(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """ST-20: llm_cache + Garmin disk-cache summary, with purge actions below."""
+    """ST-20: llm_cache + Garmin disk-cache summary, with purge actions below.
+    OPS-06: + dedup cache-hit rate by kind (7/30 days)."""
     llm = await llm_cache.stats(session)
     garmin = garmin_client.cache_stats()
+    hit_7 = await repository.cache_hit_stats(session, days=7)
+    hit_30 = await repository.cache_hit_stats(session, days=30)
     return templates.TemplateResponse(
         request, "cache.html",
         {"user": user, "base": "/ui", "title": "Кеші",
          "token": request.query_params.get("token", ""),
-         "llm": llm, "garmin": garmin,
+         "llm": llm, "garmin": garmin, "hit_7": hit_7, "hit_30": hit_30,
          "msg": request.query_params.get("msg", "")},
     )
 

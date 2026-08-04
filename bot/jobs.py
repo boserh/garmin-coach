@@ -1183,22 +1183,20 @@ async def _sync_for_user(session, user: User) -> None:
 RACE_PACK_GUARD_PREFIX = "race_pack_sent:"
 
 
-async def _race_pack_for_user(ctx, session, user: User) -> None:
-    """EP-05: send the race pack exactly once, ``race.TRIGGER_DAYS`` before the active
-    plan's target date. Pure DB read + weather + one Opus call (no Garmin fetch needed,
-    unlike most other jobs here) — guarded per-plan (not per-date), so a fresh plan/target
-    date naturally re-arms it and a missed tick never loses the trigger."""
-    if not user.telegram_chat_id:
-        return
-    plan = await repository.get_active_plan(session, user.id)
-    if not race.has_target(plan):
-        return
-    today = dt.datetime.now(user_tz(user)).date()
-    if race.days_to_target(plan.target_date, today) != race.TRIGGER_DAYS:
-        return
-    guard_key = RACE_PACK_GUARD_PREFIX + str(plan.id)
-    if await repository.get_state(session, user.id, guard_key) == "1":
-        return
+async def _race_forecast_for_target(user: User, plan) -> Optional[dict]:
+    """The target date's forecast row, or None (no stored location, or Open-Meteo has
+    nothing that far out yet — same "just degrade" rule as the pack's own weather block)."""
+    if user.latitude is None or user.longitude is None:
+        return None
+    week = await run_in_threadpool(weather.fetch_forecast_week, user.latitude, user.longitude)
+    if not week:
+        return None
+    return next((d for d in week if d.get("date") == plan.target_date), None)
+
+
+async def _send_race_pack_stage(ctx, session, user: User, plan, guard_key: str) -> None:
+    """T-7: the original EP-05 narrated pack (one Opus call, cached/logged by
+    ``run_race_plan``)."""
     creds = load_credentials(user)
     if not creds.anthropic_key:
         return
@@ -1212,9 +1210,64 @@ async def _race_pack_for_user(ctx, session, user: User) -> None:
         return
     await ctx.bot.send_message(
         user.telegram_chat_id,
-        f"🏁 Race pack — твій старт за {race.TRIGGER_DAYS} дн.:\n\n" + text,
+        f"🏁 Race pack — твій старт за {race.STAGE_PACK} дн.:\n\n" + text,
     )
     logger.info(f"RACE pack sent user={user.id} plan={plan.id}")
+
+
+async def _send_race_checklist_stage(ctx, session, user: User, plan, guard_key: str) -> None:
+    """NF-22 T-3: deterministic prep checklist — zero Claude, zero Garmin calls."""
+    forecast_day = await _race_forecast_for_target(user, plan)
+    await repository.set_state(session, user.id, guard_key, "1")
+    await ctx.bot.send_message(user.telegram_chat_id, race.checklist_text(plan, forecast_day))
+    logger.info(f"RACE checklist sent user={user.id} plan={plan.id}")
+
+
+async def _send_race_brief_stage(
+    ctx, session, user: User, plan, guard_key: str, today: dt.date,
+) -> None:
+    """NF-22 T-1 (evening, catches up through race day): final weather + the saved pack
+    quoted back + an early-bedtime nudge. Zero Claude calls — no fresh narration."""
+    forecast_day = await _race_forecast_for_target(user, plan)
+    last_pack = await repository.get_last_report_of_kind(session, user.id, "race")
+    pack_text = last_pack[0] if last_pack else None
+    history = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)
+    bedtime = sleepnudge.recommended_bedtime(history)
+    days_left = race.days_to_target(plan.target_date, today)
+    await repository.set_state(session, user.id, guard_key, "1")
+    await ctx.bot.send_message(
+        user.telegram_chat_id,
+        race.brief_text(plan, forecast_day, pack_text, bedtime, days_left),
+    )
+    logger.info(f"RACE brief sent user={user.id} plan={plan.id}")
+
+
+async def _race_pack_for_user(ctx, session, user: User) -> None:
+    """EP-05/NF-22 race-week countdown: three staged messages ahead of the active plan's
+    target date — T-7 the narrated pack (Opus, cached), T-3 a deterministic prep
+    checklist, T-1 evening (catching up through race day) a final weather + pace brief
+    quoting the saved pack. Pure DB read + weather (+ one Opus call, T-7 only) — guarded
+    per (plan, stage), so a fresh plan/target date naturally re-arms all three, and
+    ``race.stage_for``'s catch-up windows mean a single missed tick doesn't lose T-3/T-1."""
+    if not user.telegram_chat_id:
+        return
+    plan = await repository.get_active_plan(session, user.id)
+    if not race.has_target(plan):
+        return
+    today = dt.datetime.now(user_tz(user)).date()
+    stage = race.stage_for(race.days_to_target(plan.target_date, today))
+    if stage is None:
+        return
+    guard_key = RACE_PACK_GUARD_PREFIX + str(plan.id) + ":" + stage
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return
+
+    if stage == "pack":
+        await _send_race_pack_stage(ctx, session, user, plan, guard_key)
+    elif stage == "checklist":
+        await _send_race_checklist_stage(ctx, session, user, plan, guard_key)
+    else:
+        await _send_race_brief_stage(ctx, session, user, plan, guard_key, today)
 
 
 async def _sync_gear_roster(session, user: User) -> list:
@@ -1266,12 +1319,11 @@ async def _gear_check_for_user(ctx, session, user: User) -> None:
 
 
 async def _checkup_reminder_for_user(ctx, session, user: User) -> None:
-    """"Аналізи" tab follow-up: nudge once per HealthCheckup whose ``next_due_date`` is
-    close or already past (``app.checkup_reminders``). Pure DB read, zero Garmin/Claude —
-    the cheapest possible daily check, piggybacking on the once-a-day plan_sync_job like
-    NF-15's gear check. Guarded per-checkup (not per-date): each row nudges at most once,
-    ever — editing the date on the SAME row doesn't re-arm it in v1 (see the module's own
-    note); a genuinely rescheduled checkup is a new row."""
+    """"Аналізи" tab follow-up: nudge once per (HealthCheckup, next_due_date) whose date
+    is close or already past (``app.checkup_reminders``). Pure DB read, zero
+    Garmin/Claude — the cheapest possible daily check, piggybacking on the once-a-day
+    plan_sync_job like NF-15's gear check. Guarded per-(checkup, due date): rescheduling
+    `next_due_date` on the same row changes the guard key, so it re-arms the reminder."""
     if not user.telegram_chat_id:
         return
     from app import checkup_reminders
@@ -1282,7 +1334,7 @@ async def _checkup_reminder_for_user(ctx, session, user: User) -> None:
         return
     today = dt.datetime.now(user_tz(user)).date()
     for row in checkup_reminders.due(rows, today):
-        guard_key = checkup_reminders.REMINDER_PREFIX + str(row.id)
+        guard_key = checkup_reminders.guard_key(row)
         if await repository.get_state(session, user.id, guard_key) == "1":
             continue
         await repository.set_state(session, user.id, guard_key, "1")
