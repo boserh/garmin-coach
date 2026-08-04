@@ -179,7 +179,8 @@ async def test_race_pack_job_skips_outside_trigger_day(session):
     today = dt.date.today()
     user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
     session.add(user)
-    session.add(_plan(target_date=(today + dt.timedelta(days=3)).isoformat()))
+    # day 5 falls outside every NF-22 stage window (pack=7, checklist=[2,3], brief=[0,1]).
+    session.add(_plan(target_date=(today + dt.timedelta(days=5)).isoformat()))
     await session.commit()
 
     ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
@@ -203,3 +204,159 @@ async def test_race_pack_job_skips_without_chat_id(session):
         await jobs._race_pack_for_user(ctx, session, user)
 
     ctx.bot.send_message.assert_not_called()
+
+
+# --- NF-22 race-week countdown: stage_for / checklist_text / brief_text -------------
+
+def test_stage_for_exact_and_catchup_windows():
+    assert race.stage_for(None) is None
+    assert race.stage_for(-1) is None
+    assert race.stage_for(race.STAGE_PACK) == "pack"
+    assert race.stage_for(race.STAGE_PACK - 1) is None       # day 6: no stage
+    assert race.stage_for(3) == "checklist"                  # nominal T-3
+    assert race.stage_for(2) == "checklist"                  # 1-day catch-up
+    assert race.stage_for(4) is None                          # outside checklist window
+    assert race.stage_for(1) == "brief"                       # nominal T-1
+    assert race.stage_for(0) == "brief"                       # 1-day catch-up (race day)
+
+
+def test_checklist_text_includes_weather_when_present():
+    plan = _plan(target_date="2026-08-01")
+    text = race.checklist_text(plan, {"feels_max_c": 29, "precip_mm": 2})
+    assert "2026-08-01" in text
+    assert "29°C" in text
+    assert "опади 2 мм" in text
+
+
+def test_checklist_text_degrades_without_forecast():
+    plan = _plan(target_date="2026-08-01")
+    text = race.checklist_text(plan, None)
+    assert "Прогноз" not in text
+    assert "Виклади" in text
+
+
+def test_brief_text_quotes_pack_and_uses_bedtime():
+    plan = _plan(target_date="2026-08-01")
+    text = race.brief_text(
+        plan, {"feels_max_c": 22}, "цільовий темп 5:30/км", bedtime="22:15", days_left=1,
+    )
+    assert "Завтра старт" in text
+    assert "22°C" in text
+    assert "до 22:15" in text
+    assert "цільовий темп 5:30/км" in text
+
+
+def test_brief_text_race_day_heading_and_no_pack_degrade():
+    plan = _plan(target_date="2026-08-01")
+    text = race.brief_text(plan, None, None, bedtime=None, days_left=0)
+    assert "Сьогодні старт" in text
+    assert "Лягай раніше" in text
+    assert "не генерувався" in text
+
+
+# --- NF-22 bot/jobs.py: T-3 checklist stage -----------------------------------------
+
+async def test_race_checklist_stage_sends_once_at_t3(session):
+    from bot import jobs
+
+    user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
+    session.add(user)
+    today = dt.datetime.now(jobs.user_tz(user)).date()
+    session.add(_plan(target_date=(today + dt.timedelta(days=race.STAGE_CHECKLIST)).isoformat()))
+    await session.commit()
+
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    await jobs._race_pack_for_user(ctx, session, user)
+    await jobs._race_pack_for_user(ctx, session, user)  # second tick same day: no resend
+
+    ctx.bot.send_message.assert_called_once()
+    assert "3 дні до старту" in ctx.bot.send_message.call_args.args[1]
+
+
+async def test_race_checklist_stage_catches_up_one_missed_day(session):
+    from bot import jobs
+
+    user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
+    session.add(user)
+    today = dt.datetime.now(jobs.user_tz(user)).date()
+    # target is 2 days out — the T-3 tick was "missed", this is the catch-up day.
+    session.add(_plan(target_date=(today + dt.timedelta(days=2)).isoformat()))
+    await session.commit()
+
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    await jobs._race_pack_for_user(ctx, session, user)
+    ctx.bot.send_message.assert_called_once()
+
+
+# --- NF-22 bot/jobs.py: T-1 evening brief stage -------------------------------------
+
+async def test_race_brief_stage_sends_once_and_quotes_saved_pack(session):
+    from bot import jobs
+
+    user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
+    session.add(user)
+    today = dt.datetime.now(jobs.user_tz(user)).date()
+    plan = _plan(target_date=(today + dt.timedelta(days=race.STAGE_BRIEF)).isoformat())
+    session.add(plan)
+    session.add(ReportLog(user_id=U1, kind="race", model="m", ok=True,
+                          report_text="цільовий темп 5:00/км"))
+    await session.commit()
+
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    await jobs._race_pack_for_user(ctx, session, user)
+    await jobs._race_pack_for_user(ctx, session, user)  # no resend
+
+    ctx.bot.send_message.assert_called_once()
+    text = ctx.bot.send_message.call_args.args[1]
+    assert "Завтра старт" in text
+    assert "цільовий темп 5:00/км" in text
+
+
+async def test_race_brief_stage_degrades_without_saved_pack(session):
+    from bot import jobs
+
+    user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
+    session.add(user)
+    today = dt.datetime.now(jobs.user_tz(user)).date()
+    session.add(_plan(target_date=(today + dt.timedelta(days=race.STAGE_BRIEF)).isoformat()))
+    await session.commit()
+
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    await jobs._race_pack_for_user(ctx, session, user)
+
+    ctx.bot.send_message.assert_called_once()
+    assert "не генерувався" in ctx.bot.send_message.call_args.args[1]
+
+
+async def test_race_stages_independent_guards_all_three_fire(session):
+    """Each stage has its own guard — a plan that lives through all three trigger days
+    gets all three messages, not just the first."""
+    from bot import jobs
+
+    user = User(id=U1, email="a@b.c", password_hash="x", telegram_chat_id=555)
+    session.add(user)
+    today = dt.datetime.now(jobs.user_tz(user)).date()
+    plan = _plan(target_date=(today + dt.timedelta(days=race.STAGE_PACK)).isoformat())
+    session.add(plan)
+    await session.commit()
+
+    ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+    with patch.object(jobs, "run_race_plan", new=AsyncMock(return_value="pack text")), \
+         patch.object(jobs, "load_credentials",
+                      return_value=SimpleNamespace(anthropic_key="k")):
+        await jobs._race_pack_for_user(ctx, session, user)   # T-7: pack
+    ctx.bot.send_message.assert_called_once()
+
+    ctx.bot.send_message.reset_mock()
+    plan.target_date = (today + dt.timedelta(days=race.STAGE_CHECKLIST)).isoformat()
+    await session.commit()
+    await jobs._race_pack_for_user(ctx, session, user)       # T-3: checklist
+    ctx.bot.send_message.assert_called_once()
+    assert "3 дні до старту" in ctx.bot.send_message.call_args.args[1]
+
+    ctx.bot.send_message.reset_mock()
+    plan.target_date = (today + dt.timedelta(days=race.STAGE_BRIEF)).isoformat()
+    await session.commit()
+    await jobs._race_pack_for_user(ctx, session, user)       # T-1: brief
+    ctx.bot.send_message.assert_called_once()
+    assert "Завтра старт" in ctx.bot.send_message.call_args.args[1]

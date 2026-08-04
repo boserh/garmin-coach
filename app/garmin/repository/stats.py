@@ -4,13 +4,14 @@ cross-sport load, compare-window and Wrapped aggregates. Split out of the flat
 import datetime as dt
 from typing import Dict, List
 
-from sqlalchemy import select
+from sqlalchemy import Integer, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     ActivityRecord,
     DailyMetric,
     PersonalRecord,
+    ReportLog,
 )
 from app.garmin.repository.core import ASK_DAILY_FIELDS, query_daily
 from app.statutil import avg as _avg
@@ -340,3 +341,33 @@ async def wrapped_stats(
         "vo2_end": vo2_series[-1] if vo2_series else None,
     })
     return base
+
+
+async def cache_hit_stats(session: AsyncSession, days: int) -> List[dict]:
+    """OPS-06: Claude dedup cache-hit share per ``report_logs.kind`` over the last
+    ``days`` days, process-wide (no ``user_id`` filter — the dedup cache itself is
+    process-wide, this mirrors it). One GROUP BY over data already collected for cost
+    tracking. Sorted by ``total`` descending, so the busiest kinds surface first."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                ReportLog.kind,
+                func.count().label("total"),
+                func.sum(func.cast(ReportLog.cached, Integer)).label("cached"),
+            )
+            .where(ReportLog.created_at >= cutoff)
+            .group_by(ReportLog.kind)
+        )
+    ).all()
+    out = []
+    for kind, total, cached in rows:
+        cached = cached or 0
+        out.append({
+            "kind": kind,
+            "total": total,
+            "cached": cached,
+            "hit_rate": round(100 * cached / total, 1) if total else 0.0,
+        })
+    out.sort(key=lambda r: -r["total"])
+    return out

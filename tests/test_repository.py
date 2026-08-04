@@ -797,3 +797,40 @@ async def test_recent_step_match_empty_without_matches(session):
     await session.flush()
     await session.commit()
     assert await repository.recent_step_match(session, plan.id) == []
+
+
+# ---------- OPS-06: cache_hit_stats ----------
+
+async def test_cache_hit_stats_groups_by_kind_and_computes_rate(session):
+    now = dt.datetime.now(dt.timezone.utc)
+    session.add_all([
+        ReportLog(user_id=U1, kind="report", model="m", cached=True, created_at=now),
+        ReportLog(user_id=U1, kind="report", model="m", cached=True, created_at=now),
+        ReportLog(user_id=U1, kind="report", model="m", cached=False, created_at=now),
+        ReportLog(user_id=U1, kind="ask", model="m", cached=False, created_at=now),
+    ])
+    await session.commit()
+
+    stats = await repository.cache_hit_stats(session, days=30)
+    by_kind = {r["kind"]: r for r in stats}
+    assert by_kind["report"] == {"kind": "report", "total": 3, "cached": 2, "hit_rate": 66.7}
+    assert by_kind["ask"] == {"kind": "ask", "total": 1, "cached": 0, "hit_rate": 0.0}
+    # busiest kind first
+    assert stats[0]["kind"] == "report"
+
+
+async def test_cache_hit_stats_excludes_rows_outside_window(session):
+    now = dt.datetime.now(dt.timezone.utc)
+    old = now - dt.timedelta(days=40)
+    session.add_all([
+        ReportLog(user_id=U1, kind="report", model="m", cached=True, created_at=now),
+        ReportLog(user_id=U1, kind="report", model="m", cached=False, created_at=old),
+    ])
+    await session.commit()
+
+    stats = await repository.cache_hit_stats(session, days=30)
+    assert stats == [{"kind": "report", "total": 1, "cached": 1, "hit_rate": 100.0}]
+
+
+async def test_cache_hit_stats_empty_when_no_rows(session):
+    assert await repository.cache_hit_stats(session, days=30) == []

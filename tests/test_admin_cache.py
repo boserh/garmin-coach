@@ -1,4 +1,6 @@
-"""ST-20: /admin/cache page — llm_cache stats/purge + Garmin disk-cache stats/purge."""
+"""ST-20: /admin/cache page — llm_cache stats/purge + Garmin disk-cache stats/purge.
+OPS-06: + dedup cache-hit rate by kind."""
+import os
 import time
 
 import anyio
@@ -64,6 +66,20 @@ def test_cache_stats_groups_by_prefix(cache_dir):
     assert stats["total_bytes"] > 0
 
 
+def test_cache_stats_oldest_age_days(cache_dir):
+    client._cache_put("series:v2:1", [{"d": 0.1}], ttl_s=60)
+    path = client._key_path("series:v2:1")
+    old_mtime = time.time() - 5 * 86400
+    os.utime(path, (old_mtime, old_mtime))
+    stats = client.cache_stats()
+    assert stats["oldest_age_days"] == pytest.approx(5.0, abs=0.1)
+
+
+def test_cache_stats_oldest_age_none_when_empty(cache_dir):
+    stats = client.cache_stats()
+    assert stats["oldest_age_days"] is None
+
+
 def test_cache_purge_expired_removes_only_expired_files(cache_dir):
     client._cache_put("series:v2:1", [{"d": 0.1}], ttl_s=-1)   # expired
     client._cache_put("series:v2:2", [{"d": 0.2}], ttl_s=60)   # alive
@@ -101,6 +117,22 @@ def test_admin_cache_page_renders(auth_client):
     r = auth_client.get("/admin/cache")
     assert r.status_code == 200
     assert "llm_cache" in r.text.lower() or "Claude dedup" in r.text
+
+
+def test_admin_cache_page_renders_hit_rate_by_kind(auth_client):
+    from app.db.models import ReportLog
+
+    async def seed():
+        async with async_session_maker() as s:
+            s.add(ReportLog(user_id=1, kind="report", model="m", cached=True))
+            s.add(ReportLog(user_id=1, kind="report", model="m", cached=False))
+            await s.commit()
+
+    anyio.run(seed)
+    r = auth_client.get("/admin/cache")
+    assert r.status_code == 200
+    assert "report" in r.text
+    assert "50.0%" in r.text
 
 
 def test_admin_cache_llm_purge_expired_action(auth_client):

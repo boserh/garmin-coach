@@ -478,5 +478,3 @@ uses ~30% more tokens for the same text than Sonnet 4.6.
   (create → schedule → delete a workout — the one branch recon never exercised) and one
   full cycle `/report` → morning job → `push-plan --dry-run` → a real MFA connect
   through `/settings`.
-- Health checkups: a genuinely rescheduled `next_due_date` on the SAME row doesn't
-  re-arm the reminder guard in v1 — documented limitation, revisit if it matters.
