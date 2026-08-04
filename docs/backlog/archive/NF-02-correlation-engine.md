@@ -19,4 +19,4 @@
 1 Sonnet-виклик/міс ≈ $0.03–0.05; обчислення — на Pi за секунди (скаляри з
 `daily_metrics`, не серії).
 
-Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-02](ANALYSIS.md).
+Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-02](../ANALYSIS.md).

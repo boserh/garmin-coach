@@ -17,4 +17,4 @@ EP-09 (`query_activities`/`query_daily`/`aggregate_weekly`) — «поговор
 
 $0 — LLM платить клієнт MCP (Claude-підписка).
 
-Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-08](ANALYSIS.md).
+Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-08](../ANALYSIS.md).

@@ -12,7 +12,7 @@ Usage::
     ./venv/bin/python -m scripts.backup_db --dir /mnt/usb  # backups elsewhere
     ./venv/bin/python -m scripts.backup_db --rsync-dest user@host:/backups/
 
-Notes / pitfalls (see docs/backlog/OPS-02):
+Notes / pitfalls (see docs/backlog/archive/OPS-02-sqlite-backups.md):
 
 - **Not** ``cp``: ``VACUUM INTO`` (SQLite ≥ 3.27) takes a read lock and writes a
   clean, defragmented copy; the fallback is the online backup API. Both are safe on
