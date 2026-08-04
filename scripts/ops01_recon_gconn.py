@@ -3,7 +3,7 @@
 
 Runs a real login (incl. MFA) and exercises every Garmin endpoint this project
 uses (see app/garmin/client.py), printing a PASS/FAIL table to paste into
-docs/backlog/OPS-01-garmin-auth-plan-b.md.
+docs/backlog/archive/OPS-01-garmin-auth-plan-b.md.
 
 Deliberately standalone — NO app imports — so it runs in a throwaway venv with
 the *latest* python-garminconnect, without touching the app's DB or config.
@@ -312,7 +312,7 @@ def write_roundtrip(api, day):
 
 
 def summary():
-    print("\n== summary (paste into docs/backlog/OPS-01-garmin-auth-plan-b.md) ==")
+    print("\n== summary (paste into docs/backlog/archive/OPS-01-garmin-auth-plan-b.md) ==")
     print(f"Run: {dt.datetime.now():%Y-%m-%d %H:%M} · python {sys.version.split()[0]}")
     width = max((len(n) for n, _, _ in RESULTS), default=10)
     for name, status, note in RESULTS:

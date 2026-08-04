@@ -8,4 +8,4 @@
   розвантаження threadpool (M, разом з PERF-02/CODE-01).
 
 Історичний текст — у git
-(`git log -- docs/backlog/PERF-04-event-loop-and-threadpool.md`).
+(`git log --follow -- docs/backlog/archive/PERF-04-event-loop-and-threadpool.md`).

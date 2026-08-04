@@ -27,4 +27,4 @@ Garmin дає baseline-band тільки по HRV. Нічний Python-джоб 
 
 +300–500 токенів input/день ≈ +$0.001–0.002/день.
 
-Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-01](ANALYSIS.md).
+Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-01](../ANALYSIS.md).

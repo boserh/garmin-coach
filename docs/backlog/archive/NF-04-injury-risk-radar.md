@@ -20,4 +20,4 @@ EP-02-механіку. False positives вбивають довіру — «ти
 
 Детектор — чистий Python; текст — Sonnet при спрацюванні (~$0.02, рідко).
 
-Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-04](ANALYSIS.md).
+Деталі, ризики і RICE-розбір: [ANALYSIS.md §3 · NF-04](../ANALYSIS.md).
