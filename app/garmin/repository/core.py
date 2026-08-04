@@ -73,7 +73,8 @@ async def list_activities(session: AsyncSession, user_id: int, n: int = 5) -> Li
     ).scalars().all()
     return [
         {"id": a.id, "date": a.date, "type": a.type, "dist_km": a.dist_km,
-         "dur_min": a.dur_min, "avg_hr": a.avg_hr}
+         "dur_min": a.dur_min, "avg_hr": a.avg_hr, "load": a.load,
+         "rpe": (a.subjective or {}).get("rpe")}
         for a in rows
     ]
 
