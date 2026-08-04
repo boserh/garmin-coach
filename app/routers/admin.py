@@ -174,6 +174,14 @@ def _column_filters(model, active: dict):
     return conds
 
 
+async def _user_filter_options(session: AsyncSession) -> list:
+    """[(user_id_str, email), ...] for the "Користувач" dropdown — a raw user_id
+    is meaningless to an admin, so this is offered separately from the generic
+    enum-column scan (which skips every ``*_id`` column on purpose)."""
+    rows = (await session.execute(select(User.id, User.email).order_by(User.email))).all()
+    return [(str(uid), email) for uid, email in rows]
+
+
 async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
     """Trend charts (HRV / sleep hours / sleep score) for the daily_metrics page
     (the viewing admin's own data)."""
@@ -269,6 +277,9 @@ async def ui_table(
     rows = [[getattr(r, c) for c in cols] for r in result.scalars().all()]
     total = await _count(session, model, where)
     enum_options = await _enum_filter_options(session, model)
+    user_options = (
+        await _user_filter_options(session) if "user_id" in table_cols else []
+    )
 
     charts = first_date = last_date = None
     if table == "daily_metrics":
@@ -289,7 +300,7 @@ async def ui_table(
             "tables": list(TABLES), "token": token, "page_qs": page_qs,
             "charts": charts, "first_date": first_date, "last_date": last_date,
             "enum_options": enum_options, "active_filters": active_filters,
-            "has_date_col": date_col is not None,
+            "user_options": user_options, "has_date_col": date_col is not None,
             "date_from": date_from, "date_to": date_to,
         },
     )

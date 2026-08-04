@@ -189,6 +189,26 @@ def test_ui_table_column_filters(auth_client):
     assert 'name="date_from"' not in no_date.text
 
 
+def test_ui_table_user_filter(auth_client):
+    """A dedicated "Користувач" dropdown (email labels) on every table with a
+    user_id column — user_id itself is excluded from the generic enum scan
+    (raw ids aren't a meaningful label), so it needs its own filter."""
+    uid = _user_id("t@example.com")
+
+    page = auth_client.get("/ui/daily_metrics").text
+    assert 'name="f_user_id"' in page
+    assert f'<option value="{uid}">t@example.com</option>' in page
+
+    # filtering by a nonexistent user_id returns zero rows, not an error
+    r = auth_client.get("/ui/daily_metrics?f_user_id=999999")
+    assert r.status_code == 200
+    assert "з 0" in r.text or "0 з 0" in r.text
+
+    # the users table has no user_id column — no such filter offered there
+    users_page = auth_client.get("/ui/users").text
+    assert 'name="f_user_id"' not in users_page
+
+
 def test_activity_analysis_shown_on_detail(auth_client):
     from app.garmin import repository
 
