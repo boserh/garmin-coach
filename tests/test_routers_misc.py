@@ -140,6 +140,55 @@ def test_activities_minimal_index_and_run_chart(auth_client):
     assert "mousemove" in detail
 
 
+def test_ui_table_column_filters(auth_client):
+    """/ui's real per-column filters (dropdowns + date range), not the old
+    substring-only search box."""
+    from app.garmin import repository
+
+    uid = _user_id("t@example.com")
+
+    async def seed():
+        async with async_session_maker() as s:
+            for i, (aid, date, atype) in enumerate([
+                (9001, "2026-06-01", "running"),
+                (9002, "2026-06-05", "cycling"),
+                (9003, "2026-06-10", "running"),
+            ]):
+                await repository.upsert_activity(s, uid, aid, {
+                    "date": date, "type": atype, "dur_min": 30.0 + i,
+                })
+            await s.commit()
+
+    anyio.run(seed)
+
+    # a dropdown is offered for the low-cardinality "type" column
+    page = auth_client.get("/ui/activities").text
+    assert 'name="f_type"' in page
+    assert '<option value="running">running</option>' in page
+
+    # exact-match dropdown filter narrows the rows to just that type — the
+    # dropdown itself still lists every option (so it doesn't disappear once
+    # picked), so assert on a *row*, not the presence of "cycling" anywhere.
+    filtered = auth_client.get("/ui/activities?f_type=running")
+    assert filtered.status_code == 200
+    assert "2026-06-01" in filtered.text and "2026-06-10" in filtered.text
+    assert "2026-06-05" not in filtered.text  # the cycling row's date
+
+    # date-range filter excludes rows outside the window
+    ranged = auth_client.get("/ui/activities?date_from=2026-06-06")
+    assert "2026-06-10" in ranged.text
+    assert "2026-06-01" not in ranged.text
+
+    # column filter + text search compose (AND, not OR)
+    combo = auth_client.get("/ui/activities?f_type=running&search=nope-no-match")
+    assert "з 0" in combo.text or "1–0" in combo.text or "0 з 0" in combo.text
+
+    # a table with no "date" column skips the date-range inputs entirely
+    no_date = auth_client.get("/ui/bot_state")
+    assert no_date.status_code == 200
+    assert 'name="date_from"' not in no_date.text
+
+
 def test_activity_analysis_shown_on_detail(auth_client):
     from app.garmin import repository
 
