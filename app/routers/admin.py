@@ -8,14 +8,26 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.charts import run_charts as _run_charts
 from app.charts import series as _series
 from app.core.auth import require_admin
 from app.db import llm_cache
-from app.db.models import ActivityRecord, BotState, DailyMetric, ReportLog, User
+from app.db.models import (
+    ActivityRecord,
+    BotState,
+    CheckupAttachment,
+    DailyMetric,
+    HealthCheckup,
+    PersonalRecord,
+    PlannedWorkout,
+    ReportLog,
+    Supplement,
+    TrainingPlan,
+    User,
+)
 from app.dependencies import get_session
 from app.garmin import client as garmin_client
 from app.garmin import repository
@@ -23,13 +35,21 @@ from app.garmin import repository
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# name → ORM model (whitelist; the path param is matched against these keys only)
+# name → ORM model (whitelist; the path param is matched against these keys only).
+# llm_cache and job_runs are deliberately excluded — they already have dedicated
+# views (/admin/cache, /admin/jobs) rather than a raw-table one.
 TABLES = {
     "users": User,
     "daily_metrics": DailyMetric,
     "activities": ActivityRecord,
     "report_logs": ReportLog,
     "bot_state": BotState,
+    "personal_records": PersonalRecord,
+    "training_plans": TrainingPlan,
+    "planned_workouts": PlannedWorkout,
+    "supplements": Supplement,
+    "health_checkups": HealthCheckup,
+    "checkup_attachments": CheckupAttachment,
 }
 
 # Columns shown on a table's list view (the detail page always shows every column).
@@ -37,14 +57,31 @@ TABLES = {
 # heavy fields (load/exercises/series) live on the per-row detail page.
 INDEX_COLS = {
     "activities": ["id", "date", "type", "dur_min", "dist_km", "avg_hr", "max_hr"],
+    # "data" is a raw blob (the uploaded photo/PDF) — unusable in a text table cell.
+    "checkup_attachments": ["id", "checkup_id", "filename", "media_type", "created_at"],
 }
 
 # The raw DB browser spans all users' rows → admin only.
 router = APIRouter(tags=["ui"], dependencies=[Depends(require_admin)])
 
 
-async def _count(session: AsyncSession, model) -> int:
-    return (await session.execute(select(func.count()).select_from(model))).scalar_one()
+async def _count(session: AsyncSession, model, where=None) -> int:
+    stmt = select(func.count()).select_from(model)
+    if where is not None:
+        stmt = stmt.where(where)
+    return (await session.execute(stmt)).scalar_one()
+
+
+def _search_filter(model, search: str):
+    """Substring match (case-insensitive) across every column, cast to text.
+
+    Lets one search box cover every table without per-table filter config.
+    """
+    if not search:
+        return None
+    like = f"%{search}%"
+    cols = [c for c in model.__table__.columns if c.name != "data"]  # skip blob columns
+    return or_(*(cast(c, String).ilike(like) for c in cols))
 
 
 async def _daily_charts(session: AsyncSession, user_id: int, days: int = 60):
@@ -101,6 +138,7 @@ async def ui_table(
     request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    search: str = Query(""),
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -116,11 +154,13 @@ async def ui_table(
     order_col = next(
         (table_cols[c] for c in ("date", "created_at") if c in table_cols), pk
     )
-    result = await session.execute(
-        select(model).order_by(order_col.desc()).limit(limit).offset(offset)
-    )
+    where = _search_filter(model, search.strip())
+    stmt = select(model).order_by(order_col.desc()).limit(limit).offset(offset)
+    if where is not None:
+        stmt = stmt.where(where)
+    result = await session.execute(stmt)
     rows = [[getattr(r, c) for c in cols] for r in result.scalars().all()]
-    total = await _count(session, model)
+    total = await _count(session, model, where)
 
     charts = first_date = last_date = None
     if table == "daily_metrics":
@@ -130,7 +170,7 @@ async def ui_table(
         request, "table.html",
         {
             "table": table, "cols": cols, "rows": rows, "user": user,
-            "limit": limit, "offset": offset, "total": total,
+            "limit": limit, "offset": offset, "total": total, "search": search,
             "tables": list(TABLES), "token": request.query_params.get("token", ""),
             "charts": charts, "first_date": first_date, "last_date": last_date,
         },
@@ -158,9 +198,11 @@ async def ui_row(
     if obj is None:
         raise HTTPException(status_code=404, detail="Row not found")
 
-    # ``series`` renders as charts; ``analysis`` as its own block — not raw fields.
+    # ``series`` renders as charts; ``analysis`` as its own block; ``data`` is a raw
+    # blob (checkup_attachments) — none render as plain fields.
     fields = [(c.name, getattr(obj, c.name))
-              for c in model.__table__.columns if c.name not in ("series", "analysis")]
+              for c in model.__table__.columns
+              if c.name not in ("series", "analysis", "data")]
     charts, first_x, last_x = _run_charts(getattr(obj, "series", None) or [])
     return templates.TemplateResponse(
         request, "detail.html",

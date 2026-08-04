@@ -33,16 +33,27 @@
     .xaxis { display: flex; justify-content: space-between; }
     button.del { padding: .15rem .55rem; border: 0; border-radius: 6px; cursor: pointer;
                  background: rgba(247,118,142,.12); color: #f7768e; font-size: .82rem; }
+    .search { display: flex; gap: .4rem; align-items: center; }
+    .search input[type=search] { background: #151a23; border: 1px solid #313a49; border-radius: 8px;
+      color: #eef1f5; padding: .32rem .6rem; font-size: .85rem; min-width: 16rem; }
+    .search input[type=search]:focus { outline: none; border-color: #7aa2f7; }
+    .search button { padding: .32rem .7rem; border: 1px solid #313a49; border-radius: 8px; cursor: pointer;
+      background: #1a2029; color: #eef1f5; font-size: .85rem; }
+    .search a.clear { color: #909aa8; font-size: .85rem; }
   </style>
 </head>
 <body>
   {% set base = base or '/ui' %}
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
-  {% set q = '&token=' ~ token if token else '' %}
+  {% set search = search or '' %}
+  {% set q = ('&token=' ~ token if token else '') ~ ('&search=' ~ search|urlencode if search else '') %}
   {% set qf = '?token=' ~ token if token else '' %}
   {% set NICE = {"daily_metrics": "Відновлення", "activities": "Тренування",
-                 "report_logs": "Звіти", "users": "Користувачі", "bot_state": "Стан бота"} %}
+                 "report_logs": "Звіти", "users": "Користувачі", "bot_state": "Стан бота",
+                 "personal_records": "Рекорди", "training_plans": "Плани тренувань",
+                 "planned_workouts": "Заплановані сесії", "supplements": "Добавки",
+                 "health_checkups": "Аналізи", "checkup_attachments": "Файли аналізів"} %}
   <div class="bar tabs">
     <a href="{{ base }}{{ qf }}">← огляд</a>
     {% for t in tables %}
@@ -51,13 +62,22 @@
   </div>
   <div class="bar">
     <b>{{ NICE.get(table, table) }}</b>
-    <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}</span>
+    <span class="meta">{{ offset + 1 }}–{{ offset + rows|length }} з {{ total }}{% if search %} (фільтр: "{{ search }}"){% endif %}</span>
     {% if offset > 0 %}
       <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ [offset - limit, 0]|max }}{{ q }}">← попередні</a>
     {% endif %}
     {% if offset + limit < total %}
       <a href="{{ base }}/{{ table }}?limit={{ limit }}&offset={{ offset + limit }}{{ q }}">наступні →</a>
     {% endif %}
+  </div>
+  <div class="bar search">
+    <form method="get" action="{{ base }}/{{ table }}" class="search">
+      {% if token %}<input type="hidden" name="token" value="{{ token }}">{% endif %}
+      <input type="hidden" name="limit" value="{{ limit }}">
+      <input type="search" name="search" value="{{ search }}" placeholder="Фільтр по всіх колонках…">
+      <button type="submit">Фільтрувати</button>
+      {% if search %}<a class="clear" href="{{ base }}/{{ table }}{{ qf }}">✕ скинути</a>{% endif %}
+    </form>
   </div>
   {% if charts %}
     <div class="charts">

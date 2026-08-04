@@ -9,7 +9,10 @@ Usage:
 """
 import argparse
 import asyncio
+import logging
+import time
 
+from app.core.logging import setup as setup_logging
 from app.db.base import async_session_maker, init_db
 from app.db.models import User
 from app.garmin.credentials import load_credentials
@@ -17,35 +20,42 @@ from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from app.garmin.service import build_payload_cached
 
+logger = logging.getLogger("backfill_month_by_id")
+
 
 async def _run(user_id: int) -> int:
+    setup_logging()
+    t0 = time.monotonic()
     await init_db()
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         if user is None:
-            print(f"No user with id {user_id}.")
+            logger.error(f"No user with id {user_id}.")
             return 1
 
         creds = load_credentials(user)
         if not creds.has_garmin:
-            print("No Garmin credentials on this user — set them up in /settings first.")
+            logger.error("No Garmin credentials on this user — set them up in /settings first.")
             return 1
 
-        print(f"Fetching last 30 days of Garmin activities/data for "
-              f"user {user_id} ({user.email})...")
+        logger.info(f"Fetching last 30 days of Garmin data (sleep/HRV/stress/body "
+                    f"battery/readiness/VO2max + activities) for user {user_id} "
+                    f"({user.email})... this can take a while.")
         try:
             async with user_runtime(session, user):
                 payload, new_activities = await build_payload_cached(
                     session, user.id, days=30, activity_limit=60,
                 )
         except GarminAuthFailed:
-            print("Garmin rejected the stored email/password — backfill skipped. "
-                  "Fix the creds via /settings and re-run.")
+            logger.error("Garmin rejected the stored email/password — backfill "
+                         "skipped. Fix the creds via /settings and re-run.")
             return 1
 
         await session.commit()
-        print(f"Backfilled {len(payload.daily)} day(s), "
-              f"{len(new_activities)} activit{'y' if len(new_activities) == 1 else 'ies'}.")
+        elapsed = time.monotonic() - t0
+        logger.info(f"Backfilled {len(payload.daily)} day(s), "
+                    f"{len(new_activities)} activit{'y' if len(new_activities) == 1 else 'ies'} "
+                    f"in {elapsed:.1f}s.")
         return 0
 
 
