@@ -83,7 +83,7 @@ concurrent workers don't trip "database is locked".
   generation as a `fitness` snapshot + `weekly_volume` + `recovery` trend.
 - **Sync awareness**: `synced_today`/`has_data`/`last_data_date` distinguish "watch
   hasn't synced" from "bad recovery." Morning job runs ~10s after startup then every
-  20 min; window (07–12 Europe/Warsaw) + once-a-day guard live in `morning_job`.
+  15 min; window (07–12 Europe/Warsaw) + once-a-day guard live in `morning_job`.
 
 ## Weather (`app/weather.py`)
 

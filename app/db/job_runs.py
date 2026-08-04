@@ -26,7 +26,7 @@ async def record_job_run(
 ) -> None:
     """Write one job-run row (does not commit). With ``aggregate=True`` a routine run rolls
     into the existing (job, user_id, run_date) row for the day — incrementing ``count`` and
-    refreshing status/detail/finished_at — instead of adding a new row, so the 20-min tick
+    refreshing status/detail/finished_at — instead of adding a new row, so the 15-min tick
     doesn't flood the log. Notable outcomes and errors pass ``aggregate=False`` for their own
     row. Rows older than ``RETENTION_DAYS`` are purged lazily here."""
     now = _utcnow()

@@ -355,8 +355,8 @@ async def test_tick_skips_outside_users_local_window(monkeypatch):
 
 async def test_tick_notifies_once_on_garmin_rate_limit(monkeypatch):
     """When Garmin keeps 429ing through every backoff retry, _api raises
-    GarminRateLimited — the tick should DM the user once (not every 5-minute tick,
-    now that CHECK_INTERVAL_MIN is tighter) and stay silent on a same-day repeat."""
+    GarminRateLimited — the tick should DM the user once (not every 15-minute tick)
+    and stay silent on a same-day repeat."""
     from app.garmin.client import GarminRateLimited
 
     user = SimpleNamespace(id=9, timezone="Europe/Warsaw", telegram_chat_id=9)

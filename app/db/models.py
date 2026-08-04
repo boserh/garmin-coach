@@ -280,7 +280,7 @@ class JobRun(Base):
     """OPS-04: one row per run of a per-user background-job branch (morning tick + the five
     run_daily jobs), so "did plan_sync run yesterday and how did it end?" is a web read, not
     an ssh+grep. ``status`` is ok/skip/error; ``detail`` is a short reason ("sent" / "outside
-    window" / "MFARequired" / a traceback tail ≤512). The 20-min morning tick's routine
+    window" / "MFARequired" / a traceback tail ≤512). The 15-min morning tick's routine
     ok/skip results are AGGREGATED into one row per user/day (``count`` = number of ticks,
     ``run_date`` = that local date) so the log isn't flooded — notable outcomes (a report
     actually sent, an MFA gate) and errors get their own rows. Rows older than 30 days are
