@@ -10,6 +10,7 @@ from app import weather
 from app.analysis import delivery
 from app.analysis.service import AnalystError, run_analysis
 from app.core.auth import current_user
+from app.core.demo import DEMO_DISABLED_MSG
 from app.core.tz import user_today
 from app.db.models import User
 from app.dependencies import get_session
@@ -27,6 +28,11 @@ async def report_json(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    if user.is_demo:
+        return {
+            "synced_today": True, "last_data_date": None, "note": None,
+            "report": DEMO_DISABLED_MSG,
+        }
     async with user_runtime(session, user) as creds:
         payload, _ = await service.build_payload_cached(
             session, user.id, days=7, activity_limit=20
@@ -53,6 +59,11 @@ async def deep(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    if user.is_demo:
+        return {
+            "synced_today": True, "last_data_date": None,
+            "question": q or _DEEP_Q, "report": DEMO_DISABLED_MSG,
+        }
     async with user_runtime(session, user) as creds:
         payload, _ = await service.build_payload_cached(
             session, user.id, days=14, activity_limit=30

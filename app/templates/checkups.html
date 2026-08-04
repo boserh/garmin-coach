@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="uk">
 <head>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Аналізи</title>
@@ -30,6 +31,8 @@
         <a href="/settings">Налаштуваннях</a>.</div>
     {% elif request.query_params.get('err') == 'mergecount' %}
       <div class="err" style="margin:0 0 1rem">Обери щонайменше 2 записи для об'єднання.</div>
+    {% elif request.query_params.get('err') == 'demo' %}
+      <div class="err" style="margin:0 0 1rem">🎭 Демо-акаунт: завантаження й розбір фото/PDF вимкнені.</div>
     {% endif %}
 
     <details class="fwrap">

@@ -898,6 +898,8 @@ async def plan_create(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if user.is_demo:
+        return RedirectResponse("/plan?error=demo", status_code=303)
     if goal not in GOALS:
         return RedirectResponse("/plan?error=goal", status_code=303)
     if goal in OPEN_ENDED_GOALS:

@@ -51,6 +51,14 @@ class User(Base):
     # reactivate it later. Distinct from approval: active=False is a deliberate off.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # The singleton read-only walkthrough account (see app.demo) — seeded fake data,
+    # never a real Garmin/Claude call. app.db.users.eligible_users excludes it from every
+    # background job; app.core.auth.current_user + app.garmin.runtime.user_runtime +
+    # app.analysis.client._get_client all refuse to touch the network for it, and several
+    # routers short-circuit its POST actions with a canned response before reaching those
+    # choke points at all.
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Encrypted upstream credentials (Fernet tokens); null until the user fills them in.
     garmin_email_enc: Mapped[Optional[str]] = mapped_column(Text)
     garmin_password_enc: Mapped[Optional[str]] = mapped_column(Text)

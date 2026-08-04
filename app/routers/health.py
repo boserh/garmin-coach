@@ -34,12 +34,15 @@ async def status(
 ) -> dict:
     """The logged-in user's status: Garmin auth, their DB stats, last morning
     report, total cost."""
-    garmin = "ok"
-    try:
-        async with user_runtime(session, user):
-            await run_in_threadpool(service.login)
-    except Exception as e:  # noqa: BLE001 — surface any login failure as status
-        garmin = f"error: {type(e).__name__}: {e}"
+    if user.is_demo:
+        garmin = "demo (no real Garmin account)"
+    else:
+        garmin = "ok"
+        try:
+            async with user_runtime(session, user):
+                await run_in_threadpool(service.login)
+        except Exception as e:  # noqa: BLE001 — surface any login failure as status
+            garmin = f"error: {type(e).__name__}: {e}"
 
     history_days = (await session.execute(
         select(func.count(DailyMetric.id)).where(DailyMetric.user_id == user.id)

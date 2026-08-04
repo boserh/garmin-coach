@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="uk">
 <head>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Програма тренувань</title>
@@ -23,6 +24,7 @@
 
     {% if error == 'gen' %}<div class="err" style="margin:1.2rem 0">Не вдалось згенерувати план. Спробуй ще раз.</div>
     {% elif error == 'goal' %}<div class="err" style="margin:1.2rem 0">Обери коректну ціль.</div>
+    {% elif error == 'demo' %}<div class="err" style="margin:1.2rem 0">🎭 Демо-акаунт: генерація нового плану вимкнена.</div>
     {% elif error == 'days' %}<div class="err" style="margin:1.2rem 0">Обери щонайменше два дні бігу.</div>{% endif %}
 
     <div id="loading" class="loadbox" style="display:none">
