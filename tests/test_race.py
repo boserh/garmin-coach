@@ -210,7 +210,6 @@ async def test_race_pack_job_skips_without_chat_id(session):
 
 def test_stage_for_exact_and_catchup_windows():
     assert race.stage_for(None) is None
-    assert race.stage_for(-1) is None
     assert race.stage_for(race.STAGE_PACK) == "pack"
     assert race.stage_for(race.STAGE_PACK - 1) is None       # day 6: no stage
     assert race.stage_for(3) == "checklist"                  # nominal T-3
@@ -218,6 +217,11 @@ def test_stage_for_exact_and_catchup_windows():
     assert race.stage_for(4) is None                          # outside checklist window
     assert race.stage_for(1) == "brief"                       # nominal T-1
     assert race.stage_for(0) == "brief"                       # 1-day catch-up (race day)
+    # NF-23: the days AFTER the race belong to the post-race debrief, with a longer
+    # catch-up — a runner who travelled to a race often syncs the watch a day or two late.
+    assert race.stage_for(-1) == "debrief"
+    assert race.stage_for(-race.DEBRIEF_CATCHUP_DAYS) == "debrief"
+    assert race.stage_for(-race.DEBRIEF_CATCHUP_DAYS - 1) is None
 
 
 def test_checklist_text_includes_weather_when_present():

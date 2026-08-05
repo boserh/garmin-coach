@@ -37,6 +37,7 @@ from app.analysis.service import (
     run_injury_check,
     run_insights,
     run_plan_adaptation,
+    run_race_debrief,
     run_race_plan,
     run_weather_plan_check,
 )
@@ -1406,7 +1407,9 @@ async def _sync_for_user(session, user: User) -> None:
         await plan_sync.sync_plan_to_garmin(session, user.id)
 
 
-RACE_PACK_GUARD_PREFIX = "race_pack_sent:"
+# The per-(plan, stage) guard key itself lives in app.race (NF-23: archiving a plan has to be
+# able to cancel an unsent debrief without importing the bot).
+RACE_PACK_GUARD_PREFIX = race.STAGE_GUARD_PREFIX
 
 
 async def _race_forecast_for_target(user: User, plan) -> Optional[dict]:
@@ -1455,6 +1458,15 @@ async def _send_race_brief_stage(
     """NF-22 T-1 (evening, catches up through race day): final weather + the saved pack
     quoted back + an early-bedtime nudge. Zero Claude calls — no fresh narration."""
     forecast_day = await _race_forecast_for_target(user, plan)
+    # NF-23: keep race-day weather for the debrief. After the race the forecast endpoint no
+    # longer carries that date, and "it was 29°C" is half the explanation of a fade — so the
+    # one moment we hold the number is here, the evening before.
+    if forecast_day:
+        await repository.set_state(
+            session, user.id,
+            race.WEATHER_STATE_PREFIX + str(plan.id),
+            json.dumps(forecast_day, ensure_ascii=False),
+        )
     last_pack = await repository.get_last_report_of_kind(session, user.id, "race")
     pack_text = last_pack[0] if last_pack else None
     history = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)
@@ -1466,6 +1478,52 @@ async def _send_race_brief_stage(
         race.brief_text(plan, forecast_day, pack_text, bedtime, days_left),
     )
     logger.info(f"RACE brief sent user={user.id} plan={plan.id}")
+
+
+async def find_race_activity(session, user: User, plan):
+    """The activity that WAS the race, or ``None``.
+
+    Only explicit evidence counts (the ticket's own risk note): a session the plan marked as
+    the race, or a run on the target date itself. There is deliberately no "fast and long
+    enough" heuristic — mistaking a hard training run for a race would produce a confident,
+    entirely wrong debrief."""
+    workouts = await repository.list_workouts(session, plan.id)
+    race_days = {w.date for w in workouts if (w.type or "") == "race"}
+    if plan.target_date:
+        race_days.add(plan.target_date)
+    acts = await repository.activities_on_dates(session, user.id, race_days)
+    runs = [a for a in acts if "run" in (a.type or "").lower()]
+    if not runs:
+        return None
+    # The longest run of the day: a race is never the shakeout that shares its date.
+    return max(runs, key=lambda a: a.dist_km or 0)
+
+
+async def _send_race_debrief_stage(ctx, session, user: User, plan, guard_key: str) -> None:
+    """NF-23 T+1: splits vs the schedule, fade point, HR drift — one Sonnet call, then the
+    guard, so the debrief lands once and the loop from preparation to conclusions finally
+    closes. No activity synced yet → no guard is set and the next tick tries again (inside
+    ``race.DEBRIEF_CATCHUP_DAYS``)."""
+    activity = await find_race_activity(session, user, plan)
+    if activity is None:
+        logger.info(f"RACE debrief: no race activity yet user={user.id} plan={plan.id}")
+        return
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return
+    try:
+        text = await run_race_debrief(
+            session, user_id=user.id, activity=activity, plan=plan,
+            api_key=creds.anthropic_key)
+    except AnalystError:
+        logger.exception(f"RACE debrief failed user={user.id}")
+        return
+    await repository.set_state(session, user.id, guard_key, "1")
+    if not text:
+        return
+    await ctx.bot.send_message(
+        user.telegram_chat_id, "🏁 Розбір твого старту:\n\n" + text)
+    logger.info(f"RACE debrief sent user={user.id} plan={plan.id} act={activity.activity_id}")
 
 
 async def _race_pack_for_user(ctx, session, user: User) -> None:
@@ -1484,7 +1542,7 @@ async def _race_pack_for_user(ctx, session, user: User) -> None:
     stage = race.stage_for(race.days_to_target(plan.target_date, today))
     if stage is None:
         return
-    guard_key = RACE_PACK_GUARD_PREFIX + str(plan.id) + ":" + stage
+    guard_key = race.stage_guard_key(plan.id, stage)
     if await repository.get_state(session, user.id, guard_key) == "1":
         return
 
@@ -1492,6 +1550,8 @@ async def _race_pack_for_user(ctx, session, user: User) -> None:
         await _send_race_pack_stage(ctx, session, user, plan, guard_key)
     elif stage == "checklist":
         await _send_race_checklist_stage(ctx, session, user, plan, guard_key)
+    elif stage == "debrief":
+        await _send_race_debrief_stage(ctx, session, user, plan, guard_key)
     else:
         await _send_race_brief_stage(ctx, session, user, plan, guard_key, today)
 

@@ -136,6 +136,37 @@ async def runs_for_efficiency(
     ]
 
 
+async def recent_runs_with_series(
+    session: AsyncSession, user_id: int, days: int = 21, limit: int = 8
+) -> List[dict]:
+    """NF-25: the last few runs that carry a per-point ``series``, oldest-first — the input
+    for the form-drift streak the injury radar reads.
+
+    Deliberately NOT ``runs_for_efficiency``: that one requires an average HR (it computes
+    pace@HR), while running dynamics need only cadence/contact time — gating on HR would
+    silently drop exactly the runs a chest-strap-less user does record dynamics on.
+    """
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            ).order_by(ActivityRecord.date.desc()).limit(limit)
+        )
+    ).scalars().all()
+    out = [
+        {"date": a.date, "dur_min": a.dur_min, "dist_km": a.dist_km,
+         "avg_hr": a.avg_hr, "series": a.series}
+        for a in rows if a.series
+    ]
+    out.reverse()   # oldest-first, the convention every detector in app/ expects
+    return out
+
+
 # EP-09 /ask tool: run-volume metrics reuse weekly_run_volume's buckets; anything else in
 # ASK_DAILY_FIELDS is averaged per ISO week from query_daily.
 _ASK_WEEKLY_RUN_KEYS = {"run_km": "km", "run_count": "runs", "longest_km": "longest_km"}

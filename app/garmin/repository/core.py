@@ -233,6 +233,38 @@ async def get_activity(session: AsyncSession, user_id: int, row_id: int):
     ).scalar_one_or_none()
 
 
+async def get_activity_by_garmin_id(session: AsyncSession, user_id: int, activity_id: int):
+    """One activity by its GARMIN id, scoped to the user. ``/activity`` and ``/race done``
+    are typed from what the user sees in Garmin Connect / our own listings, which is this id,
+    not the internal row id."""
+    return (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.activity_id == int(activity_id),
+                ActivityRecord.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def activities_on_dates(session: AsyncSession, user_id: int, dates) -> list:
+    """This user's visible activities on any of ``dates`` (ISO strings), as ORM rows.
+
+    ORM rows rather than ``query_activities``'s compact dicts because the caller (NF-23's race
+    finder) needs the stored ``series``/``activity_id`` to build a debrief."""
+    if not dates:
+        return []
+    return list((
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.date.in_(list(dates)),
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            ).order_by(ActivityRecord.date)
+        )
+    ).scalars().all())
+
+
 async def get_last_activity(session: AsyncSession, user_id: int):
     """This user's most recent activity (newest first), or None. Used by /checkin to
     target the run the runner most likely wants to rate."""
@@ -675,6 +707,13 @@ async def persist_payload(
             new_activities.append(rec)
     if new_activities:
         await session.flush()  # assign ids before the caller reads them
+    # NF-33: recognise the route as part of the sync, not at read time — pure math over the
+    # series we just stored, so "is this my usual loop?" is answerable the moment the run
+    # lands. Idempotent: an activity that already has a route_id is skipped.
+    from app.garmin.repository.routes import assign_routes_for_activities
+
+    await assign_routes_for_activities(
+        session, user_id, [aid for aid, _row in act_pairs if aid])
     return new_activities
 
 

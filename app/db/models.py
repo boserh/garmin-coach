@@ -195,7 +195,40 @@ class ActivityRecord(Base):
     # (and for everything synced before this field existed); every consumer must degrade to
     # silence rather than to zero.
     zones: Mapped[Optional[dict]] = mapped_column(JSON)
+    # NF-33: which recognised route (see ``Route``) this run belongs to — self-assigned by
+    # fingerprint similarity, nullable forever (treadmill runs, GPS-less sessions and every
+    # activity stored before this field existed simply have none, and every consumer must
+    # then stay silent).
+    route_id: Mapped[Optional[int]] = mapped_column(ForeignKey("routes.id"), index=True)
 
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Route(Base):
+    """NF-33: one recognised, repeated route — a *fingerprint*, never a stored track.
+
+    "Is my usual loop faster than a month ago?" was unanswerable because nothing recorded
+    WHERE a run happened, so comparisons could only be period-vs-period, contaminated by
+    terrain and wind. The fix is not to store the track (the privacy cost of that is a home
+    address in every backup) but a compact signature: a coarsened start point, the distance,
+    the climb, and the shape of the route as normalised elevation + bearings. Under a
+    kilobyte, unreconstructable, and enough to tell two loops apart — including the same loop
+    run backwards, which is deliberately a DIFFERENT route because comparing the two would be
+    dishonest.
+
+    ``name`` is the user's own label for the cluster ("парк", "робота і назад"); until they
+    name it, the route is referred to by number. The fingerprint of the first activity in the
+    cluster is the reference every later run is matched against (``app.routes.similar``)."""
+
+    __tablename__ = "routes"
+    __table_args__ = (
+        Index("ix_routes_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[Optional[str]] = mapped_column(String(80))
+    fingerprint: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

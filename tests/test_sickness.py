@@ -7,6 +7,7 @@ import datetime as dt
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 from app import health as health_mod
 from app import sickness
@@ -17,7 +18,10 @@ from app.garmin.schemas import PlanEdit, PlanOp
 from bot import handlers as handlers_module
 from bot import jobs as jobs_module
 
-TODAY = dt.date.today()
+# The handler dates its guard with the USER's today (ST-14, Europe/Warsaw by default), so the
+# test has to as well: with a UTC container, `dt.date.today()` is a day behind between 22:00
+# and midnight UTC in summer, and the guard assertions failed for those two hours a day.
+TODAY = dt.datetime.now(ZoneInfo("Europe/Warsaw")).date()
 TODAY_S = TODAY.isoformat()
 
 

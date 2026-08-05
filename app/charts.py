@@ -106,6 +106,10 @@ def run_charts(activity_series):
         defs = [
             ("Темп, хв/км", "#6cb6ff", "pace", [p.get("p") for p in activity_series]),
             ("Пульс", "#ff7b72", "hr", [p.get("hr") for p in activity_series]),
+            # NF-25: cadence, when the watch reported it — the channel that shows form
+            # falling away late in a run. Absent (like elevation) on series without it.
+            ("Каденс, кр/хв", "#d2a8ff", "cadence",
+             [p.get("cad") for p in activity_series]),
         ]
     defs.append(("Висота, м", "#7ee787", "elev", [p.get("e") for p in activity_series]))
     charts = [{"label": lbl, "color": c, "fmt": fmt, "s": s}

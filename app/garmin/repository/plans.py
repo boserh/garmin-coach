@@ -449,7 +449,17 @@ async def create_plan(
 
 
 async def archive_plan(session: AsyncSession, plan: TrainingPlan) -> None:
+    """Archive a plan. NF-23: this also cancels an unsent post-race debrief by pre-setting its
+    send guard — a plan the runner archived (they moved on, or the race didn't happen) must
+    not produce a race debrief days later, and a guard that's already "1" is the cheapest way
+    to say that without a second state key."""
+    from app import race
+    from app.garmin.repository.state import set_state
+
     plan.status = "archived"
+    if plan.user_id is not None:
+        await set_state(session, plan.user_id,
+                        race.stage_guard_key(plan.id, "debrief"), "1")
     await session.commit()
 
 

@@ -27,6 +27,7 @@ from app.analysis.cache import (
     _digest_cache_key,
     _insights_cache_key,
     _race_cache_key,
+    _race_debrief_cache_key,
     _supplement_cache_key,
     _wrapped_cache_key,
 )
@@ -43,6 +44,7 @@ from app.analysis.client import (
     MODEL_INJURY,
     MODEL_INSIGHTS,
     MODEL_RACE,
+    MODEL_RACE_DEBRIEF,
     MODEL_SUPPLEMENTS,
     MODEL_WRAPPED,
     PRICES,
@@ -68,6 +70,7 @@ from app.analysis.prompts import (
     SYSTEM_INJURY,
     SYSTEM_INSIGHTS,
     SYSTEM_RACE,
+    SYSTEM_RACE_DEBRIEF,
     SYSTEM_SUPPLEMENTS,
     SYSTEM_WRAPPED,
 )
@@ -800,10 +803,13 @@ def _planned_payload(workout) -> dict:
     }
 
 
-def activity_payload(activity, planned=None) -> dict:
+def activity_payload(activity, planned=None, route=None) -> dict:
     """Compact LLM input for one ActivityRecord — summary fields plus run segments.
     ``planned`` (optional PlannedWorkout matched by matching.match_activities) adds a
-    planned-vs-actual slice so the analysis can judge adherence, not just the raw effort."""
+    planned-vs-actual slice so the analysis can judge adherence, not just the raw effort.
+    ``route`` (NF-33, optional) adds the same-route comparison — an anonymised ``route_id``
+    plus pace/HR deltas against earlier passes. It carries **no coordinates**: the track never
+    leaves the Pi, which is this feature's central privacy rule, enforced by a test."""
     data = {
         "type": activity.type, "date": activity.date,
         "dur_min": activity.dur_min, "dist_km": activity.dist_km,
@@ -828,6 +834,16 @@ def activity_payload(activity, planned=None) -> dict:
             data["elevation_gain_m"] = elevation["gain_m"]
             data["elevation_loss_m"] = elevation["loss_m"]
             data["hilly"] = elevation["hilly"]
+        # NF-25: cadence / ground contact / vertical oscillation + the within-session form
+        # drift. Absent for a watch without the dynamics accessory (the common case) — the
+        # key is then simply missing and SYSTEM_ACTIVITY says nothing about form.
+        if sport_bucket(activity.type) != "bike":
+            from app import rundynamics
+
+            dynamics = rundynamics.session_dynamics(
+                activity.series, dur_min=activity.dur_min)
+            if dynamics:
+                data["dynamics"] = dynamics
     # EP-12: the runner's subjective check-in (RPE + niggle). Part of the payload, so it
     # also enters the dedup-cache key automatically (_activity_cache_key hashes `data`).
     if getattr(activity, "subjective", None):
@@ -838,6 +854,8 @@ def activity_payload(activity, planned=None) -> dict:
         data["step_match"] = activity.step_match
     if planned is not None:
         data["planned"] = _planned_payload(planned)
+    if route:
+        data["route"] = route
     return data
 
 
@@ -902,7 +920,11 @@ async def run_activity_analysis(
 
     planned = await repository.get_workout_for_activity(session, user_id, activity.id) \
         if user_id is not None else None
-    data = activity_payload(activity, planned)
+    # NF-33: "this is your loop, 7th pass, GAP pace the best in 3 months" — a pure DB read,
+    # None for a first pass or a run with no recognised route.
+    route = await repository.build_route_context(session, user_id, activity) \
+        if user_id is not None else None
+    data = activity_payload(activity, planned, route)
     q = f"activity #{activity.id} ({activity.type})"
     text = await _run_cached_narration(
         session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, context=data,
@@ -1176,6 +1198,97 @@ async def run_race_plan(
     )
 
 
+# ---------- POST-RACE DEBRIEF (NF-23) ----------
+
+RACE_DEBRIEF_BUILDUP_WEEKS = 8   # the block that led into the race — where the causes live
+
+
+def race_debrief_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """Narrate an already-computed post-race analysis (Sonnet). Every number in ``context``
+    came out of ``app.postrace``; the model's job is the three takeaways, not arithmetic."""
+    return _complete(MODEL_RACE_DEBRIEF, SYSTEM_RACE_DEBRIEF, context, "race_debrief",
+                     api_key, max_tokens=1200)
+
+
+async def build_race_debrief_context(session, *, user_id: int, activity, plan=None) -> dict:
+    """Assemble everything the debrief narration reads: the computed numbers, the build-up
+    that produced them, race-day weather and the runner's own check-in. Pure DB + the stored
+    splits/series — no Garmin call (both were already fetched by the auto-analysis)."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app import postrace
+    from app.garmin import client, repository
+
+    # Splits are disk-cached for a year and were fetched by NF-14's step matching; this is a
+    # cache read in practice, and it degrades to [] rather than failing (an AC).
+    try:
+        splits = await run_in_threadpool(client.fetch_activity_splits, activity.activity_id)
+    except Exception:  # noqa: BLE001 — a missing/expired lap fetch must not lose the debrief
+        logger.warning(f"RACE debrief: splits unavailable for {activity.activity_id}")
+        splits = []
+
+    debrief = postrace.build_debrief(
+        splits=splits, series=activity.series,
+        dist_km=activity.dist_km, dur_min=activity.dur_min, avg_hr=activity.avg_hr,
+        target_pace_min_km=postrace.target_pace_for_plan(plan, activity.dist_km),
+    )
+    context: dict = {
+        "activity_id": activity.activity_id,
+        "race": {
+            "date": activity.date, "dist_km": activity.dist_km,
+            "dur_min": activity.dur_min, "avg_hr": activity.avg_hr,
+            "avg_pace_min_km": debrief.get("avg_pace_min_km"),
+            "avg_gap_pace_min_km": debrief.get("avg_gap_pace_min_km"),
+        },
+        "debrief": debrief,
+    }
+    volume = await repository.weekly_run_volume(
+        session, user_id, weeks=RACE_DEBRIEF_BUILDUP_WEEKS)
+    compliance = None
+    if plan is not None:
+        compliance = _recent_compliance(
+            await repository.weekly_compliance(session, plan.id), weeks=4) or None
+    if volume or compliance:
+        context["buildup"] = {"weekly_volume": volume or None, "compliance": compliance}
+    if plan is not None:
+        from app import race as race_mod
+
+        stored = await repository.get_state(
+            session, user_id, race_mod.WEATHER_STATE_PREFIX + str(plan.id))
+        if stored:
+            try:
+                context["weather"] = json.loads(stored)
+            except ValueError:
+                pass
+    if getattr(activity, "subjective", None):
+        context["subjective"] = activity.subjective
+    return context
+
+
+async def run_race_debrief(
+    session, *, user_id: int, activity, plan=None, api_key: Optional[str] = None,
+) -> str:
+    """One post-race debrief: numbers from ``app.postrace``, three next-cycle takeaways from
+    Sonnet, cached and logged as ``ReportLog(kind="race_debrief")``.
+
+    Exactly ONE Claude call per race — the cache key carries the activity id, so a repeated
+    ``/race done <id>`` on the same race is a cache hit rather than a second paid call. The
+    text is also stored on the activity row, so the archived plan page can show the debrief
+    next to the plan that led to it."""
+    context = await build_race_debrief_context(
+        session, user_id=user_id, activity=activity, plan=plan)
+    text = await _run_cached_narration(
+        session, user_id=user_id, kind="race_debrief", model=MODEL_RACE_DEBRIEF,
+        context=context, cache_key=_race_debrief_cache_key(context, MODEL_RACE_DEBRIEF),
+        with_stats_fn=race_debrief_with_stats,
+        question=f"race_debrief:{activity.activity_id}", api_key=api_key,
+    )
+    activity.analysis = text
+    return text
+
+
 # ---------- CORRELATION INSIGHTS (NF-02) ----------
 
 INSIGHTS_WINDOW_DAYS = 120   # how much recovery history the correlation pass looks over
@@ -1306,10 +1419,21 @@ async def build_injury_assessment(session, *, user_id: int):
     # NF-24: grey-zone drift compounds every other risk signal (fatigue accrues faster than
     # the volume suggests), so it raises the score — but it can never trip a warning alone.
     intensity_ctx = await build_intensity_context(session, user_id=user_id)
+    # NF-25: how many of the most recent runs in a row ended with the form falling away.
+    # Costs one indexed query and no LLM; a user whose watch reports no dynamics gets an
+    # all-``None`` list and a streak of 0, i.e. exactly the previous behaviour.
+    from app import rundynamics
+
+    recent_series = await repository.recent_runs_with_series(session, user_id)
+    drift_streak = rundynamics.drift_streak([
+        rundynamics.session_dynamics(r.get("series"), dur_min=r.get("dur_min"))
+        for r in recent_series
+    ])
     return injury.assess(
         daily, runs, history_days=history_days,
         min_history_days=settings.INJURY_MIN_HISTORY_DAYS,
         intensity_findings=(intensity_ctx or {}).get("findings"),
+        dynamics_drift_streak=drift_streak,
     )
 
 

@@ -32,6 +32,27 @@ STAGE_CHECKLIST = 3             # T-3: deterministic prep checklist
 STAGE_BRIEF = 1                 # T-1 evening: final weather + pace brief (catches up
                                  # through race day itself if the T-1 tick was missed)
 
+# NF-23: T+1 — the post-race debrief, the stage that finally closes the loop the product used
+# to drop the moment the season's most valuable data arrived. Negative = days AFTER the race;
+# it catches up over three days because the runner may not have synced the watch on the
+# evening of the race itself.
+STAGE_DEBRIEF = -1
+DEBRIEF_CATCHUP_DAYS = 3
+
+# Where the T-1 stage parks race-day weather so the T+1 debrief can still read it: after the
+# race the forecast endpoint no longer covers that date, and "it was 29 °C" is half the
+# explanation of a fade. Per-plan, so a new plan naturally starts clean.
+WEATHER_STATE_PREFIX = "race_weather:"
+
+# Per-(plan, stage) send guard. Lives here rather than in bot/jobs.py so non-bot code can
+# reason about it too — NF-23's AC that archiving a plan cancels an unsent debrief is
+# implemented by pre-setting this key in ``repository.archive_plan``.
+STAGE_GUARD_PREFIX = "race_pack_sent:"
+
+
+def stage_guard_key(plan_id: int, stage: str) -> str:
+    return f"{STAGE_GUARD_PREFIX}{plan_id}:{stage}"
+
 # Only fold a forecast into the pack when the race is this close — Open-Meteo's daily
 # forecast is unreliable much further out (same reasoning as EP-13's decision window).
 WEATHER_WINDOW_DAYS = 7
@@ -100,9 +121,15 @@ def stage_for(days_left: Optional[int]) -> Optional[str]:
     ``"checklist"``/``"brief"`` each get a 2-day catch-up window ending on their nominal
     day, so a single missed tick (e.g. the Pi was down) doesn't silently drop a stage —
     the per-(plan, stage) guard in bot/jobs.py still makes each fire at most once, no
-    matter which day inside its window it actually catches on."""
-    if days_left is None or days_left < 0:
+    matter which day inside its window it actually catches on.
+
+    NF-23 adds ``"debrief"`` on the days AFTER the race (``days_left`` negative), with a
+    three-day catch-up of its own: the activity has to reach us from the watch first, and a
+    runner who travelled to a race often syncs a day or two later."""
+    if days_left is None:
         return None
+    if days_left < 0:
+        return "debrief" if -DEBRIEF_CATCHUP_DAYS <= days_left <= STAGE_DEBRIEF else None
     if days_left == STAGE_PACK:
         return "pack"
     if STAGE_CHECKLIST - 1 <= days_left <= STAGE_CHECKLIST:

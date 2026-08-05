@@ -617,8 +617,13 @@ _EXPORT_DAILY_CSV_COLS = [c for c in _EXPORT_DAILY_COLS if c != "extra"]
 
 _EXPORT_ACTIVITY_COLS = [
     "id", "activity_id", "date", "type", "dur_min", "dist_km", "avg_hr", "max_hr", "load",
-    "exercises", "series", "analysis", "subjective", "step_match", "created_at",
+    "exercises", "series", "analysis", "subjective", "step_match", "route_id", "created_at",
 ]
+
+# NF-33: the recognised routes themselves. Exported because they're derived from the user's
+# own tracks and are what makes their activity history readable ("route 3" means nothing
+# without this file); the fingerprint is a coarse signature, not a reconstructable track.
+_EXPORT_ROUTE_COLS = ["id", "name", "fingerprint", "created_at"]
 _EXPORT_ACTIVITY_CSV_COLS = [
     c for c in _EXPORT_ACTIVITY_COLS
     if c not in ("exercises", "series", "subjective", "step_match")
@@ -700,6 +705,10 @@ async def me_export(
     # text we hold, so a portability export that silently omitted it would be dishonest.
     from app.db import profile as profile_db
     profile_facts, _profile_stoplist = await profile_db.get_profile(session, user.id)
+    # NF-33: routes (an AC of the ticket) — user-scoped like everything else here.
+    from app.garmin.repository import routes as routes_repo
+    route_rows = [_export_row(r, _EXPORT_ROUTE_COLS)
+                  for r in await routes_repo.list_routes(session, user.id)]
 
     plan_rows = []
     for p in plans:
@@ -726,6 +735,7 @@ async def me_export(
                     json.dumps(lifestyle_rows, ensure_ascii=False, indent=2))
         zf.writestr("athlete_profile.json",
                     json.dumps(profile_facts, ensure_ascii=False, indent=2))
+        zf.writestr("routes.json", json.dumps(route_rows, ensure_ascii=False, indent=2))
     buf.seek(0)
 
     fname = f"garmin-coach-export-{dt.date.today().isoformat()}.zip"
@@ -859,6 +869,28 @@ async def me_hide_activity(
     return RedirectResponse(
         f"/me/activities/{row_id}?{'shown' if not hidden else 'hidden'}=1", status_code=303
     )
+
+
+@router.post("/me/activities/{row_id}/route-name")
+async def me_rename_route(
+    row_id: int,
+    name: str = Form(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """NF-33: name the route this activity belongs to ("парк", "робота і назад").
+
+    The name is the only human-authored part of a route — everything else is derived — and it
+    is what makes ``/compare route`` readable. Pure DB, no Garmin/Claude; 404 when the
+    activity isn't this user's or carries no recognised route."""
+    from app.garmin.repository import routes as routes_repo
+
+    act = await repository.get_activity(session, user.id, row_id)
+    if act is None or act.route_id is None:
+        raise HTTPException(status_code=404, detail="Activity has no recognised route")
+    await routes_repo.rename_route(session, user.id, act.route_id, name)
+    await session.commit()
+    return RedirectResponse(f"/me/activities/{row_id}?renamed=1", status_code=303)
 
 
 @router.get("/me/jobs", response_class=HTMLResponse)
@@ -1110,6 +1142,20 @@ async def me_row(
             "is_hidden": bool(obj.is_hidden),
             "gear_name": gear_name,
         }
+        # NF-25/NF-33: form drift and the same-route comparison, both deterministic lines
+        # (no LLM). Absent for a watch without dynamics / a run with no recognised route.
+        from app import routes as routes_mod
+        from app import rundynamics
+        from app.garmin.repository import routes as routes_repo
+
+        a["dynamics_line"] = rundynamics.summary(
+            rundynamics.session_dynamics(obj.series, dur_min=obj.dur_min))
+        route_ctx = await routes_repo.build_route_context(session, user.id, obj)
+        route_obj = await routes_repo.get_route(session, user.id, obj.route_id) \
+            if obj.route_id else None
+        a["route_id"] = obj.route_id
+        a["route_name"] = route_obj.name if route_obj else None
+        a["route_line"] = routes_mod.summary(route_ctx, a["route_name"])
         strain = None
         if obj.load:
             strain = {"value": int(obj.load), "color": "#3aa0ff", "label": "Навантаження",

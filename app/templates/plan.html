@@ -56,6 +56,12 @@
         <div style="white-space:pre-wrap;margin-top:.5rem">{{ race_pack.text }}</div>
       </div>
     {% endif %}
+    {% if race_debrief %}
+      <div class="summary race-pack">
+        <b>🏁 Розбір старту</b> — {{ race_debrief.target_date }}
+        <div style="white-space:pre-wrap;margin-top:.5rem">{{ race_debrief.text }}</div>
+      </div>
+    {% endif %}
 
     {% if not readonly and user.garmin_sync_enabled %}
       <div class="meta" style="margin-top:.6rem">

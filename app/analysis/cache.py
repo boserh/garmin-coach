@@ -199,6 +199,12 @@ _RACE_KEY_FIELDS = (
     "goal", "target_date", "target_dist_km", "fitness", "recent_sessions", "weather",
 )
 _COMPARE_KEY_FIELDS = ("weeks", "years_back", "current", "past")
+# NF-23: ``activity_id`` is in the key on purpose — it makes a repeat ``/race done <id>`` a
+# cache HIT instead of a second paid Opus/Sonnet call for a race whose numbers cannot change
+# (the ticket calls this out as the cross-cutting trap).
+_RACE_DEBRIEF_KEY_FIELDS = (
+    "activity_id", "race", "debrief", "buildup", "weather", "subjective",
+)
 
 
 def _digest_cache_key(context: dict, model: str) -> str:
@@ -219,3 +225,7 @@ def _race_cache_key(context: dict, model: str) -> str:
 
 def _compare_cache_key(context: dict, model: str) -> str:
     return _context_cache_key("compare", context, model, _COMPARE_KEY_FIELDS)
+
+
+def _race_debrief_cache_key(context: dict, model: str) -> str:
+    return _context_cache_key("race_debrief", context, model, _RACE_DEBRIEF_KEY_FIELDS)

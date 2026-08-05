@@ -640,6 +640,27 @@ async def _race_pack_block(session, user: User, plan) -> Optional[dict]:
     return {"text": text, "date": date, "days_left": days_left}
 
 
+async def _race_debrief_block(session, user: User, plan) -> Optional[dict]:
+    """NF-23: the post-race debrief shown ON the plan that led to the race.
+
+    Unlike the pre-race pack this is NOT time-boxed — a debrief is worth reading a year later,
+    next to the plan that produced it, which is exactly what the ticket asks for ("щоб через
+    рік розбір читався поруч із планом"). Pure DB read of the stored narration; ``None`` when
+    the plan had no race or the debrief hasn't been generated."""
+    from app import race as race_mod
+
+    if not plan or not plan.target_date or not race_mod.has_target(plan):
+        return None
+    days_left = race_mod.days_to_target(plan.target_date)
+    if days_left is None or days_left > 0:
+        return None                     # the race hasn't happened yet
+    last = await repository.get_last_report_of_kind(session, user.id, "race_debrief")
+    if not last:
+        return None
+    text, date = last
+    return {"text": text, "date": date, "target_date": plan.target_date}
+
+
 # ST-21: workout types a manual link may target (mirror repository._MANUAL_MATCH_TYPES).
 _MANUAL_TYPES = {"easy", "long", "tempo", "intervals", "race", "cycling"}
 
@@ -751,6 +772,7 @@ async def plan_page(
     anchor_pace = await repository.typical_run_pace(session, user.id)
     weather_chips, weather_conflicts = await _weather_chips(user, workouts)
     race_pack = await _race_pack_block(session, user, plan)
+    race_debrief = await _race_debrief_block(session, user, plan)
     today_iso = dt.date.today().isoformat()
     manual_actions = await _manual_actions(session, user, workouts, today_iso)
     load_forecast = await repository.load_forecast(session, user.id)
@@ -771,7 +793,8 @@ async def plan_page(
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
-         "race_pack": race_pack, "load_forecast": load_forecast,
+         "race_pack": race_pack, "race_debrief": race_debrief,
+         "load_forecast": load_forecast,
          "season": (plan.intake or {}).get("season"), "season_sports": SEASON_SPORTS,
          "cycling": (plan.intake or {}).get("cycling"),
          # NF-17: race target time (a race goal only), formatted for display + edit.
@@ -820,6 +843,9 @@ async def plan_view(
          # ST-13/EP-05: only the ACTIVE plan gets weather chips / a race-pack block — a
          # past forecast/pack means nothing on an archived plan.
          "weather_chips": {}, "weather_conflicts": set(), "race_pack": None,
+         # NF-23: the debrief IS shown on an archived plan — that's its whole point, unlike
+         # the pre-race pack, which is worthless once the race is behind you.
+         "race_debrief": await _race_debrief_block(session, user, plan),
          "count": len(workouts), "readonly": True},
     )
 
