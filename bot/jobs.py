@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi.concurrency import run_in_threadpool
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
 from app import baselines, gear, race, records, sickness, sleepnudge, stepmatch, weather
@@ -298,7 +299,16 @@ async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.dat
         text = str(e)
 
     prefix = "🧪 [тест] " if force else ""
-    await ctx.bot.send_message(user.telegram_chat_id, prefix + "Доброго ранку.\n\n" + note + text)
+    try:
+        await ctx.bot.send_message(
+            user.telegram_chat_id, prefix + "Доброго ранку.\n\n" + note + text)
+    except (BadRequest, Forbidden) as e:
+        # A permanent delivery failure (dead/invalid chat_id, bot blocked/removed) —
+        # never transient, so retrying every CHECK_INTERVAL_MIN forever just re-runs the
+        # full fetch+Claude generation for nothing. Log ERROR (TelegramAlertHandler mirrors
+        # it to the owner) and still report "delivered" so the caller sets today's guard —
+        # next attempt is tomorrow, not in 15 minutes.
+        logger.error(f"MORNING send failed user={user.id} chat={user.telegram_chat_id}: {e}")
     return True
 
 
