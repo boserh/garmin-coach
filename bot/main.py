@@ -102,6 +102,8 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
     app.add_handler(CallbackQueryHandler(handlers.plan_extend_callback, pattern=r"^planext:"))
     app.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci:"))
+    # NF-18: the auto-sickness question's ✅/❌ (the /sick rebuild, offered without /sick).
+    app.add_handler(CallbackQueryHandler(handlers.sickness_callback, pattern=r"^sick:"))
     # ST-23: plain text is a follow-up to an unconfirmed plan proposal (question or
     # correction). Registered last so every command above still wins; with no pending
     # proposal the handler returns silently, keeping the bot's previous behaviour on

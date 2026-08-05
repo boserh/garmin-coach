@@ -50,6 +50,11 @@ PENDING_ADAPT_KEY = "pending_adapt"
 # an explicit ❌ (set by plan_extend_callback, read by the morning nudge). "" = not snoozed.
 PLAN_EXTEND_SNOOZE_KEY = "extend_snooze"
 
+# NF-18: date (ISO) the auto-sickness question was last asked (or answered ❌) — set by both
+# the morning hook (bot.jobs._sickness_check_for_user) and sickness_callback, read by the
+# hook as its settings.SICKNESS_GUARD_DAYS snooze.
+SICKNESS_WARNED_KEY = "sickness_warned"
+
 # ST-23: every unconfirmed proposal says the dialogue is open — a plain text message
 # while it stands is routed back into the edit engine as a follow-up (plan_followup).
 PROPOSAL_HINT = "\n\n💬 Питання чи корекція? Просто напиши повідомленням."
@@ -1056,22 +1061,31 @@ async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not edit.operations:
         await update.message.reply_text(edit.summary or "Перебудовувати нічого.")
         return
-    ops = [op.model_dump() for op in edit.operations]
-    kb = InlineKeyboardMarkup([[
+    sent = await update.message.reply_text(
+        "🤒 Пропоную перебудову:\n\n" + edit.summary + PROPOSAL_HINT,
+        reply_markup=_sick_keyboard(),
+    )
+    async with async_session_maker() as session:
+        await _store_sick_proposal(session, user.id, edit, days_missed, sent)
+
+
+def _sick_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Застосувати", callback_data="plan_apply"),
         InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
     ]])
-    sent = await update.message.reply_text(
-        "🤒 Пропоную перебудову:\n\n" + edit.summary + PROPOSAL_HINT, reply_markup=kb
+
+
+async def _store_sick_proposal(session, user_id: int, edit, days_missed: int, sent) -> None:
+    """Park a sick-mode rebuild as the pending plan edit, with the ST-23 dialogue extras so
+    a follow-up question/correction refines it through the same path as a /plan proposal.
+    Shared by ``/sick`` and the NF-18 auto-trigger's ✅."""
+    await repository.set_pending_plan_edit(
+        session, user_id, [op.model_dump() for op in edit.operations], [],
+        summary=edit.summary,
+        instruction=f"хвороба/подорож: пропущено днів {days_missed}",
+        message=_message_ref(sent),
     )
-    # Stored with the ST-23 dialogue extras, so a follow-up question/correction refines
-    # this rebuild through the same path as a /plan proposal.
-    async with async_session_maker() as session:
-        await repository.set_pending_plan_edit(
-            session, user.id, ops, [], summary=edit.summary,
-            instruction=f"хвороба/подорож: пропущено днів {days_missed}",
-            message=_message_ref(sent),
-        )
 
 
 def _ops_hint(ops: list) -> str:
@@ -1231,6 +1245,63 @@ async def plan_extend_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("Не вдалось продовжити план. Спробуй пізніше.")
             return
     await q.edit_message_text("✅ Додав наступні тижні до плану. /plan — переглянути.")
+
+
+async def sickness_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Answer the NF-18 auto-sickness question ("схоже, ти вибув із графіка — перебудувати
+    блок?"). ``sick:yes:<n>`` runs the same ``run_sick_check`` as ``/sick`` (the one paid
+    call of the feature, only ever after this explicit tap) with the detected missed streak
+    as ``days_missed``, then hands the result to the normal plan-edit confirm flow;
+    ``sick:no`` snoozes the question for SICKNESS_GUARD_DAYS. Idempotent against a stale
+    button: a rebuild proposal already awaiting confirmation short-circuits."""
+    from app.analysis.service import run_sick_check
+    from app.garmin.credentials import load_credentials
+
+    q = update.callback_query
+    await q.answer()
+    parts = (q.data or "").split(":")
+    days_missed = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+
+        today = user_today(user).isoformat()
+        if len(parts) > 1 and parts[1] == "no":
+            await repository.set_state(session, user.id, SICKNESS_WARNED_KEY, today)
+            await q.edit_message_text(
+                "Ок, не чіпаю план. Якщо все ж захочеш перебудувати блок — /sick.")
+            return
+
+        if await repository.get_pending_plan_edit(session, user.id):
+            await q.edit_message_text("Пропозиція вже чекає на підтвердження.")
+            return
+
+        await q.edit_message_text("⏳ Перебудовую блок у щадному режимі…")
+        creds = load_credentials(user)
+        try:
+            plan, edit = await run_sick_check(
+                session, user_id=user.id, days_missed=days_missed,
+                api_key=creds.anthropic_key,
+            )
+        except AnalystError as e:
+            logger.error(f"ANALYST {e}")
+            await q.edit_message_text(str(e))
+            return
+        if plan is None:
+            await q.edit_message_text("Немає активної програми.")
+            return
+        if edit is None or not edit.operations:
+            await q.edit_message_text(edit.summary if edit else "Перебудовувати нічого.")
+            return
+        sent = await ctx.bot.send_message(
+            q.message.chat.id,
+            "🤒 Пропоную перебудову:\n\n" + edit.summary + PROPOSAL_HINT,
+            reply_markup=_sick_keyboard(),
+        )
+        await _store_sick_proposal(session, user.id, edit, days_missed, sent)
+    logger.info(f"SICKNESS rebuild proposed user={user.id} days_missed={days_missed}")
 
 
 # ---------- TEST JOB ----------

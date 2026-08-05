@@ -212,6 +212,33 @@ async def upcoming_plan_workouts(
     ).scalars().all()
 
 
+async def recent_plan_workouts(
+    session: AsyncSession, user_id: int, days: int = 7,
+    today: Optional[dt.date] = None,
+) -> List[PlannedWorkout]:
+    """The active plan's sessions over the last ``days`` days, INCLUDING today, any status
+    (the mirror of :func:`upcoming_plan_workouts`, which looks forward at planned ones only).
+
+    NF-18 reads this to count a streak of consecutive ``missed`` sessions, so it must see
+    ``done``/``partial``/``skipped`` rows too — those are what break a streak. Returns []
+    when there is no active plan. ``today`` takes the user's OWN date (ST-14).
+    """
+    plan = await get_active_plan(session, user_id)
+    if plan is None:
+        return []
+    today = today or dt.date.today()
+    start = (today - dt.timedelta(days=days)).isoformat()
+    return (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id == plan.id,
+                PlannedWorkout.date >= start,
+                PlannedWorkout.date <= today.isoformat(),
+            ).order_by(PlannedWorkout.date)
+        )
+    ).scalars().all()
+
+
 async def load_forecast(
     session: AsyncSession, user_id: int, *, today: Optional[dt.date] = None,
 ) -> Optional[dict]:

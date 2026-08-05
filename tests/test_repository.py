@@ -752,25 +752,30 @@ async def test_costs_for_month_empty_when_no_calls(session):
 # ---------- recent_step_match (NF-14) ----------
 
 async def test_recent_step_match_only_includes_scored_matches(session):
+    # Dates are relative: recent_step_match only looks back STEP_MATCH_DAYS, so hardcoded
+    # ones silently rot out of the window as the calendar moves on.
+    scored_date = (dt.date.today() - dt.timedelta(days=5)).isoformat()
+    unscored_date = (dt.date.today() - dt.timedelta(days=2)).isoformat()
     plan = TrainingPlan(user_id=U1, goal="g", status="active",
-                        start_date="2026-06-01", target_date="2026-09-01")
+                        start_date=(dt.date.today() - dt.timedelta(days=60)).isoformat(),
+                        target_date=(dt.date.today() + dt.timedelta(days=30)).isoformat())
     session.add(plan)
     await session.flush()
 
-    scored = ActivityRecord(id=101, user_id=U1, activity_id=9101, date="2026-07-05",
+    scored = ActivityRecord(id=101, user_id=U1, activity_id=9101, date=scored_date,
                             type="running", dist_km=8.0, dur_min=40.0,
                             step_match={"steps_hit": 6, "steps_total": 8, "misses": []})
-    unscored = ActivityRecord(id=102, user_id=U1, activity_id=9102, date="2026-07-08",
+    unscored = ActivityRecord(id=102, user_id=U1, activity_id=9102, date=unscored_date,
                               type="running", dist_km=5.0, dur_min=25.0)
     session.add_all([scored, unscored])
-    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-07-05", week=1,
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date=scored_date, week=1,
                                type="tempo", status="done", completed_activity_id=101))
-    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-07-08", week=1,
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date=unscored_date, week=1,
                                type="easy", status="done", completed_activity_id=102))
     await session.commit()
 
     rows = await repository.recent_step_match(session, plan.id)
-    assert rows == [{"date": "2026-07-05", "steps_hit": 6, "steps_total": 8}]
+    assert rows == [{"date": scored_date, "steps_hit": 6, "steps_total": 8}]
 
 
 async def test_recent_step_match_respects_days_window(session):

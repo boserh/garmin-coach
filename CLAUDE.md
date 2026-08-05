@@ -184,6 +184,9 @@ Optional, with defaults:
 | `HEALTH_ALERTS` | `True` | master on/off for proactive recovery-anomaly alerts. |
 | `HEALTH_MIN_HISTORY_DAYS` | `7` | cold-start gate. |
 | `HEALTH_ALERT_COOLDOWN_DAYS` | `3` | same alert kind at most once per this many days. |
+| `SICKNESS_AUTO` | `True` | master on/off for the auto "схоже, захворів" rebuild offer (NF-18). |
+| `SICKNESS_MISSED_DAYS` | `3` | consecutive missed plan sessions (last 7 days) needed to ask. |
+| `SICKNESS_GUARD_DAYS` | `7` | after asking (or a ❌), stay quiet this many days. |
 | `FUELING_MIN_DURATION_MIN` | `45` | below this session duration, fueling advisor stays silent. |
 | `FUELING_HEAT_FEELS_C` | `28` | feels-like max °C at/above → heat notes. |
 | `DEPLOY_ENABLED` | `False` | master on/off for the admin-only `/deploy` bot command. |
@@ -251,6 +254,7 @@ app/
   goal.py                                  NF-10: pure goal progress projection
   fueling.py                                NF-11: pure heat/duration fueling calculator
   sleepnudge.py                              NF-16: pure sleep-debt detector
+  sickness.py                                 NF-18: pure missed-session streak detector
   records.py                                  EP-14: pure personal-record detector
   stepmatch.py                                 NF-14: pure step-level plan-vs-actual matcher
   checkup_reminders.py                          pure next_due_date reminder logic
