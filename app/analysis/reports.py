@@ -107,7 +107,8 @@ async def _run_cached_narration(
         text, stats = cached, CallStats(kind=kind, model=model, cached=True)
     else:
         try:
-            text, stats = await _run_claude(with_stats_fn, context, api_key)
+            text, stats = await _run_claude(
+                with_stats_fn, context, api_key, session=session, user_id=user_id)
         except AnalystError as e:
             await repository.log_report(
                 session, user_id=user_id, kind=kind, model=model, ok=False,
@@ -617,7 +618,7 @@ async def run_ask_agent(
     for round_n in range(1, MAX_ASK_ROUNDS + 1):
         msg, stats = await _run_claude(
             _complete_tools, model, SYSTEM_ASK_TOOLS, messages, tools, api_key,
-            ASK_TOOL_MAX_TOKENS,
+            ASK_TOOL_MAX_TOKENS, session=session, user_id=user_id,
         )
         total.input_tokens += stats.input_tokens
         total.output_tokens += stats.output_tokens
@@ -1219,7 +1220,8 @@ async def run_injury_check(
 
     context = injury.to_context(assessment)
     try:
-        text, stats = await _run_claude(injury_with_stats, context, api_key)
+        text, stats = await _run_claude(
+            injury_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         logger.warning(f"INJURY narration failed user={user_id}, using fallback: {e}")
         await repository.log_report(
@@ -1274,7 +1276,8 @@ async def run_health_alert(
 
     context = health.to_context(report)
     try:
-        text, stats = await _run_claude(health_with_stats, context, api_key)
+        text, stats = await _run_claude(
+            health_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         logger.warning(f"HEALTH narration failed user={user_id}, using fallback: {e}")
         await repository.log_report(
@@ -1451,7 +1454,9 @@ async def run_checkup_ocr_batch(
         (media_type, base64.b64encode(fb).decode("ascii")) for fb, media_type, _ in files]
     q = f"checkup upload (OCR, {len(files)} file{'s' if len(files) != 1 else ''})"
     try:
-        text, stats = await _run_claude(checkup_ocr_with_stats, b64_files, api_key, None)
+        text, stats = await _run_claude(
+            checkup_ocr_with_stats, b64_files, api_key, None,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="checkup_ocr", model=MODEL_CHECKUP_OCR, ok=False,
@@ -1468,6 +1473,7 @@ async def run_checkup_ocr_batch(
         try:
             text2, stats2 = await _run_claude(
                 checkup_ocr_with_stats, b64_files, api_key, _ocr_retry_max_tokens(len(files)),
+                session=session, user_id=user_id,
             )
         except AnalystError as e2:
             await repository.log_report(

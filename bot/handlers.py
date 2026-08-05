@@ -331,12 +331,29 @@ def _month_bounds_utc(year: int, month: int, tz) -> "tuple[dt.datetime, dt.datet
     return start_local.astimezone(dt.timezone.utc), end_local.astimezone(dt.timezone.utc)
 
 
-def _format_costs(agg: dict, year: int, month: int) -> str:
+def _format_budget_line(budget_status: Optional[dict]) -> Optional[str]:
+    """OPS-11: one line of "spent / ceiling / projected", so ``/costs`` answers "how close
+    am I to the breaker" and not only "what did I spend". Returns None when no ceiling is
+    configured (all limits 0) — there's nothing to be close to."""
+    if not budget_status or budget_status["month_limit"] <= 0:
+        return None
+    icon = "🛑" if budget_status["blocked"] else ("⚠️" if budget_status["warn"] else "✅")
+    return (f"{icon} Ліміт: ${budget_status['month_usd']:.2f} / "
+            f"${budget_status['month_limit']:.2f} ({budget_status['pct']:.0f}%), "
+            f"прогноз ${budget_status['projected_month_usd']:.2f}")
+
+
+def _format_costs(agg: dict, year: int, month: int,
+                  budget_status: Optional[dict] = None) -> str:
     label = f"{year}-{month:02d}"
+    budget_line = _format_budget_line(budget_status)
     if agg["calls"] == 0:
-        return f"💰 Витрати за {label}: викликів не було."
+        head = f"💰 Витрати за {label}: викликів не було."
+        return f"{head}\n{budget_line}" if budget_line else head
     lines = [f"💰 Витрати за {label}: ${agg['total_usd']:.2f}",
              f"Викликів: {agg['calls']} (з кешу: {agg['cached']})"]
+    if budget_line:
+        lines.append(budget_line)
     if agg["by_kind"]:
         lines.append("")
         lines.append("По типах:")
@@ -370,7 +387,14 @@ async def costs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, use
     year, month = parsed
     start, end = _month_bounds_utc(year, month, tz)
     agg = await repository.costs_for_month(session, user.id, start, end)
-    await update.message.reply_text(_format_costs(agg, year, month))
+    # The ceiling line only makes sense for the *current* month — a past month's spend can't
+    # be compared against a limit that no longer applies to it.
+    now = dt.datetime.now(tz)
+    budget_status = None
+    if (year, month) == (now.year, now.month):
+        from app.analysis import budget as budget_mod
+        budget_status = budget_mod.status(await budget_mod.spend_totals(session, user.id))
+    await update.message.reply_text(_format_costs(agg, year, month, budget_status))
 
 
 @bot_command

@@ -24,7 +24,7 @@ from telegram.ext import ContextTypes
 
 from app import baselines, gear, race, records, sickness, sleepnudge, stepmatch, weather
 from app import format as fmt
-from app.analysis import delivery
+from app.analysis import budget, delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
 from app.analysis.service import (
     AnalystError,
@@ -107,6 +107,11 @@ GARMIN_ERR_BURST_PREFIX = "garmin_err_burst:"
 # OPS-08: the date (ISO) a stale-backup DM was last sent to this admin, so
 # backup_status.should_warn can apply the once/day-vs-once/BACKUP_WARN_DAYS cadence.
 BACKUP_WARN_KEY = "backup_warn_last"
+
+# OPS-11: highest budget step (80 / 100) already announced this calendar month, keyed
+# budget_warn:<YYYY-MM>. Storing the step rather than a date is what makes 80% fire once
+# and 100% still get through afterwards — and makes the whole thing reset with the month.
+BUDGET_WARN_PREFIX = "budget_warn:"
 
 # A separate, once-a-day calendar sync (push upcoming plan workouts to Garmin, remove
 # stale ones). Kept out of the morning report — different concern. Scheduled via
@@ -225,16 +230,30 @@ async def for_each_user(worker, *, with_chat: bool, label: str,
         async with async_session_maker() as session:
             for user in await eligible_users(session, with_chat=with_chat):
                 started = dt.datetime.now(dt.timezone.utc)
+                # OPS-11: everything a scheduled job does is *background* LLM work, which
+                # the budget breaker switches off before it touches interactive commands.
+                # Set once here rather than threaded through every run_* signature — the
+                # distinction is "who called", which is what a ContextVar tracks.
+                bg_token = budget.set_background(True)
                 try:
                     outcome = await worker(session, user)
                     if isinstance(outcome, JobOutcome):
                         status, detail, notable = outcome.status, outcome.detail, outcome.notable
                     else:
                         status, detail, notable = "ok", None, False
+                except budget.BudgetExceeded as e:
+                    # Not an error: the breaker deliberately paused background work. Its own
+                    # job-run row (skip/budget) is why OPS-04 can answer "where is my morning
+                    # report" without anyone reading the logs.
+                    logger.warning(f"{label} budget-skipped user={user.id}: {e}")
+                    await session.rollback()
+                    status, detail, notable = "skip", f"budget: {e}", True
                 except Exception:
                     logger.exception(f"{label} failed user={user.id}")
                     await session.rollback()   # don't taint the next user's shared session
                     status, detail, notable = "error", _traceback_tail(), True
+                finally:
+                    budget.reset_background(bg_token)
                 agg = aggregate and status != "error" and not notable
                 await _record_job_run_safe(job=label, user=user, status=status,
                                            detail=detail, started=started, aggregate=agg)
@@ -763,6 +782,42 @@ async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
         logger.exception(f"OPS-08 backup freshness check failed user={user.id}")
 
 
+async def _budget_warn_for_user(ctx, session, user: User, today: str) -> None:
+    """OPS-11: DM once when this user's Claude spend crosses the warn threshold (80% of the
+    monthly ceiling) and once again when it hits 100%. Two notifications per calendar month
+    at most — the guard value stores the highest step already announced, so crossing 80%
+    doesn't re-fire daily and crossing 100% still gets through after an earlier 80% DM.
+
+    Pure DB read of ``report_logs``; zero Garmin, zero Claude. Best-effort — a breaker that
+    breaks the tick would be worse than no breaker."""
+    if not user.telegram_chat_id:
+        return
+    try:
+        from app.analysis import budget as budget_mod
+
+        st = budget_mod.status(await budget_mod.spend_totals(session, user.id, fresh=True))
+        step = 100 if st["blocked"] else (80 if st["warn"] else 0)
+        if step == 0:
+            return
+        key = f"{BUDGET_WARN_PREFIX}{today[:7]}"     # per calendar month
+        announced = int(await repository.get_state(session, user.id, key) or 0)
+        if step <= announced:
+            return
+        await repository.set_state(session, user.id, key, str(step))
+        if step == 100:
+            text = (f"🛑 Бюджет на Claude вичерпано: ${st['month_usd']:.2f} з "
+                    f"${st['month_limit']:.2f} за місяць. Фонові звіти зупинені, "
+                    f"команди відповідатимуть відмовою до наступного періоду.")
+        else:
+            text = (f"⚠️ Витрачено {st['pct']:.0f}% бюджету на Claude: "
+                    f"${st['month_usd']:.2f} з ${st['month_limit']:.2f}. "
+                    f"Прогноз до кінця місяця — ${st['projected_month_usd']:.2f}.")
+        await ctx.bot.send_message(user.telegram_chat_id, text)
+        logger.warning(f"OPS-11 budget DM user={user.id} step={step} spent={st['month_usd']}")
+    except Exception:  # noqa: BLE001 — observation only, never break the tick
+        logger.exception(f"OPS-11 budget warn failed user={user.id}")
+
+
 async def _tick_for_user(ctx, session, user: User) -> None:
     # ST-14: window + "today" are per-user (their own timezone), not the process TZ — a
     # traveling user or a second user outside Europe/Warsaw gets their own morning, and
@@ -776,6 +831,11 @@ async def _tick_for_user(ctx, session, user: User) -> None:
     # OPS-08: a pure file-stat check, zero network/Garmin — runs regardless of whether
     # this user even has Garmin credentials, admin-only (a per-install fact).
     await _backup_freshness_check(ctx, session, user, today)
+
+    # OPS-11: pure DB read of this user's own spend — also independent of Garmin, and
+    # deliberately BEFORE the fetch, so the "budget is gone" DM still lands on a day the
+    # breaker is about to stop the morning report itself.
+    await _budget_warn_for_user(ctx, session, user, today)
 
     try:
         async with user_garmin_runtime(session, user, skip_label="TICK") as creds:

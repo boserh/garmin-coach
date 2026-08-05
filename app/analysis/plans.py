@@ -193,7 +193,8 @@ async def _add_plan_strength(
                             {"description": desc, "fitness": fitness or None,
                              "exercise_categories": exercises.CATEGORIES,
                              "weeks": weeks_span},
-                            api_key, model)
+                            api_key, model,
+                            session=session, user_id=plan.user_id)
                         progression = _fill_progression_gaps(
                             [repository._sanitize_strength(s) for s in sessions])
                         gen_cache[key] = progression if any(progression) else None
@@ -202,7 +203,8 @@ async def _add_plan_strength(
                             generate_strength_with_stats,
                             {"description": desc, "fitness": fitness or None,
                              "exercise_categories": exercises.CATEGORIES},
-                            api_key, model)
+                            api_key, model,
+                            session=session, user_id=plan.user_id)
                         gen_cache[key] = repository._sanitize_strength(sess)
                 except Exception:
                     logger.exception(f"PLAN strength gen failed plan={plan.id}")
@@ -377,7 +379,8 @@ async def run_plan_generation(
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
         plan_out, stats = await _run_claude(
-            generate_plan_with_stats, context, api_key, gen_model)
+            generate_plan_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan", model=gen_model, ok=False,
@@ -461,7 +464,8 @@ async def run_plan_extension(
     logger.info(f"PLAN extend user={user_id} plan={plan.id} {new_start}..{block_end}")
     try:
         plan_out, stats = await _run_claude(
-            generate_plan_with_stats, context, api_key, gen_model)
+            generate_plan_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan", model=gen_model, ok=False,
@@ -510,7 +514,8 @@ async def run_strength_preview(
                "exercise_categories": exercises.CATEGORIES}
     try:
         sess, stats = await _run_claude(
-            generate_strength_with_stats, context, api_key, gen_model)
+            generate_strength_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="strength", model=gen_model, ok=False,
@@ -651,7 +656,8 @@ async def run_plan_edit(
     # report_logs) reads as a thread rather than a series of unrelated edit requests.
     logged_q = (f"↳ {instruction}" if pending else instruction)[:200]
     try:
-        edit, stats = await _run_claude(plan_edit_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            plan_edit_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan_edit", model=MODEL_PLAN, ok=False,
@@ -852,7 +858,8 @@ async def run_plan_adaptation(
         "load_forecast": load_forecast,
     }
     try:
-        edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            plan_adapt_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="adapt", model=MODEL_PLAN, ok=False,
@@ -946,7 +953,8 @@ async def run_weather_plan_check(
         "conflicts": conflicts,
     }
     try:
-        edit, stats = await _run_claude(weather_plan_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            weather_plan_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="weather", model=MODEL_PLAN, ok=False,
@@ -1034,7 +1042,8 @@ async def run_sick_check(
                       "description": w.description} for w in ws],
     }
     try:
-        edit, stats = await _run_claude(sick_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            sick_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="sick", model=MODEL_PLAN, ok=False,

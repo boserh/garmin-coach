@@ -46,6 +46,25 @@ class Settings(BaseSettings):
     # shared pool, which Garmin fetches/logins use) so LLM latency can't starve it.
     CLAUDE_MAX_WORKERS: int = 4
 
+    # --- LLM budget circuit breaker (OPS-11) ---
+    # Spend was measured (ReportLog.cost_usd, /costs) but never *capped*: a looping
+    # adaptation, a retry storm, or plan generation on Opus with max_tokens=16000 fired
+    # three times in a row had nothing but human discipline between it and the bill.
+    # Enforced in app.analysis.budget from the single choke point every Claude call
+    # goes through. Any of these set to 0 disables that particular ceiling (the tests
+    # keep the defaults — a suite that spends $0 never approaches them).
+    LLM_BUDGET_MONTH_USD: float = 25.0   # hard ceiling per calendar month, per user
+    LLM_BUDGET_DAY_USD: float = 5.0      # hard ceiling per calendar day, per user
+    LLM_BUDGET_WARN_PCT: float = 0.8     # DM once at this share of the monthly ceiling
+    # Background work (morning report, digest, adaptation, auto-analysis) is switched off
+    # at this share, before interactive commands are — an automatic job must not eat the
+    # budget the human's own /report needs.
+    LLM_BUDGET_SOFT_PCT: float = 0.9
+    # Per-call ceiling on the *estimated* cost of one request (input estimate + the full
+    # max_tokens output priced in). The real guard against a single Opus-16k call in a
+    # loop, which no monthly average catches in time.
+    LLM_MAX_CALL_USD: float = 2.0
+
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     # Second, separate bot identity for the hidden system/admin commands (/deploy +

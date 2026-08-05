@@ -58,6 +58,20 @@
       </div>
     {% endif %}
 
+    {% if llm_budget and (llm_budget.warn or llm_budget.blocked) %}
+      <div class="note" style="border-color:{{ '#f7768e' if llm_budget.blocked else '#e0af68' }};background:rgba({{ '247,118,142' if llm_budget.blocked else '224,175,104' }},.08)">
+        {% if llm_budget.blocked %}🛑 Бюджет на Claude вичерпано{% else %}⚠️ Бюджет на Claude{% endif %}:
+        ${{ '%.2f'|format(llm_budget.month_usd) }} з ${{ '%.2f'|format(llm_budget.month_limit) }}
+        за місяць ({{ llm_budget.pct }}%), прогноз ${{ '%.2f'|format(llm_budget.projected_month_usd) }}.
+        {% if llm_budget.blocked %}
+          Нові виклики зупинені до наступного періоду.
+        {% elif llm_budget.soft_blocked %}
+          Фонові звіти призупинені — команди ще працюють.
+        {% endif %}
+        Деталі — <a href="/me/report_logs">витрати</a>.
+      </div>
+    {% endif %}
+
     {% if not has_history %}
       <div class="note">
         Ще немає історії відновлення — після першого синку Garmin тут з'явиться сьогоднішня

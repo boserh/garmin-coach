@@ -18,7 +18,10 @@ def test_run_claude_uses_dedicated_pool():
 
     async def go():
         # _run_claude(fn, *args) calls fn(*args); report the worker thread name.
-        return await analysis._run_claude(lambda _: threading.current_thread().name, None)
+        # session=None is enough here: with no user_id the OPS-11 budget check reads
+        # from settings only and short-circuits before touching the session.
+        return await analysis._run_claude(
+            lambda _: threading.current_thread().name, None, session=None)
 
     name = asyncio.run(go())
     assert name.startswith("claude")

@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.analysis.budget import BudgetExceeded
 from app.core import logging as app_logging
 from app.core.auth import RequiresLogin
 from app.core.config import settings
@@ -109,6 +110,15 @@ def create_app() -> FastAPI:
                 "message": "Garmin просить код підтвердження — заверши вхід у Налаштуваннях.",
                 "settings_url": "/settings",
             },
+            status_code=409,
+        )
+
+    @app.exception_handler(BudgetExceeded)
+    async def _budget_exceeded(request: Request, exc: BudgetExceeded):
+        # OPS-11: same shape as the MFA/creds gates above — a JSON 409 with the human
+        # explanation the breaker produced, never a traceback.
+        return JSONResponse(
+            {"error": "llm_budget_exceeded", "message": str(exc), "costs_url": "/me/costs"},
             status_code=409,
         )
 

@@ -202,6 +202,11 @@ async def dashboard(
         from app import backup_status
         backup = backup_status.read_status(Path(settings.BACKUP_DIR))
 
+    # OPS-11: the spend breaker's own state, so the ceiling is visible BEFORE it silently
+    # starts skipping morning reports. Same DB rows the cost tile above reads.
+    from app.analysis import budget as budget_mod
+    llm_budget = budget_mod.status(await budget_mod.spend_totals(session, user.id))
+
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
@@ -216,5 +221,6 @@ async def dashboard(
             "eff_chart": eff_chart,
             "backup": backup,
             "backup_warn_days": settings.BACKUP_WARN_DAYS,
+            "llm_budget": llm_budget,
         },
     )
