@@ -18,7 +18,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi.concurrency import run_in_threadpool
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from app import baselines, gear, race, records, sickness, sleepnudge, stepmatch, weather
@@ -64,6 +64,25 @@ from bot.handlers import (
 )
 
 logger = logging.getLogger("bot")
+
+_main_bot: "Bot | None" = None
+
+
+def _main_bot_ctx(ctx: ContextTypes.DEFAULT_TYPE):
+    """The hidden /test_morning + /test_digest force-* entry points run under the
+    separate admin bot process — ``ctx.bot`` there is the admin bot, so sending through
+    it lands the report in the admin-bot chat thread instead of the user's regular one.
+    Swap in a lazily-built Bot bound to the main product token instead; nothing else in
+    the forced-delivery path touches ``ctx`` besides ``.bot``."""
+    global _main_bot
+    if _main_bot is None:
+        _main_bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+
+    class _MainBotCtx:
+        bot = _main_bot
+
+    return _MainBotCtx()
+
 
 MORNING_START_HOUR = 7
 MORNING_DEADLINE_HOUR = 12
@@ -285,7 +304,9 @@ async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.dat
 
 async def force_morning_for_user(ctx, session, user: User) -> None:
     """Send the morning report on demand, bypassing the time window + once-a-day guard
-    (and leaving the guard untouched, so the real morning still fires). For /test_morning."""
+    (and leaving the guard untouched, so the real morning still fires). For /test_morning.
+    Callers running under the admin bot process should pass ``_main_bot_ctx(ctx)`` so
+    delivery uses the main bot identity, not the admin bot's."""
     now = dt.datetime.now(user_tz(user))
     today = now.date().isoformat()
     async with user_runtime(session, user) as creds:
@@ -1234,7 +1255,9 @@ async def _digest_for_user(ctx, session, user: User) -> None:
 
 async def force_digest_for_user(ctx, session, user: User) -> None:
     """Send the weekly digest on demand, bypassing the once-a-week guard (and leaving it
-    untouched, so the scheduled one still fires). For the hidden /test_digest command."""
+    untouched, so the scheduled one still fires). For the hidden /test_digest command.
+    Callers running under the admin bot process should pass ``_main_bot_ctx(ctx)`` so
+    delivery uses the main bot identity, not the admin bot's."""
     async with user_runtime(session, user) as creds:
         if not creds.anthropic_key:
             await ctx.bot.send_message(user.telegram_chat_id, "🧪 Немає Anthropic-ключа.")
