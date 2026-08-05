@@ -1323,14 +1323,14 @@ async def sickness_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def test_job(ctx: ContextTypes.DEFAULT_TYPE):
     # Runs the exact morning-report path (weather included), same as the scheduled job.
-    from bot.jobs import force_morning_for_user
+    from bot.jobs import _main_bot_ctx, force_morning_for_user
 
     user_id = ctx.job.data["user_id"]
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         if user is None:
             return
-        await force_morning_for_user(ctx, session, user)
+        await force_morning_for_user(_main_bot_ctx(ctx), session, user)
 
 
 async def test_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1361,7 +1361,7 @@ async def test_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     and once-a-day guard — without consuming today's guard, so the scheduled one still fires.
     With an argument (``/test_morning <id_or_email>``) targets any user, not just the
     caller (admin bot only) — the report is sent to that user's own chat, not the caller's."""
-    from bot.jobs import force_morning_for_user
+    from bot.jobs import _main_bot_ctx, force_morning_for_user
 
     logger.info(f"CMD /test_morning args={ctx.args}")
     async with async_session_maker() as session:
@@ -1377,13 +1377,13 @@ async def test_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if user is None:
                 return
         await update.message.reply_text(f"🧪 Генерую ранковий звіт для {user.email}…")
-        await force_morning_for_user(ctx, session, user)
+        await force_morning_for_user(_main_bot_ctx(ctx), session, user)
 
 
 async def test_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Force the weekly digest now (no once-a-week guard), so a test exercises the exact
     digest path without consuming the week's guard. Hidden debug command (EP-07)."""
-    from bot.jobs import force_digest_for_user
+    from bot.jobs import _main_bot_ctx, force_digest_for_user
 
     logger.info("CMD /test_digest")
     await update.message.reply_text("🧪 Генерую тижневий підсумок…")
@@ -1391,7 +1391,7 @@ async def test_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = await _resolve_user(update, session)
         if user is None:
             return
-        await force_digest_for_user(ctx, session, user)
+        await force_digest_for_user(_main_bot_ctx(ctx), session, user)
 
 
 async def deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
