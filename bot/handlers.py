@@ -9,6 +9,7 @@ import datetime as dt
 import functools
 import json
 import logging
+from types import SimpleNamespace
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -94,6 +95,7 @@ HELP_TEXT = (
     "/activities — останні активності\n"
     "/activity <id> [force] — розбір активності (force — перегенерувати платно)\n"
     "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
+    "/pain [зона] — болить: покроковий протокол повернення до бігу (без витрат на LLM)\n"
     "/resync [дата [дата]] — пересинкувати дані з Garmin (без аргументів — вчора+сьогодні)\n"
     "/hide <id> [show] — приховати активність (дубль/битий трек); show — повернути\n"
     "/records — особисті рекорди\n"
@@ -1585,6 +1587,165 @@ async def sickness_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         await _store_sick_proposal(session, user.id, edit, days_missed, sent)
     logger.info(f"SICKNESS rebuild proposed user={user.id} days_missed={days_missed}")
+
+
+# ---------- RETURN TO RUN (NF-30) ----------
+
+RETURN_STATE_KEY = "rtr_state"       # the protocol's own state blob (app.returntorun)
+RETURN_WARNED_KEY = "rtr_warned"     # last time we offered it — the RETURN_GUARD_DAYS snooze
+
+# The one-tap pain scale after a protocol session. Four buttons rather than eleven: the
+# decision only needs "within 2/10 or not", and a scale nobody taps produces no data at all.
+RETURN_PAIN_CHOICES = ((0, "0 — нема"), (2, "1-2 — ледь"),
+                       (4, "3-5 — помітно"), (7, "6+ — сильно"))
+
+
+def return_pain_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"rtrpain:{value}")]
+        for value, label in RETURN_PAIN_CHOICES
+    ])
+
+
+async def load_return_state(session, user_id: int) -> Optional[dict]:
+    raw = await repository.get_state(session, user_id, RETURN_STATE_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+async def save_return_state(session, user_id: int, state: dict) -> None:
+    await repository.set_state(session, user_id, RETURN_STATE_KEY,
+                               json.dumps(state, ensure_ascii=False))
+
+
+async def schedule_return_session(session, user, state: dict, date_iso: str) -> None:
+    """Write the current rung as an ordinary ``PlannedWorkout`` on ``date_iso``.
+
+    An ordinary session on purpose: the plan view, the Garmin push (walk/run is just
+    structured interval steps) and the EP-01 matcher all work on it unchanged — the protocol
+    needs no parallel machinery, only its own progression rule."""
+    from app import returntorun
+
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None:
+        return
+    step = returntorun.step_by_number(state.get("step", 1))
+    if not step:
+        return
+    existing = await repository.workout_on_date(session, plan.id, date_iso)
+    if existing is not None and (existing.description or "").startswith("Крок "):
+        return   # already scheduled for that day — idempotent
+    await repository.append_workouts(session, plan, [SimpleNamespace(
+        date=date_iso, week=None, type="easy", dist_km=None,
+        description=f"Крок {step['n']}/{returntorun.LAST_STEP}: {step['label']}",
+        steps=returntorun.session_steps(step),
+    )])
+
+
+@bot_command
+async def pain_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/pain [зона] — report pain explicitly and get the return-to-run offer (NF-30).
+
+    The automatic trigger needs pain on several runs; this is the "it hurts NOW" entry that
+    the ticket asks for. Still an offer, never an automatic start: the person decides."""
+    from app import returntorun
+
+    note = " ".join(ctx.args).strip() if ctx.args else ""
+    logger.info("CMD /pain")
+    if not settings.RETURN_TO_RUN:
+        await update.message.reply_text("Протокол повернення вимкнено в налаштуваннях.")
+        return
+    state = await load_return_state(session, user.id)
+    if returntorun.is_active(state):
+        await update.message.reply_text(returntorun.step_text(state))
+        return
+    last = await repository.get_last_activity(session, user.id)
+    if last is not None:
+        await repository.set_subjective(session, user.id, last.id, pain=True,
+                                        note=note or None)
+    trigger = {"pain_runs": 1, "window": 1, "note": note or None}
+    await update.message.reply_text(
+        returntorun.offer_text(trigger),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Веди мене", callback_data="rtr:yes"),
+            InlineKeyboardButton("❌ Не треба", callback_data="rtr:no"),
+        ]]),
+    )
+
+
+async def return_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Answer the return-to-run offer. ``rtr:yes`` pauses the plan and schedules the first
+    rung; ``rtr:no`` snoozes for RETURN_GUARD_DAYS and changes nothing at all (an AC — a
+    declined offer must not touch the plan)."""
+    from app import returntorun
+
+    q = update.callback_query
+    await q.answer()
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        today = user_today(user)
+        await repository.set_state(session, user.id, RETURN_WARNED_KEY, today.isoformat())
+        if (q.data or "").endswith(":no"):
+            await session.commit()
+            await q.edit_message_text(
+                "Ок, нічого не міняю. Якщо передумаєш — /pain.")
+            return
+
+        state = returntorun.start(today)
+        await save_return_state(session, user.id, state)
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is not None:
+            await repository.set_plan_paused(session, plan, True)
+            await schedule_return_session(session, user, state, today.isoformat())
+        await session.commit()
+        paused_note = ("Твій план поставлено на паузу — він нікуди не дівається, "
+                       "повернемось до нього після протоколу.\n\n") if plan else ""
+        await q.edit_message_text(paused_note + returntorun.step_text(state))
+    logger.info(f"RETURN protocol started user={user.id}")
+
+
+async def return_pain_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """One tap on the post-session pain scale moves the ladder (or stops it). Zero LLM —
+    the whole progression is deterministic (an AC)."""
+    from app import returntorun
+
+    q = update.callback_query
+    await q.answer()
+    try:
+        pain = float((q.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        return
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        state = await load_return_state(session, user.id)
+        if not returntorun.is_active(state):
+            await q.edit_message_text("Протокол уже не активний.")
+            return
+        today = user_today(user)
+        state = returntorun.advance(state, pain, today=today)
+        await save_return_state(session, user.id, state)
+        if state.get("status") == "active":
+            await schedule_return_session(
+                session, user, state, (today + dt.timedelta(days=2)).isoformat())
+        elif state.get("status") == "done":
+            plan = await repository.get_active_plan(session, user.id)
+            if plan is not None:
+                await repository.set_plan_paused(session, plan, False)
+        await session.commit()
+        await q.edit_message_text(
+            returntorun.outcome_text(state) or returntorun.step_text(state))
+    logger.info(f"RETURN step user={user.id} pain={pain} → {state.get('outcome')} "
+                f"step={state.get('step')}")
 
 
 # ---------- TEST JOB ----------

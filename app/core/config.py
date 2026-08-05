@@ -204,6 +204,18 @@ class Settings(BaseSettings):
     SICKNESS_MISSED_DAYS: int = 3    # consecutive missed sessions (last 7 days) to trigger
     SICKNESS_GUARD_DAYS: int = 7     # after a proposal (or its ❌), stay quiet this many days
 
+    # --- Return-to-run protocol (NF-30) ---
+    # Pain already reported on several recent runs turns into ONE ✅/❌ DM offering a
+    # deterministic walk/run ladder (app.returntorun, zero LLM in the protocol itself — the
+    # only paid call is the optional plan rebuild the user asks for on the way out). The
+    # master switch exists because this is the feature that comes closest to the medical
+    # boundary: the protocol describes load, never a diagnosis, and an owner who wants none
+    # of it can turn it off outright.
+    RETURN_TO_RUN: bool = True
+    RETURN_PAIN_RUNS: int = 2        # pain on this many of the last RETURN_WINDOW_RUNS runs
+    RETURN_WINDOW_RUNS: int = 5      # ...within this many most recent check-ins
+    RETURN_GUARD_DAYS: int = 14      # after a proposal (or its ❌), stay quiet this many days
+
     # --- Backup freshness monitoring (OPS-08) ---
     # Where scripts/backup_db.py writes its rotated copies + the last_ok.json marker
     # app.backup_status reads (must match --dir when backup_db is invoked with a

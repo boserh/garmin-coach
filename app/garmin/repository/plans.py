@@ -18,16 +18,30 @@ from app.garmin.repository.core import _dump_steps
 
 # ---------- TRAINING PLAN ----------
 
+# NF-30: a plan in the return-to-run protocol is "paused", NOT archived — it keeps its future
+# sessions and stays the user's current plan, so /plan still shows it and the protocol can hand
+# it back afterwards. Anything that asks for "the current plan" must therefore see it.
+CURRENT_PLAN_STATUSES = ("active", "paused")
+
+
 async def get_active_plan(session: AsyncSession, user_id: int):
-    """This user's current active TrainingPlan, or None."""
+    """This user's current TrainingPlan (active or NF-30-paused), or None."""
     return (
         await session.execute(
             select(TrainingPlan)
-            .where(TrainingPlan.user_id == user_id, TrainingPlan.status == "active")
+            .where(TrainingPlan.user_id == user_id,
+                   TrainingPlan.status.in_(CURRENT_PLAN_STATUSES))
             .order_by(TrainingPlan.id.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+async def set_plan_paused(session: AsyncSession, plan, paused: bool) -> None:
+    """Pause (NF-30) or resume one plan. A pause is deliberately NOT an archive: the sessions
+    stay, the plan stays current, and the protocol's own sessions are written into the same
+    plan alongside them."""
+    plan.status = "paused" if paused else "active"
 
 
 async def list_plans(session: AsyncSession, user_id: int, status: Optional[str] = None):
@@ -424,7 +438,8 @@ async def create_plan(
     prior = (
         await session.execute(
             select(TrainingPlan).where(
-                TrainingPlan.user_id == user_id, TrainingPlan.status == "active"
+                TrainingPlan.user_id == user_id,
+                TrainingPlan.status.in_(CURRENT_PLAN_STATUSES),
             )
         )
     ).scalars().all()

@@ -675,6 +675,72 @@ async def _sickness_check_for_user(ctx, session, user: User, creds, today: str,
         return False
 
 
+async def _return_to_run_check_for_user(ctx, session, user: User, today: str) -> bool:
+    """NF-30: the two halves of the return-to-run protocol, both in the morning tick.
+
+    1. **A protocol already running** — if yesterday's rung was actually run, ask the one-tap
+       pain question that moves the ladder. A day the runner didn't run asks nothing and moves
+       nothing (an AC): silence is not evidence.
+    2. **No protocol** — if pain has been flagged on several recent runs, offer one ✅/❌.
+
+    Zero Claude calls on either path; the only paid call in the whole feature is the plan
+    rebuild the user may ask for on the way out."""
+    from app import returntorun
+    from bot import handlers as h
+
+    if not settings.RETURN_TO_RUN or not user.alerts_enabled or not user.telegram_chat_id:
+        return False
+    try:
+        state = await h.load_return_state(session, user.id)
+        if returntorun.is_active(state):
+            return await _return_step_prompt(ctx, session, user, state, today)
+
+        if _within_guard(await repository.get_state(session, user.id, h.RETURN_WARNED_KEY),
+                         today, settings.RETURN_GUARD_DAYS):
+            return False
+        runs = await repository.recent_subjective_runs(session, user.id, days=21)
+        trigger = returntorun.should_offer(
+            runs, window=settings.RETURN_WINDOW_RUNS, needed=settings.RETURN_PAIN_RUNS)
+        if trigger is None:
+            return False
+        # Guard BEFORE sending: a delivery hiccup must not turn into re-asking every tick.
+        await repository.set_state(session, user.id, h.RETURN_WARNED_KEY, today)
+        await ctx.bot.send_message(
+            user.telegram_chat_id, returntorun.offer_text(trigger),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Веди мене", callback_data="rtr:yes"),
+                InlineKeyboardButton("❌ Не треба", callback_data="rtr:no"),
+            ]]),
+        )
+        logger.info(f"RETURN offer sent user={user.id} pain_runs={trigger['pain_runs']}")
+        return True
+    except Exception:
+        logger.exception(f"RETURN check failed user={user.id}")
+        return False
+
+
+async def _return_step_prompt(ctx, session, user: User, state: dict, today: str) -> bool:
+    """Ask "how was the pain?" once, for a protocol session that actually happened."""
+    from bot import handlers as h
+
+    asked_key = h.RETURN_STATE_KEY + ":asked"
+    if await repository.get_state(session, user.id, asked_key) == today:
+        return False
+    yesterday = (dt.date.fromisoformat(today) - dt.timedelta(days=1)).isoformat()
+    acts = await repository.activities_on_dates(session, user.id, {yesterday, today})
+    if not any("run" in (a.type or "").lower() or "walk" in (a.type or "").lower()
+               for a in acts):
+        return False    # nothing was run — the ladder stays exactly where it is
+    await repository.set_state(session, user.id, asked_key, today)
+    await ctx.bot.send_message(
+        user.telegram_chat_id,
+        "🩹 Як біль після вчорашньої сесії протоколу — і сьогодні вранці?",
+        reply_markup=h.return_pain_keyboard(),
+    )
+    logger.info(f"RETURN pain question sent user={user.id} step={state.get('step')}")
+    return True
+
+
 async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
     """ST-11: decode the stored Garmin session's estimated death date
     (``app.garmin.token_info``) and DM a heads-up once the deadline is within
@@ -899,7 +965,13 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                     sick_sent = await _sickness_check_for_user(
                         ctx, session, user, creds, today, risk=risk)
 
-                if not deload_sent and not sick_sent:
+                # NF-30 return-to-run: the case where the pain has ALREADY happened. It runs
+                # regardless of the two above, because a live protocol's daily step question
+                # is not a risk advisory competing for the day's one slot — it's the thing the
+                # runner is currently following. Its own offer is guarded separately.
+                rtr_sent = await _return_to_run_check_for_user(ctx, session, user, today)
+
+                if not deload_sent and not sick_sent and not rtr_sent:
                     # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack.
                     await _injury_check_for_user(ctx, session, user, creds, today, risk=risk)
 
