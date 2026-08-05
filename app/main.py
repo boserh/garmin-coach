@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.analysis.budget import BudgetExceeded
 from app.core import logging as app_logging
 from app.core.auth import RequiresLogin
 from app.core.config import settings
@@ -56,7 +57,15 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app_logging.setup()
-    app = FastAPI(title="Garmin → Claude", version="1.0.0", lifespan=lifespan)
+    # openapi_url=None also kills /docs and /redoc. This is a personal single-tenant
+    # app with no external API consumers, so the generated schema is pure attack
+    # surface: it hands a scanner the full route map (including every admin path),
+    # each form's exact field names, and our route docstrings — which describe
+    # internal guards, cost paths and cache behaviour. Scanners already fetch it
+    # (a 200 on /openapi.json in the middle of a .env sweep is what surfaced this).
+    app = FastAPI(
+        title="Garmin → Claude", version="1.0.0", lifespan=lifespan, openapi_url=None
+    )
 
     # Signed cookie sessions for web login. APP_SECRET_KEY doubles as the signing
     # key. If it's unset we must NOT fall back to a constant — a known secret lets
@@ -76,7 +85,29 @@ def create_app() -> FastAPI:
         SessionMiddleware,
         secret_key=session_secret,
         same_site="lax",
+        https_only=settings.SESSION_HTTPS_ONLY,
     )
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        # The app is served behind Cloudflare, which adds none of these for us.
+        # frame-ancestors 'none' is the CSP-era X-Frame-Options: without it /login can be
+        # framed invisibly over another page and clicks stolen. nosniff stops a browser
+        # from re-guessing a response's type (an uploaded lab-report photo served back
+        # from /checkups/... must never be interpreted as HTML). Referrer-Policy keeps
+        # our paths — which carry row ids — out of the Referer sent to any external link.
+        response = await call_next(request)
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        # Only promise HTTPS when we're actually configured for it — see the comment on
+        # SESSION_HTTPS_ONLY: HSTS from a dev box would pin http://localhost off-limits.
+        if settings.SESSION_HTTPS_ONLY and settings.HSTS_MAX_AGE:
+            response.headers.setdefault(
+                "Strict-Transport-Security", f"max-age={settings.HSTS_MAX_AGE}"
+            )
+        return response
 
     @app.middleware("http")
     async def _log_requests(request: Request, call_next):
@@ -109,6 +140,15 @@ def create_app() -> FastAPI:
                 "message": "Garmin просить код підтвердження — заверши вхід у Налаштуваннях.",
                 "settings_url": "/settings",
             },
+            status_code=409,
+        )
+
+    @app.exception_handler(BudgetExceeded)
+    async def _budget_exceeded(request: Request, exc: BudgetExceeded):
+        # OPS-11: same shape as the MFA/creds gates above — a JSON 409 with the human
+        # explanation the breaker produced, never a traceback.
+        return JSONResponse(
+            {"error": "llm_budget_exceeded", "message": str(exc), "costs_url": "/me/costs"},
             status_code=409,
         )
 

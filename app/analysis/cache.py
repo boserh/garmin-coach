@@ -83,7 +83,9 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                subjective: Optional[dict] = None,
                health_alerts: Optional[dict] = None,
                fueling: Optional[dict] = None,
-               today: Optional[str] = None) -> str:
+               today: Optional[str] = None,
+               intensity: Optional[dict] = None,
+               athlete_profile: Optional[dict] = None) -> str:
     # ``today`` is the user's own date (their timezone, ST-14) when the caller knows it —
     # it is part of the prompt (and of every relative-day label built from it), so it must
     # be part of the key. Falls back to the process date for callers without a user.
@@ -103,13 +105,21 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "subjective": subjective,
         "health_alerts": health_alerts,
         "fueling": fueling,
+        # NF-24: the intensity block is prompt context, so it must be part of the key —
+        # otherwise a week that just drifted into the grey zone would keep returning
+        # yesterday's report, which is exactly the trap the backlog warns about.
+        "intensity": intensity,
+        # EP-18: without the profile in the key, editing a fact would change the prompt but
+        # not the hash — the coach would "learn" something and keep serving the old report.
+        "athlete_profile": athlete_profile,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list,
-                   last_data_date: Optional[str] = None) -> str:
+                   last_data_date: Optional[str] = None,
+                   athlete_profile: Optional[dict] = None) -> str:
     # EP-09: keyed on a coarse daily-data slice (last_data_date — the most recent stored
     # daily_metrics date, a pure-DB proxy for "has anything changed") rather than the
     # calendar date alone, so a repeat question before today's data has synced is still a
@@ -122,6 +132,8 @@ def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list,
         "question": question,
         "model": model,
         "ask": True,
+        # EP-18: the profile is part of what /ask reads, so it keys the cache too.
+        "athlete_profile": athlete_profile,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -175,8 +187,13 @@ _DIGEST_KEY_FIELDS = (
     "iso_week", "week", "weekly_volume", "compliance", "recovery",
     "fitness", "multisport", "goal", "goal_projection", "efficiency", "records",
     "sleep_regularity",
+    "intensity",   # NF-24 — prompt context, therefore key material
+    "strength",    # NF-27 — same
 )
-_INSIGHTS_KEY_FIELDS = ("window_days", "findings")
+# NF-28's lifestyle findings are a separate context key, so they must be listed here too —
+# without it a newly-logged tag would change the prompt but not the hash, and /insights
+# would keep serving the pre-lifestyle text (the backlog's cross-cutting trap).
+_INSIGHTS_KEY_FIELDS = ("window_days", "findings", "lifestyle_findings")
 _WRAPPED_KEY_FIELDS = ("period", "start", "end", "stats", "records")
 _RACE_KEY_FIELDS = (
     "goal", "target_date", "target_dist_km", "fitness", "recent_sessions", "weather",

@@ -46,6 +46,25 @@ class Settings(BaseSettings):
     # shared pool, which Garmin fetches/logins use) so LLM latency can't starve it.
     CLAUDE_MAX_WORKERS: int = 4
 
+    # --- LLM budget circuit breaker (OPS-11) ---
+    # Spend was measured (ReportLog.cost_usd, /costs) but never *capped*: a looping
+    # adaptation, a retry storm, or plan generation on Opus with max_tokens=16000 fired
+    # three times in a row had nothing but human discipline between it and the bill.
+    # Enforced in app.analysis.budget from the single choke point every Claude call
+    # goes through. Any of these set to 0 disables that particular ceiling (the tests
+    # keep the defaults — a suite that spends $0 never approaches them).
+    LLM_BUDGET_MONTH_USD: float = 25.0   # hard ceiling per calendar month, per user
+    LLM_BUDGET_DAY_USD: float = 5.0      # hard ceiling per calendar day, per user
+    LLM_BUDGET_WARN_PCT: float = 0.8     # DM once at this share of the monthly ceiling
+    # Background work (morning report, digest, adaptation, auto-analysis) is switched off
+    # at this share, before interactive commands are — an automatic job must not eat the
+    # budget the human's own /report needs.
+    LLM_BUDGET_SOFT_PCT: float = 0.9
+    # Per-call ceiling on the *estimated* cost of one request (input estimate + the full
+    # max_tokens output priced in). The real guard against a single Opus-16k call in a
+    # loop, which no monthly average catches in time.
+    LLM_MAX_CALL_USD: float = 2.0
+
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     # Second, separate bot identity for the hidden system/admin commands (/deploy +
@@ -69,6 +88,16 @@ class Settings(BaseSettings):
     # 0 so a fixture can log in repeatedly). See app.core.ratelimit for the trade-offs.
     LOGIN_RATE_LIMIT: int = 5          # max attempts per window before a 429
     LOGIN_RATE_WINDOW_S: int = 300     # window length in seconds (default 5 min)
+
+    # Secure-only session cookie + HSTS. Defaults ON: the deployed site is HTTPS, and
+    # without the Secure flag the session cookie rides along on any plain-HTTP request
+    # to the same host — readable by anyone on the path. Turn OFF only to develop over
+    # http://localhost, where a Secure cookie is never stored and login just silently
+    # fails to stick (the tests set it to false for the same reason).
+    # HSTS is deliberately tied to the same switch: promising a browser "HTTPS only for
+    # the next N seconds" is a one-way door, so it must never fire from a dev box.
+    SESSION_HTTPS_ONLY: bool = True
+    HSTS_MAX_AGE: int = 31536000       # 1 year; 0 omits the header entirely
 
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by
@@ -139,6 +168,14 @@ class Settings(BaseSettings):
     SLEEP_NUDGE: bool = True
     SLEEP_NUDGE_HOUR: int = 21
 
+    # --- Lifestyle log (NF-28) ---
+    # One tap in the same evening slot as the sleep nudge marks the day's everyday facts
+    # (alcohol / late caffeine / late meal / stress / travel / feeling off). Zero LLM calls;
+    # the tags become binary variables in NF-02's correlation engine, which until now could
+    # only correlate what the watch itself reports. Off → the prompt is never sent (already
+    # stored history stays, and /log keeps working).
+    LIFESTYLE_LOG: bool = True
+
     # --- Injury-risk radar (NF-04) ---
     # A pure-Python detector combines load-side signals (ACWR trend, repeated pain, RPE/pace
     # divergence, HRV/RHR drift) into a severity score; on a high score the morning tick sends
@@ -190,6 +227,17 @@ class Settings(BaseSettings):
     # GEAR_REWARN_KM further. 0 disables the DM entirely (roster/mileage still refresh).
     GEAR_WEAR_KM: float = 700
     GEAR_REWARN_KM: float = 150
+
+    # --- Intensity distribution (NF-24) ---
+    # A pure-Python, zero-LLM read of HR time-in-zone (app.intensity): what share of weekly
+    # TIME was actually easy, how much sat in the useless "grey zone", and how big the
+    # anaerobic dose was. Before this, whole-session avg_hr was the only intensity signal in
+    # the app — and it averages an interval session into a meaningless middle. Off → nothing
+    # is fetched and every consumer stays silent (already-stored zones remain).
+    INTENSITY_DISTRIBUTION: bool = True
+    POLARIZATION_LOW_TARGET: float = 0.8   # target share of weekly time in zones 1-2
+    GRAY_ZONE_MAX: float = 0.15            # above this share in zone 3 for several weeks → flag
+    ANAEROBIC_WEEKLY_CAP: float = 8.0      # weekly sum of anaerobic training effect
 
     # --- Forward load forecast (NF-20) ---
     # A pure-Python, zero-LLM forecast (app.loadforecast): this ISO week's still-planned

@@ -72,6 +72,7 @@ from app.analysis.prompts import (
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
+from app.db import profile as profile_db
 from app.db.models import HealthCheckup
 from app.garmin.schemas import Payload, SupplementAdvice
 from app.multisport import sport_bucket
@@ -107,7 +108,8 @@ async def _run_cached_narration(
         text, stats = cached, CallStats(kind=kind, model=model, cached=True)
     else:
         try:
-            text, stats = await _run_claude(with_stats_fn, context, api_key)
+            text, stats = await _run_claude(
+                with_stats_fn, context, api_key, session=session, user_id=user_id)
         except AnalystError as e:
             await repository.log_report(
                 session, user_id=user_id, kind=kind, model=model, ok=False,
@@ -193,6 +195,8 @@ def analyze_with_stats(
     health_alerts: Optional[dict] = None,
     fueling: Optional[dict] = None,
     today: Optional[str] = None,
+    intensity_ctx: Optional[dict] = None,
+    athlete_profile: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -243,6 +247,14 @@ def analyze_with_stats(
         user_content["health_alerts"] = health_alerts
     if fueling:
         user_content["fueling"] = fueling
+    # NF-24: only travels when there IS a deviation worth mentioning — the daily report is
+    # not the place for a distribution table nobody asked for.
+    if intensity_ctx and intensity_ctx.get("findings"):
+        user_content["intensity"] = intensity_ctx
+    # EP-18: what the coach remembers about THIS athlete. Absent (not empty) for a new
+    # user, so their prompts stay byte-for-byte what they were before coach memory existed.
+    if athlete_profile:
+        user_content["athlete_profile"] = athlete_profile
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -341,6 +353,8 @@ async def run_analysis(
     subjective = None
     health_alerts = None
     fueling = None
+    intensity_ctx = None
+    athlete_profile = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -400,12 +414,20 @@ async def run_analysis(
                     today_session, weather, heat_feels_c=settings.FUELING_HEAT_FEELS_C,
                     min_duration_min=settings.FUELING_MIN_DURATION_MIN, anchor_pace=anchor_pace,
                 )
+            # NF-24: intensity distribution — carried only when the detector actually found
+            # a deviation, so the daily report gains ~120 tokens on the days it has
+            # something to say and nothing at all on the days it doesn't.
+            intensity_ctx = await build_intensity_context(session, user_id=user_id) or None
+            # EP-18: the durable athlete model, injected through the one shared helper every
+            # LLM path uses so "what the coach knows" can't drift between surfaces.
+            athlete_profile = await profile_db.build_context(session, user_id)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
-                           subjective, health_alerts, fueling, today_iso)
+                           subjective, health_alerts, fueling, today_iso, intensity_ctx,
+                           athlete_profile)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -415,7 +437,7 @@ async def run_analysis(
         return analyze_with_stats(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
-            today_iso,
+            today_iso, intensity_ctx, athlete_profile,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
@@ -611,13 +633,18 @@ async def run_ask_agent(
     }
     if recent_asks:
         user_content["recent_qa"] = recent_asks
+    # EP-18: /ask is where "it doesn't know me" is felt most sharply — a question about a
+    # recurring problem should be answered against a year of observation, not 7 days.
+    profile_ctx = await profile_db.build_context(session, user_id)
+    if profile_ctx:
+        user_content["athlete_profile"] = profile_ctx
     messages = [{"role": "user", "content": json.dumps(user_content, ensure_ascii=False)}]
 
     total = CallStats(kind="ask", model=model)
     for round_n in range(1, MAX_ASK_ROUNDS + 1):
         msg, stats = await _run_claude(
             _complete_tools, model, SYSTEM_ASK_TOOLS, messages, tools, api_key,
-            ASK_TOOL_MAX_TOKENS,
+            ASK_TOOL_MAX_TOKENS, session=session, user_id=user_id,
         )
         total.input_tokens += stats.input_tokens
         total.output_tokens += stats.output_tokens
@@ -667,7 +694,9 @@ async def run_ask(
     recent_asks = await repository.get_recent_asks(session, user_id, minutes=ASK_CONTEXT_MIN)
     last_data_date = await repository.latest_daily_date(session, user_id)
 
-    key = _ask_cache_key(reports, question, MODEL_ASK, recent_asks, last_data_date)
+    profile_ctx = await profile_db.build_context(session, user_id)
+    key = _ask_cache_key(reports, question, MODEL_ASK, recent_asks, last_data_date,
+                         profile_ctx)
     cached = await llm_cache.get(session, key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {MODEL_ASK} (ask)")
@@ -1003,6 +1032,13 @@ async def run_digest(
         "efficiency": efficiency_trend,
         "records": month_records,
         "sleep_regularity": sleep_regularity,
+        # NF-24: the digest is the right home for the FULL distribution (the daily report
+        # only gets a line, and only on a deviation) — a weekly retrospective is exactly
+        # where "where did your week's time actually go" belongs.
+        "intensity": await build_intensity_context(session, user_id=user_id) or None,
+        # NF-27: tonnage / e1RM trend / stalls — the strength half of the week, which the
+        # digest previously couldn't mention at all because nothing computed it.
+        "strength": await build_strength_context(session, user_id=user_id) or None,
         "has_plan": plan is not None,
     }
 
@@ -1163,10 +1199,15 @@ async def run_insights(
     (the honest "not enough data" path) — the caller shows a friendly message and never
     spends a Claude call in that case."""
     from app import correlations
+    from app.db import lifestyle as lifestyle_db
     from app.garmin import repository
 
     history = await repository.read_history(session, user_id, days=INSIGHTS_WINDOW_DAYS)
-    findings = correlations.find_correlations(history)
+    # NF-28: the user's own evening tags join as binary variables — the engine could
+    # previously only correlate what the watch reports, which left every everyday lever
+    # (alcohol, late caffeine, a hard day) permanently invisible.
+    logs = await lifestyle_db.read_range(session, user_id, days=INSIGHTS_WINDOW_DAYS)
+    findings = correlations.find_correlations(history, lifestyle_logs=logs)
     if not findings:
         logger.info(f"INSIGHTS skip user={user_id}: no significant correlations")
         return None
@@ -1177,6 +1218,75 @@ async def run_insights(
         with_stats_fn=insights_with_stats,
         question=f"insights:{len(findings)}", api_key=api_key,
     )
+
+
+# ---------- INTENSITY DISTRIBUTION (NF-24) ----------
+
+INTENSITY_WEEKS = 8   # enough to see a grey-zone trend without dragging in an old training block
+
+
+async def build_intensity_context(session, *, user_id: int) -> dict:
+    """The shared NF-24 context: weekly time-in-zone distribution + findings, or ``{}``.
+
+    ``{}`` on purpose rather than a "no data" structure — an empty dict is falsy, so every
+    consumer's ``if ctx:`` guard degrades to silence for a user whose activities carry no
+    zones (an old history, a watch without a HR strap, the feature switched off). Pure DB
+    read + the pure detector; no Garmin request, no Claude call.
+
+    Weeks in which the PLAN itself prescribed intensity are passed to the detector so the
+    grey-zone advice can't fire for a week the athlete spent following the plan."""
+    from app import intensity
+    from app.garmin import repository
+
+    if not settings.INTENSITY_DISTRIBUTION:
+        return {}
+    acts = await repository.activities_with_zones(session, user_id, weeks=INTENSITY_WEEKS)
+    weeks = intensity.weekly_distribution(acts)
+    if not weeks:
+        return {}
+    planned = await repository.recent_plan_workouts(session, user_id, days=7 * INTENSITY_WEEKS)
+    planned_weeks = {
+        w for w in (
+            _iso_week(p.date) for p in planned
+            if (p.type or "") in intensity.INTENSITY_TYPES
+        ) if w
+    }
+    findings = intensity.detect(
+        weeks,
+        low_target=settings.POLARIZATION_LOW_TARGET,
+        gray_max=settings.GRAY_ZONE_MAX,
+        anaerobic_cap=settings.ANAEROBIC_WEEKLY_CAP,
+        planned_intensity_weeks=planned_weeks,
+    )
+    return intensity.build_context(weeks, findings)
+
+
+def _iso_week(date_s: Optional[str]) -> Optional[str]:
+    try:
+        return dt.date.fromisoformat(date_s or "").strftime("%G-W%V")
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------- STRENGTH STATS (NF-27) ----------
+
+STRENGTH_WEEKS = 12   # enough to see an e1RM trend and a stall without dragging in last year
+
+
+async def build_strength_context(session, *, user_id: int) -> dict:
+    """Weekly tonnage / e1RM / stalls, or ``{}`` for someone with no logged strength sets.
+
+    ``{}`` (falsy) rather than a "no data" structure, so every consumer's ``if ctx:`` guard
+    degrades to silence. Pure DB read over sets Garmin has already returned and we have
+    already stored — no Garmin request, no LLM call."""
+    from app import strengthstats
+    from app.garmin import repository
+
+    rows = await repository.strength_sessions(session, user_id, weeks=STRENGTH_WEEKS)
+    weeks = strengthstats.weekly_stats(rows)
+    if not weeks:
+        return {}
+    return strengthstats.build_context(weeks, strengthstats.detect_stalls(weeks))
 
 
 # ---------- INJURY-RISK RADAR (NF-04) ----------
@@ -1193,9 +1303,13 @@ async def build_injury_assessment(session, *, user_id: int):
     daily = await repository.read_load_history(session, user_id, days=injury.WINDOW_DAYS)
     runs = await repository.recent_subjective_runs(session, user_id, days=injury.WINDOW_DAYS)
     history_days = await repository.count_daily_metrics(session, user_id)
+    # NF-24: grey-zone drift compounds every other risk signal (fatigue accrues faster than
+    # the volume suggests), so it raises the score — but it can never trip a warning alone.
+    intensity_ctx = await build_intensity_context(session, user_id=user_id)
     return injury.assess(
         daily, runs, history_days=history_days,
         min_history_days=settings.INJURY_MIN_HISTORY_DAYS,
+        intensity_findings=(intensity_ctx or {}).get("findings"),
     )
 
 
@@ -1219,7 +1333,8 @@ async def run_injury_check(
 
     context = injury.to_context(assessment)
     try:
-        text, stats = await _run_claude(injury_with_stats, context, api_key)
+        text, stats = await _run_claude(
+            injury_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         logger.warning(f"INJURY narration failed user={user_id}, using fallback: {e}")
         await repository.log_report(
@@ -1274,7 +1389,8 @@ async def run_health_alert(
 
     context = health.to_context(report)
     try:
-        text, stats = await _run_claude(health_with_stats, context, api_key)
+        text, stats = await _run_claude(
+            health_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         logger.warning(f"HEALTH narration failed user={user_id}, using fallback: {e}")
         await repository.log_report(
@@ -1451,7 +1567,9 @@ async def run_checkup_ocr_batch(
         (media_type, base64.b64encode(fb).decode("ascii")) for fb, media_type, _ in files]
     q = f"checkup upload (OCR, {len(files)} file{'s' if len(files) != 1 else ''})"
     try:
-        text, stats = await _run_claude(checkup_ocr_with_stats, b64_files, api_key, None)
+        text, stats = await _run_claude(
+            checkup_ocr_with_stats, b64_files, api_key, None,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="checkup_ocr", model=MODEL_CHECKUP_OCR, ok=False,
@@ -1468,6 +1586,7 @@ async def run_checkup_ocr_batch(
         try:
             text2, stats2 = await _run_claude(
                 checkup_ocr_with_stats, b64_files, api_key, _ocr_retry_max_tokens(len(files)),
+                session=session, user_id=user_id,
             )
         except AnalystError as e2:
             await repository.log_report(

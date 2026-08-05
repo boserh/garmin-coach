@@ -15,6 +15,10 @@ os.environ["LOGIN_RATE_LIMIT"] = "0"
 # FakeProvider it's pure wall-clock waste (real Garmin is never touched in tests).
 # 0 disables it (app.core.config's own comment on GARMIN_RPS).
 os.environ["GARMIN_RPS"] = "0"
+# TestClient talks to http://testserver, and httpx (correctly) refuses to store a
+# Secure cookie sent over plain HTTP — with the prod default every logged-in fixture
+# would silently lose its session. Dedicated tests assert the flag is set in prod.
+os.environ["SESSION_HTTPS_ONLY"] = "false"
 # Cost safety (see CLAUDE.md "Cost safety"): tests must NEVER reach the real Anthropic API.
 # Hard-override the key to a dummy so even a mock that misses its target gets a 401 instead
 # of spending real money — CODE-01's refactor silently un-mocked calls and burned tokens.

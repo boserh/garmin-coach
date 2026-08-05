@@ -58,6 +58,20 @@
       </div>
     {% endif %}
 
+    {% if llm_budget and (llm_budget.warn or llm_budget.blocked) %}
+      <div class="note" style="border-color:{{ '#f7768e' if llm_budget.blocked else '#e0af68' }};background:rgba({{ '247,118,142' if llm_budget.blocked else '224,175,104' }},.08)">
+        {% if llm_budget.blocked %}🛑 Бюджет на Claude вичерпано{% else %}⚠️ Бюджет на Claude{% endif %}:
+        ${{ '%.2f'|format(llm_budget.month_usd) }} з ${{ '%.2f'|format(llm_budget.month_limit) }}
+        за місяць ({{ llm_budget.pct }}%), прогноз ${{ '%.2f'|format(llm_budget.projected_month_usd) }}.
+        {% if llm_budget.blocked %}
+          Нові виклики зупинені до наступного періоду.
+        {% elif llm_budget.soft_blocked %}
+          Фонові звіти призупинені — команди ще працюють.
+        {% endif %}
+        Деталі — <a href="/me/report_logs">витрати</a>.
+      </div>
+    {% endif %}
+
     {% if not has_history %}
       <div class="note">
         Ще немає історії відновлення — після першого синку Garmin тут з'явиться сьогоднішня
@@ -121,6 +135,29 @@
         });
       </script>
       {% endif %}
+    {% endif %}
+
+    {% if intensity_week %}
+    <p class="eyebrow" style="margin-top:2rem">Розподіл інтенсивності ({{ intensity_week.week }})</p>
+    <div class="charts">
+      <div class="chart">
+        <div class="chead">Частка часу за зонами пульсу
+          <span class="meta">— {{ intensity_week.sessions }} сесій із зонами</span></div>
+        <div class="cwrap" style="display:flex;height:1.25rem;border-radius:4px;overflow:hidden">
+          <span style="width:{{ intensity_week.low_pct }}%;background:#9ece6a" title="Легка (зони 1-2)"></span>
+          <span style="width:{{ intensity_week.gray_pct }}%;background:#e0af68" title="Сіра (зона 3)"></span>
+          <span style="width:{{ intensity_week.high_pct }}%;background:#f7768e" title="Важка (зони 4-5)"></span>
+        </div>
+        <div class="meta xaxis">
+          <span style="color:#9ece6a">легка {{ intensity_week.low_pct }}%</span>
+          <span style="color:#e0af68">сіра {{ intensity_week.gray_pct }}%</span>
+          <span style="color:#f7768e">важка {{ intensity_week.high_pct }}%</span>
+        </div>
+        {% for f in intensity_findings %}
+        <div class="meta" style="color:#e0af68">⚠️ {{ f.detail }}</div>
+        {% endfor %}
+      </div>
+    </div>
     {% endif %}
 
     {% if eff_chart and eff_chart.series %}

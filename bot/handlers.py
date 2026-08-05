@@ -292,9 +292,23 @@ async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, u
         )
         return
     order = {k: i for i, k in enumerate(records.DISPLAY_ORDER)}
-    rows.sort(key=lambda r: order.get(r.kind, 99))
+    # NF-27: the strength kinds are dynamic (one e1RM per lift), so they can't live in
+    # DISPLAY_ORDER — they sort after the running ones, in their own block.
+    run_rows = [r for r in rows if r.kind in order]
+    lift_rows = [r for r in rows if r.kind not in order]
+    run_rows.sort(key=lambda r: order[r.kind])
+    lift_rows.sort(key=lambda r: r.kind)
     lines = ["🏅 Твої особисті рекорди:"]
-    lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
+    lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})"
+              for r in run_rows]
+    if lift_rows:
+        lines.append("")
+        lines.append("🏋️ Силова:")
+        lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})"
+                  for r in lift_rows]
+        # Epley is a formula, not a measurement — say so once rather than putting an
+        # estimated lift next to a measured running PB as if they were the same kind of number.
+        lines.append("≈1ПМ — оцінка за формулою з реальних сетів, дивись на тренд.")
     lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
 
@@ -331,12 +345,29 @@ def _month_bounds_utc(year: int, month: int, tz) -> "tuple[dt.datetime, dt.datet
     return start_local.astimezone(dt.timezone.utc), end_local.astimezone(dt.timezone.utc)
 
 
-def _format_costs(agg: dict, year: int, month: int) -> str:
+def _format_budget_line(budget_status: Optional[dict]) -> Optional[str]:
+    """OPS-11: one line of "spent / ceiling / projected", so ``/costs`` answers "how close
+    am I to the breaker" and not only "what did I spend". Returns None when no ceiling is
+    configured (all limits 0) — there's nothing to be close to."""
+    if not budget_status or budget_status["month_limit"] <= 0:
+        return None
+    icon = "🛑" if budget_status["blocked"] else ("⚠️" if budget_status["warn"] else "✅")
+    return (f"{icon} Ліміт: ${budget_status['month_usd']:.2f} / "
+            f"${budget_status['month_limit']:.2f} ({budget_status['pct']:.0f}%), "
+            f"прогноз ${budget_status['projected_month_usd']:.2f}")
+
+
+def _format_costs(agg: dict, year: int, month: int,
+                  budget_status: Optional[dict] = None) -> str:
     label = f"{year}-{month:02d}"
+    budget_line = _format_budget_line(budget_status)
     if agg["calls"] == 0:
-        return f"💰 Витрати за {label}: викликів не було."
+        head = f"💰 Витрати за {label}: викликів не було."
+        return f"{head}\n{budget_line}" if budget_line else head
     lines = [f"💰 Витрати за {label}: ${agg['total_usd']:.2f}",
              f"Викликів: {agg['calls']} (з кешу: {agg['cached']})"]
+    if budget_line:
+        lines.append(budget_line)
     if agg["by_kind"]:
         lines.append("")
         lines.append("По типах:")
@@ -370,7 +401,14 @@ async def costs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, use
     year, month = parsed
     start, end = _month_bounds_utc(year, month, tz)
     agg = await repository.costs_for_month(session, user.id, start, end)
-    await update.message.reply_text(_format_costs(agg, year, month))
+    # The ceiling line only makes sense for the *current* month — a past month's spend can't
+    # be compared against a limit that no longer applies to it.
+    now = dt.datetime.now(tz)
+    budget_status = None
+    if (year, month) == (now.year, now.month):
+        from app.analysis import budget as budget_mod
+        budget_status = budget_mod.status(await budget_mod.spend_totals(session, user.id))
+    await update.message.reply_text(_format_costs(agg, year, month, budget_status))
 
 
 @bot_command
@@ -718,6 +756,144 @@ def _ci_render(current_text: str, status: str) -> str:
     plus the fresh check-in status line."""
     base = current_text.split(_CI_SEP)[0].rstrip()
     return f"{base}{_CI_SEP}{status}"
+
+
+# ---------- COACH MEMORY (EP-18) ----------
+
+@bot_command
+async def forget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/forget — list what the coach remembers; ``/forget <id|текст>`` deletes one fact and
+    stop-lists it so it can't be rediscovered. The correction channel the profile needs: a
+    wrong fact nobody can delete quietly steers advice for months."""
+    from app import profile as profile_rules
+    from app.db import profile as profile_db
+
+    arg = " ".join(ctx.args or []).strip()
+    logger.info(f"CMD /forget {arg[:60]}")
+    facts, stoplist = await profile_db.get_profile(session, user.id)
+    if not facts:
+        await update.message.reply_text(
+            "Коуч поки нічого про тебе не запамʼятав. Профіль наповнюється з тижневих підсумків."
+        )
+        return
+    if not arg:
+        lines = [f"{f['id']} · {f['text']}" for f in profile_rules.select(facts)]
+        await update.message.reply_text(
+            "🧠 Що коуч памʼятає:\n\n" + "\n".join(lines) +
+            "\n\nЩоб прибрати: /forget <id> (або текст факту). Повний список — /me/profile."
+        )
+        return
+    facts, stoplist, removed = profile_rules.forget(facts, stoplist, arg)
+    if not removed:
+        await update.message.reply_text("Не знайшов такого факту. Список — просто /forget.")
+        return
+    await profile_db.save_profile(session, user.id, facts, stoplist)
+    await session.commit()
+    await update.message.reply_text("✅ Прибрав і більше не згадуватиму цього.")
+
+
+# ---------- LIFESTYLE LOG (NF-28) ----------
+
+LIFESTYLE_PROMPT = (
+    "Що сьогодні було? (можна кілька; мовчання — теж нормально)"
+)
+# The status footer under the keyboard, rewritten in place on each tap — same trick as
+# the check-in footer above, so re-taps never stack.
+_LS_SEP = "\n— — —\n"
+
+
+def lifestyle_keyboard(date: str, tags=None) -> InlineKeyboardMarkup:
+    """Tag toggles + a «нічого» button. ``date`` rides in the callback data, so the whole
+    thing is stateless and a prompt left unanswered overnight still writes to the right day.
+
+    Selected tags are marked with a leading ✓ so the message itself shows what's stored —
+    there is no other place a one-tap feature can show its state."""
+    from app.db import lifestyle as lifestyle_db
+
+    chosen = set(tags or [])
+    buttons = [
+        InlineKeyboardButton(
+            ("✓ " if slug in chosen else "") + lifestyle_db.label(slug),
+            callback_data=f"ls:t:{date}:{slug}",
+        )
+        for slug in lifestyle_db.TAG_ORDER
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("✅ Нічого такого", callback_data=f"ls:none:{date}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _lifestyle_status(tags) -> str:
+    from app.db import lifestyle as lifestyle_db
+
+    if not tags:
+        return "✅ Записав: нічого такого."
+    return "✅ Записав: " + ", ".join(lifestyle_db.label(t) for t in tags) + "."
+
+
+def _ls_render(current_text: str, status: str) -> str:
+    return f"{current_text.split(_LS_SEP)[0].rstrip()}{_LS_SEP}{status}"
+
+
+async def lifestyle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle the evening tag buttons. ``ls:t:<date>:<slug>`` toggles one tag;
+    ``ls:none:<date>`` stores an EMPTY list — which is data, not a dismissal: without those
+    "nothing happened" nights there is no control group and no association can ever be
+    computed. Zero Claude calls; a pure DB write."""
+    q = update.callback_query
+    await q.answer()
+    from app.db import lifestyle as lifestyle_db
+
+    parts = q.data.split(":")
+    action, date = parts[1], parts[2]
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        if action == "none":
+            tags = (await lifestyle_db.upsert(session, user.id, date, [])).tags
+        else:
+            tags = await lifestyle_db.toggle_tag(session, user.id, date, parts[3])
+    await q.edit_message_text(
+        _ls_render(q.message.text, _lifestyle_status(tags)),
+        reply_markup=lifestyle_keyboard(date, tags),
+    )
+
+
+@bot_command
+async def log_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/log [вчора|YYYY-MM-DD] <теги> — the typed fallback for the evening buttons, and the
+    only way to fill in a day already gone («/log вчора пиво»). Bare ``/log`` opens today's
+    keyboard. Upsert, so logging the same day twice corrects it rather than duplicating."""
+    from app.core.tz import user_today
+    from app.db import lifestyle as lifestyle_db
+
+    arg = " ".join(ctx.args or [])
+    logger.info(f"CMD /log {arg}")
+    today = user_today(user)
+    if not arg.strip():
+        row = await lifestyle_db.get_day(session, user.id, today.isoformat())
+        await update.message.reply_text(
+            LIFESTYLE_PROMPT,
+            reply_markup=lifestyle_keyboard(today.isoformat(), row.tags if row else None),
+        )
+        return
+
+    date = lifestyle_db.parse_date(arg, today)
+    if date is None:
+        await update.message.reply_text(
+            f"Можу записати лише за останні {lifestyle_db.BACKDATE_MAX_DAYS} днів "
+            f"і не наперед. Приклад: /log вчора пиво"
+        )
+        return
+    tags = lifestyle_db.parse_tags(arg)
+    row = await lifestyle_db.upsert(session, user.id, date.isoformat(), tags)
+    when = "сьогодні" if date == today else date.isoformat()
+    await update.message.reply_text(
+        f"{_lifestyle_status(row.tags)} ({when})",
+        reply_markup=lifestyle_keyboard(date.isoformat(), row.tags),
+    )
 
 
 async def checkin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

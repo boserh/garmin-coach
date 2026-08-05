@@ -56,6 +56,58 @@ async def weekly_run_volume(
     return out
 
 
+async def strength_sessions(
+    session: AsyncSession, user_id: int, weeks: int = 12
+) -> List[dict]:
+    """NF-27: strength activities over the last ``weeks`` weeks that carry executed sets,
+    oldest first — the raw material for ``app.strengthstats``. The per-set reps/weights have
+    been fetched and stored all along (``exercise:v3``, cached a year); nothing here costs a
+    Garmin request. JSON-null filtered in Python, same gotcha as the other JSON columns."""
+    cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type == "strength_training",
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            ).order_by(ActivityRecord.date)
+        )
+    ).scalars().all()
+    return [
+        {"date": a.date, "dur_min": a.dur_min, "exercises": a.exercises}
+        for a in rows if isinstance(a.exercises, dict) and a.exercises
+    ]
+
+
+async def activities_with_zones(
+    session: AsyncSession, user_id: int, weeks: int = 8
+) -> List[dict]:
+    """NF-24: activities over the last ``weeks`` weeks carrying HR time-in-zone, oldest
+    first — the raw material for ``app.intensity``. All sports, not just running: the grey
+    zone is a property of the whole week's training, and an hour of zone-3 cycling costs the
+    same recovery as an hour of zone-3 running.
+
+    Filtering the JSON null happens in Python, not SQL — a JSON column stores ``None`` as
+    JSON ``null`` rather than SQL NULL (the same README gotcha as ``runs_for_efficiency``)."""
+    cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            ).order_by(ActivityRecord.date)
+        )
+    ).scalars().all()
+    return [
+        {"date": a.date, "type": a.type, "dur_min": a.dur_min, "zones": a.zones}
+        for a in rows if isinstance(a.zones, dict) and a.zones
+    ]
+
+
 async def runs_for_efficiency(
     session: AsyncSession, user_id: int, weeks: int = 12
 ) -> List[dict]:

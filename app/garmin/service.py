@@ -329,6 +329,21 @@ def daily_summary(date: dt.date) -> dict:
     return result
 
 
+def _training_effect(dto: dict) -> Optional[dict]:
+    """NF-24: ``{"te_aer": .., "te_anaer": ..}`` from an activity DTO, or ``None``.
+
+    Both values sit in the DTO the activity list already returns and were being discarded.
+    ``te_anaer`` is the only cheap read on how much genuinely anaerobic work a week held —
+    ``load`` alone can't distinguish a long easy run from a session of 400s."""
+    out = {}
+    for src, dst in (("aerobicTrainingEffect", "te_aer"),
+                     ("anaerobicTrainingEffect", "te_anaer")):
+        v = dto.get(src)
+        if isinstance(v, (int, float)) and v > 0:
+            out[dst] = round(float(v), 1)
+    return out or None
+
+
 def _attach_detail(row: dict, activity_id, force: bool = False) -> bool:
     """Fetch and attach the per-sport detail onto ``row`` in place — a strength session's
     exercise sets, or a run/ride pace-or-speed ``series``. Returns True when a Garmin detail
@@ -344,6 +359,14 @@ def _attach_detail(row: dict, activity_id, force: bool = False) -> bool:
     typ = row.get("type") or ""
     if not activity_id:
         return False
+    # NF-24: time-in-zone, for anything that actually recorded HR. Gating on avg_hr rather
+    # than on sport keeps this one extra request off sessions that could never have zones
+    # (a manually entered swim, a phone-logged walk) while still covering strength, which
+    # does contribute to the weekly intensity budget.
+    if row.get("avg_hr"):
+        z = client.fetch_activity_zones(activity_id, force=force)
+        if z:
+            row["zones"] = {**(row.get("zones") or {}), **z}
     if typ == "strength_training":
         ex = client.fetch_exercise_summary(activity_id, force=force)
         if ex:
@@ -384,6 +407,10 @@ def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
             "avg_hr": a.get("averageHR"),
             "max_hr": a.get("maxHR"),
             "load": a.get("activityTrainingLoad"),
+            # NF-24: aerobic/anaerobic training effect ride along in the list DTO we already
+            # downloaded and were throwing away — zero extra requests for the anaerobic-dose
+            # half of the intensity budget.
+            "zones": _training_effect(a),
         }
         if _attach_detail(row, a.get("activityId")):
             time.sleep(0.3)
@@ -410,6 +437,7 @@ def _row_from_detail(a: dict) -> dict:
         "avg_hr": pick("averageHR"),
         "max_hr": pick("maxHR"),
         "load": pick("activityTrainingLoad"),
+        "zones": _training_effect(summary) or _training_effect(a),
     }
 
 

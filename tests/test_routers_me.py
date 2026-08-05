@@ -61,6 +61,8 @@ def test_me_export_zip_scoped_to_own_user_no_secrets(client):
     assert names == {
         "daily_metrics.json", "daily_metrics.csv", "activities.json", "activities.csv",
         "personal_records.json", "plans.json", "report_logs.json",
+        "lifestyle_logs.json",   # NF-28 — user-authored data belongs in a portability export
+        "athlete_profile.json",  # EP-18 — the coach's memory of this athlete is theirs too
     }
 
     daily = json.loads(zf.read("daily_metrics.json"))

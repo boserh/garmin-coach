@@ -30,6 +30,7 @@ from app.analysis.prompts import (
     SYSTEM_WEATHER_PLAN,
 )
 from app.core.config import settings
+from app.db import profile as profile_db
 from app.garmin import exercises
 from app.garmin.schemas import GeneratedPlan, PlanEdit, StrengthSession
 
@@ -117,6 +118,17 @@ def _existing_custom_strength(workouts, intake) -> dict:
     return out
 
 
+async def _recent_lifts(session, user_id: int, weeks: int = 4) -> dict:
+    """NF-27: ``{exercise: {top_weight_kg, typical_reps, e1rm, sessions}}`` over the last
+    ``weeks``. Empty for someone with no logged strength sets, in which case the prompt
+    simply doesn't get the field and behaves exactly as before."""
+    from app import strengthstats
+    from app.garmin import repository
+
+    rows = await repository.strength_sessions(session, user_id, weeks=weeks + 2)
+    return strengthstats.recent_lifts(rows, weeks=weeks) if rows else {}
+
+
 async def _add_plan_strength(
     session, plan, *, intake, fitness, api_key, model,
     start: Optional[str] = None, end: Optional[str] = None,
@@ -169,6 +181,9 @@ async def _add_plan_strength(
                     }
                 else:
                     logger.warning(f"PLAN strength snapshot empty tid={tid} plan={plan.id}")
+        # NF-27: the executed sets from the last few weeks (zero Garmin/LLM cost — they're
+        # already stored) so the generated progression starts from the achieved weight.
+        recent_lifts = await _recent_lifts(session, plan.user_id)
         # Generate each distinct free-text session once, sanitise categories, and lay it on
         # its weekday as a from-scratch strength_plan (built natively on push).
         custom_plans: dict = {}
@@ -192,8 +207,14 @@ async def _add_plan_strength(
                             generate_strength_progression_with_stats,
                             {"description": desc, "fitness": fitness or None,
                              "exercise_categories": exercises.CATEGORIES,
-                             "weeks": weeks_span},
-                            api_key, model)
+                             "weeks": weeks_span,
+                             # NF-27: what was ACTUALLY lifted recently. Without this the
+                             # progression planned next block's weights out of the model's
+                             # head and never checked them against reality — an open loop
+                             # that is the whole reason this ticket exists.
+                             "recent_lifts": recent_lifts or None},
+                            api_key, model,
+                            session=session, user_id=plan.user_id)
                         progression = _fill_progression_gaps(
                             [repository._sanitize_strength(s) for s in sessions])
                         gen_cache[key] = progression if any(progression) else None
@@ -202,7 +223,8 @@ async def _add_plan_strength(
                             generate_strength_with_stats,
                             {"description": desc, "fitness": fitness or None,
                              "exercise_categories": exercises.CATEGORIES},
-                            api_key, model)
+                            api_key, model,
+                            session=session, user_id=plan.user_id)
                         gen_cache[key] = repository._sanitize_strength(sess)
                 except Exception:
                     logger.exception(f"PLAN strength gen failed plan={plan.id}")
@@ -373,11 +395,15 @@ async def run_plan_generation(
         # NF-17: a race target time (seconds) — SYSTEM_PLAN derives target paces from it
         # when it's realistic for the fitness snapshot, else says so honestly in the summary.
         "target_time_s": (intake or {}).get("target_time_s") or None,
+        # EP-18: a year of "what actually works on this athlete" beats a generic template —
+        # this is the whole point of keeping a profile at all.
+        "athlete_profile": await profile_db.build_context(session, user_id),
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
         plan_out, stats = await _run_claude(
-            generate_plan_with_stats, context, api_key, gen_model)
+            generate_plan_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan", model=gen_model, ok=False,
@@ -461,7 +487,8 @@ async def run_plan_extension(
     logger.info(f"PLAN extend user={user_id} plan={plan.id} {new_start}..{block_end}")
     try:
         plan_out, stats = await _run_claude(
-            generate_plan_with_stats, context, api_key, gen_model)
+            generate_plan_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan", model=gen_model, ok=False,
@@ -510,7 +537,8 @@ async def run_strength_preview(
                "exercise_categories": exercises.CATEGORIES}
     try:
         sess, stats = await _run_claude(
-            generate_strength_with_stats, context, api_key, gen_model)
+            generate_strength_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="strength", model=gen_model, ok=False,
@@ -651,7 +679,8 @@ async def run_plan_edit(
     # report_logs) reads as a thread rather than a series of unrelated edit requests.
     logged_q = (f"↳ {instruction}" if pending else instruction)[:200]
     try:
-        edit, stats = await _run_claude(plan_edit_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            plan_edit_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="plan_edit", model=MODEL_PLAN, ok=False,
@@ -775,6 +804,15 @@ def plan_adapt_with_stats(
     )
 
 
+async def _intensity_context(session, user_id: int) -> Optional[dict]:
+    """NF-24 context for the adaptation prompt, or ``None``. Imported lazily from
+    ``analysis.reports`` (which owns the builder) to keep the plans/reports import edge
+    one-directional at module load."""
+    from app.analysis.reports import build_intensity_context
+
+    return await build_intensity_context(session, user_id=user_id) or None
+
+
 async def run_plan_adaptation(
     session, *, user_id: int, api_key: Optional[str] = None,
     trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
@@ -850,9 +888,17 @@ async def run_plan_adaptation(
         "step_match": step_match,
         "risk": risk or None,
         "load_forecast": load_forecast,
+        # NF-24: the SHAPE of the load, not just its size. Adaptation could previously only
+        # move or shrink sessions; with the distribution in hand, a drift into the grey zone
+        # becomes "slow the easy runs down", which is the correct fix and costs no volume.
+        "intensity": await _intensity_context(session, user_id),
+        # EP-18: adaptation is where a remembered constraint pays off most — "intervals in
+        # the heat get abandoned" should stop the model from proposing them again.
+        "athlete_profile": await profile_db.build_context(session, user_id),
     }
     try:
-        edit, stats = await _run_claude(plan_adapt_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            plan_adapt_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="adapt", model=MODEL_PLAN, ok=False,
@@ -946,7 +992,8 @@ async def run_weather_plan_check(
         "conflicts": conflicts,
     }
     try:
-        edit, stats = await _run_claude(weather_plan_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            weather_plan_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="weather", model=MODEL_PLAN, ok=False,
@@ -1034,7 +1081,8 @@ async def run_sick_check(
                       "description": w.description} for w in ws],
     }
     try:
-        edit, stats = await _run_claude(sick_with_stats, context, api_key)
+        edit, stats = await _run_claude(
+            sick_with_stats, context, api_key, session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
             session, user_id=user_id, kind="sick", model=MODEL_PLAN, ok=False,

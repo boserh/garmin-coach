@@ -194,6 +194,16 @@ Optional, with defaults:
 | `SLEEP_NUDGE_HOUR` | `21` | hour (Europe/Warsaw) the evening check runs. |
 | `GEAR_WEAR_KM` | `700` | mileage threshold for the "replace your shoes" DM (once per pair); `0` disables. |
 | `GEAR_REWARN_KM` | `150` | re-warn a pair still in rotation every this many further km. |
+| `LIFESTYLE_LOG` | `True` | master on/off for NF-28's evening one-tap lifestyle prompt. |
+| `INTENSITY_DISTRIBUTION` | `True` | master on/off for NF-24's HR-zone distribution. |
+| `POLARIZATION_LOW_TARGET` | `0.8` | target share of weekly TIME in zones 1-2. |
+| `GRAY_ZONE_MAX` | `0.15` | zone-3 share above which several weeks in a row is flagged. |
+| `ANAEROBIC_WEEKLY_CAP` | `8.0` | weekly sum of anaerobic training effect before it's called over. |
+| `LLM_BUDGET_MONTH_USD` | `25.0` | OPS-11 hard monthly Claude ceiling per user; `0` disables. |
+| `LLM_BUDGET_DAY_USD` | `5.0` | same, per calendar day (user's timezone, ST-14). |
+| `LLM_BUDGET_WARN_PCT` | `0.8` | DM once at this share of the monthly ceiling. |
+| `LLM_BUDGET_SOFT_PCT` | `0.9` | background work (morning/digest/adapt) stops at this share — before interactive commands do. |
+| `LLM_MAX_CALL_USD` | `2.0` | per-call ceiling on the ESTIMATED cost (input estimate + the full `max_tokens` output); the real guard against Opus-16k in a loop. |
 
 `CLAUDE_CACHE_FILE`/`STATE_FILE` are gone — that state lives in the `llm_cache`/
 `bot_state` tables, shared by bot and web processes.
@@ -216,6 +226,8 @@ app/
     models.py           ORM: User, DailyMetric, ActivityRecord, ReportLog, LlmCache, BotState, HealthCheckup, Supplement (user-scoped)
     users.py            user queries: get_by_email / get_by_chat_id / create_user
     llm_cache.py        async get/put over llm_cache — the cross-process Claude dedup cache
+    lifestyle.py          NF-28: lifestyle-tag vocabulary + user-scoped CRUD
+    profile.py             EP-18: encrypted read/write of the athlete profile
     checkups.py          user-scoped CRUD for HealthCheckup
     supplements.py        user-scoped CRUD for Supplement
   garmin/
@@ -258,8 +270,12 @@ app/
   records.py                                  EP-14: pure personal-record detector
   stepmatch.py                                 NF-14: pure step-level plan-vs-actual matcher
   checkup_reminders.py                          pure next_due_date reminder logic
+  intensity.py                                   NF-24: pure HR-zone distribution / gray zone / anaerobic budget
+  strengthstats.py                                NF-27: pure tonnage, Epley e1RM, trend, stall detection
+  profile.py                                       EP-18: pure coach-memory rules (validation, decay, eviction)
   analysis/
     service.py           analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
+    budget.py             OPS-11: the spend breaker — period ceilings + a per-call ceiling
     plans.py              plan generation/edit/adaptation/extension/strength-progression
     reports.py             activity/checkup/supplement analysis, /ask agent + tools, compare/wrapped/insights
     prompts.py               SYSTEM_* prompt templates
@@ -278,7 +294,7 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /checkups, /deploy (admin), /test_*
+  handlers.py           /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /checkups, /log (NF-28), /forget (EP-18), /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job
 alembic/           migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/              pytest
@@ -321,6 +337,8 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   `GET /plan/{id}` (read-only view of a past plan). Login; current user.
 - `GET/POST /chat` + `POST /chat/confirm` — web chat over `run_ask`/`run_plan_edit`, no
   streaming (v1 scope, see EP-11 below). Login; current user.
+- `GET /me/profile` + `POST /me/profile/forget|pin` — EP-18: what the coach remembers,
+  with evidence links; "this isn't true" deletes + stop-lists, "this matters" pins.
 - `GET /me/export` — streamed ZIP of everything this account owns (portability, not a
   DB backup — see NF-13 below). Login; current user; linked from `/me`.
 - `GET/POST /checkups`, `GET/POST /checkups/{id}`, `/checkups/supplements` — health
@@ -342,7 +360,10 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   JSON + `analysis` text), `ReportLog` (cost/metrics + `question`/`report_text`),
   `BotState` (key/value), `TrainingPlan` (goal/params/intake/summary, one active per
   user) + `PlannedWorkout` (dated session with `steps` JSON), `PersonalRecord` (one row
-  per beaten best — history, not just current), `HealthCheckup`, `Supplement`.
+  per beaten best — history, not just current), `HealthCheckup`, `Supplement`,
+  `LifestyleLog` (NF-28 — one evening's self-reported tags; `tags=[]` is data, not an
+  absent row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory).
+  `ActivityRecord.zones` (NF-24) holds HR time-in-zone + training effect.
 - **DB as cache**: past days served from the DB; today always refetched.
 - **Migrations**: `./venv/bin/python -m alembic upgrade head`. Add one after model
   changes: `./venv/bin/python -m alembic revision --autogenerate -m "msg"`. **On the Pi,
@@ -413,7 +434,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   files), `push-plan [--days 14] [--dry-run]` (writes plan to Garmin calendar, idempotent
   via stored `garmin_workout_id`/`garmin_schedule_id`), `unpush-plan`, `token-expiry`
   (OPS-01, per-user auth deadline), `trigger-plan-adapt` (on-demand EP-02 review),
-  `list-workouts`, `backfill-records`.
+  `list-workouts`, `backfill-records` (running bests **and** NF-27's strength e1RM /
+  tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
+  stored activities; idempotent, paced, 0 LLM cost).
 
 ## Design notes (per-feature)
 
@@ -467,6 +490,15 @@ an app-level HTTP middleware (logger `api`, `GET /plan → 200 42ms`), not
 `report_logs` (browsable at `/me/report_logs`, `/ui/report_logs`).
 
 ## Models & cost
+
+**Spend is capped, not just measured (OPS-11).** `app.analysis.budget` enforces a monthly
+and a daily ceiling in `client._run_claude` — the single choke point every `*_with_stats`
+call passes through (`session` is keyword-**required** there, so a new LLM path can't
+silently skip it; a parametrized test walks every call site) — plus a per-call ceiling in
+`_complete*`, which prices the FULL `max_tokens` output and is what actually stops one
+Opus-16k call in a loop. Background work (morning/digest/adaptation) is switched off at
+`LLM_BUDGET_SOFT_PCT`, before interactive commands are; a cache hit is neither counted nor
+blocked. All limits at 0 restore the pre-OPS-11 behaviour.
 
 `/report` + morning + `/ask` + `/activity` + weekly digest → `claude-sonnet-5`.
 `/deep`, **plan generation** (`MODEL_PLAN_GEN`) and **race pack** (`MODEL_RACE`) →

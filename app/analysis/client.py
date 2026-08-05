@@ -122,15 +122,30 @@ _claude_executor = ThreadPoolExecutor(
 )
 
 
-async def _run_claude(fn, *args):
+async def _run_claude(fn, *args, session, user_id=None):
     """Run a blocking ``*_with_stats`` Claude call on the dedicated pool.
 
     Drop-in for ``run_in_threadpool`` on the LLM path so it no longer competes
     with Garmin work for anyio's threads. The Claude functions take positional
     args only (no ContextVar dependency — unlike the Garmin provider path), so a
-    bare ``run_in_executor`` is enough."""
+    bare ``run_in_executor`` is enough.
+
+    OPS-11: this is also the budget checkpoint. Every ``*_with_stats`` call in the app
+    goes through here, so enforcing once here covers all of them — and ``session`` is
+    keyword-**required** on purpose, so a future call path that forgets it fails loudly
+    at the call site instead of quietly slipping past the ceiling. A dedup-cache hit
+    never reaches this function, which is exactly right: a free answer must not be
+    counted or blocked."""
+    from app.analysis import budget
+
+    await budget.enforce(session, user_id)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_claude_executor, fn, *args)
+    result = await loop.run_in_executor(_claude_executor, fn, *args)
+    # Fold the just-billed cost into the memoised totals so a burst inside one TTL window
+    # still sees itself accumulate. Every *_with_stats returns (value, CallStats).
+    if isinstance(result, tuple) and len(result) == 2:
+        budget.note_spend(user_id, getattr(result[1], "cost_usd", 0.0) or 0.0)
+    return result
 
 
 @dataclass
@@ -151,6 +166,10 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
     mapping (used by the plan calls; the older report calls keep their inline copies)."""
     from anthropic import APIConnectionError, APIStatusError
 
+    from app.analysis import budget
+
+    budget.check_call_estimate(
+        model, system, budget.payload_text(user_content), max_tokens)
     kwargs = dict(
         model=model, max_tokens=max_tokens, system=system,
         messages=[{"role": "user",
@@ -199,6 +218,12 @@ def _complete_vision(
     else (thinking disabled, usage accounting, error mapping) mirrors ``_complete``."""
     from anthropic import APIConnectionError, APIStatusError
 
+    from app.analysis import budget
+
+    # An uploaded page costs roughly this many input tokens regardless of its base64 size,
+    # so the estimate counts pages, not bytes (see budget.estimate_call_usd).
+    budget.check_call_estimate(
+        model, system, "", max_tokens, extra_input_tokens=2000 * len(files))
     content = [
         {
             "type": "document" if media_type == "application/pdf" else "image",
@@ -246,6 +271,13 @@ def _complete_tools(
     thread pool via ``_run_claude`` like every other Claude call."""
     from anthropic import APIConnectionError, APIStatusError
 
+    from app.analysis import budget
+
+    # The agent loop grows ``messages`` every round, so the estimate rises with it — an
+    # /ask that keeps calling tools trips the per-call ceiling before it trips the monthly.
+    budget.check_call_estimate(
+        model, system, budget.payload_text(messages) + budget.payload_text(tools),
+        max_tokens)
     kwargs = dict(
         model=model, max_tokens=max_tokens, system=system,
         messages=messages, tools=tools,

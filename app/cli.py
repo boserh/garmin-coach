@@ -169,6 +169,53 @@ async def _backfill_series(email: str, since: str) -> int:
     return 0
 
 
+async def _backfill_zones(email: str, days: int) -> int:
+    """NF-24: fetch HR time-in-zone for this user's stored activities that don't have it yet.
+
+    Idempotent (only fills rows whose ``zones`` carry no per-zone seconds — a row that only
+    has training effect from the list DTO still needs the zone fetch) and paced, so a year
+    of history doesn't turn into a burst against Garmin's unofficial API. Zero LLM cost."""
+    import asyncio
+    import datetime as dt
+
+    from fastapi.concurrency import run_in_threadpool
+    from sqlalchemy import select
+
+    from app.db.models import ActivityRecord
+    from app.garmin import client
+
+    def _has_zone_time(z) -> bool:
+        return isinstance(z, dict) and any(f"z{n}_s" in z for n in range(1, 6))
+
+    async with cli_user(email) as (session, user):
+        cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+        rows = (await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user.id,
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.avg_hr.is_not(None),   # no HR → zones can't exist
+            ).order_by(ActivityRecord.date.desc())
+        )).scalars().all()
+        rows = [r for r in rows if not _has_zone_time(r.zones)]
+        if not rows:
+            print("No activities need zone backfilling.")
+            return 0
+        print(f"Backfilling zones for {len(rows)} activity(ies) of {email}...")
+        done = 0
+        async with garmin_login(session, user):
+            for r in rows:
+                z = await run_in_threadpool(client.fetch_activity_zones, r.activity_id)
+                if z:
+                    r.zones = {**(r.zones or {}), **z}
+                    done += 1
+                    total_min = round(sum(z.values()) / 60)
+                    print(f"  {r.date} {r.type} (id={r.activity_id}) — {total_min} min in zones")
+                await asyncio.sleep(0.3)  # be gentle on Garmin
+            await session.commit()
+        print(f"Done: {done}/{len(rows)} updated.")
+    return 0
+
+
 async def _backfill_auto_activities(email: str, since: str) -> int:
     """Re-fetch dailyEvents from Garmin for stored days that have no auto_activities
     in extra. Idempotent — skips rows that already have the key."""
@@ -213,10 +260,15 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
 
 
 async def _backfill_records(email: str) -> int:
-    """Seed the personal_records table from the user's full stored history (EP-14).
+    """Seed the personal_records table from the user's full stored history (EP-14 + NF-27).
     Idempotent and SILENT: it runs the same detector the bot uses, but sends no
     celebrations — records are dated in the past, so nothing is 'fresh'. Run once after
-    importing years of history; the daily tick keeps it current afterwards."""
+    importing years of history; the daily tick keeps it current afterwards.
+
+    NF-27 needs no backfill command of its own: tonnage and e1RM are DERIVED at read time
+    from the executed sets already stored (``exercise:v3``), so the only thing to seed is
+    the strength records — which this detector now produces alongside the running ones,
+    at zero LLM and zero Garmin cost."""
     from app import records
 
     async with cli_user(email) as (session, user):
@@ -231,7 +283,7 @@ async def _backfill_records(email: str) -> int:
                         if x.kind in records.DISPLAY_ORDER else 99):
             prev = (f" (was {records.format_value(r.kind, r.previous_value)})"
                     if r.previous_value is not None else "")
-            print(f"  {records.LABELS.get(r.kind, r.kind)}: "
+            print(f"  {records.label_for(r.kind)}: "
                   f"{records.format_value(r.kind, r.value)}{prev}  [{r.date}]")
     return 0
 
@@ -606,8 +658,15 @@ def main(argv=None) -> int:
     lw.add_argument("--email", required=True)
 
     br = sub.add_parser(
-        "backfill-records", help="Seed personal records from stored history (silent, EP-14)")
+        "backfill-records",
+        help="Seed personal records (running + strength e1RM/tonnage) from stored history")
     br.add_argument("--email", required=True)
+
+    bz = sub.add_parser(
+        "backfill-zones", help="Fetch HR time-in-zone for stored activities missing it (NF-24)")
+    bz.add_argument("--email", required=True)
+    bz.add_argument("--days", type=int, default=180,
+                    help="How far back to backfill (default 180)")
 
     bss = sub.add_parser(
         "backfill-strength-snapshots",
@@ -646,6 +705,9 @@ def main(argv=None) -> int:
         return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":
         return _run(_list_workouts(args.email))
+    if args.cmd == "backfill-zones":
+        return _run(_backfill_zones(args.email, args.days))
+
     if args.cmd == "backfill-records":
         return _run(_backfill_records(args.email))
     if args.cmd == "backfill-strength-snapshots":

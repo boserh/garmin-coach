@@ -188,6 +188,13 @@ class ActivityRecord(Base):
     # NF-15: the Garmin gear uuid linked to this activity (run-type only, v2 activity->gear
     # link endpoint) — null when nothing's linked or the activity predates this field.
     gear_id: Mapped[Optional[str]] = mapped_column(String(64))
+    # NF-24: HR time-in-zone + training effect — {z1_s..z5_s, te_aer, te_anaer}. Before this,
+    # the ONLY intensity proxy in the whole app was whole-session avg_hr, which averages
+    # 5x1km at zone 5 with its recoveries into a meaningless "zone 3" — so nothing could see
+    # the classic amateur mistake of easy runs run too hard. Null for an activity with no HR
+    # (and for everything synced before this field existed); every consumer must degrade to
+    # silence rather than to zero.
+    zones: Mapped[Optional[dict]] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
@@ -271,6 +278,68 @@ class BotState(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class LifestyleLog(Base):
+    """NF-28: one evening's self-reported lifestyle facts — beer, late caffeine, a late
+    heavy meal, a hard day, travel — as a plain list of tag slugs.
+
+    The correlation engine (NF-02) could only ever correlate what the watch reports, so the
+    strongest everyday levers were invisible and the user's most interesting question ("what
+    actually wrecks my HRV?") stayed unanswerable on an engine already written and tested.
+
+    Deliberately binary and tiny: no counts, no calories, no macros. The whole risk of any
+    diary is entry cost, so the only thing that must survive daily use is a fact you can tap
+    once. ``tags`` being an EMPTY list is meaningful data — the "nothing happened" control
+    group, without which no association can ever be established; that's why absence of a row
+    (never asked / ignored) and a row with no tags are different states and must stay so.
+
+    Unique per (user, date); re-tapping upserts."""
+
+    __tablename__ = "lifestyle_logs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_lifestyle_user_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    date: Mapped[str] = mapped_column(String(10), index=True)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class AthleteProfile(Base):
+    """EP-18 · the coach's long-term memory of one athlete — the durable qualitative model
+    that survives individual reports.
+
+    Every Claude call in the system is otherwise **amnesiac**: context is rebuilt from the
+    payload, baselines and a couple of recent reports, so everything qualitative learned over
+    a year ("Wednesdays after Tuesday tempos are always bad", "knee complains on downhills,
+    not on volume") lived only inside the text of individual reports and did not exist for
+    the next call. NF-01 closed the quantitative half (personal metric norms); this is the
+    other half.
+
+    ``facts_enc`` is a Fernet-encrypted JSON list of
+    ``{id, text, kind, confidence, first_seen, last_confirmed, evidence: [report_log_id]}``.
+    Encrypted, not plain: this is the most sensitive text in the database — injuries, work
+    pressure, habits — and it is emphatically not "just a cache". ``stoplist_enc`` holds
+    statements the user explicitly rejected, so a fact deleted as wrong cannot be
+    regenerated next week and quietly come back."""
+
+    __tablename__ = "athlete_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    facts_enc: Mapped[Optional[str]] = mapped_column(Text)
+    stoplist_enc: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
