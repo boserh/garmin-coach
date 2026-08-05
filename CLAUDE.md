@@ -187,6 +187,10 @@ Optional, with defaults:
 | `SICKNESS_AUTO` | `True` | master on/off for the auto "схоже, захворів" rebuild offer (NF-18). |
 | `SICKNESS_MISSED_DAYS` | `3` | consecutive missed plan sessions (last 7 days) needed to ask. |
 | `SICKNESS_GUARD_DAYS` | `7` | after asking (or a ❌), stay quiet this many days. |
+| `RETURN_TO_RUN` | `True` | master on/off for NF-30's walk/run return-after-pain protocol. |
+| `RETURN_PAIN_RUNS` | `2` | pain flagged on this many of the last `RETURN_WINDOW_RUNS` runs → offer it. |
+| `RETURN_WINDOW_RUNS` | `5` | how many recent check-ins that window spans. |
+| `RETURN_GUARD_DAYS` | `14` | after offering (or a ❌), stay quiet this many days. |
 | `FUELING_MIN_DURATION_MIN` | `45` | below this session duration, fueling advisor stays silent. |
 | `FUELING_HEAT_FEELS_C` | `28` | feels-like max °C at/above → heat notes. |
 | `DEPLOY_ENABLED` | `False` | master on/off for the admin-only `/deploy` bot command. |
@@ -236,7 +240,7 @@ app/
     runtime.py            user_runtime(session, user): bind provider, persist a fresh session token
     client.py             low-level connectapi fetches + disk cache for immutable assets
     service.py             aggregation; build_payload (sync) + build_payload_cached (async, per-user)
-    repository.py          user-scoped upserts/reads, ReportLog, per-user BotState
+    repository/            user-scoped upserts/reads, ReportLog, per-user BotState, routes (NF-33)
     schemas.py               Pydantic Payload / DailySummary / Activity / PlannedRun
     exercise_names.py         Garmin exercise NAME codes → readable Ukrainian
     mfa.py                     MFA bridge (background-thread login + resumable code prompt)
@@ -273,6 +277,10 @@ app/
   intensity.py                                   NF-24: pure HR-zone distribution / gray zone / anaerobic budget
   strengthstats.py                                NF-27: pure tonnage, Epley e1RM, trend, stall detection
   profile.py                                       EP-18: pure coach-memory rules (validation, decay, eviction)
+  rundynamics.py                                    NF-25: pure cadence/GCT/oscillation — in-session form drift + weekly trend
+  routes.py                                          NF-33: pure route fingerprint/similarity/repeat comparison (no track stored)
+  postrace.py                                         NF-23: pure post-race maths — GAP km curve, split, fade point, decoupling
+  returntorun.py                                       NF-30: pure walk/run return-after-pain ladder + stop rule
   analysis/
     service.py           analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     budget.py             OPS-11: the spend breaker — period ceilings + a per-call ceiling
@@ -294,7 +302,7 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /checkups, /log (NF-28), /forget (EP-18), /deploy (admin), /test_*
+  handlers.py           /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /checkups, /log (NF-28), /forget (EP-18), /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job
 alembic/           migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/              pytest
@@ -339,6 +347,7 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   streaming (v1 scope, see EP-11 below). Login; current user.
 - `GET /me/profile` + `POST /me/profile/forget|pin` — EP-18: what the coach remembers,
   with evidence links; "this isn't true" deletes + stop-lists, "this matters" pins.
+- `POST /me/activities/{id}/route-name` — NF-33: name the route this run belongs to.
 - `GET /me/export` — streamed ZIP of everything this account owns (portability, not a
   DB backup — see NF-13 below). Login; current user; linked from `/me`.
 - `GET/POST /checkups`, `GET/POST /checkups/{id}`, `/checkups/supplements` — health
@@ -363,7 +372,8 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   per beaten best — history, not just current), `HealthCheckup`, `Supplement`,
   `LifestyleLog` (NF-28 — one evening's self-reported tags; `tags=[]` is data, not an
   absent row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory).
-  `ActivityRecord.zones` (NF-24) holds HR time-in-zone + training effect.
+  `ActivityRecord.zones` (NF-24) holds HR time-in-zone + training effect;
+  `ActivityRecord.route_id` → `Route` (NF-33 — a fingerprint, never a stored track).
 - **DB as cache**: past days served from the DB; today always refetched.
 - **Migrations**: `./venv/bin/python -m alembic upgrade head`. Add one after model
   changes: `./venv/bin/python -m alembic revision --autogenerate -m "msg"`. **On the Pi,
@@ -436,7 +446,10 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   (OPS-01, per-user auth deadline), `trigger-plan-adapt` (on-demand EP-02 review),
   `list-workouts`, `backfill-records` (running bests **and** NF-27's strength e1RM /
   tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
-  stored activities; idempotent, paced, 0 LLM cost).
+  stored activities; idempotent, paced, 0 LLM cost), `backfill-routes` (NF-33 route
+  clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent);
+  `backfill-series --force` refetches runs that already have a series to pick up the
+  `series:v3` channels.
 
 ## Design notes (per-feature)
 
@@ -460,7 +473,9 @@ architecture + current operational state.
   `--email … --resend` also clears that user's send-guard (a real Claude call,
   unattended) — prefer the admin bot's `/test_morning` for just LOOKING at output.
 - **Garmin disk cache** (per-key files, `GARMIN_CACHE_DIR`): immutable ID-keyed assets
-  only — `exercise:v2` (365d), `workout:v2` (7d), `series:v2` (365d, elevation-aware).
+  only — `exercise:v2` (365d), `workout:v2` (7d), `series:v3` (365d; elevation, NF-25's
+  cadence/GCT/oscillation and NF-33's coordinates — v2 entries stay readable, a missing
+  channel reads as absent, never as zero).
   One JSON file per key, atomic replace, cross-process safe, in-process memo on top.
 - **DB day-level cache** (`DailyMetric`): past days served from DB; today refetched.
 
@@ -500,7 +515,8 @@ Opus-16k call in a loop. Background work (morning/digest/adaptation) is switched
 `LLM_BUDGET_SOFT_PCT`, before interactive commands are; a cache hit is neither counted nor
 blocked. All limits at 0 restore the pre-OPS-11 behaviour.
 
-`/report` + morning + `/ask` + `/activity` + weekly digest → `claude-sonnet-5`.
+`/report` + morning + `/ask` + `/activity` + weekly digest + the post-race debrief
+(NF-23) + the weekly coach-memory pass (EP-18 ph2) → `claude-sonnet-5`.
 `/deep`, **plan generation** (`MODEL_PLAN_GEN`) and **race pack** (`MODEL_RACE`) →
 `claude-opus-4-8`. Plan **edits** stay Sonnet (`MODEL_PLAN`). Plan generation also
 accepts **Fable** via setup-form toggle. Every call logs to `ReportLog` (tokens, cost,

@@ -222,7 +222,7 @@ descriptor keys per sport — running `{d, p, hr}` unchanged; cycling `{d, spd, 
 `multisport.sport_bucket`. `_segments`/`activity_payload` collapse whichever keys are
 present (pace+HR vs speed+power+HR); `SYSTEM_ACTIVITY` gained a cycling data section.
 Web chart shows speed/power sparklines when present. Swim series deliberately out of
-scope (own metric shape). Cache key bumped to `series:v2:<id>`.
+scope (own metric shape). Cache key bumped to `series:v2:<id>` (now `v3` — see NF-25/NF-33).
 
 ## Cycling sessions in the plan (EP-10 phase 3 — cycling only, swimming out of scope)
 
@@ -244,7 +244,7 @@ rescales a split via the Minetti et al. (2002) energy-cost-of-running polynomial
 `_segments` computes per-segment `gain_m`/`loss_m`/`grade_pct`/`gap_pace` (running
 only); `activity_payload` adds whole-activity `elevation_gain_m`/`hilly` (>10 m/km).
 EP-01 matching uses GAP for `actual_pace_minkm` on hilly routes. Web detail page gets an
-elevation sparkline. Cache key `series:v2:<id>` (elevation-aware).
+elevation sparkline. Cache key `series:v2:<id>` (elevation-aware; now `v3` — see NF-25/NF-33).
 
 ## Compare-past-self (NF-06)
 
@@ -578,3 +578,98 @@ rpe_rising, recurring_pain?, recent}` for three prompts: the daily report, EP-02
 adaptation, and the weekly digest's plan/fact `overreached` count (easy-intent session
 completed but RPE ≥`HARD_RPE`=8 — an under-recovery signal even when objective load
 looks fine).
+
+## Post-race debrief (NF-23)
+
+Pure (`app/postrace.py`): `build_debrief` turns a race into numbers before any narration
+exists — the per-kilometre curve, `split_halves`, `fade_point`, `decoupling_pct` and
+`target_comparison`. Everything is judged on **GAP** pace (`app.gap`); raw splits on a real
+course describe the hills, so a fade found on raw pace would be terrain, not the runner
+(there is a test with a flat-then-climb profile for exactly this).
+
+Three input tiers, deliberately: laps (`fetch_activity_splits`, disk-cached — the runner's
+own splits) → the per-point `series` when auto-lap was off → aggregates only. The last tier
+still narrates; nothing here may raise on missing data.
+
+The target pace comes from the structured `TrainingPlan.intake.target_time_s` (NF-17), never
+from parsing the narrated pack — the ticket's own brittleness note. No target → the whole
+`target` block is absent rather than zero-filled.
+
+One Sonnet call (`SYSTEM_RACE_DEBRIEF`, `run_race_debrief`), prompt focused on **three
+takeaways for the next cycle** rather than a retelling of the numbers. `activity_id` is in
+the dedup key, so a repeated `/race done <id>` is a cache hit.
+
+Delivery is a T+1 race-week stage (`race.stage_for` returns `"debrief"` for negative
+`days_left` within `DEBRIEF_CATCHUP_DAYS`=3 — the watch may sync late). The per-(plan, stage)
+guard key moved into `race.stage_guard_key` so `repository.archive_plan` can cancel an unsent
+debrief by pre-setting it. Race-day weather is stashed by the T-1 stage
+(`race.WEATHER_STATE_PREFIX`), because after the race the forecast endpoint no longer covers
+that date. The race activity is found only by explicit evidence (`type="race"` or
+`target_date`) — never a "fast and long" heuristic.
+
+## Running dynamics (NF-25)
+
+`series:v3` adds `cad`/`gct`/`vo` from the same `/details` response (zero new Garmin
+requests). `app/rundynamics.py::session_dynamics` measures within-session drift on **flat
+points only** — a climb legitimately shortens the stride, so an unfiltered number would
+describe the route; with no elevation channel it reports `flat_filtered=false` instead of
+pretending. Gated at 30 minutes (a shorter session has no tired last third).
+
+`build_trend` compares weeks using **easy runs only** (`efficiency._easy_corridor`), since
+cadence on intervals is structurally different. `drift_streak` feeds
+`injury._dynamics_signal` at severity 2 — a contributing signal, never a warning on its own,
+same weighting rule as NF-24's grey zone.
+
+The consumers report **fact and change only**. `SYSTEM_ACTIVITY` is explicit that no
+technique prescriptions are allowed, and there is a test for the tone.
+
+## Same-route recognition (NF-33)
+
+`series:v3` also carries `lat`/`lon` (one key bump for both this and NF-25). `app/routes.py`
+stores a **fingerprint, never a track**: a start point coarsened to three decimals (≈110 m —
+a block, not a doorstep), distance, climb, a normalised elevation profile and a bearing
+sequence, under a kilobyte and unreconstructable.
+
+`similar()` needs start proximity + distance + agreeing shape; the bearing sequence is what
+makes the same loop run **backwards** a different route (deliberate — comparing them would be
+dishonest), and it keeps working on flat routes where the elevation profile says nothing.
+`match()` takes the FIRST similar cluster, which is what makes `backfill-routes` idempotent.
+
+Assignment happens inside `persist_payload`, so a run is recognised as it lands. The privacy
+rule is structural: `build_route_context` emits an anonymised `route_id` plus pace/HR deltas,
+and a test asserts no coordinate reaches the assembled LLM context (a leak here would put a
+home address into `report_logs`).
+
+## Return-to-run protocol (NF-30)
+
+Pure (`app/returntorun.py`), **zero LLM by construction** — the ladder is deterministic and
+the only paid call in the feature is an optional plan rebuild on the way out.
+
+The progression rule is the runner's own pain number (EP-12's scale): ≤2/10 during the
+session AND the next morning → step up; above → repeat the rung; rising on two consecutive
+steps → stop and point at a professional. A day with no run is `"idle"` — it moves the step
+neither way, because silence is not evidence.
+
+The plan is `status="paused"`, not archived (`repository.CURRENT_PLAN_STATUSES`), so `/plan`
+still shows it with a banner and its future sessions survive. Protocol sessions are ordinary
+`PlannedWorkout` rows with structured steps, so the Garmin push and the EP-01 matcher work
+unchanged — walk/run needed no new DTO.
+
+Entry is always an offer (morning tick with a `RETURN_GUARD_DAYS` guard, or `/pain`), and a
+declined offer touches nothing. The medical boundary is enforced by a test over every string
+the feature can emit: no diagnosis, no injury name, no "push through it" — plus a
+`RETURN_TO_RUN` master switch.
+
+## Coach memory: weekly accumulation (EP-18 phase 2)
+
+One Sonnet call a week inside `weekly_digest_job` (`run_profile_update`) proposing a
+**delta** — `{add, confirm, contradict, drop}` — against the stored facts, never a rewrite,
+so a bad week cannot erase a year.
+
+The anti-poisoning rules are code, not prompt etiquette: every proposed fact must cite a
+`report_logs` id (`repository.reports_for_evidence`) or `profile.normalize_fact` drops it; the
+stop-list refuses a statement the user rejected even when it is proposed again; `contradict`
+lowers confidence instead of deleting; `parse_profile_delta` caps additions at three a week
+and returns an empty delta on anything unparseable (never half-applied). A failure is
+swallowed by the job — the digest must not depend on it, and yesterday's profile is a
+perfectly good profile.
