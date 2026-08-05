@@ -156,6 +156,17 @@ class Settings(BaseSettings):
     HEALTH_MIN_HISTORY_DAYS: int = 7      # no alert until at least a week of history (cold-start)
     HEALTH_ALERT_COOLDOWN_DAYS: int = 3   # same alert kind at most once per this many days
 
+    # --- Auto sickness trigger (NF-18) ---
+    # A streak of consecutive `missed` plan sessions (app.sickness, zero-LLM) PLUS an
+    # actionable EP-08 health report turns into ONE ✅/❌ DM offering the NF-03 block
+    # rebuild — the /sick flow for a user too ill to type /sick. Both conditions are
+    # required: missed sessions alone are as likely to mean a business trip. The Claude
+    # call happens only on ✅. Process-level on/off; per-user gates are alerts_enabled +
+    # plan_adapt_enabled (it proposes a plan change).
+    SICKNESS_AUTO: bool = True
+    SICKNESS_MISSED_DAYS: int = 3    # consecutive missed sessions (last 7 days) to trigger
+    SICKNESS_GUARD_DAYS: int = 7     # after a proposal (or its ❌), stay quiet this many days
+
     # --- Backup freshness monitoring (OPS-08) ---
     # Where scripts/backup_db.py writes its rotated copies + the last_ok.json marker
     # app.backup_status reads (must match --dir when backup_db is invoked with a

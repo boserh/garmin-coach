@@ -21,7 +21,7 @@ from fastapi.concurrency import run_in_threadpool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from app import baselines, gear, race, records, sleepnudge, stepmatch, weather
+from app import baselines, gear, race, records, sickness, sleepnudge, stepmatch, weather
 from app import format as fmt
 from app.analysis import delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
@@ -58,6 +58,7 @@ from bot.handlers import (
     MFA_REQUIRED_MSG,
     PENDING_ADAPT_KEY,
     PLAN_EXTEND_SNOOZE_KEY,
+    SICKNESS_WARNED_KEY,
     TZ,  # noqa: F401 — the process TZ, re-exported here for the run_daily schedules/tests
     checkin_keyboard,
 )
@@ -544,6 +545,82 @@ async def _deload_check_for_user(ctx, session, user: User, creds, today: str,
     return True
 
 
+async def _sickness_check_for_user(ctx, session, user: User, creds, today: str,
+                                   *, risk: "_RiskCache | None" = None) -> bool:
+    """NF-18: offer the NF-03 block rebuild without waiting for a ``/sick`` that an actually
+    ill user never types. Fires only when BOTH hold: a streak of ≥``SICKNESS_MISSED_DAYS``
+    consecutive ``missed`` plan sessions in the last week (``app.sickness``, an objective
+    signal NF-09 cannot see — it only looks forward at heavy sessions) AND an actionable
+    EP-08 health report (a missed streak alone is as likely to be a business trip).
+
+    Where NF-09 eases the FUTURE when something heavy is coming, this repairs the BROKEN
+    PAST — so it runs after ``_deload_check_for_user`` and only when that stayed silent
+    (shared ``INJURY_WARNED_KEY`` gate: never two risk DMs in one day). Zero Claude calls
+    here — the DM is a plain ✅/❌ question; the paid ``run_sick_check`` happens in
+    ``sickness_callback`` on an explicit ✅. Returns True when a question went out."""
+    if not settings.SICKNESS_AUTO or not user.alerts_enabled or not user.plan_adapt_enabled:
+        return False
+    if not user.telegram_chat_id or not creds.anthropic_key:
+        return False
+    # Shared daily risk-touchpoint gate (same one the deload proposal and the plain
+    # injury advisory use) + this feature's own longer snooze.
+    if _within_guard(await repository.get_state(session, user.id, INJURY_WARNED_KEY),
+                     today, settings.INJURY_GUARD_DAYS):
+        return False
+    if _within_guard(await repository.get_state(session, user.id, SICKNESS_WARNED_KEY),
+                     today, settings.SICKNESS_GUARD_DAYS):
+        return False
+    # Never a second set of buttons over an unanswered proposal — from either the
+    # adaptation hooks (PENDING_ADAPT_KEY) or a /plan|/sick edit awaiting confirmation.
+    if await _has_pending_proposal(session, user.id):
+        return False
+    if await repository.get_pending_plan_edit(session, user.id):
+        return False
+
+    try:
+        today_d = dt.date.fromisoformat(today)
+    except ValueError:
+        return False
+    try:
+        ws = await repository.recent_plan_workouts(
+            session, user.id, days=sickness.LOOKBACK_DAYS, today=today_d)
+        if not ws:
+            return False   # no active plan / empty window — nothing to repair
+        streak = sickness.missed_streak(
+            [{"date": w.date, "status": w.status} for w in ws], today=today_d)
+        if streak < settings.SICKNESS_MISSED_DAYS:
+            return False
+
+        # Only now the (heavier) recovery detector — and only as the SECOND condition.
+        risk = risk or _RiskCache(session, user.id)
+        report = await risk.health()
+        if not report.actionable:
+            logger.debug(f"SICKNESS skip user={user.id}: {streak} missed but recovery is fine")
+            return False
+
+        # Guards BEFORE sending — a send hiccup must not loop into re-asking next tick.
+        await repository.set_state(session, user.id, INJURY_WARNED_KEY, today)
+        await repository.set_state(session, user.id, SICKNESS_WARNED_KEY, today)
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Перебудувати", callback_data=f"sick:yes:{streak}"),
+            InlineKeyboardButton("❌ Не треба", callback_data="sick:no"),
+        ]])
+        missed_word = fmt.plural_uk(
+            streak, "пропущена сесія", "пропущені сесії", "пропущених сесій")
+        await ctx.bot.send_message(
+            user.telegram_chat_id,
+            f"🤒 Схоже, ти вибув із графіка ({streak} {missed_word} поспіль) на тлі "
+            "просілого відновлення. Перебудувати найближчий блок у щадному режимі?",
+            reply_markup=kb,
+        )
+        logger.info(f"SICKNESS proposal sent user={user.id}: streak={streak} "
+                    f"alerts={[a.kind for a in report.alerts]}")
+        return True
+    except Exception:
+        logger.exception(f"SICKNESS check failed user={user.id}")
+        return False
+
+
 async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
     """ST-11: decode the stored Garmin session's estimated death date
     (``app.garmin.token_info``) and DM a heads-up once the deadline is within
@@ -708,7 +785,7 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             # recomputing it on every 15-min tick right through the evening. Their DMs are
             # per-day guarded and the first morning tick already fires them, so this only sheds
             # the wasted afternoon churn — no advisory that would have gone out is lost. One
-            # _RiskCache memo is still shared across the three hooks so each detector runs at
+            # _RiskCache memo is still shared across the four hooks so each detector runs at
             # most once per tick.
             if in_morning:
                 risk = _RiskCache(session, user.id)
@@ -719,7 +796,15 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                 deload_sent = await _deload_check_for_user(
                     ctx, session, user, creds, today, risk=risk)
 
+                # NF-18 auto-sickness: the mirror case — nothing heavy ahead to ease, but a
+                # streak of missed sessions behind + poor recovery. Runs only when the
+                # deload proposal stayed silent (the two share the day's one risk slot).
+                sick_sent = False
                 if not deload_sent:
+                    sick_sent = await _sickness_check_for_user(
+                        ctx, session, user, creds, today, risk=risk)
+
+                if not deload_sent and not sick_sent:
                     # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack.
                     await _injury_check_for_user(ctx, session, user, creds, today, risk=risk)
 

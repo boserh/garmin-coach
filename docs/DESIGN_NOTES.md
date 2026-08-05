@@ -178,6 +178,25 @@ risk={...})` — a new `SYSTEM_PLAN_ADAPT` rule easing 5-7 days, cutting harder 
 as that day's risk touchpoint — plain injury/health DMs are skipped when it fires.
 `plan_adapt_enabled=False` or `adjust_level="off"` → zero Claude calls.
 
+## Auto sickness trigger (NF-18)
+
+The `/sick` rebuild offered without `/sick` — an actually ill user never types it.
+`_sickness_check_for_user` runs right AFTER the deload check and only when that stayed
+silent (they share `INJURY_WARNED_KEY`: never two risk DMs a day). Fires on **both**
+conditions: a streak of ≥`SICKNESS_MISSED_DAYS` (3) consecutive `missed` plan sessions in
+the last 7 days (`app.sickness.missed_streak`, pure) **and** an actionable EP-08 health
+report — missed sessions alone are as likely to be a business trip. Streak walks backwards
+from the most recent past session: `done`/`partial`/`skipped` break it, `planned` rows
+(rest/cross, which the matcher never touches) are invisible so a rest day can't reset it;
+today's session is excluded (it may still sync). Deliberately NOT NF-09's signal —
+NF-09 looks forward at heavy sessions and eases the future, this looks back at a broken
+past and repairs it (a user who missed half the week may have nothing heavy ahead).
+The DM is a plain ✅/❌ question, **zero Claude calls**; `sickness_callback` runs the same
+`run_sick_check` as `/sick` (`days_missed` = the streak) only on ✅, then hands the result
+to the normal plan-edit confirm flow. ❌/ignored → `SICKNESS_WARNED_KEY` snoozes for
+`SICKNESS_GUARD_DAYS` (7). Yields to any pending proposal (`PENDING_ADAPT_KEY` or a
+pending plan edit); gates: `SICKNESS_AUTO` + `alerts_enabled` + `plan_adapt_enabled`.
+
 ## Multisport weekly load budget (NF-05)
 
 Pure-Python (`app/multisport.py`): TRIMP-like load per ISO week across **all** activity
