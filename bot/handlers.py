@@ -128,6 +128,21 @@ async def _resolve_user(update: Update, session) -> "User | None":
     return user
 
 
+async def _resolve_target_user(update: Update, session, token: str) -> "User | None":
+    """Admin-bot only: resolve a ``/test_morning <id_or_email>`` argument to any user
+    (not just the caller). Numeric token → users.id, else → email. Replies + returns
+    None on not-found so the caller can bail the same way as ``_resolve_user``."""
+    user = None
+    if token.isdigit():
+        user = await session.get(User, int(token))
+    else:
+        user = await users.get_by_email(session, token)
+    if user is None:
+        await update.message.reply_text(f"🧪 Юзера '{token}' не знайдено.")
+        return None
+    return user
+
+
 def bot_command(_func=None, *, creds: Optional[str] = None):
     """Wrap a Telegram command handler with the shared preamble (A3): open a DB session,
     resolve the caller to a registered user (``_resolve_user`` replies + the wrapper returns
@@ -1343,15 +1358,25 @@ async def test_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def test_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Force the real morning report now (weather included), bypassing the time window
-    and once-a-day guard — without consuming today's guard, so the scheduled one still fires."""
+    and once-a-day guard — without consuming today's guard, so the scheduled one still fires.
+    With an argument (``/test_morning <id_or_email>``) targets any user, not just the
+    caller (admin bot only) — the report is sent to that user's own chat, not the caller's."""
     from bot.jobs import force_morning_for_user
 
-    logger.info("CMD /test_morning")
-    await update.message.reply_text("🧪 Генерую ранковий звіт…")
+    logger.info(f"CMD /test_morning args={ctx.args}")
     async with async_session_maker() as session:
-        user = await _resolve_user(update, session)
-        if user is None:
-            return
+        if ctx.args:
+            user = await _resolve_target_user(update, session, ctx.args[0])
+            if user is None:
+                return
+            if not user.telegram_chat_id:
+                await update.message.reply_text(f"🧪 У '{ctx.args[0]}' немає telegram_chat_id.")
+                return
+        else:
+            user = await _resolve_user(update, session)
+            if user is None:
+                return
+        await update.message.reply_text(f"🧪 Генерую ранковий звіт для {user.email}…")
         await force_morning_for_user(ctx, session, user)
 
 

@@ -100,7 +100,7 @@ async def _post_init(application: Application) -> None:
     # commands in its own "/" menu for convenience.
     await application.bot.set_my_commands([
         BotCommand("deploy", "git pull + рестарт сервісів (admin)"),
-        BotCommand("test_morning", "Форс ранкового звіту зараз"),
+        BotCommand("test_morning", "Форс ранкового звіту (опц. id/email юзера)"),
         BotCommand("test_digest", "Форс тижневого підсумку зараз"),
         BotCommand("test_on", "Тестова джоба: ранковий звіт кожні N хв"),
         BotCommand("test_off", "Вимкнути тестову джобу"),
