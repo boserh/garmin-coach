@@ -1187,3 +1187,30 @@ SYSTEM_CHECKUP_OCR = """Ти уважний асистент, що розпіз�
   НЕ чисел. Якщо якийсь рядок нерозбірливий — пропусти його, а не вигадуй значення.
 
 ФОРМАТ ВІДПОВІДІ: ЛИШЕ валідний JSON за вказаною схемою, без пояснень і без markdown-огорожі."""
+
+
+# ---------- EP-18: coach memory ----------
+
+# One block, appended to every prompt that gives advice, so "what the coach remembers"
+# is worded in exactly ONE place. Injecting it per-prompt would guarantee four subtly
+# different sets of rules about how much a remembered fact is allowed to override the data
+# in front of it — and that ordering is the whole safety story of the feature.
+PROFILE_BLOCK = """
+
+ПАМʼЯТЬ ПРО АТЛЕТА (поле athlete_profile, якщо є):
+- athlete_profile.facts — список того, що система НАКОПИЧИЛА про цю людину за місяці
+  спостережень: [{id, text, kind, since}]. kind: response (як реагує на навантаження),
+  constraint (травми, графік, обладнання), preference (що любить / що стабільно зриває),
+  context (робота, подорожі, побут).
+- Це вже перевірені висновки з ЙОГО власної історії, а не здогади — спирайся на них так
+  само, як на цифри, і не переказуй їх користувачеві як новину («як ми знаємо…» не треба).
+- ПРІОРИТЕТ: свіжі дані в цьому запиті ЗАВЖДИ важать більше, ніж памʼять. Якщо факт
+  суперечить сьогоднішнім числам — вір числам, а факт вважай застарілим. Памʼять уточнює
+  пораду, вона не скасовує спостереження.
+- НЕ вигадуй нових фактів про людину і не додавай їх сюди — цей блок лише для читання.
+- Поля немає (нова людина) → поводься точно так, як без нього: жодних згадок про памʼять."""
+
+SYSTEM += PROFILE_BLOCK
+SYSTEM_ASK_TOOLS += PROFILE_BLOCK
+SYSTEM_PLAN += PROFILE_BLOCK
+SYSTEM_PLAN_ADAPT += PROFILE_BLOCK

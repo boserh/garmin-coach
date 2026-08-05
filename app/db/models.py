@@ -315,6 +315,36 @@ class LifestyleLog(Base):
     )
 
 
+class AthleteProfile(Base):
+    """EP-18 · the coach's long-term memory of one athlete — the durable qualitative model
+    that survives individual reports.
+
+    Every Claude call in the system is otherwise **amnesiac**: context is rebuilt from the
+    payload, baselines and a couple of recent reports, so everything qualitative learned over
+    a year ("Wednesdays after Tuesday tempos are always bad", "knee complains on downhills,
+    not on volume") lived only inside the text of individual reports and did not exist for
+    the next call. NF-01 closed the quantitative half (personal metric norms); this is the
+    other half.
+
+    ``facts_enc`` is a Fernet-encrypted JSON list of
+    ``{id, text, kind, confidence, first_seen, last_confirmed, evidence: [report_log_id]}``.
+    Encrypted, not plain: this is the most sensitive text in the database — injuries, work
+    pressure, habits — and it is emphatically not "just a cache". ``stoplist_enc`` holds
+    statements the user explicitly rejected, so a fact deleted as wrong cannot be
+    regenerated next week and quietly come back."""
+
+    __tablename__ = "athlete_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    facts_enc: Mapped[Optional[str]] = mapped_column(Text)
+    stoplist_enc: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class JobRun(Base):
     """OPS-04: one row per run of a per-user background-job branch (morning tick + the five
     run_daily jobs), so "did plan_sync run yesterday and how did it end?" is a web read, not

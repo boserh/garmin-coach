@@ -30,6 +30,7 @@ from app.analysis.prompts import (
     SYSTEM_WEATHER_PLAN,
 )
 from app.core.config import settings
+from app.db import profile as profile_db
 from app.garmin import exercises
 from app.garmin.schemas import GeneratedPlan, PlanEdit, StrengthSession
 
@@ -375,6 +376,9 @@ async def run_plan_generation(
         # NF-17: a race target time (seconds) — SYSTEM_PLAN derives target paces from it
         # when it's realistic for the fitness snapshot, else says so honestly in the summary.
         "target_time_s": (intake or {}).get("target_time_s") or None,
+        # EP-18: a year of "what actually works on this athlete" beats a generic template —
+        # this is the whole point of keeping a profile at all.
+        "athlete_profile": await profile_db.build_context(session, user_id),
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
@@ -869,6 +873,9 @@ async def run_plan_adaptation(
         # move or shrink sessions; with the distribution in hand, a drift into the grey zone
         # becomes "slow the easy runs down", which is the correct fix and costs no volume.
         "intensity": await _intensity_context(session, user_id),
+        # EP-18: adaptation is where a remembered constraint pays off most — "intervals in
+        # the heat get abandoned" should stop the model from proposing them again.
+        "athlete_profile": await profile_db.build_context(session, user_id),
     }
     try:
         edit, stats = await _run_claude(

@@ -744,6 +744,40 @@ def _ci_render(current_text: str, status: str) -> str:
     return f"{base}{_CI_SEP}{status}"
 
 
+# ---------- COACH MEMORY (EP-18) ----------
+
+@bot_command
+async def forget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/forget — list what the coach remembers; ``/forget <id|текст>`` deletes one fact and
+    stop-lists it so it can't be rediscovered. The correction channel the profile needs: a
+    wrong fact nobody can delete quietly steers advice for months."""
+    from app import profile as profile_rules
+    from app.db import profile as profile_db
+
+    arg = " ".join(ctx.args or []).strip()
+    logger.info(f"CMD /forget {arg[:60]}")
+    facts, stoplist = await profile_db.get_profile(session, user.id)
+    if not facts:
+        await update.message.reply_text(
+            "Коуч поки нічого про тебе не запамʼятав. Профіль наповнюється з тижневих підсумків."
+        )
+        return
+    if not arg:
+        lines = [f"{f['id']} · {f['text']}" for f in profile_rules.select(facts)]
+        await update.message.reply_text(
+            "🧠 Що коуч памʼятає:\n\n" + "\n".join(lines) +
+            "\n\nЩоб прибрати: /forget <id> (або текст факту). Повний список — /me/profile."
+        )
+        return
+    facts, stoplist, removed = profile_rules.forget(facts, stoplist, arg)
+    if not removed:
+        await update.message.reply_text("Не знайшов такого факту. Список — просто /forget.")
+        return
+    await profile_db.save_profile(session, user.id, facts, stoplist)
+    await session.commit()
+    await update.message.reply_text("✅ Прибрав і більше не згадуватиму цього.")
+
+
 # ---------- LIFESTYLE LOG (NF-28) ----------
 
 LIFESTYLE_PROMPT = (

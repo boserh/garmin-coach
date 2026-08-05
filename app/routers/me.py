@@ -696,6 +696,10 @@ async def me_export(
     # NF-28: the lifestyle tags are user-AUTHORED data (not derived cache), so they belong
     # in a portability export more clearly than anything else here.
     lifestyle_rows = await lifestyle_db.read_all(session, user.id)
+    # EP-18: the coach's memory of this athlete is theirs too — and it is the most sensitive
+    # text we hold, so a portability export that silently omitted it would be dishonest.
+    from app.db import profile as profile_db
+    profile_facts, _profile_stoplist = await profile_db.get_profile(session, user.id)
 
     plan_rows = []
     for p in plans:
@@ -720,6 +724,8 @@ async def me_export(
         zf.writestr("report_logs.json", json.dumps(report_rows, ensure_ascii=False, indent=2))
         zf.writestr("lifestyle_logs.json",
                     json.dumps(lifestyle_rows, ensure_ascii=False, indent=2))
+        zf.writestr("athlete_profile.json",
+                    json.dumps(profile_facts, ensure_ascii=False, indent=2))
     buf.seek(0)
 
     fname = f"garmin-coach-export-{dt.date.today().isoformat()}.zip"
@@ -871,6 +877,66 @@ async def me_jobs(
         {"runs": runs, "user": user, "base": "/me", "job_filter": job,
          "is_admin_view": False, "title": "Фонові задачі", "token": ""},
     )
+
+
+@router.get("/me/profile", response_class=HTMLResponse)
+async def me_profile(
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """EP-18: everything the coach 'knows' about this athlete, with the reports each fact
+    was drawn from. Transparency is not a nicety here — a profile the user cannot inspect is
+    a profile they cannot correct, and an uncorrectable wrong fact quietly steers advice for
+    months (the poisoning failure mode). Pure DB read, user-scoped."""
+    from app import profile as profile_rules
+    from app.db import profile as profile_db
+
+    facts, stoplist = await profile_db.get_profile(session, user.id)
+    shown = profile_rules.select(facts)
+    return templates.TemplateResponse(
+        request, "profile.html",
+        {"user": user, "facts": shown, "total": len(facts),
+         "hidden": max(0, len(facts) - len(shown)), "stoplist": stoplist,
+         "max_facts": profile_rules.MAX_FACTS},
+    )
+
+
+@router.post("/me/profile/forget")
+async def me_profile_forget(
+    fact_id: str = Form(...),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """"This isn't true": drop the fact AND stop-list it, so next week's pass cannot
+    rediscover the same statement and quietly bring it back."""
+    from app import profile as profile_rules
+    from app.db import profile as profile_db
+
+    facts, stoplist = await profile_db.get_profile(session, user.id)
+    facts, stoplist, _removed = profile_rules.forget(facts, stoplist, fact_id)
+    await profile_db.save_profile(session, user.id, facts, stoplist)
+    await session.commit()
+    return RedirectResponse("/me/profile", status_code=303)
+
+
+@router.post("/me/profile/pin")
+async def me_profile_pin(
+    fact_id: str = Form(...),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """"This matters": pin a fact so eviction and confidence decay can't drop it. The user
+    overrode the heuristic; the heuristic must not quietly override them back."""
+    from app.db import profile as profile_db
+
+    facts, stoplist = await profile_db.get_profile(session, user.id)
+    for f in facts:
+        if f.get("id") == fact_id:
+            f["pinned"] = not f.get("pinned")
+    await profile_db.save_profile(session, user.id, facts, stoplist)
+    await session.commit()
+    return RedirectResponse("/me/profile", status_code=303)
 
 
 @router.get("/me", response_class=HTMLResponse)
