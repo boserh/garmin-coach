@@ -52,6 +52,8 @@ MODEL_PLAN = SONNET_5        # plan edits (/plan <text>): small, mechanical → 
 MODEL_RACE = OPUS_4_8        # race pack (EP-05): reasoning-heavy synthesis, once per race
 MODEL_RACE_DEBRIEF = SONNET_5  # post-race debrief (NF-23): our engine did the maths, Sonnet
                                # only narrates it — ~$0.02, a few times a year
+MODEL_PROFILE = SONNET_5     # coach-memory weekly pass (EP-18 ph2): a small JSON delta,
+                             # once a week — ~$0.03/month
 MODEL_CHECKUP = SONNET_5     # health-checkup interpretation: small, on explicit user request
 MODEL_SUPPLEMENTS = SONNET_5 # supplement → lab-monitoring advice: small, on explicit user request
 MODEL_CHECKUP_OCR = SONNET_5 # lab-report photo/PDF → structured checkup: vision, on upload

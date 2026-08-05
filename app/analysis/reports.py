@@ -43,6 +43,7 @@ from app.analysis.client import (
     MODEL_HEALTH,
     MODEL_INJURY,
     MODEL_INSIGHTS,
+    MODEL_PROFILE,
     MODEL_RACE,
     MODEL_RACE_DEBRIEF,
     MODEL_SUPPLEMENTS,
@@ -69,6 +70,7 @@ from app.analysis.prompts import (
     SYSTEM_HEALTH,
     SYSTEM_INJURY,
     SYSTEM_INSIGHTS,
+    SYSTEM_PROFILE,
     SYSTEM_RACE,
     SYSTEM_RACE_DEBRIEF,
     SYSTEM_SUPPLEMENTS,
@@ -1196,6 +1198,153 @@ async def run_race_plan(
         cache_key=_race_cache_key(context, MODEL_RACE),
         with_stats_fn=race_plan_with_stats, question=f"race:{plan.id}", api_key=api_key,
     )
+
+
+# ---------- COACH MEMORY: WEEKLY ACCUMULATION (EP-18 phase 2) ----------
+
+PROFILE_WINDOW_DAYS = 7        # one week of observations per pass — the ticket's own cadence
+PROFILE_MAX_ADDS = 3           # ...and at most this many new facts out of it
+
+
+def profile_update_with_stats(
+    context: dict, api_key: Optional[str] = None
+) -> Tuple[str, CallStats]:
+    """One weekly coach-memory pass (Sonnet) → a JSON delta. Returns (text, stats)."""
+    return _complete(MODEL_PROFILE, SYSTEM_PROFILE, context, "profile", api_key,
+                     max_tokens=1200)
+
+
+def parse_profile_delta(text: str) -> dict:
+    """Parse the model's reply into a ``{add, confirm, contradict, drop}`` delta.
+
+    Tolerates fences/prose around the JSON (same slice-to-the-outermost-braces trick as the
+    plan parser) and returns an EMPTY delta on anything unparseable — a malformed weekly pass
+    must leave the profile exactly as it was, never half-applied."""
+    s = (text or "").strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i == -1 or j <= i:
+        return {}
+    try:
+        data = json.loads(s[i:j + 1])
+    except ValueError:
+        logger.warning("PROFILE: weekly delta was not valid JSON — skipping this week")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {k: data.get(k) or [] for k in ("add", "confirm", "contradict", "drop")}
+    if not isinstance(out["add"], list):
+        out["add"] = []
+    # The cap is enforced HERE, not asked for politely in the prompt: a profile that can grow
+    # by an arbitrary number of facts per week defeats both ceilings it lives under.
+    out["add"] = [f for f in out["add"] if isinstance(f, dict)][:PROFILE_MAX_ADDS]
+    for key in ("confirm", "contradict", "drop"):
+        out[key] = [x for x in (out[key] if isinstance(out[key], list) else [])
+                    if isinstance(x, str)]
+    return out
+
+
+async def build_profile_context(session, *, user_id: int) -> Optional[dict]:
+    """The week's observations plus the facts already known, or ``None`` when there is
+    nothing to learn from (no reports in the window — a quiet week costs no call)."""
+    from app import profile as profile_rules
+    from app import records as records_mod
+    from app.db import lifestyle as lifestyle_db
+    from app.db import profile as profile_db
+    from app.garmin import repository
+
+    reports_week = await repository.reports_for_evidence(
+        session, user_id, days=PROFILE_WINDOW_DAYS)
+    if not reports_week:
+        return None
+
+    facts, _stoplist = await profile_db.get_profile(session, user_id)
+    today = dt.date.today()
+    week: dict = {}
+
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is not None:
+        compliance = _recent_compliance(
+            await repository.weekly_compliance(session, plan.id), weeks=1)
+        if compliance:
+            week["compliance"] = compliance
+    subjective = await repository.recent_subjective_runs(
+        session, user_id, days=PROFILE_WINDOW_DAYS)
+    if subjective:
+        week["subjective"] = subjective
+    lifestyle = await lifestyle_db.read_range(
+        session, user_id, days=PROFILE_WINDOW_DAYS)
+    if lifestyle:
+        week["lifestyle"] = lifestyle
+    intensity = await build_intensity_context(session, user_id=user_id)
+    if intensity and intensity.get("findings"):
+        week["intensity"] = intensity["findings"]
+    records = records_mod.to_context(
+        await repository.recent_records(session, user_id, days=PROFILE_WINDOW_DAYS))
+    if records:
+        week["records"] = records
+
+    return {
+        "today": today.isoformat(),
+        "profile": [
+            {"id": f["id"], "text": f["text"], "kind": f["kind"],
+             "confidence": f["confidence"], "first_seen": f["first_seen"],
+             "last_confirmed": f["last_confirmed"]}
+            for f in profile_rules.select(facts)
+        ],
+        "week": week,
+        "reports": reports_week,
+    }
+
+
+async def run_profile_update(
+    session, *, user_id: int, api_key: Optional[str] = None,
+) -> Optional[dict]:
+    """EP-18 phase 2: one Sonnet call a week that updates what the coach remembers.
+
+    Returns the applied delta (or ``None`` when nothing ran). The whole design is defensive,
+    because the failure mode of a self-accumulating memory is that one wrong conclusion
+    re-confirms itself for months:
+
+    * it proposes a DELTA against the known facts, never a rewrite, so a bad week cannot
+      erase a year;
+    * a fact without evidence is dropped by ``profile.normalize_fact``, and a fact the user
+      rejected is refused by the stop-list — even if the model proposes it again;
+    * ``contradict`` lowers confidence rather than deleting, because one contradicting week is
+      evidence, not proof;
+    * and a failure here is swallowed by the caller: the digest must not depend on it, and
+      yesterday's profile is a perfectly good profile.
+    """
+    from app import profile as profile_rules
+    from app.db import profile as profile_db
+
+    context = await build_profile_context(session, user_id=user_id)
+    if context is None:
+        logger.info(f"PROFILE skip user={user_id}: no reports in the window")
+        return None
+
+    text, stats = await _run_claude(
+        profile_update_with_stats, context, api_key, session=session, user_id=user_id)
+    delta = parse_profile_delta(text)
+    from app.garmin import repository
+
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=True, cached=stats.cached,
+        question=f"profile:{dt.date.today().isoformat()}", report_text=text,
+    )
+    if not delta:
+        return None
+
+    facts, stoplist = await profile_db.get_profile(session, user_id)
+    updated = profile_rules.apply_delta(facts, delta, stoplist=stoplist)
+    await profile_db.save_profile(session, user_id, updated, stoplist)
+    logger.info(
+        f"PROFILE updated user={user_id}: +{len(delta.get('add') or [])} "
+        f"✓{len(delta.get('confirm') or [])} ✗{len(delta.get('contradict') or [])} "
+        f"−{len(delta.get('drop') or [])} → {len(updated)} facts"
+    )
+    return delta
 
 
 # ---------- POST-RACE DEBRIEF (NF-23) ----------

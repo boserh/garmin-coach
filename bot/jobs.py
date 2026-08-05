@@ -37,6 +37,7 @@ from app.analysis.service import (
     run_injury_check,
     run_insights,
     run_plan_adaptation,
+    run_profile_update,
     run_race_debrief,
     run_race_plan,
     run_weather_plan_check,
@@ -1366,6 +1367,22 @@ async def _digest_for_user(ctx, session, user: User) -> None:
             # the month (each self-guards to once a month via bot_state).
             await _monthly_compare_for_user(ctx, session, user, creds)
             await _monthly_insights_for_user(ctx, session, user, creds)
+            await _profile_update_for_user(session, user, creds)
+
+
+async def _profile_update_for_user(session, user: User, creds) -> None:
+    """EP-18 phase 2: the weekly coach-memory pass, riding on the digest that just went out.
+
+    Silent by design — nothing is sent to the user (the profile shows up at ``/me/profile``
+    and, indirectly, in every future piece of advice). Failure is swallowed on purpose: an
+    unavailable memory update must never cost the digest, and yesterday's profile is a
+    perfectly good profile."""
+    if not creds.anthropic_key:
+        return
+    try:
+        await run_profile_update(session, user_id=user.id, api_key=creds.anthropic_key)
+    except Exception:  # noqa: BLE001 — see the docstring: never let this break the digest
+        logger.exception(f"PROFILE weekly update failed user={user.id}")
 
 
 async def force_digest_for_user(ctx, session, user: User) -> None:

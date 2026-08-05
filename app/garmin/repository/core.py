@@ -796,6 +796,41 @@ async def get_recent_reports(
     ]
 
 
+PROFILE_EVIDENCE_EXCERPT = 600   # chars of each report the weekly profile pass reads
+
+
+async def reports_for_evidence(
+    session: AsyncSession, user_id: int, days: int = 7, limit: int = 20
+) -> List[dict]:
+    """EP-18 phase 2: this week's successful reports as ``{id, kind, date, excerpt}``.
+
+    The **id** is the point: every fact the weekly pass proposes must cite one of these rows,
+    so a remembered claim always leads back to text a human can go and read. Excerpts are
+    truncated because the pass needs to know what was said, not to re-read the week in full —
+    an unbounded context here would quietly make the cheapest call in the app one of the
+    dearest."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(ReportLog.id, ReportLog.kind, ReportLog.created_at, ReportLog.report_text)
+            .where(
+                ReportLog.user_id == user_id,
+                ReportLog.ok.is_(True),
+                ReportLog.report_text.is_not(None),
+                ReportLog.created_at >= cutoff,
+            )
+            .order_by(ReportLog.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        {"id": rid, "kind": kind,
+         "date": created.date().isoformat() if created else None,
+         "excerpt": (text or "")[:PROFILE_EVIDENCE_EXCERPT]}
+        for rid, kind, created, text in rows
+    ]
+
+
 async def get_recent_asks(
     session: AsyncSession, user_id: int, minutes: int = 5
 ) -> List[dict]:
