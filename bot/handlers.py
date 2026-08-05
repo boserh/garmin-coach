@@ -744,6 +744,110 @@ def _ci_render(current_text: str, status: str) -> str:
     return f"{base}{_CI_SEP}{status}"
 
 
+# ---------- LIFESTYLE LOG (NF-28) ----------
+
+LIFESTYLE_PROMPT = (
+    "Що сьогодні було? (можна кілька; мовчання — теж нормально)"
+)
+# The status footer under the keyboard, rewritten in place on each tap — same trick as
+# the check-in footer above, so re-taps never stack.
+_LS_SEP = "\n— — —\n"
+
+
+def lifestyle_keyboard(date: str, tags=None) -> InlineKeyboardMarkup:
+    """Tag toggles + a «нічого» button. ``date`` rides in the callback data, so the whole
+    thing is stateless and a prompt left unanswered overnight still writes to the right day.
+
+    Selected tags are marked with a leading ✓ so the message itself shows what's stored —
+    there is no other place a one-tap feature can show its state."""
+    from app.db import lifestyle as lifestyle_db
+
+    chosen = set(tags or [])
+    buttons = [
+        InlineKeyboardButton(
+            ("✓ " if slug in chosen else "") + lifestyle_db.label(slug),
+            callback_data=f"ls:t:{date}:{slug}",
+        )
+        for slug in lifestyle_db.TAG_ORDER
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("✅ Нічого такого", callback_data=f"ls:none:{date}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _lifestyle_status(tags) -> str:
+    from app.db import lifestyle as lifestyle_db
+
+    if not tags:
+        return "✅ Записав: нічого такого."
+    return "✅ Записав: " + ", ".join(lifestyle_db.label(t) for t in tags) + "."
+
+
+def _ls_render(current_text: str, status: str) -> str:
+    return f"{current_text.split(_LS_SEP)[0].rstrip()}{_LS_SEP}{status}"
+
+
+async def lifestyle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle the evening tag buttons. ``ls:t:<date>:<slug>`` toggles one tag;
+    ``ls:none:<date>`` stores an EMPTY list — which is data, not a dismissal: without those
+    "nothing happened" nights there is no control group and no association can ever be
+    computed. Zero Claude calls; a pure DB write."""
+    q = update.callback_query
+    await q.answer()
+    from app.db import lifestyle as lifestyle_db
+
+    parts = q.data.split(":")
+    action, date = parts[1], parts[2]
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        if action == "none":
+            tags = (await lifestyle_db.upsert(session, user.id, date, [])).tags
+        else:
+            tags = await lifestyle_db.toggle_tag(session, user.id, date, parts[3])
+    await q.edit_message_text(
+        _ls_render(q.message.text, _lifestyle_status(tags)),
+        reply_markup=lifestyle_keyboard(date, tags),
+    )
+
+
+@bot_command
+async def log_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/log [вчора|YYYY-MM-DD] <теги> — the typed fallback for the evening buttons, and the
+    only way to fill in a day already gone («/log вчора пиво»). Bare ``/log`` opens today's
+    keyboard. Upsert, so logging the same day twice corrects it rather than duplicating."""
+    from app.core.tz import user_today
+    from app.db import lifestyle as lifestyle_db
+
+    arg = " ".join(ctx.args or [])
+    logger.info(f"CMD /log {arg}")
+    today = user_today(user)
+    if not arg.strip():
+        row = await lifestyle_db.get_day(session, user.id, today.isoformat())
+        await update.message.reply_text(
+            LIFESTYLE_PROMPT,
+            reply_markup=lifestyle_keyboard(today.isoformat(), row.tags if row else None),
+        )
+        return
+
+    date = lifestyle_db.parse_date(arg, today)
+    if date is None:
+        await update.message.reply_text(
+            f"Можу записати лише за останні {lifestyle_db.BACKDATE_MAX_DAYS} днів "
+            f"і не наперед. Приклад: /log вчора пиво"
+        )
+        return
+    tags = lifestyle_db.parse_tags(arg)
+    row = await lifestyle_db.upsert(session, user.id, date.isoformat(), tags)
+    when = "сьогодні" if date == today else date.isoformat()
+    await update.message.reply_text(
+        f"{_lifestyle_status(row.tags)} ({when})",
+        reply_markup=lifestyle_keyboard(date.isoformat(), row.tags),
+    )
+
+
 async def checkin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle the RPE / pain buttons. Callback data carries the activity id, so no chat
     state is kept. Re-tapping overwrites the stored value (repository.set_subjective)."""

@@ -276,6 +276,38 @@ class BotState(Base):
     )
 
 
+class LifestyleLog(Base):
+    """NF-28: one evening's self-reported lifestyle facts — beer, late caffeine, a late
+    heavy meal, a hard day, travel — as a plain list of tag slugs.
+
+    The correlation engine (NF-02) could only ever correlate what the watch reports, so the
+    strongest everyday levers were invisible and the user's most interesting question ("what
+    actually wrecks my HRV?") stayed unanswerable on an engine already written and tested.
+
+    Deliberately binary and tiny: no counts, no calories, no macros. The whole risk of any
+    diary is entry cost, so the only thing that must survive daily use is a fact you can tap
+    once. ``tags`` being an EMPTY list is meaningful data — the "nothing happened" control
+    group, without which no association can ever be established; that's why absence of a row
+    (never asked / ignored) and a row with no tags are different states and must stay so.
+
+    Unique per (user, date); re-tapping upserts."""
+
+    __tablename__ = "lifestyle_logs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_lifestyle_user_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    date: Mapped[str] = mapped_column(String(10), index=True)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class JobRun(Base):
     """OPS-04: one row per run of a per-user background-job branch (morning tick + the five
     run_daily jobs), so "did plan_sync run yesterday and how did it end?" is a web read, not

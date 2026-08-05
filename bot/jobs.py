@@ -56,6 +56,7 @@ from bot.handlers import (
     CHECKIN_PROMPT,
     GARMIN_AUTH_INVALID_MSG,
     GARMIN_RATE_LIMITED_MSG,
+    LIFESTYLE_PROMPT,
     MFA_REQUIRED_MSG,
     PENDING_ADAPT_KEY,
     PLAN_EXTEND_SNOOZE_KEY,
@@ -63,6 +64,7 @@ from bot.handlers import (
     TZ,  # noqa: F401 — the process TZ, re-exported here for the run_daily schedules/tests
     checkin_keyboard,
 )
+from bot.handlers import lifestyle_keyboard as handlers_lifestyle_keyboard
 
 logger = logging.getLogger("bot")
 
@@ -1196,40 +1198,82 @@ async def weather_plan_job(ctx: ContextTypes.DEFAULT_TYPE):
 # (bot_state key sleep_nudge:<date>, ST-14) — a re-tick within the same evening stays quiet.
 SLEEP_NUDGE_GUARD_PREFIX = "sleep_nudge:"
 
+# NF-28: the evening lifestyle prompt is offered at most once per local day
+# (bot_state lifestyle_ask:<date>). Silence stays a valid non-answer — an ignored prompt is
+# never repeated, so the diary can't turn into a nag the user mutes.
+LIFESTYLE_ASK_PREFIX = "lifestyle_ask:"
 
-async def _sleep_nudge_for_user(ctx, session, user: User, today: str) -> None:
+
+async def _lifestyle_keyboard_if_due(session, user: User, today: str):
+    """NF-28: the evening tag keyboard when this user hasn't answered today yet — else
+    ``None``. Silence is a valid non-answer, so an unanswered prompt is never repeated
+    within the day and never chased the next day; a diary that nags is a diary that gets
+    muted, and a muted diary correlates nothing."""
+    if not settings.LIFESTYLE_LOG or not user.telegram_chat_id:
+        return None
+    from app.db import lifestyle as lifestyle_db
+
+    if await lifestyle_db.get_day(session, user.id, today) is not None:
+        return None                       # already answered (buttons or /log)
+    guard_key = LIFESTYLE_ASK_PREFIX + today
+    if await repository.get_state(session, user.id, guard_key) == "1":
+        return None                       # already asked today
+    await repository.set_state(session, user.id, guard_key, "1")
+    return handlers_lifestyle_keyboard(today)
+
+
+async def _sleep_nudge_for_user(ctx, session, user: User, today: str,
+                                reply_markup=None) -> bool:
     """NF-16: a once-a-evening, zero-LLM heads-up when tomorrow's plan holds a key session
     (tempo/intervals/long) AND recent sleep shows a debt signal (``app.sleepnudge`` — reuses
     NF-01's own personal band, plus Garmin's own sleep_need vs actual gap). Either condition
     alone stays silent (EP-13's "no conflict, no message" rule) — never "before every tempo
     run". Pure DB read, zero Garmin/Claude calls (today's data is already synced by evening).
     Reuses ``User.alerts_enabled`` as the per-user off-switch (same wellness-push class as
-    EP-08's health alerts) plus the process-level ``SLEEP_NUDGE`` toggle."""
+    EP-08's health alerts) plus the process-level ``SLEEP_NUDGE`` toggle.
+
+    Returns True when a message went out. ``reply_markup`` lets NF-28's lifestyle keyboard
+    ride along on this message instead of arriving as a second evening ping."""
     if not settings.SLEEP_NUDGE or not user.alerts_enabled or not user.telegram_chat_id:
-        return
+        return False
     guard_key = SLEEP_NUDGE_GUARD_PREFIX + today
     if await repository.get_state(session, user.id, guard_key) == "1":
-        return
+        return False
     tomorrow = (dt.date.fromisoformat(today) + dt.timedelta(days=1)).isoformat()
     ws = await repository.upcoming_plan_workouts(session, user.id, days=2)
     if not sleepnudge.tomorrow_is_heavy([w.type for w in ws if w.date == tomorrow]):
-        return
+        return False
     history = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)
     if not sleepnudge.has_sleep_debt(history):
-        return
+        return False
     await repository.set_state(session, user.id, guard_key, "1")
-    await ctx.bot.send_message(user.telegram_chat_id, sleepnudge.nudge_text(history))
+    text = sleepnudge.nudge_text(history)
+    if reply_markup is not None:
+        text = f"{text}\n\n{LIFESTYLE_PROMPT}"
+    await ctx.bot.send_message(user.telegram_chat_id, text, reply_markup=reply_markup)
     logger.info(f"SLEEP_NUDGE sent user={user.id}")
+    return True
 
 
 async def sleep_nudge_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Evening check (NF-16): a heads-up before a heavy session on a sleep-debt night.
     Silent when there's no conflict of the two conditions. Scheduled by run_daily at
     ``SLEEP_NUDGE_HOUR`` (process TZ in v1 — see ``_sleep_nudge_for_user``'s per-user guard
-    date, ST-14); the job's own firing hour is the one piece that stays global."""
+    date, ST-14); the job's own firing hour is the one piece that stays global.
+
+    NF-28 rides along here: the same evening slot also asks for the day's lifestyle tags —
+    attached to the sleep nudge when one goes out, as its own small prompt otherwise. The
+    nudge itself is rare by design (heavy session AND sleep debt), so hanging the diary on
+    it alone would collect almost nothing; the daily prompt is what makes the correlation
+    engine's control group fill up at all.
+    """
     async def worker(session, user):
         today = dt.datetime.now(user_tz(user)).date().isoformat()
-        await _sleep_nudge_for_user(ctx, session, user, today)
+        kb = await _lifestyle_keyboard_if_due(session, user, today)
+        sent = await _sleep_nudge_for_user(ctx, session, user, today, reply_markup=kb)
+        if kb is not None and not sent:
+            await ctx.bot.send_message(
+                user.telegram_chat_id, LIFESTYLE_PROMPT, reply_markup=kb)
 
     await for_each_user(worker, with_chat=True, label="SLEEP_NUDGE")
 

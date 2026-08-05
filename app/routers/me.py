@@ -22,6 +22,7 @@ from app import stepmatch
 from app.charts import run_charts as _run_charts
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
+from app.db import lifestyle as lifestyle_db
 from app.db.models import (
     ActivityRecord,
     DailyMetric,
@@ -692,6 +693,9 @@ async def me_export(
     activity_rows = [_export_row(a, _EXPORT_ACTIVITY_COLS) for a in activities]
     record_rows = [_export_row(r, _EXPORT_RECORD_COLS) for r in records]
     report_rows = [_export_row(r, _EXPORT_REPORT_COLS) for r in reports]
+    # NF-28: the lifestyle tags are user-AUTHORED data (not derived cache), so they belong
+    # in a portability export more clearly than anything else here.
+    lifestyle_rows = await lifestyle_db.read_all(session, user.id)
 
     plan_rows = []
     for p in plans:
@@ -714,6 +718,8 @@ async def me_export(
                     json.dumps(record_rows, ensure_ascii=False, indent=2))
         zf.writestr("plans.json", json.dumps(plan_rows, ensure_ascii=False, indent=2))
         zf.writestr("report_logs.json", json.dumps(report_rows, ensure_ascii=False, indent=2))
+        zf.writestr("lifestyle_logs.json",
+                    json.dumps(lifestyle_rows, ensure_ascii=False, indent=2))
     buf.seek(0)
 
     fname = f"garmin-coach-export-{dt.date.today().isoformat()}.zip"

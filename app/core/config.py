@@ -158,6 +158,14 @@ class Settings(BaseSettings):
     SLEEP_NUDGE: bool = True
     SLEEP_NUDGE_HOUR: int = 21
 
+    # --- Lifestyle log (NF-28) ---
+    # One tap in the same evening slot as the sleep nudge marks the day's everyday facts
+    # (alcohol / late caffeine / late meal / stress / travel / feeling off). Zero LLM calls;
+    # the tags become binary variables in NF-02's correlation engine, which until now could
+    # only correlate what the watch itself reports. Off → the prompt is never sent (already
+    # stored history stays, and /log keeps working).
+    LIFESTYLE_LOG: bool = True
+
     # --- Injury-risk radar (NF-04) ---
     # A pure-Python detector combines load-side signals (ACWR trend, repeated pain, RPE/pace
     # divergence, HRV/RHR drift) into a severity score; on a high score the morning tick sends

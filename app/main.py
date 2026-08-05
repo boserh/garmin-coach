@@ -57,7 +57,15 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app_logging.setup()
-    app = FastAPI(title="Garmin → Claude", version="1.0.0", lifespan=lifespan)
+    # openapi_url=None also kills /docs and /redoc. This is a personal single-tenant
+    # app with no external API consumers, so the generated schema is pure attack
+    # surface: it hands a scanner the full route map (including every admin path),
+    # each form's exact field names, and our route docstrings — which describe
+    # internal guards, cost paths and cache behaviour. Scanners already fetch it
+    # (a 200 on /openapi.json in the middle of a .env sweep is what surfaced this).
+    app = FastAPI(
+        title="Garmin → Claude", version="1.0.0", lifespan=lifespan, openapi_url=None
+    )
 
     # Signed cookie sessions for web login. APP_SECRET_KEY doubles as the signing
     # key. If it's unset we must NOT fall back to a constant — a known secret lets

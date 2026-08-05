@@ -176,7 +176,10 @@ _DIGEST_KEY_FIELDS = (
     "fitness", "multisport", "goal", "goal_projection", "efficiency", "records",
     "sleep_regularity",
 )
-_INSIGHTS_KEY_FIELDS = ("window_days", "findings")
+# NF-28's lifestyle findings are a separate context key, so they must be listed here too —
+# without it a newly-logged tag would change the prompt but not the hash, and /insights
+# would keep serving the pre-lifestyle text (the backlog's cross-cutting trap).
+_INSIGHTS_KEY_FIELDS = ("window_days", "findings", "lifestyle_findings")
 _WRAPPED_KEY_FIELDS = ("period", "start", "end", "stats", "records")
 _RACE_KEY_FIELDS = (
     "goal", "target_date", "target_dist_km", "fitness", "recent_sessions", "weather",

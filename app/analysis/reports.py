@@ -1164,10 +1164,15 @@ async def run_insights(
     (the honest "not enough data" path) — the caller shows a friendly message and never
     spends a Claude call in that case."""
     from app import correlations
+    from app.db import lifestyle as lifestyle_db
     from app.garmin import repository
 
     history = await repository.read_history(session, user_id, days=INSIGHTS_WINDOW_DAYS)
-    findings = correlations.find_correlations(history)
+    # NF-28: the user's own evening tags join as binary variables — the engine could
+    # previously only correlate what the watch reports, which left every everyday lever
+    # (alcohol, late caffeine, a hard day) permanently invisible.
+    logs = await lifestyle_db.read_range(session, user_id, days=INSIGHTS_WINDOW_DAYS)
+    findings = correlations.find_correlations(history, lifestyle_logs=logs)
     if not findings:
         logger.info(f"INSIGHTS skip user={user_id}: no significant correlations")
         return None
