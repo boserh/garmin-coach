@@ -292,9 +292,23 @@ async def records_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, u
         )
         return
     order = {k: i for i, k in enumerate(records.DISPLAY_ORDER)}
-    rows.sort(key=lambda r: order.get(r.kind, 99))
+    # NF-27: the strength kinds are dynamic (one e1RM per lift), so they can't live in
+    # DISPLAY_ORDER — they sort after the running ones, in their own block.
+    run_rows = [r for r in rows if r.kind in order]
+    lift_rows = [r for r in rows if r.kind not in order]
+    run_rows.sort(key=lambda r: order[r.kind])
+    lift_rows.sort(key=lambda r: r.kind)
     lines = ["🏅 Твої особисті рекорди:"]
-    lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})" for r in rows]
+    lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})"
+              for r in run_rows]
+    if lift_rows:
+        lines.append("")
+        lines.append("🏋️ Силова:")
+        lines += [records.format_record_line(r, with_prev=False) + f"  ({r.date})"
+                  for r in lift_rows]
+        # Epley is a formula, not a measurement — say so once rather than putting an
+        # estimated lift next to a measured running PB as if they were the same kind of number.
+        lines.append("≈1ПМ — оцінка за формулою з реальних сетів, дивись на тренд.")
     lines.append("\nРахуємо по цілих пробіжках (не відрізках всередині довшого бігу).")
     await update.message.reply_text("\n".join(lines))
 

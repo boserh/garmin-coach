@@ -188,6 +188,7 @@ _DIGEST_KEY_FIELDS = (
     "fitness", "multisport", "goal", "goal_projection", "efficiency", "records",
     "sleep_regularity",
     "intensity",   # NF-24 — prompt context, therefore key material
+    "strength",    # NF-27 — same
 )
 # NF-28's lifestyle findings are a separate context key, so they must be listed here too —
 # without it a newly-logged tag would change the prompt but not the hash, and /insights

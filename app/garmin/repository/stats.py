@@ -56,6 +56,31 @@ async def weekly_run_volume(
     return out
 
 
+async def strength_sessions(
+    session: AsyncSession, user_id: int, weeks: int = 12
+) -> List[dict]:
+    """NF-27: strength activities over the last ``weeks`` weeks that carry executed sets,
+    oldest first — the raw material for ``app.strengthstats``. The per-set reps/weights have
+    been fetched and stored all along (``exercise:v3``, cached a year); nothing here costs a
+    Garmin request. JSON-null filtered in Python, same gotcha as the other JSON columns."""
+    cutoff = (dt.date.today() - dt.timedelta(weeks=weeks)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type == "strength_training",
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= cutoff,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            ).order_by(ActivityRecord.date)
+        )
+    ).scalars().all()
+    return [
+        {"date": a.date, "dur_min": a.dur_min, "exercises": a.exercises}
+        for a in rows if isinstance(a.exercises, dict) and a.exercises
+    ]
+
+
 async def activities_with_zones(
     session: AsyncSession, user_id: int, weeks: int = 8
 ) -> List[dict]:

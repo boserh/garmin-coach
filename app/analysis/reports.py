@@ -1036,6 +1036,9 @@ async def run_digest(
         # only gets a line, and only on a deviation) — a weekly retrospective is exactly
         # where "where did your week's time actually go" belongs.
         "intensity": await build_intensity_context(session, user_id=user_id) or None,
+        # NF-27: tonnage / e1RM trend / stalls — the strength half of the week, which the
+        # digest previously couldn't mention at all because nothing computed it.
+        "strength": await build_strength_context(session, user_id=user_id) or None,
         "has_plan": plan is not None,
     }
 
@@ -1263,6 +1266,27 @@ def _iso_week(date_s: Optional[str]) -> Optional[str]:
         return dt.date.fromisoformat(date_s or "").strftime("%G-W%V")
     except (TypeError, ValueError):
         return None
+
+
+# ---------- STRENGTH STATS (NF-27) ----------
+
+STRENGTH_WEEKS = 12   # enough to see an e1RM trend and a stall without dragging in last year
+
+
+async def build_strength_context(session, *, user_id: int) -> dict:
+    """Weekly tonnage / e1RM / stalls, or ``{}`` for someone with no logged strength sets.
+
+    ``{}`` (falsy) rather than a "no data" structure, so every consumer's ``if ctx:`` guard
+    degrades to silence. Pure DB read over sets Garmin has already returned and we have
+    already stored — no Garmin request, no LLM call."""
+    from app import strengthstats
+    from app.garmin import repository
+
+    rows = await repository.strength_sessions(session, user_id, weeks=STRENGTH_WEEKS)
+    weeks = strengthstats.weekly_stats(rows)
+    if not weeks:
+        return {}
+    return strengthstats.build_context(weeks, strengthstats.detect_stalls(weeks))
 
 
 # ---------- INJURY-RISK RADAR (NF-04) ----------

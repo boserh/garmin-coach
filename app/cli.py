@@ -260,10 +260,15 @@ async def _backfill_auto_activities(email: str, since: str) -> int:
 
 
 async def _backfill_records(email: str) -> int:
-    """Seed the personal_records table from the user's full stored history (EP-14).
+    """Seed the personal_records table from the user's full stored history (EP-14 + NF-27).
     Idempotent and SILENT: it runs the same detector the bot uses, but sends no
     celebrations — records are dated in the past, so nothing is 'fresh'. Run once after
-    importing years of history; the daily tick keeps it current afterwards."""
+    importing years of history; the daily tick keeps it current afterwards.
+
+    NF-27 needs no backfill command of its own: tonnage and e1RM are DERIVED at read time
+    from the executed sets already stored (``exercise:v3``), so the only thing to seed is
+    the strength records — which this detector now produces alongside the running ones,
+    at zero LLM and zero Garmin cost."""
     from app import records
 
     async with cli_user(email) as (session, user):
@@ -278,7 +283,7 @@ async def _backfill_records(email: str) -> int:
                         if x.kind in records.DISPLAY_ORDER else 99):
             prev = (f" (was {records.format_value(r.kind, r.previous_value)})"
                     if r.previous_value is not None else "")
-            print(f"  {records.LABELS.get(r.kind, r.kind)}: "
+            print(f"  {records.label_for(r.kind)}: "
                   f"{records.format_value(r.kind, r.value)}{prev}  [{r.date}]")
     return 0
 
@@ -653,7 +658,8 @@ def main(argv=None) -> int:
     lw.add_argument("--email", required=True)
 
     br = sub.add_parser(
-        "backfill-records", help="Seed personal records from stored history (silent, EP-14)")
+        "backfill-records",
+        help="Seed personal records (running + strength e1RM/tonnage) from stored history")
     br.add_argument("--email", required=True)
 
     bz = sub.add_parser(

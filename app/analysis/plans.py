@@ -118,6 +118,17 @@ def _existing_custom_strength(workouts, intake) -> dict:
     return out
 
 
+async def _recent_lifts(session, user_id: int, weeks: int = 4) -> dict:
+    """NF-27: ``{exercise: {top_weight_kg, typical_reps, e1rm, sessions}}`` over the last
+    ``weeks``. Empty for someone with no logged strength sets, in which case the prompt
+    simply doesn't get the field and behaves exactly as before."""
+    from app import strengthstats
+    from app.garmin import repository
+
+    rows = await repository.strength_sessions(session, user_id, weeks=weeks + 2)
+    return strengthstats.recent_lifts(rows, weeks=weeks) if rows else {}
+
+
 async def _add_plan_strength(
     session, plan, *, intake, fitness, api_key, model,
     start: Optional[str] = None, end: Optional[str] = None,
@@ -170,6 +181,9 @@ async def _add_plan_strength(
                     }
                 else:
                     logger.warning(f"PLAN strength snapshot empty tid={tid} plan={plan.id}")
+        # NF-27: the executed sets from the last few weeks (zero Garmin/LLM cost — they're
+        # already stored) so the generated progression starts from the achieved weight.
+        recent_lifts = await _recent_lifts(session, plan.user_id)
         # Generate each distinct free-text session once, sanitise categories, and lay it on
         # its weekday as a from-scratch strength_plan (built natively on push).
         custom_plans: dict = {}
@@ -193,7 +207,12 @@ async def _add_plan_strength(
                             generate_strength_progression_with_stats,
                             {"description": desc, "fitness": fitness or None,
                              "exercise_categories": exercises.CATEGORIES,
-                             "weeks": weeks_span},
+                             "weeks": weeks_span,
+                             # NF-27: what was ACTUALLY lifted recently. Without this the
+                             # progression planned next block's weights out of the model's
+                             # head and never checked them against reality — an open loop
+                             # that is the whole reason this ticket exists.
+                             "recent_lifts": recent_lifts or None},
                             api_key, model,
                             session=session, user_id=plan.user_id)
                         progression = _fill_progression_gaps(

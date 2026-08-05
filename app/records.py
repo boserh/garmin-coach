@@ -51,12 +51,29 @@ _RACE_KEYS = {
 }
 _RACE_KINDS = frozenset(_RACE_KEYS)
 
+# NF-27: strength kinds. ``e1rm:<exercise>`` is dynamic (one per lift the user actually
+# does), so unlike every other kind it can't live in a fixed set — hence the prefix test
+# below rather than a membership check.
+E1RM_PREFIX = "e1rm:"
+TONNAGE_WEEK = "tonnage_week"
+
 # Higher value is better for these; for everything else (pace + race predictions) lower wins.
 _HIGHER_BETTER = frozenset(
-    {"longest_run_km", "longest_run_min", "biggest_week_km", "vo2max"}
+    {"longest_run_km", "longest_run_min", "biggest_week_km", "vo2max", TONNAGE_WEEK}
 )
 
+
+def _is_e1rm(kind: str) -> bool:
+    return kind.startswith(E1RM_PREFIX)
+
+
+# An e1RM is an ESTIMATE from a formula, not a measured lift, and it wobbles set to set.
+# Requiring a real margin keeps it from "beating itself" on rounding every single week —
+# the same reasoning as RACE_IMPROVE_S for the (also estimated) race predictions.
+E1RM_IMPROVE_KG = 1.0
+
 LABELS = {
+    TONNAGE_WEEK: "найбільший тонаж за тиждень",
     "fastest_5k": "найшвидші 5 км",
     "fastest_10k": "найшвидші 10 км",
     "fastest_half": "найшвидший півмарафон",
@@ -85,10 +102,14 @@ _ROUND = {
 
 
 def _higher_better(kind: str) -> bool:
-    return kind in _HIGHER_BETTER
+    return kind in _HIGHER_BETTER or _is_e1rm(kind)
 
 
 def _round_for(kind: str, value: float) -> float:
+    if _is_e1rm(kind):
+        return round(value, 1)
+    if kind == TONNAGE_WEEK:
+        return round(value)
     if kind in _PACE_KINDS:
         return round(value, 2)   # ~0.6 s/km granularity
     if kind in _RACE_KINDS:
@@ -188,9 +209,52 @@ async def _metric_bests(session: AsyncSession, user_id: int) -> dict:
     return out
 
 
+async def _strength_bests(session: AsyncSession, user_id: int) -> dict:
+    """NF-27: best e1RM per exercise + the biggest weekly tonnage, from the executed sets
+    Garmin has been returning all along (see ``app.strengthstats``). Dated by the session /
+    the week's last session, so a backfill of years of gym history seeds silently — the
+    same date gate every other record uses."""
+    from app import strengthstats
+
+    rows = (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type == "strength_training",
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            )
+        )
+    ).scalars().all()
+
+    out: dict = {}
+    week_tonnage: dict = {}
+    week_date: dict = {}
+    for a in rows:
+        if not isinstance(a.exercises, dict):
+            continue
+        for name, value in strengthstats.session_e1rm(a.exercises).items():
+            _offer(out, f"{E1RM_PREFIX}{name}", value, a.date, a.id)
+        tonnage = sum(strengthstats.session_tonnage(a.exercises).values())
+        if tonnage <= 0:
+            continue
+        try:
+            wk = dt.date.fromisoformat(a.date).strftime("%G-W%V")
+        except (TypeError, ValueError):
+            continue
+        week_tonnage[wk] = week_tonnage.get(wk, 0.0) + tonnage
+        if a.date > week_date.get(wk, ""):
+            week_date[wk] = a.date
+    for wk, kg in week_tonnage.items():
+        _offer(out, TONNAGE_WEEK, kg, week_date[wk], None)
+    return out
+
+
 def _beats(kind: str, value: float, prev: Optional[float]) -> bool:
     if prev is None:
         return True
+    if _is_e1rm(kind):                 # estimated — require a real margin, not rounding
+        return value >= prev + E1RM_IMPROVE_KG
     if _higher_better(kind):
         return value > prev
     if kind in _RACE_KINDS:            # noisy — require a meaningful margin
@@ -219,6 +283,7 @@ async def detect_records(session: AsyncSession, user_id: int) -> list:
     an unchanged best won't re-insert. Use :func:`announce_worthy` to pick the fresh ones."""
     bests = await _run_bests(session, user_id)
     bests.update(await _metric_bests(session, user_id))
+    bests.update(await _strength_bests(session, user_id))
     stored = await _latest_values(session, user_id)
 
     inserted = []
@@ -257,6 +322,10 @@ def _fmt_hms(seconds: float) -> str:
 
 
 def format_value(kind: str, value: float) -> str:
+    if _is_e1rm(kind):
+        return f"≈{value:.1f} кг"      # "≈" always: Epley estimates, never measures
+    if kind == TONNAGE_WEEK:
+        return f"{value:.0f} кг"
     if kind in _PACE_KINDS:
         return _fmt_pace(value)
     if kind in _RACE_KINDS:
@@ -268,8 +337,15 @@ def format_value(kind: str, value: float) -> str:
     return f"{value:.1f} км"   # longest_run_km, biggest_week_km
 
 
+def label_for(kind: str) -> str:
+    """Human label for any kind, including the dynamic strength ones."""
+    if _is_e1rm(kind):
+        return f"≈1ПМ {kind[len(E1RM_PREFIX):]}"
+    return LABELS.get(kind, kind)
+
+
 def format_record_line(rec, *, with_prev: bool = True) -> str:
-    label = LABELS.get(rec.kind, rec.kind)
+    label = label_for(rec.kind)
     line = f"🏅 {label}: {format_value(rec.kind, rec.value)}"
     if with_prev and rec.previous_value is not None:
         line += f" (було {format_value(rec.kind, rec.previous_value)})"
@@ -288,7 +364,7 @@ def to_context(records: list) -> list:
     return [
         {k: v for k, v in {
             "kind": r.kind,
-            "label": LABELS.get(r.kind, r.kind),
+            "label": label_for(r.kind),
             "value": format_value(r.kind, r.value),
             "previous": (format_value(r.kind, r.previous_value)
                          if r.previous_value is not None else None),
