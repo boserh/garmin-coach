@@ -25,6 +25,43 @@ _recent: dict[str, float] = {}
 _lock = threading.Lock()
 
 
+def _fetch_owner_chat_id() -> "int | None":
+    """Blocking DB fetch, always run on a fresh thread with its own event loop.
+
+    ``emit()`` runs synchronously inside whichever thread logged the record — in the
+    bot/web processes that's almost always a thread with an asyncio loop already
+    running, and ``asyncio.run()`` raises immediately (without awaiting its coroutine)
+    when called there. That exception used to be swallowed by the bare ``except
+    Exception: pass`` below, silently breaking every alert — hence a brand new thread
+    here instead, where starting a fresh loop is always safe."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import User
+
+    async def _fetch() -> "int | None":
+        async with async_session_maker() as session:
+            user = (
+                await session.execute(select(User).order_by(User.id.asc()).limit(1))
+            ).scalar_one_or_none()
+            return user.telegram_chat_id if user else None
+
+    result: dict = {}
+
+    def _run() -> None:
+        try:
+            result["chat_id"] = asyncio.run(_fetch())
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    return result.get("chat_id")
+
+
 def _resolve_owner_chat_id() -> "int | None":
     """Same owner as bot.admin_main: lowest users.id's telegram_chat_id, cached."""
     now = time.monotonic()
@@ -32,23 +69,7 @@ def _resolve_owner_chat_id() -> "int | None":
         return _owner_chat_state["chat_id"]
     chat_id = _owner_chat_state["chat_id"]  # keep the stale value on a transient failure
     try:
-        import asyncio
-
-        from sqlalchemy import select
-
-        from app.db.base import async_session_maker
-        from app.db.models import User
-
-        async def _fetch() -> "int | None":
-            async with async_session_maker() as session:
-                user = (
-                    await session.execute(
-                        select(User).order_by(User.id.asc()).limit(1)
-                    )
-                ).scalar_one_or_none()
-                return user.telegram_chat_id if user else None
-
-        chat_id = asyncio.run(_fetch())
+        chat_id = _fetch_owner_chat_id()
     except Exception:
         pass
     _owner_chat_state["chat_id"] = chat_id
