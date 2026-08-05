@@ -83,7 +83,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                subjective: Optional[dict] = None,
                health_alerts: Optional[dict] = None,
                fueling: Optional[dict] = None,
-               today: Optional[str] = None) -> str:
+               today: Optional[str] = None,
+               intensity: Optional[dict] = None) -> str:
     # ``today`` is the user's own date (their timezone, ST-14) when the caller knows it —
     # it is part of the prompt (and of every relative-day label built from it), so it must
     # be part of the key. Falls back to the process date for callers without a user.
@@ -103,6 +104,10 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         "subjective": subjective,
         "health_alerts": health_alerts,
         "fueling": fueling,
+        # NF-24: the intensity block is prompt context, so it must be part of the key —
+        # otherwise a week that just drifted into the grey zone would keep returning
+        # yesterday's report, which is exactly the trap the backlog warns about.
+        "intensity": intensity,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -175,6 +180,7 @@ _DIGEST_KEY_FIELDS = (
     "iso_week", "week", "weekly_volume", "compliance", "recovery",
     "fitness", "multisport", "goal", "goal_projection", "efficiency", "records",
     "sleep_regularity",
+    "intensity",   # NF-24 — prompt context, therefore key material
 )
 # NF-28's lifestyle findings are a separate context key, so they must be listed here too —
 # without it a newly-logged tag would change the prompt but not the hash, and /insights

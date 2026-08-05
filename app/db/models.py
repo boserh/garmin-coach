@@ -188,6 +188,13 @@ class ActivityRecord(Base):
     # NF-15: the Garmin gear uuid linked to this activity (run-type only, v2 activity->gear
     # link endpoint) — null when nothing's linked or the activity predates this field.
     gear_id: Mapped[Optional[str]] = mapped_column(String(64))
+    # NF-24: HR time-in-zone + training effect — {z1_s..z5_s, te_aer, te_anaer}. Before this,
+    # the ONLY intensity proxy in the whole app was whole-session avg_hr, which averages
+    # 5x1km at zone 5 with its recoveries into a meaningless "zone 3" — so nothing could see
+    # the classic amateur mistake of easy runs run too hard. Null for an activity with no HR
+    # (and for everything synced before this field existed); every consumer must degrade to
+    # silence rather than to zero.
+    zones: Mapped[Optional[dict]] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

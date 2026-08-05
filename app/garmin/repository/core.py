@@ -644,6 +644,7 @@ async def upsert_activity(
         "exercises": row.get("exercises"),
         "series": row.get("series"),
         "gear_id": row.get("gear_id"),
+        "zones": row.get("zones"),
     }
     if existing:
         for k, v in fields.items():

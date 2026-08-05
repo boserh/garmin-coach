@@ -301,7 +301,8 @@ def cache_del(key: str) -> None:
 
 # Cache keys scoped to a single activity — used by ``cache_del_activity`` (ST-20) to
 # wipe everything Garmin ever cached about one activity without touching siblings.
-_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v2", "splits:v1", "gear_link:v1")
+_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v2", "splits:v1", "gear_link:v1",
+                          "zones:v1")
 _CACHE_FILE_RE = re.compile(r"^(.+_v\d+)_.+$")
 
 
@@ -708,6 +709,91 @@ def fetch_activity_splits(activity_id, force: bool = False) -> list:
             return old
     _cache_put(key, laps, SPLITS_TTL_S)
     return laps
+
+
+ZONES_TTL_S = 365 * 24 * 3600   # a completed activity's time-in-zone is immutable
+HR_ZONES_TTL_S = 7 * 24 * 3600  # the user's own zone thresholds change rarely
+
+
+def fetch_activity_zones(activity_id, force: bool = False) -> dict:
+    """NF-24: seconds spent in each HR zone during this activity —
+    ``{"z1_s": .., .., "z5_s": ..}``, or ``{}`` when Garmin has none (no HR strap, an old
+    activity, a manually-entered session).
+
+    This is the number the whole intensity-distribution feature rests on: whole-session
+    ``avg_hr`` averages 5×1km at zone 5 together with its jog recoveries into a meaningless
+    "zone 3", so without time-in-zone the app is structurally blind to the most common
+    amateur mistake (easy runs too hard, hard runs too easy).
+
+    Immutable once the activity is complete → disk-cached for a year like series/splits.
+    The DTO shape differs across watch firmwares, so every field is read defensively and a
+    zone we can't parse simply doesn't contribute (never a crash, never a zero that looks
+    like real data)."""
+    key = f"zones:v1:{activity_id}"
+    cached = None if force else _cache_get(key)
+    if cached is not None:
+        return cached
+    d = _safe(_api, f"/activity-service/activity/{activity_id}/hrTimeInZones")
+    # The endpoint answers with a LIST of per-zone objects; a dict here means an error
+    # envelope from _safe (transient — don't cache it as "no zones").
+    if not isinstance(d, list):
+        return {}
+    out: dict = {}
+    for item in d:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("zoneNumber")
+        secs = item.get("secsInZone")
+        if number is None or secs is None:
+            continue
+        try:
+            n = int(number)
+            s = float(secs)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 5 and s > 0:
+            out[f"z{n}_s"] = round(s)
+    if force and not out:
+        old = _cache_get(key)
+        if old:
+            logger.info(f"GCACHE keep non-empty on empty force-refetch: {key}")
+            return old
+    _cache_put(key, out, ZONES_TTL_S)
+    return out
+
+
+def fetch_hr_zones() -> dict:
+    """The user's own HR zone boundaries (``{"z1": bpm, ...}``) plus ``max_hr``/``rest_hr``
+    when Garmin reports them. Cached for a week — thresholds move when the user retests, not
+    daily. Returns ``{}`` on error, and every consumer treats that as "no zone context".
+
+    We take Garmin as the source of truth here deliberately: these same numbers drive the
+    watch's own live zone feedback, so a second, locally-editable set of thresholds would
+    make the coach and the watch disagree about what "zone 2" means."""
+    key = "hr_zones:v1"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    d = _safe(_api, "/biometric-service/heartRateZones")
+    rows = d if isinstance(d, list) else [d] if isinstance(d, dict) and "_error" not in d else []
+    out: dict = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for n in range(1, 6):
+            v = row.get(f"zone{n}Floor")
+            if v is not None and f"z{n}" not in out:
+                try:
+                    out[f"z{n}"] = round(float(v))
+                except (TypeError, ValueError):
+                    pass
+        for src, dst in (("maxHeartRateUsed", "max_hr"), ("restingHrAutoUpdate", "rest_hr")):
+            v = row.get(src)
+            if isinstance(v, (int, float)) and dst not in out:
+                out[dst] = round(float(v))
+    if out:
+        _cache_put(key, out, HR_ZONES_TTL_S)
+    return out
 
 
 def fetch_workout_full(workout_id) -> dict:

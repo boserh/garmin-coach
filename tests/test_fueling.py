@@ -117,7 +117,7 @@ async def test_run_analysis_includes_fueling_for_todays_heavy_session(session, m
     def fake_analyze(payload, question="", deep=False, kind=None, previous_report=None,
                       api_key=None, weather=None, plan_today=None, fitness=None,
                       records=None, norm=None, subjective=None, health_alerts=None,
-                      fueling=None, today=None):
+                      fueling=None, today=None, intensity_ctx=None):
         captured["fueling"] = fueling
         return "звіт", service.CallStats(kind=kind or "report", model="m")
 
@@ -151,7 +151,7 @@ async def test_run_analysis_omits_fueling_without_weather(session, monkeypatch):
     def fake_analyze(payload, question="", deep=False, kind=None, previous_report=None,
                       api_key=None, weather=None, plan_today=None, fitness=None,
                       records=None, norm=None, subjective=None, health_alerts=None,
-                      fueling=None, today=None):
+                      fueling=None, today=None, intensity_ctx=None):
         captured["fueling"] = fueling
         return "звіт", service.CallStats(kind=kind or "report", model="m")
 

@@ -171,16 +171,40 @@ def _recovery_signal(daily: List[dict]) -> Optional[Signal]:
     return Signal("recovery", sev, "Відновлення просідає: " + ", ".join(parts) + ".")
 
 
+def _intensity_signal(findings: Optional[List[dict]]) -> Optional[Signal]:
+    """NF-24: sustained grey-zone drift as a risk signal in its own right.
+
+    Volume is what everyone watches, but chronically running easy days too hard is how a
+    runner accumulates fatigue no rest day repays — the load looks reasonable while the
+    recovery cost of it does not. Deliberately weighted BELOW repeated pain: it's a
+    contributing pattern that makes other signals worse, never a warning on its own."""
+    if not findings:
+        return None
+    gray = next((f for f in findings if f.get("kind") == "gray_zone"), None)
+    if gray is None:
+        return None
+    pct = round(100 * (gray.get("gray_frac") or 0))
+    return Signal(
+        "intensity", 2,
+        f"Легкі сесії стабільно заважкі: {pct}% часу в сірій зоні "
+        f"{gray.get('weeks', 3)} тижні поспіль — втома накопичується швидше, "
+        f"ніж це видно з обсягу.",
+    )
+
+
 def assess(
     daily: List[dict], runs: List[dict], *, history_days: int,
     min_history_days: int = 14, today: Optional[dt.date] = None,
+    intensity_findings: Optional[List[dict]] = None,
 ) -> Assessment:
     """Fuse the windowed signals into an :class:`Assessment`. ``daily`` (recovery/load rows,
     each ``{date, hrv_avg, resting_hr, acwr_pct, hrv_baseline_low}``) and ``runs``
     (``{date, pace, rpe, pain, note}``), both oldest-first, are the last ~``WINDOW_DAYS``.
     ``history_days`` is the user's TOTAL days of data — under ``min_history_days`` we stay in
     a quiet calibration mode (``level="calibrating"``) and raise no warning (the EP-08 anti-
-    false-positive rule). Pure; ``today`` is accepted for symmetry/testing but unused here."""
+    false-positive rule). ``intensity_findings`` (NF-24, optional) are the already-computed
+    distribution deviations — a grey-zone drift raises the score without being able to trip a
+    warning by itself. Pure; ``today`` is accepted for symmetry/testing but unused here."""
     if history_days < min_history_days:
         return Assessment(level="calibrating", history_days=history_days)
 
@@ -189,6 +213,7 @@ def assess(
         _acwr_signal(daily),
         _recovery_signal(daily),
         _rpe_signal(runs),
+        _intensity_signal(intensity_findings),
     ) if s is not None]
     signals.sort(key=lambda s: s.severity, reverse=True)
     score = sum(s.severity for s in signals)

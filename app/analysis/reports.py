@@ -194,6 +194,7 @@ def analyze_with_stats(
     health_alerts: Optional[dict] = None,
     fueling: Optional[dict] = None,
     today: Optional[str] = None,
+    intensity_ctx: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -244,6 +245,10 @@ def analyze_with_stats(
         user_content["health_alerts"] = health_alerts
     if fueling:
         user_content["fueling"] = fueling
+    # NF-24: only travels when there IS a deviation worth mentioning — the daily report is
+    # not the place for a distribution table nobody asked for.
+    if intensity_ctx and intensity_ctx.get("findings"):
+        user_content["intensity"] = intensity_ctx
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -342,6 +347,7 @@ async def run_analysis(
     subjective = None
     health_alerts = None
     fueling = None
+    intensity_ctx = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -401,12 +407,16 @@ async def run_analysis(
                     today_session, weather, heat_feels_c=settings.FUELING_HEAT_FEELS_C,
                     min_duration_min=settings.FUELING_MIN_DURATION_MIN, anchor_pace=anchor_pace,
                 )
+            # NF-24: intensity distribution — carried only when the detector actually found
+            # a deviation, so the daily report gains ~120 tokens on the days it has
+            # something to say and nothing at all on the days it doesn't.
+            intensity_ctx = await build_intensity_context(session, user_id=user_id) or None
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
-                           subjective, health_alerts, fueling, today_iso)
+                           subjective, health_alerts, fueling, today_iso, intensity_ctx)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -416,7 +426,7 @@ async def run_analysis(
         return analyze_with_stats(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
-            today_iso,
+            today_iso, intensity_ctx,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
@@ -1004,6 +1014,10 @@ async def run_digest(
         "efficiency": efficiency_trend,
         "records": month_records,
         "sleep_regularity": sleep_regularity,
+        # NF-24: the digest is the right home for the FULL distribution (the daily report
+        # only gets a line, and only on a deviation) — a weekly retrospective is exactly
+        # where "where did your week's time actually go" belongs.
+        "intensity": await build_intensity_context(session, user_id=user_id) or None,
         "has_plan": plan is not None,
     }
 
@@ -1185,6 +1199,54 @@ async def run_insights(
     )
 
 
+# ---------- INTENSITY DISTRIBUTION (NF-24) ----------
+
+INTENSITY_WEEKS = 8   # enough to see a grey-zone trend without dragging in an old training block
+
+
+async def build_intensity_context(session, *, user_id: int) -> dict:
+    """The shared NF-24 context: weekly time-in-zone distribution + findings, or ``{}``.
+
+    ``{}`` on purpose rather than a "no data" structure — an empty dict is falsy, so every
+    consumer's ``if ctx:`` guard degrades to silence for a user whose activities carry no
+    zones (an old history, a watch without a HR strap, the feature switched off). Pure DB
+    read + the pure detector; no Garmin request, no Claude call.
+
+    Weeks in which the PLAN itself prescribed intensity are passed to the detector so the
+    grey-zone advice can't fire for a week the athlete spent following the plan."""
+    from app import intensity
+    from app.garmin import repository
+
+    if not settings.INTENSITY_DISTRIBUTION:
+        return {}
+    acts = await repository.activities_with_zones(session, user_id, weeks=INTENSITY_WEEKS)
+    weeks = intensity.weekly_distribution(acts)
+    if not weeks:
+        return {}
+    planned = await repository.recent_plan_workouts(session, user_id, days=7 * INTENSITY_WEEKS)
+    planned_weeks = {
+        w for w in (
+            _iso_week(p.date) for p in planned
+            if (p.type or "") in intensity.INTENSITY_TYPES
+        ) if w
+    }
+    findings = intensity.detect(
+        weeks,
+        low_target=settings.POLARIZATION_LOW_TARGET,
+        gray_max=settings.GRAY_ZONE_MAX,
+        anaerobic_cap=settings.ANAEROBIC_WEEKLY_CAP,
+        planned_intensity_weeks=planned_weeks,
+    )
+    return intensity.build_context(weeks, findings)
+
+
+def _iso_week(date_s: Optional[str]) -> Optional[str]:
+    try:
+        return dt.date.fromisoformat(date_s or "").strftime("%G-W%V")
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------- INJURY-RISK RADAR (NF-04) ----------
 
 async def build_injury_assessment(session, *, user_id: int):
@@ -1199,9 +1261,13 @@ async def build_injury_assessment(session, *, user_id: int):
     daily = await repository.read_load_history(session, user_id, days=injury.WINDOW_DAYS)
     runs = await repository.recent_subjective_runs(session, user_id, days=injury.WINDOW_DAYS)
     history_days = await repository.count_daily_metrics(session, user_id)
+    # NF-24: grey-zone drift compounds every other risk signal (fatigue accrues faster than
+    # the volume suggests), so it raises the score — but it can never trip a warning alone.
+    intensity_ctx = await build_intensity_context(session, user_id=user_id)
     return injury.assess(
         daily, runs, history_days=history_days,
         min_history_days=settings.INJURY_MIN_HISTORY_DAYS,
+        intensity_findings=(intensity_ctx or {}).get("findings"),
     )
 
 

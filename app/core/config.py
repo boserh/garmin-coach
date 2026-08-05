@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     LOGIN_RATE_LIMIT: int = 5          # max attempts per window before a 429
     LOGIN_RATE_WINDOW_S: int = 300     # window length in seconds (default 5 min)
 
+    # Secure-only session cookie + HSTS. Defaults ON: the deployed site is HTTPS, and
+    # without the Secure flag the session cookie rides along on any plain-HTTP request
+    # to the same host — readable by anyone on the path. Turn OFF only to develop over
+    # http://localhost, where a Secure cookie is never stored and login just silently
+    # fails to stick (the tests set it to false for the same reason).
+    # HSTS is deliberately tied to the same switch: promising a browser "HTTPS only for
+    # the next N seconds" is a one-way door, so it must never fire from a dev box.
+    SESSION_HTTPS_ONLY: bool = True
+    HSTS_MAX_AGE: int = 31536000       # 1 year; 0 omits the header entirely
+
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by
     # setting DATABASE_URL=postgresql+asyncpg://... — no code changes needed.
@@ -217,6 +227,17 @@ class Settings(BaseSettings):
     # GEAR_REWARN_KM further. 0 disables the DM entirely (roster/mileage still refresh).
     GEAR_WEAR_KM: float = 700
     GEAR_REWARN_KM: float = 150
+
+    # --- Intensity distribution (NF-24) ---
+    # A pure-Python, zero-LLM read of HR time-in-zone (app.intensity): what share of weekly
+    # TIME was actually easy, how much sat in the useless "grey zone", and how big the
+    # anaerobic dose was. Before this, whole-session avg_hr was the only intensity signal in
+    # the app — and it averages an interval session into a meaningless middle. Off → nothing
+    # is fetched and every consumer stays silent (already-stored zones remain).
+    INTENSITY_DISTRIBUTION: bool = True
+    POLARIZATION_LOW_TARGET: float = 0.8   # target share of weekly time in zones 1-2
+    GRAY_ZONE_MAX: float = 0.15            # above this share in zone 3 for several weeks → flag
+    ANAEROBIC_WEEKLY_CAP: float = 8.0      # weekly sum of anaerobic training effect
 
     # --- Forward load forecast (NF-20) ---
     # A pure-Python, zero-LLM forecast (app.loadforecast): this ISO week's still-planned

@@ -207,6 +207,12 @@ async def dashboard(
     from app.analysis import budget as budget_mod
     llm_budget = budget_mod.status(await budget_mod.spend_totals(session, user.id))
 
+    # NF-24: this week's easy/grey/hard split. Absent (not zeroed) for a user whose
+    # activities carry no HR zones — the tile simply doesn't render.
+    from app.analysis.reports import build_intensity_context
+    intensity_ctx = await build_intensity_context(session, user_id=user.id)
+    intensity_week = (intensity_ctx.get("weeks") or [None])[-1] if intensity_ctx else None
+
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
@@ -222,5 +228,7 @@ async def dashboard(
             "backup": backup,
             "backup_warn_days": settings.BACKUP_WARN_DAYS,
             "llm_budget": llm_budget,
+            "intensity_week": intensity_week,
+            "intensity_findings": (intensity_ctx or {}).get("findings") or [],
         },
     )

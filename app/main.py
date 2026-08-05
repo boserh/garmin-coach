@@ -85,7 +85,29 @@ def create_app() -> FastAPI:
         SessionMiddleware,
         secret_key=session_secret,
         same_site="lax",
+        https_only=settings.SESSION_HTTPS_ONLY,
     )
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        # The app is served behind Cloudflare, which adds none of these for us.
+        # frame-ancestors 'none' is the CSP-era X-Frame-Options: without it /login can be
+        # framed invisibly over another page and clicks stolen. nosniff stops a browser
+        # from re-guessing a response's type (an uploaded lab-report photo served back
+        # from /checkups/... must never be interpreted as HTML). Referrer-Policy keeps
+        # our paths — which carry row ids — out of the Referer sent to any external link.
+        response = await call_next(request)
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        # Only promise HTTPS when we're actually configured for it — see the comment on
+        # SESSION_HTTPS_ONLY: HSTS from a dev box would pin http://localhost off-limits.
+        if settings.SESSION_HTTPS_ONLY and settings.HSTS_MAX_AGE:
+            response.headers.setdefault(
+                "Strict-Transport-Security", f"max-age={settings.HSTS_MAX_AGE}"
+            )
+        return response
 
     @app.middleware("http")
     async def _log_requests(request: Request, call_next):

@@ -781,6 +781,15 @@ def plan_adapt_with_stats(
     )
 
 
+async def _intensity_context(session, user_id: int) -> Optional[dict]:
+    """NF-24 context for the adaptation prompt, or ``None``. Imported lazily from
+    ``analysis.reports`` (which owns the builder) to keep the plans/reports import edge
+    one-directional at module load."""
+    from app.analysis.reports import build_intensity_context
+
+    return await build_intensity_context(session, user_id=user_id) or None
+
+
 async def run_plan_adaptation(
     session, *, user_id: int, api_key: Optional[str] = None,
     trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
@@ -856,6 +865,10 @@ async def run_plan_adaptation(
         "step_match": step_match,
         "risk": risk or None,
         "load_forecast": load_forecast,
+        # NF-24: the SHAPE of the load, not just its size. Adaptation could previously only
+        # move or shrink sessions; with the distribution in hand, a drift into the grey zone
+        # becomes "slow the easy runs down", which is the correct fix and costs no volume.
+        "intensity": await _intensity_context(session, user_id),
     }
     try:
         edit, stats = await _run_claude(
