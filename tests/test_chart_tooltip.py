@@ -29,6 +29,7 @@ globalThis.window = {addEventListener: function () {}, chartTip: null};
 globalThis.document = {
   readyState: 'complete',
   addEventListener: function () {},
+  querySelector: function () { return null; },
   querySelectorAll: function () { return []; }
 };
 """

@@ -733,7 +733,7 @@ a bookmark rather than an install, and offline was a white page — on a server 
 in the house and therefore disappears whenever you leave it.
 
 `app/static/sw.js` is deliberately tiny and dependency-free (a broken worker is sticky).
-Three strategies — cache-first for `/static/*`, stale-while-revalidate for `GET /dashboard`
+Three strategies — cache-first for `/static/*`, **network-first** for `GET /dashboard`
 and `GET /plan`, network-only for everything else — and a **deny-list that overrides all
 three**: `/login`, `/register`, `/logout`, `/settings`, `/onboarding`, `/admin/*`,
 `/me/export`, `/status`
@@ -742,7 +742,20 @@ and any non-GET are never cached, are evicted if an older worker ever stored the
 navigation can outrun a `postMessage`; the shell then legitimately re-warms — CSS and fonts
 are not anyone's data).
 
-Two details worth keeping:
+**Why network-first and not the stale-while-revalidate the ticket asked for.** SWR serves
+the saved copy whenever one exists, so the honest "дані станом на HH:MM" banner appeared on
+every ordinary ONLINE visit and claimed there was no connection when there plainly was. The
+two ways out contradict each other: hide the banner and a stale readiness number silently
+passes for today's, or keep it and the page cries wolf every time. Network-first dissolves
+the contradiction — online you get the real page and no banner at all, and the saved copy
+(with the banner) appears only when the server genuinely didn't answer, which is exactly
+what the banner claims. The cost is one LAN round-trip on a page that was already a DB
+read, which is the right trade for an app whose subject is a number that changes daily. A
+3-second timeout covers the "phone has WiFi but no route home" case, where a bare `fetch`
+would hang instead of failing; if that request lands late, the worker tells the page so it
+can offer the fresh copy.
+
+Two more details worth keeping:
 
 - **The cached page admits it is cached.** `_base.html` always emits an
   `<!--sw-offline-slot-->` marker; the worker replaces it with an "дані станом на HH:MM"

@@ -11,10 +11,10 @@
  *
  * Three rules, and a hard deny-list that overrides them:
  *
- *   cache-first             /static/* — immutable per ?v=, so a hit is always correct
- *   stale-while-revalidate  GET /dashboard, GET /plan — instant paint, fresh in the
- *                           background
- *   network-only            EVERYTHING else
+ *   cache-first    /static/* — immutable per ?v=, so a hit is always correct
+ *   network-first  GET /dashboard, GET /plan — the real page whenever the server
+ *                  answers; the saved copy, clearly labelled, only when it doesn't
+ *   network-only   EVERYTHING else
  *
  * The deny-list is the important half: personal pages must never persist on the device.
  * /login, /register, /settings, /onboarding, /admin/*, /me/export and any non-GET are
@@ -45,8 +45,9 @@ var PRECACHE = [
   '/static/fonts/inter-cyrillic-ext.woff2'
 ];
 
-// Pages worth having offline: what you'd open standing outside the front door.
-var SWR_PATHS = ['/dashboard', '/plan'];
+// Pages worth having offline: what you'd open standing outside the front door. They are
+// fetched from the network first and only fall back to the saved copy — see networkFirst.
+var OFFLINE_PATHS = ['/dashboard', '/plan'];
 
 // Never, under any circumstance, stored on the device.
 // /onboarding renders a live Telegram link token (app.core.tglink) — same class of
@@ -66,8 +67,8 @@ function isStatic(url) {
   return url.pathname.indexOf('/static/') === 0;
 }
 
-function isSwrPage(url) {
-  return SWR_PATHS.indexOf(url.pathname) !== -1;
+function isOfflinePage(url) {
+  return OFFLINE_PATHS.indexOf(url.pathname) !== -1;
 }
 
 // Everything, not just the pages: on a shared phone the previous user's dashboard must
@@ -147,25 +148,52 @@ async function storePage(cache, request, response) {
   }));
 }
 
-async function staleWhileRevalidate(request) {
+// How long to wait for the server before falling back to the saved copy. The Pi answers
+// in tens of milliseconds on the LAN, so this only fires when it is genuinely gone —
+// rebooting, or the phone has WiFi but no route home, where a bare fetch would hang.
+var NETWORK_TIMEOUT_MS = 3000;
+
+async function networkFirst(request) {
+  // Network-FIRST, not stale-while-revalidate, and the ticket asked for the latter.
+  //
+  // SWR serves the cached copy whenever there is one, so the "дані станом на HH:MM"
+  // banner appeared on every ordinary online visit and claimed there was no connection
+  // when there plainly was. The two honest ways out of that contradict each other:
+  // hide the banner and a stale readiness number silently passes for today's, or keep
+  // it and the page cries wolf every time. Network-first dissolves it — online you get
+  // the real page and no banner; the saved copy (and the banner) appear only when the
+  // server actually could not be reached, which is exactly what the banner says.
+  //
+  // The cost is one LAN round-trip on a page that was already a DB read. That is the
+  // right trade for an app whose whole subject is a number that changes daily.
   var cache = await caches.open(PAGE_CACHE);
-  var cached = await cache.match(request);
+  var timer = null;
   var network = fetch(request).then(async function (response) {
     if (response && response.ok) await storePage(cache, request, response);
     return response;
   }).catch(function () { return null; });
+  var timeout = new Promise(function (resolve) {
+    timer = setTimeout(function () { resolve(null); }, NETWORK_TIMEOUT_MS);
+  });
 
+  var fresh = await Promise.race([network, timeout]);
+  if (timer) clearTimeout(timer);
+  if (fresh && fresh.ok) return fresh;
+
+  var cached = await cache.match(request);
   if (cached) {
-    // Refresh in the background; the copy on screen is honest about its age.
-    network.then(function (fresh) {
-      if (!fresh) return;
+    // We gave up on the network (failed, or too slow to wait for). If it lands after
+    // all, tell the page so it can offer the fresh copy instead of silently aging.
+    network.then(function (late) {
+      if (!late || !late.ok) return;
       self.clients.matchAll({type: 'window'}).then(function (cs) {
         cs.forEach(function (c) { c.postMessage({type: 'fresh', url: request.url}); });
       });
     });
     return withOfflineBanner(cached);
   }
-  var fresh = await network;
+
+  fresh = await network;          // nothing saved: wait it out rather than invent a page
   if (fresh) return fresh;
   return (await caches.match(OFFLINE_URL)) ||
          new Response('Офлайн', {status: 503, headers: {'Content-Type': 'text/plain'}});
@@ -214,8 +242,8 @@ self.addEventListener('fetch', function (e) {
     return;
   }
   if (isStatic(url)) { e.respondWith(cacheFirst(request)); return; }
-  if (isSwrPage(url) && request.mode === 'navigate') {
-    e.respondWith(staleWhileRevalidate(request));
+  if (isOfflinePage(url) && request.mode === 'navigate') {
+    e.respondWith(networkFirst(request));
     return;
   }
   e.respondWith(networkOnly(request));

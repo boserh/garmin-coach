@@ -257,9 +257,9 @@
       }
     }, true);
 
-    // A page served from the cache carries an honest "data as of HH:MM" banner. When the
-    // background refresh lands, offer the fresh copy rather than silently swapping the
-    // numbers under the reader.
+    // The page is only served from the cache when the server couldn't be reached (see
+    // sw.js: network-first). If the request lands after we'd already given up, offer the
+    // fresh copy rather than letting the reader sit on a page we've labelled stale.
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data || e.data.type !== 'fresh') return;
       var banner = document.querySelector('.banner--warn .btext');
@@ -269,6 +269,8 @@
       link.href = window.location.href;
       link.className = 'blink';
       link.textContent = 'Зʼявились свіжі дані — оновити →';
+      // A text node, or the link glues itself to the sentence: "…станом на 13:07.Зʼявились".
+      banner.appendChild(document.createTextNode(' '));
       banner.appendChild(link);
     });
   }
@@ -293,4 +295,23 @@
       btn.hidden = true;
     });
   });
+})();
+
+// The chat reads oldest → newest, so the newest turn is at the bottom of the page: open
+// it there, the way every chat does. Only on the default view — after "Показати старіші"
+// the reader is looking at old messages and must not be yanked back down (the template
+// sets data-jump-latest only when no ?limit= was given).
+//
+// Progressive enhancement: with JS off the thread is still in the right order, you just
+// scroll it yourself.
+(function () {
+  'use strict';
+
+  if (!document.querySelector('.thread[data-jump-latest]')) return;
+  // The whole page, not the thread's last element: the composer sits below the thread,
+  // and stopping at the last bubble leaves it half-hidden under the fixed tab bar. The
+  // document's real bottom is where body's bottom padding guarantees clearance.
+  // 'auto', not 'smooth': this is the page's initial position, not a movement the reader
+  // should watch, and an animation on load also fights prefers-reduced-motion.
+  window.scrollTo({top: document.body.scrollHeight, behavior: 'auto'});
 })();
