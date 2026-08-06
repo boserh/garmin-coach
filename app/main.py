@@ -58,6 +58,12 @@ class _RevalidatingStatic(StaticFiles):
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-cache"
+        # UI-03: a worker's default scope is its own directory, so one served from
+        # /static/ could only control /static/ — useless for page navigations. This
+        # header is what lets it claim the whole origin while living with the other
+        # assets (the alternative is a bespoke route just to move one file to /).
+        if path == "sw.js":
+            response.headers["Service-Worker-Allowed"] = "/"
         return response
 
 

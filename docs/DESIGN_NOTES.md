@@ -673,3 +673,92 @@ lowers confidence instead of deleting; `parse_profile_delta` caps additions at t
 and returns an empty delta on anything unparseable (never half-applied). A failure is
 swallowed by the job — the digest must not depend on it, and yesterday's profile is a
 perfectly good profile.
+
+## Web UI conventions (UI batch, 2026-08)
+
+The batch answered one question — *what is already computed or stored that the user can't
+see, or can't reach from a phone?* — and the mechanisms it left behind are the ones to
+respect when touching the web layer.
+
+**One `<head>`, one asset version (UI-02).** Every page `extends "_base.html"`;
+`app.templating.create_templates()` is the only Jinja environment, and `asset_v` is a
+digest of `app.css`/`app.js`/`sw.js` bytes. The manual `?v=` bump it replaces was not
+theoretical: it had drifted from `?v=3` to `?v=4` while the mobile-layout guard still
+substituted the old literal, so the guard was measuring an **unstyled** page and passing
+on nothing. That's why the substitution now asserts it happened. Inter is self-hosted
+(one variable woff2 per subset, refreshed by `scripts/fetch_inter.py`): the app runs on a
+Pi on the LAN, so a CDN font meant the first paint waited on the public internet and
+offline rendering silently changed the metrics the guard measures.
+
+**One chart tooltip (UI-01).** `app.js` binds `.chart[data-pts]`; the SVG itself stays
+server-rendered by `app/charts.py`. Pointer Events cover mouse, finger and stylus in one
+path — the four inline copies it replaced were all `mousemove`-only, so on the device the
+app is designed around the charts were decoration. Two non-obvious rules: the finger gets
+`setPointerCapture` so a drag survives leaving the card, and the bubble does **not** hide
+on `pointerup` — a phone has no `mouseleave`, and a tooltip that vanishes on release reads
+as "nothing happened". `touch-action: pan-y` goes on `.cwrap`, never on `body`.
+
+**Notices are data (UI-07).** A router builds `[{level, icon, text, link, link_text}]`
+(`app.banners.banner`) and `_banners.html` renders it; the level picks both the colour
+(`color-mix` over the existing tokens) and the ARIA role — `alert` for warn/danger,
+`status` otherwise. An unknown level raises rather than producing an unstyled, role-less
+div. The navigation is one section list rendered twice (horizontal row on desktop, fixed
+bottom tab bar under 36rem); "Ще" is a `<details>` because the site works without JS.
+
+**Pages display, modules compute (UI-05, UI-06).** `/insights` and `/strength` re-derive
+nothing and hardcode no threshold — cold-start copy pulls its numbers from
+`INJURY_MIN_HISTORY_DAYS`, `loadforecast.MIN_HISTORY_DAYS`, `correlations.MIN_SAMPLES`.
+Both are **0 Claude calls / 0 Garmin requests**, and the tests enforce it by replacing the
+Anthropic client and the Garmin provider with functions that raise, plus asserting no
+`report_logs` row appears. "Let Claude phrase it nicer" is a separate, paid path
+(`run_insights`) and deliberately not wired in. Calibrating is rendered as calibrating: a
+quiet radar on a short history is not a green light.
+
+**Additive JSON, never a migration (UI-08).** `stepmatch.match` gained a `steps` list
+while `steps_hit`/`steps_total`/`misses` kept their exact meaning and remained the source
+of truth for the counters. A row stored before the change simply has no `steps` key and
+renders as the badge alone. The per-step deviation is measured from the **nearest edge**
+of the target range, not its midpoint — a lap on the fast edge missed by nothing — and the
+pace-curve shading is placed by **distance**, because the curve's x axis is sampled by
+distance and a band placed by lap index drifts off the line it marks.
+
+**Class names are global.** UI-08's row class started as `.step`, which was already the
+plan's structured-step line; `/plan` went into horizontal scroll until it became `.sbrow`.
+The mobile guard caught it — grep before naming.
+
+## Offline & install (UI-03)
+
+The manifest shipped with EP-04 but there was no service worker at all, so Chrome offered
+a bookmark rather than an install, and offline was a white page — on a server that lives
+in the house and therefore disappears whenever you leave it.
+
+`app/static/sw.js` is deliberately tiny and dependency-free (a broken worker is sticky).
+Three strategies — cache-first for `/static/*`, stale-while-revalidate for `GET /dashboard`
+and `GET /plan`, network-only for everything else — and a **deny-list that overrides all
+three**: `/login`, `/register`, `/logout`, `/settings`, `/admin/*`, `/me/export`, `/status`
+and any non-GET are never cached, are evicted if an older worker ever stored them, and
+`POST /logout` wipes every cache (the page also messages the worker on submit, because a
+navigation can outrun a `postMessage`; the shell then legitimately re-warms — CSS and fonts
+are not anyone's data).
+
+Two details worth keeping:
+
+- **The cached page admits it is cached.** `_base.html` always emits an
+  `<!--sw-offline-slot-->` marker; the worker replaces it with an "дані станом на HH:MM"
+  banner (timestamp from a `sw-cached-at` header it stamps on store) only when serving from
+  the cache. In an app about readiness, a stale number passing for a fresh one is worse
+  than no number.
+- **Scope.** A worker's default scope is its own directory, so one served from `/static/`
+  could only ever control `/static/`. `app.main._RevalidatingStatic` sends
+  `Service-Worker-Allowed: /` for `sw.js` and the registration asks for `{scope: '/'}` —
+  the alternative was a bespoke route just to move one file to the root.
+
+The version comes from the same `?v=` digest as the other assets, so a deploy changes the
+worker's script URL: `skipWaiting` + `clients.claim` + dropping caches whose name doesn't
+carry the current version means a changed `app.css` lands without "clear site data".
+Install criteria needed raster icons (`scripts/render_icons.py` renders 192/512 plus a
+`maskable` variant from the SVG — Android crops to its own shape and would otherwise clip
+the logo).
+
+`tests/test_pwa_offline.py` starts a real uvicorn on a loopback port: a service worker will
+not register over `file://`, and `http://127.0.0.1` is a secure context.

@@ -221,3 +221,76 @@
   // (tests/test_chart_tooltip.py runs them under node).
   window.chartTip = {formats: FORMATS, label: pointLabel, text: tooltipText};
 })();
+
+// UI-03: service-worker registration, sign-out purge, and the install button.
+//
+// Everything here is optional by construction: a browser without service workers, or a
+// user who declines the install prompt, gets exactly the app as it was before.
+(function () {
+  'use strict';
+
+  function assetVersion() {
+    var meta = document.querySelector('meta[name="asset-v"]');
+    return meta ? meta.getAttribute('content') : '';
+  }
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      // The ?v= is the same asset digest the CSS/JS links carry: a deploy changes the
+      // worker's script URL, so the browser fetches and installs the new one instead of
+      // keeping a wedged copy.
+      // scope '/' (allowed by the Service-Worker-Allowed header the app sends) — a
+      // worker under /static/ would otherwise only ever see /static/ requests.
+      navigator.serviceWorker.register('/static/sw.js?v=' + assetVersion(), {scope: '/'})
+        .catch(function () { /* unsupported, or blocked by policy — nothing breaks */ });
+    });
+
+    // Signing out must take the cached personal pages with it. Sent on submit so the
+    // worker gets it before the navigation; the worker ALSO purges when it sees the
+    // POST, because a message can lose that race.
+    document.addEventListener('submit', function (e) {
+      var form = e.target;
+      if (form instanceof HTMLFormElement &&
+          form.getAttribute('action') === '/logout' &&
+          navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({type: 'purge'});
+      }
+    }, true);
+
+    // A page served from the cache carries an honest "data as of HH:MM" banner. When the
+    // background refresh lands, offer the fresh copy rather than silently swapping the
+    // numbers under the reader.
+    navigator.serviceWorker.addEventListener('message', function (e) {
+      if (!e.data || e.data.type !== 'fresh') return;
+      var banner = document.querySelector('.banner--warn .btext');
+      if (!banner || banner.dataset.swRefreshed === '1') return;
+      banner.dataset.swRefreshed = '1';
+      var link = document.createElement('a');
+      link.href = window.location.href;
+      link.className = 'blink';
+      link.textContent = 'Зʼявились свіжі дані — оновити →';
+      banner.appendChild(link);
+    });
+  }
+
+  // The install prompt: Chrome fires this only once the PWA criteria are met, so the
+  // button appears when installing is actually possible and stays hidden otherwise.
+  var deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferredPrompt = e;
+    var btn = document.getElementById('install-pwa');
+    if (btn) btn.hidden = false;
+  });
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('#install-pwa');
+    if (!btn || !deferredPrompt) return;
+    e.preventDefault();
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function () {
+      deferredPrompt = null;
+      btn.hidden = true;
+    });
+  });
+})();

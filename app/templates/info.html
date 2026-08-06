@@ -8,6 +8,11 @@
   <div class="wrap prose">
     <p class="eyebrow">Довідка</p>
     <h1>Як це працює</h1>
+
+    {# UI-03: hidden until the browser says the PWA criteria are met (Chrome fires
+       beforeinstallprompt), so the button never promises something it can't do. #}
+    <p><button type="button" id="install-pwa" class="btn-ghost" hidden>
+      📲 Встановити застосунок на телефон</button></p>
     <p>Сервіс читає твої дані з Garmin Connect (сон, HRV, стрес, body battery,
        тренування, самопочуття) і дає Claude проаналізувати — у Telegram-боті або тут,
        у вебі. Поверх аналізу є персональна <b>програма тренувань</b>, яку сервіс
