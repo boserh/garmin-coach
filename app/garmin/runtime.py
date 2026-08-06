@@ -14,6 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from app.core.crypto import encrypt
+from app.core.impersonate import IMPERSONATING, ImpersonationUnavailable
 from app.db.models import User
 from app.garmin import providers
 from app.garmin.credentials import load_credentials
@@ -31,6 +32,11 @@ class DemoModeUnavailable(Exception):
 async def user_runtime(session, user: User):
     if user.is_demo:
         raise DemoModeUnavailable(user.id)
+    if IMPERSONATING.get():
+        # An admin is looking at this account through a borrowed session (see
+        # app.core.impersonate). Support gets to read what's stored; it does not get to
+        # spend the user's Garmin rate limit or mint a session token in their name.
+        raise ImpersonationUnavailable(user.id)
     if user.garmin_creds_invalid:
         # A previous login already failed with a bad-credentials error — don't touch
         # Garmin again (repeatedly retrying a known-bad password risks a Cloudflare

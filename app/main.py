@@ -23,6 +23,12 @@ from app.analysis.budget import BudgetExceeded
 from app.core import logging as app_logging
 from app.core.auth import RequiresLogin
 from app.core.config import settings
+from app.core.impersonate import (
+    IMPERSONATE_DISABLED_MSG,
+    IMPERSONATE_READONLY_MSG,
+    ImpersonationReadOnly,
+    ImpersonationUnavailable,
+)
 from app.db.base import dispose_db, init_db
 from app.db.models import User
 from app.db.session import get_session
@@ -182,6 +188,23 @@ def create_app() -> FastAPI:
                 "settings_url": "/settings",
             },
             status_code=409,
+        )
+
+    @app.exception_handler(ImpersonationReadOnly)
+    async def _impersonation_read_only(request: Request, exc: ImpersonationReadOnly):
+        # A borrowed session (app.core.impersonate) is read-only. current_user refuses
+        # the write before the handler runs, so nothing was changed by the time we get
+        # here — this only has to say why, in the same 403 JSON shape as the demo net.
+        return JSONResponse(
+            {"error": "impersonation_read_only", "message": IMPERSONATE_READONLY_MSG},
+            status_code=403,
+        )
+
+    @app.exception_handler(ImpersonationUnavailable)
+    async def _impersonation_unavailable(request: Request, exc: ImpersonationUnavailable):
+        return JSONResponse(
+            {"error": "impersonation_mode", "message": IMPERSONATE_DISABLED_MSG},
+            status_code=403,
         )
 
     @app.exception_handler(DemoModeUnavailable)

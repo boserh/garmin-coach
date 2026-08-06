@@ -30,6 +30,12 @@
             <button class="abtn approve" type="submit">Підтвердити</button>
           </form>{% endif %}
           {% if u.id != current_user_id %}
+            {% if not u.is_admin %}
+            {# Read-only borrowed session (app.core.impersonate) — the point is to see
+               the user's own pages; admins are excluded on purpose. #}
+            <form method="post" action="/admin/users/{{ u.id }}/impersonate">
+              <button class="abtn imp" type="submit">Переглянути як</button>
+            </form>{% endif %}
             {% if u.is_approved %}
             <form method="post" action="/admin/users/{{ u.id }}/active">
               <input type="hidden" name="active" value="{{ 0 if u.is_active else 1 }}">

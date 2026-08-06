@@ -272,7 +272,9 @@ first `alembic upgrade head`.
 * `GET /me/export` — streamed ZIP export of everything your account owns
 * `GET /settings` — manage your own Garmin/Claude/Telegram credentials + password
 * `GET /me` — browse your own metrics / activities / reports (per-user, with charts)
-* `GET /admin/users` — list/create/approve/activate/delete users (admin only)
+* `GET /admin/users` — list/create/approve/activate/delete users (admin only);
+  `POST /admin/users/{id}/impersonate` starts a **read-only** borrowed session so an
+  admin can see a user's own pages, `POST /impersonate/stop` hands the session back
 * `GET /admin/cache` — llm_cache + Garmin disk-cache stats/hit-rate + purge actions (admin only)
 * `GET /admin/jobs` — recent scheduled-job run log (admin only)
 * `GET /ui` — raw DB browser across all users (admin only)
@@ -462,3 +464,9 @@ Web access requires a login (signed cookie session); credentials are per user an
 encrypted at rest with the `APP_SECRET_KEY` Fernet key. The bot maps an incoming
 chat to a user by its stored `telegram_chat_id` and ignores unknown chats.
 Garmin credentials remain on the host machine/database and are never sent to Claude.
+
+An admin can borrow a user's session from `/admin/users` to answer "what do you actually
+see?" — bounded to reading: the borrowed session refuses every non-GET request, makes no
+Garmin or Claude call (so it spends none of the user's budget), carries no admin rights,
+and cannot be started against another admin. Every page shows whose session it is, and
+start/stop are logged at WARNING.

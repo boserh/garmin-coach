@@ -239,6 +239,8 @@ app/
     crypto.py          Fernet encrypt/decrypt for creds + bcrypt password hashing
     tz.py              canonical per-user timezone: user_tz / user_today (ST-14)
     auth.py            current_user / require_admin deps; session login/logout helpers
+    impersonate.py      admin "переглянути як": borrowed-session keys + the read-only /
+                        no-LLM / no-Garmin / no-admin guards (ContextVar, demo-shaped)
     tglink.py           signed t.me/?start= deep link that links a Telegram chat to an account
   db/
     base.py            async engine + sessionmaker + declarative Base; init_db/dispose_db
@@ -309,7 +311,7 @@ app/
     prompts.py               SYSTEM_* prompt templates
   routers/
     auth.py         GET/POST /login, GET /logout, GET/POST /register
-    settings.py       /settings (own creds), /admin/users (admin)
+    settings.py       /settings (own creds), /admin/users (admin) + impersonate start/stop
     onboarding.py       GET /onboarding — setup checklist, 0 LLM, 0 Garmin
     dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
     insights.py           GET /insights — UI-05: risk/load/correlations/recap, 0 LLM, 0 Garmin
@@ -389,7 +391,8 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET/POST /checkups`, `GET/POST /checkups/{id}`, `/checkups/supplements` — health
   checkups + supplement tracking (see below). Login; current user.
 - `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save).
-- `GET /admin/users` — list/create users (admin only).
+- `GET /admin/users` — list/create users (admin only); `POST /admin/users/{id}/impersonate`
+  starts a read-only borrowed session, `POST /impersonate/stop` ends it (see below).
 - `GET /ui` + `GET /ui/{table}` + `/ui/{table}/{id}` — raw DB browser (whitelisted
   tables). **Admin only.**
 
@@ -475,6 +478,17 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   Re-linking hands a chat over rather than tripping the UNIQUE constraint.
 - **Active flag**: `is_active` is a separate admin off-switch from approval — deactivated
   keeps data but blocks login + bot reports. Admins can't deactivate themselves.
+- **Impersonation** (`app.core.impersonate`): "Переглянути як" on `/admin/users` moves
+  `user_id` to the target and parks the admin's id in `impersonator_id`, so every route
+  stays user-scoped unchanged. The presence of that key is the whole state, and it buys
+  a session that is **read-only** (`current_user` refuses any non-GET →
+  `ImpersonationReadOnly` 403 — the rule lives in the dependency every authenticated
+  route already has, not in the routers), **spends nothing** (an `IMPERSONATING`
+  ContextVar, same kill-switch shape as the demo account, refused in `user_runtime` and
+  `analysis.client._get_client`) and **holds no admin rights** (`require_admin` refuses;
+  admins aren't impersonable). `_base.html` renders the "перегляд як …" bar on every
+  page; start/stop log at WARNING. `login_session` clears the keys, and a stop whose
+  admin was demoted/deleted meanwhile signs out instead of restoring anything.
 - **Bot**: one global `TELEGRAM_BOT_TOKEN`; chat mapped to user by `telegram_chat_id`
   (`_resolve_user`). `morning_job` loops every user with chat id + Garmin creds, guarded
   once-a-day via per-user `bot_state`.

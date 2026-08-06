@@ -20,6 +20,7 @@ from typing import Optional, Tuple
 
 from app.core.config import settings
 from app.core.demo import DEMO_DISABLED_MSG, IS_DEMO
+from app.core.impersonate import IMPERSONATE_DISABLED_MSG, IMPERSONATING
 
 logger = logging.getLogger("claude")
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -101,9 +102,13 @@ def _get_client(api_key: Optional[str] = None):
     The demo account's kill switch (``app.core.demo.IS_DEMO``) is checked FIRST, before
     that fallback — a demo user has no ``anthropic_key_enc`` of its own, and without this
     check it would silently inherit the operator's real global key and make a real paid
-    call the moment a router guard was missed."""
+    call the moment a router guard was missed. An admin-impersonated session
+    (``app.core.impersonate``) is refused for the mirror-image reason: there the key IS
+    the user's, and support looking at an account must not bill them for it."""
     if IS_DEMO.get():
         raise AnalystError(DEMO_DISABLED_MSG)
+    if IMPERSONATING.get():
+        raise AnalystError(IMPERSONATE_DISABLED_MSG)
     key = api_key or settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise AnalystError("🔑 Невірний або відсутній ANTHROPIC_API_KEY.")

@@ -22,6 +22,26 @@
    banner when it serves a page from the cache. Online it stays an invisible comment —
    a stale readiness number must never be able to pass for a fresh one. #}
 <!--sw-offline-slot-->
+{#
+  The borrowed-session bar (app.core.impersonate). It lives HERE, not in a router's
+  `banners` list, because it has to be on every page an admin can wander onto — the one
+  state where forgetting the notice on a single template means someone reads another
+  person's data without seeing whose it is. Sticky, so it survives scrolling.
+
+  Read straight off the session (via scope, so a template rendered without
+  SessionMiddleware doesn't assert) — the emails are cached there at start, so the bar
+  costs no query.
+#}
+{% set _imp = (request.scope.get('session') or {}) if request else {} %}
+{% if _imp.get('impersonator_id') %}
+  <div class="impbar" role="status">
+    <span class="imptext">👁 Перегляд як <b>{{ _imp.get('impersonated_email') }}</b>
+      — тільки читання, без Garmin і Claude. Адмін: {{ _imp.get('impersonator_email') }}</span>
+    <form method="post" action="/impersonate/stop">
+      <button class="abtn impstop" type="submit">Вийти з режиму</button>
+    </form>
+  </div>
+{% endif %}
 {% block body %}{% endblock %}
 </body>
 </html>

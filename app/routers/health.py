@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user
 from app.core.config import settings
+from app.core.impersonate import IMPERSONATING
 from app.db.models import DailyMetric, ReportLog, User
 from app.dependencies import get_session
 from app.garmin import service
@@ -49,6 +50,11 @@ async def status(
     report, total cost."""
     if user.is_demo:
         garmin = "demo (no real Garmin account)"
+    elif IMPERSONATING.get():
+        # A borrowed session never touches Garmin (app.core.impersonate). Say so, rather
+        # than letting the guard's exception land in the string below as "error: …" and
+        # read like this account's Garmin login is broken.
+        garmin = "skipped (admin impersonation — Garmin not contacted)"
     else:
         garmin = "ok"
         try:
