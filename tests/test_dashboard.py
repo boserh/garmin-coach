@@ -105,7 +105,8 @@ async def test_dashboard_with_data(client):
 
     r = client.get("/dashboard")
     assert r.status_code == 200
-    assert "running" in r.text
+    # The sport is named, not slugged — the card used to print Garmin's raw "running".
+    assert "Біг" in r.text
     assert "8.0" in r.text
     assert "0.01" in r.text   # this month's AI cost
     assert "Ще немає історії" not in r.text
@@ -177,3 +178,63 @@ async def test_dashboard_shows_upcoming_plan(client):
     assert r.status_code == 200
     assert "5.0" in r.text and "легко" in r.text
     assert "20.0" not in r.text   # 30 days out — outside the 7-day window
+
+
+def test_activity_cards_read_like_the_activities_page(auth_client):
+    """The dashboard used to build its own, worse copy of the same card: the raw Garmin
+    slug as the title, an ISO date, and — because it divided distance by duration for
+    everything — a pace under sessions that don't have one."""
+    import datetime as dt
+
+    import anyio
+
+    from app.routers.dashboard import _activity_cards
+
+    today = dt.date.today().isoformat()
+    cards = _activity_cards([
+        {"id": 1, "date": today, "type": "stand_up_paddleboarding_v2", "dist_km": 2.6,
+         "dur_min": 60.0, "avg_hr": 75, "load": 3.0, "rpe": 1, "has_checkin": True},
+        {"id": 2, "date": today, "type": "running", "dist_km": 3.0, "dur_min": 21.0,
+         "avg_hr": 128, "load": 37.0, "rpe": 2, "has_checkin": True},
+        {"id": 3, "date": today, "type": "strength_training", "dist_km": None,
+         "dur_min": 58.0, "avg_hr": 86, "load": 3.0, "rpe": None, "has_checkin": False},
+    ])
+    assert [c["type"] for c in cards] == ["SUP", "Біг", "Сила"]
+    # Pace only where pace means something — "22:52 /км" on a paddleboard is nonsense.
+    assert cards[0]["pace"] is None
+    assert cards[1]["pace"] == "7:00"   # 21 min over 3.0 km
+    assert cards[2]["pace"] is None
+    # The date is readable, and the ISO one survives for the date comparisons.
+    assert cards[0]["date"] != today and str(dt.date.today().year) in cards[0]["date"]
+    assert cards[0]["date_iso"] == today
+    del anyio
+
+
+def test_the_checkin_prompt_still_compares_real_dates(auth_client):
+    """Regression guard: formatting the display date must not break the cutoff test —
+    "Ср, 5 серпня 2026" >= "2026-08-05" is a string comparison, not a date one."""
+    import datetime as dt
+
+    from app.routers.dashboard import _activity_cards, _checkin_prompt
+
+    today = dt.date.today()
+    cards = _activity_cards([
+        {"id": 7, "date": today.isoformat(), "type": "running", "dist_km": 5.0,
+         "dur_min": 30.0, "avg_hr": 140, "load": 50.0, "rpe": None, "has_checkin": False},
+        {"id": 8, "date": (today - dt.timedelta(days=9)).isoformat(), "type": "running",
+         "dist_km": 5.0, "dur_min": 30.0, "avg_hr": 140, "load": 50.0, "rpe": None,
+         "has_checkin": False},
+    ])
+    assert _checkin_prompt(cards, today)["id"] == 7
+    assert _checkin_prompt(cards[1:], today) is None      # nine days old: don't nag
+
+
+def test_the_activity_page_titles_the_sport_not_the_slug(auth_client):
+    from app.routers.me import act_label
+
+    assert act_label("stand_up_paddleboarding_v2") == "SUP"
+    assert act_label("strength_training") == "Сила"
+    # An unmapped Garmin slug degrades to something readable, never to raw snake_case.
+    assert act_label("open_water_swimming") == "Відкрита вода"
+    assert act_label("some_new_garmin_sport") == "Some new garmin sport"
+    assert act_label(None) == ""

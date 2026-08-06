@@ -231,6 +231,23 @@ def _pace_str(dist_km, dur_min):
     return fmt.pace(dur_min / dist_km)   # seconds per km → M:SS
 
 
+def act_label(type_str) -> str:
+    """The activity type's Ukrainian name. An unmapped Garmin slug degrades to a readable
+    form ("Open water swimming") rather than being shown raw — the dashboard used to print
+    `stand_up_paddleboarding_v2` at the user."""
+    t = (type_str or "").lower()
+    return _TYPE_LABELS.get(t) or t.replace("_", " ").capitalize()
+
+
+def act_pace(type_str, dist_km, dur_min):
+    """Pace, but only where pace means anything. Distance ÷ duration is a number for any
+    activity, and printing it as "22:52 /км" under a paddleboard session is worse than
+    printing nothing — a ride is read in km/h, and a SUP session in neither."""
+    if (type_str or "").lower() not in _RUNWALK:
+        return None
+    return _pace_str(dist_km, dur_min)
+
+
 def _fmt_num(v):
     """22.0 → '22', 22.5 → '22.5' — drop a trailing .0 so weights read cleanly."""
     return str(int(v)) if float(v).is_integer() else str(v)
@@ -326,14 +343,12 @@ async def _activity_cards(session, user_id, limit, offset,
         emoji, color = _act_meta(r.type)
         runwalk = (r.type or "").lower() in _RUNWALK
         strain_ring = {"color": "#3aa0ff", **_ring_geom(r.load / 2, 24)} if r.load else None
-        t = (r.type or "").lower()
-        label = _TYPE_LABELS.get(t) or t.replace("_", " ").capitalize()
         cards.append({
-            "id": r.id, "emoji": emoji, "color": color, "label": label,
+            "id": r.id, "emoji": emoji, "color": color, "label": act_label(r.type),
             "date": _nice_date(r.date),
             "dist_km": r.dist_km, "dur_min": r.dur_min,
             "avg_hr": r.avg_hr, "max_hr": r.max_hr, "load": r.load,
-            "pace": _pace_str(r.dist_km, r.dur_min) if runwalk else None,
+            "pace": act_pace(r.type, r.dist_km, r.dur_min),
             "spark": _spark(r.series) if runwalk else None,
             "strain_ring": strain_ring,
             "has_analysis": bool(r.analysis),
@@ -378,9 +393,7 @@ async def _activity_type_counts(session, user_id, days_filter=0, date_from="", d
     stmt = stmt.group_by(ActivityRecord.type).order_by(func.count().desc())
     rows = (await session.execute(stmt)).all()
     return [
-        {"type": t, "count": n,
-         "emoji": _act_meta(t)[0],
-         "label": _TYPE_LABELS.get((t or "").lower()) or (t or "").replace("_", " ").capitalize()}
+        {"type": t, "count": n, "emoji": _act_meta(t)[0], "label": act_label(t)}
         for t, n in rows if t
     ]
 
@@ -1362,7 +1375,7 @@ async def me_row(
             gear_name = gear_mod.name_for(obj.gear_id, roster)
         a = {
             "id": obj.id, "emoji": emoji, "color": color,
-            "label": (obj.type or "—").replace("_", " ").capitalize(),
+            "label": act_label(obj.type) or "—",
             "date": _nice_date(obj.date),
             "dist_km": obj.dist_km, "dur_min": obj.dur_min,
             "avg_hr": obj.avg_hr, "max_hr": obj.max_hr, "load": obj.load,
