@@ -93,6 +93,24 @@ def test_ui_browse(auth_client):
     assert auth_client.get("/ui/nope").status_code == 404
 
 
+def test_data_tables_are_not_capped_by_the_page_column(auth_client):
+    """The scroll container around a data table must not be `.wrap`.
+
+    `.wrap` is app.css's reading column — `max-width:46rem; margin:0 auto` — and both
+    table pages defined their own `.wrap` for the scroller with only overflow/border in
+    it, so the global cap and centering survived: twelve columns squeezed into 46rem in
+    the middle of a wide screen, scrolling inside that. The class name is the bug, so
+    that's what this checks.
+    """
+    for url in ("/ui/report_logs", "/ui/daily_metrics", "/admin/jobs", "/me/jobs"):
+        html = auth_client.get(url).text
+        assert '<div class="wrap">' not in html, url
+    # The job pages render an empty-state paragraph instead of a table when there are no
+    # runs yet, so only the DB browser is guaranteed to have the container here.
+    for url in ("/ui/report_logs", "/ui/daily_metrics"):
+        assert '<div class="tscroll">' in auth_client.get(url).text, url
+
+
 def test_activities_minimal_index_and_run_chart(auth_client):
     from app.garmin import repository
 

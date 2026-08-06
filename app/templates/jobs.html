@@ -9,7 +9,10 @@
     a { color: #7aa2f7; text-decoration: none; } a:hover { text-decoration: underline; }
     h1 { font-size: 1.3rem; margin: .6rem 0 1rem; }
     .meta { color: #909aa8; font-size: .85rem; }
-    .wrap { overflow: auto; max-height: 80vh; border: 1px solid #313a49; border-radius: 12px; }
+    {# See table.html: .wrap is app.css's 46rem centred page column, so naming the
+       scroller that capped this table too. #}
+    .tscroll { width: 100%; overflow: auto; max-height: 80vh; overscroll-behavior-x: contain;
+               border: 1px solid #313a49; border-radius: 12px; }
     table { border-collapse: collapse; width: 100%; font-size: .85rem; font-variant-numeric: tabular-nums; }
     th, td { border-bottom: 1px solid #232a36; padding: .5rem .7rem; text-align: left; white-space: nowrap;
              max-width: 34rem; overflow: hidden; text-overflow: ellipsis; }
@@ -41,7 +44,7 @@
   {% if not runs %}
     <p class="meta">Ще немає записів про фонові задачі. Вони з'являться після наступних запусків.</p>
   {% else %}
-  <div class="wrap">
+  <div class="tscroll">
     <table>
       <thead><tr>
         <th>задача</th>{% if is_admin_view %}<th>user</th>{% endif %}
