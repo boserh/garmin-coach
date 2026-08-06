@@ -687,6 +687,24 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
                 background:color-mix(in srgb, var(--intervals) 8%, transparent)}
 .banner--muted{border-color:var(--line-2);background:var(--surface-2);color:var(--muted)}
 
+/* ---- borrowed-session bar (app.core.impersonate) ----
+   Not a .banner: a banner is a notice about the data on one page, this is a notice
+   about WHOSE session you're in, so it's rendered by _base.html on every page and
+   sticks to the top through a scroll. The --race hue is used nowhere else in the
+   chrome — the colour says "this isn't your account" before the sentence does. The
+   negative margins pull it out of body's padding to span the full width. */
+.impbar{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:.5rem .8rem;
+        align-items:center;justify-content:center;min-width:0;
+        margin:-2.5rem -1.5rem 1.6rem;padding:.6rem 1rem;
+        font-size:.85rem;line-height:1.45;color:#ded4f6;
+        background:color-mix(in srgb, var(--race) 22%, var(--bg));
+        border-bottom:1px solid color-mix(in srgb, var(--race) 45%, transparent)}
+.impbar .imptext{min-width:0}
+.impbar form{margin:0}
+.abtn.imp{background:color-mix(in srgb, var(--race) 16%, transparent);color:var(--race);
+          margin-left:.3rem}
+.abtn.impstop{background:color-mix(in srgb, var(--race) 30%, transparent);color:#f0eaff}
+
 /* ---- one-tap check-in (UI-04) ----
    RPE, a niggle and NF-28's evening tags all share this pill row. Every pill is a real
    <button>/<label> inside a real <form>: the site works with JS off, and the tap IS the

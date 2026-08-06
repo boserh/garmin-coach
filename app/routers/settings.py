@@ -12,9 +12,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import current_user, require_admin
+from app.core.auth import current_user, login_session, logout_session, require_admin
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt, hash_password_async, verify_password_async
+from app.core.impersonate import (
+    IMPERSONATED_EMAIL_KEY,
+    IMPERSONATOR_EMAIL_KEY,
+    IMPERSONATOR_KEY,
+)
+from app.core.impersonate import clear as clear_impersonation
 from app.core.tglink import deep_link
 from app.db import users
 from app.db.models import User
@@ -242,9 +248,12 @@ async def users_list(
     session: AsyncSession = Depends(get_session),
 ):
     rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
+    denied = request.query_params.get("imp") == "denied"
     return templates.TemplateResponse(
         request, "users.html",
-        {"users": rows, "error": None, "current_user_id": admin.id, "user": admin},
+        {"users": rows, "current_user_id": admin.id, "user": admin,
+         "error": "Цього користувача не можна переглядати (адмін або ти сам)."
+                  if denied else None},
     )
 
 
@@ -297,6 +306,66 @@ async def users_set_active(
     if u is not None and u.id != admin.id:  # never deactivate yourself
         u.is_active = active == "1"
         await session.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.post("/admin/users/{user_id}/impersonate")
+async def users_impersonate(
+    request: Request,
+    user_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Borrow this user's session, read-only (see ``app.core.impersonate``).
+
+    ``user_id`` moves to the target so every route stays user-scoped untouched; the
+    admin's own id is parked alongside it and is what ``/impersonate/stop`` reads back.
+    Admins are not impersonable — that would hand admin rights to a session where "who
+    did this" is already ambiguous, and there is nothing to support on such an account
+    that ``/ui`` doesn't show."""
+    target = await session.get(User, user_id)
+    if target is None or target.id == admin.id or target.is_admin:
+        return RedirectResponse("/admin/users?imp=denied", status_code=303)
+    login_session(request, target)  # also clears any previous impersonation keys
+    request.session[IMPERSONATOR_KEY] = admin.id
+    request.session[IMPERSONATOR_EMAIL_KEY] = admin.email
+    request.session[IMPERSONATED_EMAIL_KEY] = target.email
+    # The audit trail for a borrowed session: it's read-only and spends nothing, but
+    # somebody still looked at another person's data, and that belongs in the log.
+    logger.warning(
+        f"IMPERSONATE start admin={admin.id} ({admin.email}) → "
+        f"user={target.id} ({target.email})"
+    )
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@router.post("/impersonate/stop")
+async def impersonate_stop(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Hand the session back to the admin who borrowed it.
+
+    Deliberately depends on neither ``current_user`` (which refuses every write while
+    impersonating — including this one) nor ``require_admin`` (the session's effective
+    user is the non-admin target). It trusts only ``IMPERSONATOR_KEY``, and re-checks
+    that it still points at a real admin before restoring anything: rights demoted
+    mid-session must not be handed back."""
+    admin_id = request.session.get(IMPERSONATOR_KEY)
+    if admin_id is None:
+        return RedirectResponse("/dashboard", status_code=303)
+    impersonated = request.session.get(IMPERSONATED_EMAIL_KEY, "?")
+    clear_impersonation(request.session)
+    admin = await session.get(User, admin_id)
+    if admin is None or not admin.is_admin or not admin.is_active:
+        # The admin was deleted/demoted/deactivated while looking — there is no session
+        # to go back to, so end it entirely rather than leave the borrowed one standing.
+        logout_session(request)
+        return RedirectResponse("/login", status_code=303)
+    request.session["user_id"] = admin.id
+    logger.warning(
+        f"IMPERSONATE stop admin={admin.id} ({admin.email}) ← user={impersonated}"
+    )
     return RedirectResponse("/admin/users", status_code=303)
 
 

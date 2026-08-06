@@ -95,6 +95,15 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
         pages["activity"] = f"/me/activities/{act_id}"
     files = stage_pages(client, tmp_path, pages)
 
+    # The borrowed-session bar (app.core.impersonate) exists only while an admin is
+    # impersonating, so it needs a page staged from that state: it's a full-width sticky
+    # row carrying two email addresses and a button — the shape that overflows first.
+    _seed_user(email="layout-admin@example.com", password="pw", is_admin=True)
+    client.post("/login", data={"email": "layout-admin@example.com", "password": "pw"})
+    client.post(f"/admin/users/{_user_id(email)}/impersonate")
+    files.update(stage_pages(client, tmp_path, {"dashboard_impersonated": "/dashboard"}))
+    client.post("/impersonate/stop")
+
     failures = []
     external = []
     with sync_playwright() as p:

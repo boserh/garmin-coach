@@ -819,3 +819,45 @@ are proved, the token for the web account and the incoming update for the chat. 
 `/start` explains the actual order of operations; every linking reply ends with what the
 account still owes (`onboarding.missing_labels`), because sending someone away with
 "готово" when there's no Claude key yet just moves the confusion one step on.
+
+## Admin impersonation ("Переглянути як")
+
+Support answers to "чому в мене порожньо?" were being reconstructed out of `/ui` row by
+row, which shows the rows and not the page — and the page is where the answer usually is
+(a banner nobody read, an empty state, a plan that ended). So an admin can borrow a
+user's session from `/admin/users` instead.
+
+The session carries **both** ids: `user_id` becomes the target (so every existing
+`current_user` route stays user-scoped with no per-router change at all) and
+`impersonator_id` holds the admin. That second key is the feature — the banner, the stop
+route and all three guards key off its presence, so there is no second flag to keep in
+sync with it.
+
+Borrowed ≠ acting. `app/core/impersonate.py` bounds it three ways, each at a choke point
+rather than in the routers:
+
+- **Read-only.** `current_user` refuses any non-GET (`ImpersonationReadOnly` → 403). It's
+  in the dependency every authenticated route already declares, so a router written next
+  year inherits the rule. `POST /impersonate/stop` reads the session directly and is the
+  one write that still works.
+- **Spends nothing.** Same kill-switch shape as the demo account (`app.core.demo`): a
+  `IMPERSONATING` ContextVar set for the request, checked in `user_runtime` and
+  `analysis.client._get_client`. Support looking at an account must not bill the user's
+  Claude key or burn their Garmin rate limit — which is also why `/status` names the skip
+  ("impersonation — Garmin not contacted") instead of letting the guard's exception land
+  in its catch-all and read like a broken Garmin login.
+- **No admin.** `require_admin` refuses while impersonating, and an admin can't be
+  impersonated at all. Admin pages span everyone's data; "who did this" has to stay
+  answerable.
+
+The bar lives in `_base.html`, not in a router's `banners` list: it's a fact about whose
+session this is, not about the page, and the one state where a template that forgot the
+notice means someone reads another person's data without seeing whose. It reads the
+emails straight out of the session (cached there at start, so no query per page) and is
+styled in `--race`, a hue the chrome uses nowhere else. Start and stop log at WARNING —
+the session is read-only and costs nothing, but somebody still looked.
+
+Loose ends handled: `login_session` clears the impersonation keys, so signing in again
+after closing the tab mid-session gives a clean session rather than a borrowed one with
+a new id pasted over it; and if the admin is demoted, deactivated or deleted while
+looking, stopping signs out entirely instead of handing back rights that no longer exist.
