@@ -24,7 +24,7 @@ from app.db import lifestyle as lifestyle_db
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository, service
-from app.routers.me import _act_meta, _nice_date, _pace_str, _ring_geom
+from app.routers.me import _act_meta, _nice_date, _ring_geom, act_label, act_pace
 from app.routers.plan import _dm, _dow, fueling_today
 from app.templating import create_templates
 
@@ -60,14 +60,25 @@ def _trend_charts(trend: list) -> tuple:
 
 
 def _activity_cards(rows: list) -> list:
+    """The same card /me/activities builds, through the same helpers.
+
+    It used to be a second, worse copy: it printed the raw Garmin slug as the title
+    (`stand_up_paddleboarding_v2`), the ISO date, and — because it applied
+    distance ÷ duration unconditionally — a pace under sessions that don't have one
+    ("22:52 /км" on a paddleboard)."""
     out = []
     for a in rows:
         emoji, color = _act_meta(a["type"])
         out.append({
-            "id": a["id"], "date": a["date"], "type": a["type"], "emoji": emoji, "color": color,
+            "id": a["id"], "date": _nice_date(a["date"]),
+            # The ISO date stays alongside the formatted one: _checkin_prompt compares it
+            # against a cutoff, and "Ср, 5 серпня 2026" > "2026-08-05" is not a date test.
+            "date_iso": a["date"],
+            "type": act_label(a["type"]),
+            "emoji": emoji, "color": color,
             "dist_km": a["dist_km"], "dur_min": a["dur_min"], "avg_hr": a["avg_hr"],
             "load": a["load"], "rpe": a["rpe"], "has_checkin": a.get("has_checkin"),
-            "pace": _pace_str(a["dist_km"], a["dur_min"]),
+            "pace": act_pace(a["type"], a["dist_km"], a["dur_min"]),
         })
     return out
 
@@ -82,7 +93,8 @@ def _checkin_prompt(cards: list, today: dt.date) -> dict | None:
     with no check-in at all — or ``None``, which is most days."""
     cutoff = (today - dt.timedelta(days=CHECKIN_PROMPT_DAYS - 1)).isoformat()
     for a in cards:
-        if a["date"] >= cutoff and not a.get("has_checkin"):
+        # `date_iso`, never the display date — the latter is "Ср, 5 серпня 2026".
+        if (a.get("date_iso") or a["date"]) >= cutoff and not a.get("has_checkin"):
             return a
     return None
 

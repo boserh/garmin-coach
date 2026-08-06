@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import compare as compare_mod
 from app import correlations, loadforecast, returntorun
+from app import records as records_mod
 from app import wrapped as wrapped_mod
 from app.analysis.reports import INSIGHTS_WINDOW_DAYS, build_injury_assessment
 from app.charts import trend_series as _trend_series
@@ -131,6 +132,27 @@ def _correlations_block(findings: list) -> dict | None:
     }
 
 
+def _records_block(rows) -> dict:
+    """The period's personal bests, formatted by `app.records` and split into a headline
+    and a fold.
+
+    Two things the first cut got wrong. The raw `kind` slug was rendered straight
+    (`e1rm:тяга гирі в нахилі — 42.0`) and the value had no unit — `records.to_context`
+    is the one formatter that turns those into `≈1ПМ тяга гирі в нахилі` / `≈42.0 кг`,
+    and it already existed for the bot. And a quarter of lifting sets one e1RM record per
+    exercise, so a dozen of them buried the running milestones the recap is actually
+    about; the lifts now live behind a `<details>` while the fitness bests stay in view.
+    """
+    items = records_mod.to_context(rows or [])
+    order = {kind: i for i, kind in enumerate(records_mod.DISPLAY_ORDER)}
+    headline = sorted(
+        (r for r in items if not r["kind"].startswith(records_mod.E1RM_PREFIX)),
+        key=lambda r: order.get(r["kind"], len(order)),
+    )
+    lifts = [r for r in items if r["kind"].startswith(records_mod.E1RM_PREFIX)]
+    return {"records": headline, "lift_records": lifts}
+
+
 def _ladder_block(state: dict | None) -> dict | None:
     """NF-30's walk/run ladder, when one is actually running."""
     if not returntorun.is_active(state):
@@ -188,7 +210,8 @@ async def insights(
             "period": period, "label": wrapped_mod.label(period),
             "range": wrapped_mod.fmt_range(r_start, r_end),
             "stats": recap_stats,
-            "records": await repository.records_in_range(session, user.id, r_start, r_end),
+            **_records_block(
+                await repository.records_in_range(session, user.id, r_start, r_end)),
             "source": _SOURCES["recap"],
         }
 

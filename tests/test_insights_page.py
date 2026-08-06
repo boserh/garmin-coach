@@ -228,3 +228,61 @@ def test_it_needs_a_login(client):
     r = client.get("/insights", follow_redirects=False)
     assert r.status_code in (303, 307)
     assert r.headers["location"].endswith("/login")
+
+
+def test_records_are_rendered_with_labels_and_units(page_client, no_llm_no_garmin):
+    """The first cut printed the raw `kind` slug and a bare float — "e1rm:тяга гирі в
+    нахилі — 42.0". `app.records` already owns the one formatter (it feeds the bot's
+    /records), and this page must use it rather than grow a second one."""
+    from app import records as records_mod
+    from app.db.base import async_session_maker
+    from app.db.models import PersonalRecord
+
+    uid = _user_id(EMAIL)
+    today = dt.date.today()
+
+    async def seed():
+        async with async_session_maker() as s:
+            s.add(PersonalRecord(user_id=uid, kind="longest_run_km", value=21.4,
+                                 previous_value=18.0, date=today.isoformat()))
+            s.add(PersonalRecord(user_id=uid, kind="e1rm:тяга гирі в нахилі", value=42.0,
+                                 previous_value=40.5, date=today.isoformat()))
+            await s.commit()
+
+    anyio.run(seed)
+    html = page_client.get("/insights?period=quarter").text
+
+    # No raw slug reaches the page…
+    assert "e1rm:" not in html
+    assert "longest_run_km" not in html
+    # …and every number carries the unit the module decided on.
+    assert records_mod.label_for("longest_run_km") in html      # "найдовша пробіжка"
+    assert records_mod.format_value("longest_run_km", 21.4) in html   # "21.4 км"
+    assert "≈1ПМ тяга гирі в нахилі" in html
+    assert "≈42.0 кг" in html
+    assert "було ≈40.5 кг" in html
+
+
+def test_lift_records_are_folded_away_so_they_do_not_bury_the_recap(page_client,
+                                                                    no_llm_no_garmin):
+    """A quarter of lifting sets one e1RM record per exercise — a dozen of them pushed the
+    running milestones off the screen."""
+    from app.routers.insights import _records_block
+
+    class _R:
+        def __init__(self, kind, value):
+            self.kind, self.value, self.previous_value = kind, value, None
+            self.date = "2026-07-09"
+
+    block = _records_block([
+        _R("e1rm:жим лежачи", 80.0),
+        _R("longest_run_km", 21.4),
+        _R("e1rm:присід", 120.0),
+        _R("fastest_5k", 4.6),
+    ])
+    # Fitness bests stay in view, in the module's own display order…
+    assert [r["kind"] for r in block["records"]] == ["fastest_5k", "longest_run_km"]
+    # …and the lifts go behind the fold.
+    assert [r["kind"] for r in block["lift_records"]] == ["e1rm:жим лежачи", "e1rm:присід"]
+    assert _records_block([]) == {"records": [], "lift_records": []}
+    assert _records_block(None) == {"records": [], "lift_records": []}
