@@ -192,10 +192,31 @@ def _intensity_signal(findings: Optional[List[dict]]) -> Optional[Signal]:
     )
 
 
+def _dynamics_signal(drift_streak: int) -> Optional[Signal]:
+    """NF-25: cadence/ground-contact drift on several consecutive sessions.
+
+    Form falling apart late in a run is stabiliser fatigue, and it shows up BEFORE the volume
+    or the recovery metrics say anything — which is the whole reason the channel was added.
+    One session is noise (a bad night, a heavy pair of shoes), so the signal needs a streak;
+    and like the grey-zone one it is weighted below reported pain — it compounds risk, it
+    doesn't declare an injury."""
+    from app import rundynamics
+
+    if drift_streak < rundynamics.DRIFT_STREAK:
+        return None
+    return Signal(
+        "dynamics", 2,
+        f"Форма сиплеться під кінець бігу {drift_streak} сесії поспіль "
+        f"(каденс падає / контакт із землею довшає) — накопичена втома "
+        f"стабілізаторів, ще до болю.",
+    )
+
+
 def assess(
     daily: List[dict], runs: List[dict], *, history_days: int,
     min_history_days: int = 14, today: Optional[dt.date] = None,
     intensity_findings: Optional[List[dict]] = None,
+    dynamics_drift_streak: int = 0,
 ) -> Assessment:
     """Fuse the windowed signals into an :class:`Assessment`. ``daily`` (recovery/load rows,
     each ``{date, hrv_avg, resting_hr, acwr_pct, hrv_baseline_low}``) and ``runs``
@@ -204,7 +225,9 @@ def assess(
     a quiet calibration mode (``level="calibrating"``) and raise no warning (the EP-08 anti-
     false-positive rule). ``intensity_findings`` (NF-24, optional) are the already-computed
     distribution deviations — a grey-zone drift raises the score without being able to trip a
-    warning by itself. Pure; ``today`` is accepted for symmetry/testing but unused here."""
+    warning by itself. ``dynamics_drift_streak`` (NF-25) is how many of the most recent
+    consecutive runs ended with a form drift — same weighting rule as the intensity signal.
+    Pure; ``today`` is accepted for symmetry/testing but unused here."""
     if history_days < min_history_days:
         return Assessment(level="calibrating", history_days=history_days)
 
@@ -214,6 +237,7 @@ def assess(
         _recovery_signal(daily),
         _rpe_signal(runs),
         _intensity_signal(intensity_findings),
+        _dynamics_signal(dynamics_drift_streak),
     ) if s is not None]
     signals.sort(key=lambda s: s.severity, reverse=True)
     score = sum(s.severity for s in signals)

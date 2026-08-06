@@ -65,6 +65,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("health", "Алерти відновлення (HRV, сон, стрес)"),
         BotCommand("plan", "Програма; /plan <текст> щоб змінити, напр. додай біг сьогодні"),
         BotCommand("sick", "Захворів/у подорожі: перебудувати найближчий блок плану"),
+        BotCommand("pain", "Болить: покроковий протокол повернення до бігу"),
         BotCommand("goal", "Кількісний прогрес до цілі (прогноз Garmin + тренд)"),
         BotCommand("race", "Race pack: пейсинг/харчування/чекліст до цільового старту"),
         BotCommand("log", "Відмітити побутове: /log вчора пиво"),
@@ -100,6 +101,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("health", handlers.health))
     app.add_handler(CommandHandler("plan", handlers.plan))
     app.add_handler(CommandHandler("sick", handlers.sick))
+    app.add_handler(CommandHandler("pain", handlers.pain_cmd))
     app.add_handler(CommandHandler("log", handlers.log_cmd))
     app.add_handler(CommandHandler("forget", handlers.forget_cmd))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
@@ -110,6 +112,11 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handlers.lifestyle_callback, pattern=r"^ls:"))
     # NF-18: the auto-sickness question's ✅/❌ (the /sick rebuild, offered without /sick).
     app.add_handler(CallbackQueryHandler(handlers.sickness_callback, pattern=r"^sick:"))
+    # NF-30: the return-to-run offer's ✅/❌ and the post-session pain scale. Both are
+    # deterministic, zero-Claude paths — the protocol never pays for a step.
+    app.add_handler(CallbackQueryHandler(handlers.return_callback, pattern=r"^rtr:"))
+    app.add_handler(
+        CallbackQueryHandler(handlers.return_pain_callback, pattern=r"^rtrpain:"))
     # ST-23: plain text is a follow-up to an unconfirmed plan proposal (question or
     # correction). Registered last so every command above still wins; with no pending
     # proposal the handler returns silently, keeping the bot's previous behaviour on

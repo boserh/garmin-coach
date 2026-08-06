@@ -87,13 +87,15 @@ def test_fetch_activity_series_parses_elevation_when_present():
     assert s[0]["e"] == 250.4 and s[1]["e"] == 252.0
 
 
-def test_fetch_activity_series_uses_v2_cache_key():
+def test_fetch_activity_series_uses_v3_cache_key():
+    # NF-25/NF-33 bumped v2 → v3 ONCE, for the dynamics channels and the coordinates
+    # together (two separate bumps would have discarded the disk cache twice).
     with patch.object(client, "_cache_get", return_value=None) as get, \
          patch.object(client, "_api", return_value=_DETAILS), \
          patch.object(client, "_cache_put") as put:
         client.fetch_activity_series(123)
-    get.assert_called_once_with("series:v2:123")
-    assert put.call_args[0][0] == "series:v2:123"
+    get.assert_called_once_with("series:v3:123")
+    assert put.call_args[0][0] == "series:v3:123"
 
 
 # ---------- EP-10 phase 1: cycling series (speed/power instead of pace) ----------

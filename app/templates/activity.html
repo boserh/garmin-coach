@@ -74,6 +74,18 @@
       {% if a.pain %}<div class="bigstat"><div class="v">🩹</div><div class="k">{{ a.pain if a.pain is string else 'біль' }}</div></div>{% endif %}
     </div>
     {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
+    {% if a.dynamics_line %}<div class="note" style="max-width:none">{{ a.dynamics_line }}</div>{% endif %}
+    {% if a.route_line %}<div class="note" style="max-width:none">{{ a.route_line }}</div>{% endif %}
+
+    {% if a.route_id %}
+    <form method="post" action="/me/activities/{{ a.id }}/route-name"
+          style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.6rem 0">
+      <input type="text" name="name" maxlength="80" value="{{ a.route_name or '' }}"
+             placeholder="Назва маршруту (напр. «парк»)"
+             style="flex:1;min-width:12rem;padding:.45rem .6rem">
+      <button type="submit" class="btn-ghost">🔁 Назвати маршрут</button>
+    </form>
+    {% endif %}
 
     <div style="display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0">
       <form method="post" action="/me/activities/{{ a.id }}/resync">

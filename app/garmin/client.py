@@ -301,8 +301,11 @@ def cache_del(key: str) -> None:
 
 # Cache keys scoped to a single activity — used by ``cache_del_activity`` (ST-20) to
 # wipe everything Garmin ever cached about one activity without touching siblings.
-_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v2", "splits:v1", "gear_link:v1",
-                          "zones:v1")
+# NF-25/NF-33: ``series:v2`` stays listed next to ``series:v3`` — a Pi that has been
+# running for a year still has v2 files on disk, and "wipe everything about this activity"
+# must mean everything, not just what the current code writes.
+_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v3", "series:v2", "splits:v1",
+                          "gear_link:v1", "zones:v1")
 _CACHE_FILE_RE = re.compile(r"^(.+_v\d+)_.+$")
 
 
@@ -595,11 +598,23 @@ SERIES_TTL_S = 365 * 24 * 3600   # a completed run's per-point series is immutab
 # EP-15: "elevation" is the same lookup mechanics, added to both buckets — a descriptor
 # key that isn't present (older watch, missing altimeter) resolves to None like any other
 # missing column, never a crash (unverified against a live account — see the module intro).
+# NF-25: running dynamics — cadence / ground-contact time / vertical oscillation. These
+# columns come back in the SAME ``/details`` response we already fetch, so pulling them is
+# zero extra Garmin requests; before this they were simply never asked for, which left the
+# most direct biomechanical signal in the account unused. A watch without the accessory
+# (no HRM-Pro/Running Dynamics pod) has no such descriptor → the lookup resolves to None
+# and every point carries ``None``, exactly like elevation on an old watch.
+# NF-33: latitude/longitude, same mechanics, for route fingerprinting. They stay ON THE PI —
+# no LLM context and no report_logs ever sees them (see app/routes.py and its test).
 _SERIES_METRIC_KEYS = {
     "running": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance",
-                "elevation": "directElevation"},
+                "elevation": "directElevation",
+                "cadence": "directDoubleCadence", "gct": "directGroundContactTime",
+                "vo": "directVerticalOscillation",
+                "lat": "directLatitude", "lon": "directLongitude"},
     "cycling": {"speed": "directSpeed", "hr": "directHeartRate", "dist": "sumDistance",
-                "power": "directPower", "elevation": "directElevation"},
+                "power": "directPower", "elevation": "directElevation",
+                "lat": "directLatitude", "lon": "directLongitude"},
 }
 
 
@@ -610,14 +625,23 @@ def fetch_activity_series(
 
     Reads Garmin's ``/details`` metrics, locates the columns by descriptor key (indices
     vary), and downsamples to ``max_points``. Shape depends on ``sport``:
-    running → ``[{"d": dist_km, "p": pace_min_km, "hr": bpm, "e": elevation_m}, ...]``;
+    running → ``[{"d": dist_km, "p": pace_min_km, "hr": bpm, "e": elevation_m,
+    "cad": steps_min, "gct": ms, "vo": cm, "lat": deg, "lon": deg}, ...]``;
     cycling → ``[{"d": dist_km, "spd": speed_kmh, "pw": watts_or_None, "hr": bpm,
-    "e": elevation_m}, ...]``. ``None`` where a point lacks the value (EP-15: ``e`` is
-    ``None`` on every point when the watch/endpoint has no altitude — old series stay
-    exactly as before). Immutable → disk-cached like exercises; ``force=True`` bypasses that
-    cache and refetches (overwriting it) for a manual resync of an edited/cropped activity
-    (ST-15/ST-16)."""
-    key = f"series:v2:{activity_id}"
+    "e": elevation_m, "lat": deg, "lon": deg}, ...]``. ``None`` where a point lacks the
+    value (EP-15: ``e`` is ``None`` on every point when the watch/endpoint has no altitude —
+    old series stay exactly as before; NF-25: same for ``cad``/``gct``/``vo`` on a watch
+    without the running-dynamics accessory, which is the COMMON case, not an error).
+    Immutable → disk-cached like exercises; ``force=True`` bypasses that cache and refetches
+    (overwriting it) for a manual resync of an edited/cropped activity (ST-15/ST-16).
+
+    The cache key is ``series:v3`` (bumped ONCE for NF-25's dynamics channels and NF-33's
+    coordinates together — two bumps would have thrown the disk cache away twice). Series
+    already stored under ``v2`` on disk or in the DB stay readable and are simply missing the
+    new keys; every consumer treats a missing channel as ``None``, so no data migration is
+    needed and history is not re-fetched en masse (``app.cli backfill-series --force`` is
+    the opt-in for that)."""
+    key = f"series:v3:{activity_id}"
     cached = None if force else _cache_get(key)
     if cached is not None:
         return cached
@@ -634,6 +658,11 @@ def fetch_activity_series(
     i_dist = idx.get(keys["dist"])
     i_power = idx.get(keys["power"]) if keys.get("power") else None
     i_elev = idx.get(keys["elevation"])
+    i_lat = idx.get(keys["lat"]) if keys.get("lat") else None
+    i_lon = idx.get(keys["lon"]) if keys.get("lon") else None
+    i_cad = idx.get(keys["cadence"]) if keys.get("cadence") else None
+    i_gct = idx.get(keys["gct"]) if keys.get("gct") else None
+    i_vo = idx.get(keys["vo"]) if keys.get("vo") else None
     pts = _g(d, "activityDetailMetrics") or []
     step = max(1, len(pts) // max_points)  # downsample if Garmin returned more
 
@@ -650,6 +679,23 @@ def fetch_activity_series(
             "hr": int(hr) if hr is not None else None,
             "e": round(elev, 1) if elev is not None else None,
         }
+        # NF-33: coordinates ride along only when the track actually has them (indoor
+        # treadmill runs and GPS-less sessions leave the descriptors out entirely). Six
+        # decimals ≈ 0.1 m — far more than route matching needs, but the raw value is what
+        # the fingerprint's own truncation then coarsens, so no precision is invented here.
+        lat, lon = val(m, i_lat), val(m, i_lon)
+        if lat is not None and lon is not None:
+            point["lat"], point["lon"] = round(lat, 6), round(lon, 6)
+        if sport != "cycling":
+            # NF-25: running dynamics. Garmin reports cadence as double-cadence (both feet),
+            # which IS steps/min — no doubling here, that's the point of the "Double" key.
+            cad, gct, vo = val(m, i_cad), val(m, i_gct), val(m, i_vo)
+            if cad is not None:
+                point["cad"] = round(cad)
+            if gct is not None:
+                point["gct"] = round(gct)
+            if vo is not None:
+                point["vo"] = round(vo, 1)
         if sport == "cycling":
             point["spd"] = round(speed * 3.6, 1) if speed and speed > 0 else None
             power = val(m, i_power)

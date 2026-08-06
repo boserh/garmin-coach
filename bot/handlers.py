@@ -9,6 +9,7 @@ import datetime as dt
 import functools
 import json
 import logging
+from types import SimpleNamespace
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -87,12 +88,14 @@ HELP_TEXT = (
     "/ask <питання> — питання по всій твоїй історії тренувань і відновлення, "
     "напр. /ask коли я востаннє біг швидше 5:00/км\n"
     "/compare [тижнів] — порівняння з собою рік тому\n"
+    "/compare route — повтори того самого кола (GAP-темп, без витрат на LLM)\n"
     "/wrapped [рік|квартал] — святковий підсумок сезону (Opus)\n"
     "/insights — що на тебе насправді впливає (кореляції сну/HRV/стресу)\n\n"
     "🏃 Активності\n"
     "/activities — останні активності\n"
     "/activity <id> [force] — розбір активності (force — перегенерувати платно)\n"
     "/checkin [rpe] [нотатка] — оцінити останнє тренування (RPE + чи боліло)\n"
+    "/pain [зона] — болить: покроковий протокол повернення до бігу (без витрат на LLM)\n"
     "/resync [дата [дата]] — пересинкувати дані з Garmin (без аргументів — вчора+сьогодні)\n"
     "/hide <id> [show] — приховати активність (дубль/битий трек); show — повернути\n"
     "/records — особисті рекорди\n"
@@ -457,9 +460,16 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
 @bot_command(creds="load")
 async def race_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user, creds):
     """/race — a pre-race pack: pacing/fueling/checklist synthesis for the active plan's
-    target race (EP-05). Pure DB read + one Opus call; no Garmin fetch, so no MFA risk."""
+    target race (EP-05). Pure DB read + one Opus call; no Garmin fetch, so no MFA risk.
+
+    ``/race done [activity_id]`` (NF-23) instead produces the POST-race debrief for a race the
+    automatic T+1 stage missed (no plan, a race run off-plan, a late watch sync)."""
     from app import race as race_mod
     from app.analysis.service import run_race_plan
+
+    if ctx.args and ctx.args[0].lower() in ("done", "готово", "фініш"):
+        await _race_debrief_cmd(update, session, user, creds, ctx.args[1:])
+        return
 
     logger.info("CMD /race")
     plan = await repository.get_active_plan(session, user.id)
@@ -485,6 +495,50 @@ async def race_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     left = f"за {days_left} дн." if days_left and days_left > 0 else "уже скоро"
     header = f"🏁 Race pack — {plan.goal_label or plan.goal} ({left}):\n\n"
     await update.message.reply_text(header + text)
+
+
+async def _race_debrief_cmd(update: Update, session, user, creds, args) -> None:
+    """NF-23 ``/race done [activity_id]``: the manual entry point to the post-race debrief.
+
+    Exists because the automatic T+1 stage only fires for a race that was IN a plan — a race
+    run off-plan, or one whose plan was archived, would otherwise never get a debrief. Exactly
+    one Claude call, and a repeat on the same activity is a dedup-cache hit (the id is in the
+    key), so pressing it twice costs nothing."""
+    from app.analysis.service import run_race_debrief
+
+    logger.info("CMD /race done")
+    activity = None
+    if args:
+        try:
+            activity_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("Вкажи id активності: /race done 12345678")
+            return
+        activity = await repository.get_activity_by_garmin_id(session, user.id, activity_id)
+        if activity is None:
+            activity = await repository.get_activity(session, user.id, activity_id)
+    else:
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is not None:
+            from bot import jobs as jobs_mod
+            activity = await jobs_mod.find_race_activity(session, user, plan)
+    if activity is None:
+        await update.message.reply_text(
+            "Не знайшов забіг. Виклич /activities, візьми id старту й повтори: "
+            "/race done <id>."
+        )
+        return
+    await update.message.reply_text("Розбираю старт…")
+    plan = await repository.get_active_plan(session, user.id)
+    try:
+        text = await run_race_debrief(
+            session, user_id=user.id, activity=activity, plan=plan,
+            api_key=creds.anthropic_key)
+    except AnalystError as e:
+        logger.error(f"ANALYST {e}")
+        await update.message.reply_text(str(e))
+        return
+    await update.message.reply_text("🏁 Розбір твого старту:\n\n" + text)
 
 
 @bot_command
@@ -542,9 +596,17 @@ async def checkups_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, 
 @bot_command(creds="load")
 async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user, creds):
     """/compare [тижнів] — compare current fitness with the same span a year ago (NF-06).
-    Pure DB read + one Sonnet call; no Garmin fetch, so no MFA risk."""
+    Pure DB read + one Sonnet call; no Garmin fetch, so no MFA risk.
+
+    ``/compare route`` (NF-33) is a different question answered from the same command: the
+    passes of each recognised route, GAP-honest, with **zero** LLM cost — the comparison is
+    arithmetic, not narration."""
     from app import compare as compare_mod
     from app.analysis.service import run_compare
+
+    if ctx.args and ctx.args[0].lower() in ("route", "маршрут", "коло"):
+        await _compare_routes(update, session, user)
+        return
 
     weeks = compare_mod.parse_period(ctx.args)
     logger.info(f"CMD /compare {weeks}w")
@@ -568,6 +630,38 @@ async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user,
     header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_start, cur_end)}) "
               f"проти себе рік тому ({compare_mod.fmt_range(past_start, past_end)}):\n\n")
     await update.message.reply_text(header + text)
+
+
+async def _compare_routes(update: Update, session, user) -> None:
+    """NF-33 ``/compare route``: every recognised route with ≥2 passes, newest pass first,
+    compared on GAP pace against that route's best. Pure DB + arithmetic — no Claude call, so
+    it costs nothing and can be pressed as often as the runner likes."""
+    from app import routes as routes_mod
+    from app.garmin.repository import routes as routes_repo
+
+    known = await routes_repo.list_routes(session, user.id)
+    blocks = []
+    for route in known:
+        passes = await routes_repo.route_passes(session, user.id, route.id)
+        if len(passes) < 2:
+            continue
+        current, history = passes[-1], passes[:-1]
+        comparison = routes_mod.build_comparison(current, history)
+        line = routes_mod.summary(comparison, route.name or f"Маршрут #{route.id}")
+        if line:
+            dist = current.get("dist_km")
+            head = f"{line}\n   останнє: {current.get('date')}"
+            blocks.append(head + (f", {dist:.1f} км" if dist else ""))
+    if not blocks:
+        await update.message.reply_text(
+            "Поки нема маршруту, який ти пробіг(ла) двічі — або в пробіжках немає GPS.\n"
+            "Історію можна розкластерувати разово: `app.cli backfill-routes`."
+        )
+        return
+    await update.message.reply_text(
+        "🔁 Твої повторювані маршрути (GAP-темп, чесно до рельєфу):\n\n"
+        + "\n\n".join(blocks)
+    )
 
 
 @bot_command(creds="load")
@@ -1493,6 +1587,165 @@ async def sickness_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         await _store_sick_proposal(session, user.id, edit, days_missed, sent)
     logger.info(f"SICKNESS rebuild proposed user={user.id} days_missed={days_missed}")
+
+
+# ---------- RETURN TO RUN (NF-30) ----------
+
+RETURN_STATE_KEY = "rtr_state"       # the protocol's own state blob (app.returntorun)
+RETURN_WARNED_KEY = "rtr_warned"     # last time we offered it — the RETURN_GUARD_DAYS snooze
+
+# The one-tap pain scale after a protocol session. Four buttons rather than eleven: the
+# decision only needs "within 2/10 or not", and a scale nobody taps produces no data at all.
+RETURN_PAIN_CHOICES = ((0, "0 — нема"), (2, "1-2 — ледь"),
+                       (4, "3-5 — помітно"), (7, "6+ — сильно"))
+
+
+def return_pain_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"rtrpain:{value}")]
+        for value, label in RETURN_PAIN_CHOICES
+    ])
+
+
+async def load_return_state(session, user_id: int) -> Optional[dict]:
+    raw = await repository.get_state(session, user_id, RETURN_STATE_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+async def save_return_state(session, user_id: int, state: dict) -> None:
+    await repository.set_state(session, user_id, RETURN_STATE_KEY,
+                               json.dumps(state, ensure_ascii=False))
+
+
+async def schedule_return_session(session, user, state: dict, date_iso: str) -> None:
+    """Write the current rung as an ordinary ``PlannedWorkout`` on ``date_iso``.
+
+    An ordinary session on purpose: the plan view, the Garmin push (walk/run is just
+    structured interval steps) and the EP-01 matcher all work on it unchanged — the protocol
+    needs no parallel machinery, only its own progression rule."""
+    from app import returntorun
+
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None:
+        return
+    step = returntorun.step_by_number(state.get("step", 1))
+    if not step:
+        return
+    existing = await repository.workout_on_date(session, plan.id, date_iso)
+    if existing is not None and (existing.description or "").startswith("Крок "):
+        return   # already scheduled for that day — idempotent
+    await repository.append_workouts(session, plan, [SimpleNamespace(
+        date=date_iso, week=None, type="easy", dist_km=None,
+        description=f"Крок {step['n']}/{returntorun.LAST_STEP}: {step['label']}",
+        steps=returntorun.session_steps(step),
+    )])
+
+
+@bot_command
+async def pain_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/pain [зона] — report pain explicitly and get the return-to-run offer (NF-30).
+
+    The automatic trigger needs pain on several runs; this is the "it hurts NOW" entry that
+    the ticket asks for. Still an offer, never an automatic start: the person decides."""
+    from app import returntorun
+
+    note = " ".join(ctx.args).strip() if ctx.args else ""
+    logger.info("CMD /pain")
+    if not settings.RETURN_TO_RUN:
+        await update.message.reply_text("Протокол повернення вимкнено в налаштуваннях.")
+        return
+    state = await load_return_state(session, user.id)
+    if returntorun.is_active(state):
+        await update.message.reply_text(returntorun.step_text(state))
+        return
+    last = await repository.get_last_activity(session, user.id)
+    if last is not None:
+        await repository.set_subjective(session, user.id, last.id, pain=True,
+                                        note=note or None)
+    trigger = {"pain_runs": 1, "window": 1, "note": note or None}
+    await update.message.reply_text(
+        returntorun.offer_text(trigger),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Веди мене", callback_data="rtr:yes"),
+            InlineKeyboardButton("❌ Не треба", callback_data="rtr:no"),
+        ]]),
+    )
+
+
+async def return_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Answer the return-to-run offer. ``rtr:yes`` pauses the plan and schedules the first
+    rung; ``rtr:no`` snoozes for RETURN_GUARD_DAYS and changes nothing at all (an AC — a
+    declined offer must not touch the plan)."""
+    from app import returntorun
+
+    q = update.callback_query
+    await q.answer()
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        today = user_today(user)
+        await repository.set_state(session, user.id, RETURN_WARNED_KEY, today.isoformat())
+        if (q.data or "").endswith(":no"):
+            await session.commit()
+            await q.edit_message_text(
+                "Ок, нічого не міняю. Якщо передумаєш — /pain.")
+            return
+
+        state = returntorun.start(today)
+        await save_return_state(session, user.id, state)
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is not None:
+            await repository.set_plan_paused(session, plan, True)
+            await schedule_return_session(session, user, state, today.isoformat())
+        await session.commit()
+        paused_note = ("Твій план поставлено на паузу — він нікуди не дівається, "
+                       "повернемось до нього після протоколу.\n\n") if plan else ""
+        await q.edit_message_text(paused_note + returntorun.step_text(state))
+    logger.info(f"RETURN protocol started user={user.id}")
+
+
+async def return_pain_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """One tap on the post-session pain scale moves the ladder (or stops it). Zero LLM —
+    the whole progression is deterministic (an AC)."""
+    from app import returntorun
+
+    q = update.callback_query
+    await q.answer()
+    try:
+        pain = float((q.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        return
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        state = await load_return_state(session, user.id)
+        if not returntorun.is_active(state):
+            await q.edit_message_text("Протокол уже не активний.")
+            return
+        today = user_today(user)
+        state = returntorun.advance(state, pain, today=today)
+        await save_return_state(session, user.id, state)
+        if state.get("status") == "active":
+            await schedule_return_session(
+                session, user, state, (today + dt.timedelta(days=2)).isoformat())
+        elif state.get("status") == "done":
+            plan = await repository.get_active_plan(session, user.id)
+            if plan is not None:
+                await repository.set_plan_paused(session, plan, False)
+        await session.commit()
+        await q.edit_message_text(
+            returntorun.outcome_text(state) or returntorun.step_text(state))
+    logger.info(f"RETURN step user={user.id} pain={pain} → {state.get('outcome')} "
+                f"step={state.get('step')}")
 
 
 # ---------- TEST JOB ----------

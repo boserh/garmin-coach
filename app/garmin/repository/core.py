@@ -233,6 +233,38 @@ async def get_activity(session: AsyncSession, user_id: int, row_id: int):
     ).scalar_one_or_none()
 
 
+async def get_activity_by_garmin_id(session: AsyncSession, user_id: int, activity_id: int):
+    """One activity by its GARMIN id, scoped to the user. ``/activity`` and ``/race done``
+    are typed from what the user sees in Garmin Connect / our own listings, which is this id,
+    not the internal row id."""
+    return (
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.activity_id == int(activity_id),
+                ActivityRecord.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def activities_on_dates(session: AsyncSession, user_id: int, dates) -> list:
+    """This user's visible activities on any of ``dates`` (ISO strings), as ORM rows.
+
+    ORM rows rather than ``query_activities``'s compact dicts because the caller (NF-23's race
+    finder) needs the stored ``series``/``activity_id`` to build a debrief."""
+    if not dates:
+        return []
+    return list((
+        await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.date.in_(list(dates)),
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            ).order_by(ActivityRecord.date)
+        )
+    ).scalars().all())
+
+
 async def get_last_activity(session: AsyncSession, user_id: int):
     """This user's most recent activity (newest first), or None. Used by /checkin to
     target the run the runner most likely wants to rate."""
@@ -675,6 +707,13 @@ async def persist_payload(
             new_activities.append(rec)
     if new_activities:
         await session.flush()  # assign ids before the caller reads them
+    # NF-33: recognise the route as part of the sync, not at read time — pure math over the
+    # series we just stored, so "is this my usual loop?" is answerable the moment the run
+    # lands. Idempotent: an activity that already has a route_id is skipped.
+    from app.garmin.repository.routes import assign_routes_for_activities
+
+    await assign_routes_for_activities(
+        session, user_id, [aid for aid, _row in act_pairs if aid])
     return new_activities
 
 
@@ -754,6 +793,41 @@ async def get_recent_reports(
     return [
         {"date": created.date().isoformat() if created else None, "text": text}
         for text, created in rows
+    ]
+
+
+PROFILE_EVIDENCE_EXCERPT = 600   # chars of each report the weekly profile pass reads
+
+
+async def reports_for_evidence(
+    session: AsyncSession, user_id: int, days: int = 7, limit: int = 20
+) -> List[dict]:
+    """EP-18 phase 2: this week's successful reports as ``{id, kind, date, excerpt}``.
+
+    The **id** is the point: every fact the weekly pass proposes must cite one of these rows,
+    so a remembered claim always leads back to text a human can go and read. Excerpts are
+    truncated because the pass needs to know what was said, not to re-read the week in full —
+    an unbounded context here would quietly make the cheapest call in the app one of the
+    dearest."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(ReportLog.id, ReportLog.kind, ReportLog.created_at, ReportLog.report_text)
+            .where(
+                ReportLog.user_id == user_id,
+                ReportLog.ok.is_(True),
+                ReportLog.report_text.is_not(None),
+                ReportLog.created_at >= cutoff,
+            )
+            .order_by(ReportLog.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        {"id": rid, "kind": kind,
+         "date": created.date().isoformat() if created else None,
+         "excerpt": (text or "")[:PROFILE_EVIDENCE_EXCERPT]}
+        for rid, kind, created, text in rows
     ]
 
 

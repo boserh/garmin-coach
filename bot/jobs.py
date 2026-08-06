@@ -37,6 +37,8 @@ from app.analysis.service import (
     run_injury_check,
     run_insights,
     run_plan_adaptation,
+    run_profile_update,
+    run_race_debrief,
     run_race_plan,
     run_weather_plan_check,
 )
@@ -673,6 +675,72 @@ async def _sickness_check_for_user(ctx, session, user: User, creds, today: str,
         return False
 
 
+async def _return_to_run_check_for_user(ctx, session, user: User, today: str) -> bool:
+    """NF-30: the two halves of the return-to-run protocol, both in the morning tick.
+
+    1. **A protocol already running** — if yesterday's rung was actually run, ask the one-tap
+       pain question that moves the ladder. A day the runner didn't run asks nothing and moves
+       nothing (an AC): silence is not evidence.
+    2. **No protocol** — if pain has been flagged on several recent runs, offer one ✅/❌.
+
+    Zero Claude calls on either path; the only paid call in the whole feature is the plan
+    rebuild the user may ask for on the way out."""
+    from app import returntorun
+    from bot import handlers as h
+
+    if not settings.RETURN_TO_RUN or not user.alerts_enabled or not user.telegram_chat_id:
+        return False
+    try:
+        state = await h.load_return_state(session, user.id)
+        if returntorun.is_active(state):
+            return await _return_step_prompt(ctx, session, user, state, today)
+
+        if _within_guard(await repository.get_state(session, user.id, h.RETURN_WARNED_KEY),
+                         today, settings.RETURN_GUARD_DAYS):
+            return False
+        runs = await repository.recent_subjective_runs(session, user.id, days=21)
+        trigger = returntorun.should_offer(
+            runs, window=settings.RETURN_WINDOW_RUNS, needed=settings.RETURN_PAIN_RUNS)
+        if trigger is None:
+            return False
+        # Guard BEFORE sending: a delivery hiccup must not turn into re-asking every tick.
+        await repository.set_state(session, user.id, h.RETURN_WARNED_KEY, today)
+        await ctx.bot.send_message(
+            user.telegram_chat_id, returntorun.offer_text(trigger),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Веди мене", callback_data="rtr:yes"),
+                InlineKeyboardButton("❌ Не треба", callback_data="rtr:no"),
+            ]]),
+        )
+        logger.info(f"RETURN offer sent user={user.id} pain_runs={trigger['pain_runs']}")
+        return True
+    except Exception:
+        logger.exception(f"RETURN check failed user={user.id}")
+        return False
+
+
+async def _return_step_prompt(ctx, session, user: User, state: dict, today: str) -> bool:
+    """Ask "how was the pain?" once, for a protocol session that actually happened."""
+    from bot import handlers as h
+
+    asked_key = h.RETURN_STATE_KEY + ":asked"
+    if await repository.get_state(session, user.id, asked_key) == today:
+        return False
+    yesterday = (dt.date.fromisoformat(today) - dt.timedelta(days=1)).isoformat()
+    acts = await repository.activities_on_dates(session, user.id, {yesterday, today})
+    if not any("run" in (a.type or "").lower() or "walk" in (a.type or "").lower()
+               for a in acts):
+        return False    # nothing was run — the ladder stays exactly where it is
+    await repository.set_state(session, user.id, asked_key, today)
+    await ctx.bot.send_message(
+        user.telegram_chat_id,
+        "🩹 Як біль після вчорашньої сесії протоколу — і сьогодні вранці?",
+        reply_markup=h.return_pain_keyboard(),
+    )
+    logger.info(f"RETURN pain question sent user={user.id} step={state.get('step')}")
+    return True
+
+
 async def _token_expiry_check_for_user(ctx, session, user: User) -> None:
     """ST-11: decode the stored Garmin session's estimated death date
     (``app.garmin.token_info``) and DM a heads-up once the deadline is within
@@ -897,7 +965,13 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                     sick_sent = await _sickness_check_for_user(
                         ctx, session, user, creds, today, risk=risk)
 
-                if not deload_sent and not sick_sent:
+                # NF-30 return-to-run: the case where the pain has ALREADY happened. It runs
+                # regardless of the two above, because a live protocol's daily step question
+                # is not a risk advisory competing for the day's one slot — it's the thing the
+                # runner is currently following. Its own offer is guarded separately.
+                rtr_sent = await _return_to_run_check_for_user(ctx, session, user, today)
+
+                if not deload_sent and not sick_sent and not rtr_sent:
                     # Injury-risk radar (NF-04) — a rare, guarded advisory when signals stack.
                     await _injury_check_for_user(ctx, session, user, creds, today, risk=risk)
 
@@ -1365,6 +1439,22 @@ async def _digest_for_user(ctx, session, user: User) -> None:
             # the month (each self-guards to once a month via bot_state).
             await _monthly_compare_for_user(ctx, session, user, creds)
             await _monthly_insights_for_user(ctx, session, user, creds)
+            await _profile_update_for_user(session, user, creds)
+
+
+async def _profile_update_for_user(session, user: User, creds) -> None:
+    """EP-18 phase 2: the weekly coach-memory pass, riding on the digest that just went out.
+
+    Silent by design — nothing is sent to the user (the profile shows up at ``/me/profile``
+    and, indirectly, in every future piece of advice). Failure is swallowed on purpose: an
+    unavailable memory update must never cost the digest, and yesterday's profile is a
+    perfectly good profile."""
+    if not creds.anthropic_key:
+        return
+    try:
+        await run_profile_update(session, user_id=user.id, api_key=creds.anthropic_key)
+    except Exception:  # noqa: BLE001 — see the docstring: never let this break the digest
+        logger.exception(f"PROFILE weekly update failed user={user.id}")
 
 
 async def force_digest_for_user(ctx, session, user: User) -> None:
@@ -1406,7 +1496,9 @@ async def _sync_for_user(session, user: User) -> None:
         await plan_sync.sync_plan_to_garmin(session, user.id)
 
 
-RACE_PACK_GUARD_PREFIX = "race_pack_sent:"
+# The per-(plan, stage) guard key itself lives in app.race (NF-23: archiving a plan has to be
+# able to cancel an unsent debrief without importing the bot).
+RACE_PACK_GUARD_PREFIX = race.STAGE_GUARD_PREFIX
 
 
 async def _race_forecast_for_target(user: User, plan) -> Optional[dict]:
@@ -1455,6 +1547,15 @@ async def _send_race_brief_stage(
     """NF-22 T-1 (evening, catches up through race day): final weather + the saved pack
     quoted back + an early-bedtime nudge. Zero Claude calls — no fresh narration."""
     forecast_day = await _race_forecast_for_target(user, plan)
+    # NF-23: keep race-day weather for the debrief. After the race the forecast endpoint no
+    # longer carries that date, and "it was 29°C" is half the explanation of a fade — so the
+    # one moment we hold the number is here, the evening before.
+    if forecast_day:
+        await repository.set_state(
+            session, user.id,
+            race.WEATHER_STATE_PREFIX + str(plan.id),
+            json.dumps(forecast_day, ensure_ascii=False),
+        )
     last_pack = await repository.get_last_report_of_kind(session, user.id, "race")
     pack_text = last_pack[0] if last_pack else None
     history = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)
@@ -1466,6 +1567,52 @@ async def _send_race_brief_stage(
         race.brief_text(plan, forecast_day, pack_text, bedtime, days_left),
     )
     logger.info(f"RACE brief sent user={user.id} plan={plan.id}")
+
+
+async def find_race_activity(session, user: User, plan):
+    """The activity that WAS the race, or ``None``.
+
+    Only explicit evidence counts (the ticket's own risk note): a session the plan marked as
+    the race, or a run on the target date itself. There is deliberately no "fast and long
+    enough" heuristic — mistaking a hard training run for a race would produce a confident,
+    entirely wrong debrief."""
+    workouts = await repository.list_workouts(session, plan.id)
+    race_days = {w.date for w in workouts if (w.type or "") == "race"}
+    if plan.target_date:
+        race_days.add(plan.target_date)
+    acts = await repository.activities_on_dates(session, user.id, race_days)
+    runs = [a for a in acts if "run" in (a.type or "").lower()]
+    if not runs:
+        return None
+    # The longest run of the day: a race is never the shakeout that shares its date.
+    return max(runs, key=lambda a: a.dist_km or 0)
+
+
+async def _send_race_debrief_stage(ctx, session, user: User, plan, guard_key: str) -> None:
+    """NF-23 T+1: splits vs the schedule, fade point, HR drift — one Sonnet call, then the
+    guard, so the debrief lands once and the loop from preparation to conclusions finally
+    closes. No activity synced yet → no guard is set and the next tick tries again (inside
+    ``race.DEBRIEF_CATCHUP_DAYS``)."""
+    activity = await find_race_activity(session, user, plan)
+    if activity is None:
+        logger.info(f"RACE debrief: no race activity yet user={user.id} plan={plan.id}")
+        return
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return
+    try:
+        text = await run_race_debrief(
+            session, user_id=user.id, activity=activity, plan=plan,
+            api_key=creds.anthropic_key)
+    except AnalystError:
+        logger.exception(f"RACE debrief failed user={user.id}")
+        return
+    await repository.set_state(session, user.id, guard_key, "1")
+    if not text:
+        return
+    await ctx.bot.send_message(
+        user.telegram_chat_id, "🏁 Розбір твого старту:\n\n" + text)
+    logger.info(f"RACE debrief sent user={user.id} plan={plan.id} act={activity.activity_id}")
 
 
 async def _race_pack_for_user(ctx, session, user: User) -> None:
@@ -1484,7 +1631,7 @@ async def _race_pack_for_user(ctx, session, user: User) -> None:
     stage = race.stage_for(race.days_to_target(plan.target_date, today))
     if stage is None:
         return
-    guard_key = RACE_PACK_GUARD_PREFIX + str(plan.id) + ":" + stage
+    guard_key = race.stage_guard_key(plan.id, stage)
     if await repository.get_state(session, user.id, guard_key) == "1":
         return
 
@@ -1492,6 +1639,8 @@ async def _race_pack_for_user(ctx, session, user: User) -> None:
         await _send_race_pack_stage(ctx, session, user, plan, guard_key)
     elif stage == "checklist":
         await _send_race_checklist_stage(ctx, session, user, plan, guard_key)
+    elif stage == "debrief":
+        await _send_race_debrief_stage(ctx, session, user, plan, guard_key)
     else:
         await _send_race_brief_stage(ctx, session, user, plan, guard_key, today)
 

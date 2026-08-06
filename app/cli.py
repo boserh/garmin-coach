@@ -128,11 +128,18 @@ async def _import_export(email: str, path: str, overwrite: bool, since: str) -> 
     return 0
 
 
-async def _backfill_series(email: str, since: str) -> int:
+async def _backfill_series(email: str, since: str, force: bool = False) -> int:
     """Fetch the pace/HR series for this user's already-stored runs that don't have
     one yet (saved before the feature existed, or imported from the export). Idempotent —
     only fills nulls. ``since`` (ISO) limits to recent runs so it isn't hundreds of API
-    calls at once."""
+    calls at once.
+
+    ``--force`` (NF-25) instead REFETCHES runs that already have a series, to pick up the
+    channels a newer key version added (cadence/GCT/vertical oscillation, coordinates). It
+    is opt-in for a reason: history stays perfectly usable without it (every consumer treats
+    a missing channel as absent, not as zero), so this is a deliberate "I want the new
+    numbers on my old runs" pass, ideally with ``--since`` to bound it. Zero LLM cost, but
+    one Garmin request per run."""
     import asyncio
 
     from fastapi.concurrency import run_in_threadpool
@@ -150,7 +157,8 @@ async def _backfill_series(email: str, since: str) -> int:
         if since:
             stmt = stmt.where(ActivityRecord.date >= since)
         rows = [r for r in (await session.execute(
-            stmt.order_by(ActivityRecord.date.desc()))).scalars().all() if not r.series]
+            stmt.order_by(ActivityRecord.date.desc()))).scalars().all()
+            if force or not r.series]
         if not rows:
             print("No runs need backfilling.")
             return 0
@@ -158,7 +166,8 @@ async def _backfill_series(email: str, since: str) -> int:
         done = 0
         async with garmin_login(session, user):
             for r in rows:
-                sr = await run_in_threadpool(client.fetch_activity_series, r.activity_id)
+                sr = await run_in_threadpool(
+                    client.fetch_activity_series, r.activity_id, force=force)
                 if sr:
                     r.series = sr
                     done += 1
@@ -166,6 +175,44 @@ async def _backfill_series(email: str, since: str) -> int:
                 await asyncio.sleep(0.3)  # be gentle on Garmin
             await session.commit()
         print(f"Done: {done}/{len(rows)} updated.")
+    return 0
+
+
+async def _backfill_routes(email: str, since: str = "") -> int:
+    """NF-33: cluster this user's already-stored runs into recognised routes.
+
+    Zero Garmin calls and zero LLM cost — it only reads the coordinates already in each
+    stored ``series`` and runs the pure matcher. Idempotent by construction: an activity that
+    already carries a ``route_id`` is skipped and matching takes the first similar cluster, so
+    running it twice never duplicates routes or re-partitions history (an AC). Runs without
+    coordinates (treadmill, pre-NF-33 series) are simply left unassigned."""
+    from sqlalchemy import select
+
+    from app.db.models import ActivityRecord
+    from app.garmin.repository import routes as routes_repo
+
+    async with cli_user(email) as (session, user):
+        stmt = select(ActivityRecord).where(
+            ActivityRecord.user_id == user.id,
+            ActivityRecord.route_id.is_(None),
+            ActivityRecord.is_hidden.is_(False),
+        )
+        if since:
+            stmt = stmt.where(ActivityRecord.date >= since)
+        rows = [r for r in (await session.execute(
+            stmt.order_by(ActivityRecord.date))).scalars().all() if r.series]
+        if not rows:
+            print("No activities need route clustering.")
+            return 0
+        print(f"Clustering {len(rows)} activity(ies) for {email}...")
+        linked = 0
+        for r in rows:
+            route_id = await routes_repo.assign_route(session, user.id, r)
+            if route_id is not None:
+                linked += 1
+        await session.commit()
+        total = len(await routes_repo.list_routes(session, user.id))
+        print(f"Done: {linked}/{len(rows)} linked, {total} route(s) known.")
     return 0
 
 
@@ -619,6 +666,9 @@ def main(argv=None) -> int:
     bf = sub.add_parser("backfill-series", help="Fetch pace/HR series for stored runs missing one")
     bf.add_argument("--email", required=True)
     bf.add_argument("--since", help="only runs from this ISO date onward (e.g. 2025-06-01)")
+    bf.add_argument("--force", action="store_true",
+                    help="refetch runs that already have a series (picks up newer channels: "
+                         "cadence/GCT/oscillation, coordinates) — one Garmin call per run")
 
     baa = sub.add_parser(
         "backfill-auto-activities",
@@ -662,6 +712,13 @@ def main(argv=None) -> int:
         help="Seed personal records (running + strength e1RM/tonnage) from stored history")
     br.add_argument("--email", required=True)
 
+    brt = sub.add_parser(
+        "backfill-routes",
+        help="Cluster stored runs into recognised routes from their coordinates (NF-33) — "
+             "no Garmin calls, no LLM cost, idempotent")
+    brt.add_argument("--email", required=True)
+    brt.add_argument("--since", help="only activities from this ISO date onward")
+
     bz = sub.add_parser(
         "backfill-zones", help="Fetch HR time-in-zone for stored activities missing it (NF-24)")
     bz.add_argument("--email", required=True)
@@ -690,7 +747,7 @@ def main(argv=None) -> int:
     if args.cmd == "import-garth-token":
         return _run(_import_garth_token(args.email, args.path))
     if args.cmd == "backfill-series":
-        return _run(_backfill_series(args.email, args.since))
+        return _run(_backfill_series(args.email, args.since, args.force))
     if args.cmd == "backfill-auto-activities":
         return _run(_backfill_auto_activities(args.email, args.since))
     if args.cmd == "import-export":
@@ -705,6 +762,8 @@ def main(argv=None) -> int:
         return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":
         return _run(_list_workouts(args.email))
+    if args.cmd == "backfill-routes":
+        return _run(_backfill_routes(args.email, args.since))
     if args.cmd == "backfill-zones":
         return _run(_backfill_zones(args.email, args.days))
 

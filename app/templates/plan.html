@@ -48,12 +48,25 @@
         <span class="sep">·</span>🎯 ціль — <b>{{ target_time_str }}</b>
       {% endif %}
     </div>
+    {% if plan.status == "paused" %}
+      <div class="summary" style="border-left:3px solid #e0af68">
+        <b>⏸ План на паузі</b> — ти в протоколі повернення після болю (NF-30). Сесії нікуди
+        не зникли; план повернеться сам, коли протокол завершиться. Поточний крок і питання
+        про біль приходять у Telegram.
+      </div>
+    {% endif %}
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
     {% if race_pack %}
       <div class="summary race-pack">
         <b>🏁 Race pack</b> — {{ race_pack.date }}
         {% if race_pack.days_left is not none %}<span class="sep">·</span>старт за {{ race_pack.days_left }} дн.{% endif %}
         <div style="white-space:pre-wrap;margin-top:.5rem">{{ race_pack.text }}</div>
+      </div>
+    {% endif %}
+    {% if race_debrief %}
+      <div class="summary race-pack">
+        <b>🏁 Розбір старту</b> — {{ race_debrief.target_date }}
+        <div style="white-space:pre-wrap;margin-top:.5rem">{{ race_debrief.text }}</div>
       </div>
     {% endif %}
 

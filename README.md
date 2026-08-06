@@ -426,8 +426,11 @@ Immutable assets keyed on stable Garmin IDs, one JSON file per key, to cut reque
 
 * `exercise:v3:<id>` — a completed activity's exercise sets (365-day TTL; immutable).
 * `workout:v2:<id>` — planned-workout details: name, coach description, steps (7-day TTL; plans can be edited).
-* `series:v2:<id>` / `splits:v1:<id>` — a run's per-point pace/HR series and lap splits,
-  elevation-aware (365-day TTL; immutable).
+* `series:v3:<id>` / `splits:v1:<id>` — a run's per-point pace/HR series and lap splits;
+  the series also carries elevation, running dynamics (cadence / ground-contact time /
+  vertical oscillation, NF-25) and coordinates (NF-33) when the watch reports them
+  (365-day TTL; immutable). Entries written under the older `series:v2` key stay
+  readable — a channel a series doesn't carry reads as absent, never as zero.
 * `gear:v2:<id>` / `gear_link:v1:<id>` — gear roster/mileage and activity→gear links.
 
 A hit logs `GARMIN CACHE <key>`. Raw Garmin codes are stored; exercise names are mapped
