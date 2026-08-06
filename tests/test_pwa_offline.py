@@ -141,6 +141,21 @@ def test_the_offline_copy_admits_it_is_a_copy(page, base_url):
     assert re.search(r"\d{2}:\d{2}", banner.inner_text()), "banner without a timestamp"
 
 
+def test_an_online_visit_shows_no_offline_banner_at_all(page, base_url):
+    """The regression this file exists to prevent. With stale-while-revalidate the worker
+    served the saved copy whenever it had one, so every ordinary online load carried
+    "Немає звʼязку із сервером — дані станом на 13:07" while the server was answering
+    fine. Network-first: online means the real page, and silence."""
+    page.goto(base_url + "/dashboard")
+    page.wait_for_load_state("networkidle")
+    page.goto(base_url + "/dashboard")          # second visit: the cache is warm now
+    page.wait_for_load_state("networkidle")
+    assert page.locator(".banner--warn", has_text="збережену копію").count() == 0
+    assert "Немає звʼязку" not in page.content()
+    # This is also the freshness assertion: the banner is injected exactly when the
+    # cached copy is served, so its absence means the page came off the network.
+
+
 def test_a_page_that_was_never_cached_falls_back_to_offline(page, base_url):
     page.context.set_offline(True)
     page.goto(base_url + "/me/report_logs")
@@ -250,4 +265,4 @@ def test_the_worker_never_caches_a_personal_path():
     for path in ("/login", "/register", "/logout", "/settings", "/admin", "/me/export"):
         assert f"'{path}'" in sw, f"{path} dropped out of NEVER_CACHE"
     # Only these two pages are ever stored, and only as whole navigations.
-    assert "var SWR_PATHS = ['/dashboard', '/plan'];" in sw
+    assert "var OFFLINE_PATHS = ['/dashboard', '/plan'];" in sw

@@ -642,8 +642,15 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
   .moresheet{position:fixed;left:0;right:0;bottom:calc(3rem + env(safe-area-inset-bottom));
           display:flex;flex-direction:column;gap:.1rem;padding:.5rem .3rem;
           background:var(--surface);border-top:1px solid var(--line-2);
-          box-shadow:0 -14px 34px -18px rgba(0,0,0,.9)}
-  .moresheet a,.moresheet button.logout{display:block;width:100%;padding:.7rem 1.1rem;
+          box-shadow:0 -14px 34px -18px rgba(0,0,0,.9);
+          /* An admin sees nine entries here, and a short screen (landscape, a small
+             window) can't fit them: the sheet hit the top of the viewport and flexbox
+             squashed every row to half its height, clipping the labels. Scroll the list
+             instead — and see the flex:none below, which is what stops the squashing. */
+          max-height:calc(100dvh - 4.5rem);overflow-y:auto;
+          overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+  .moresheet a,.moresheet button.logout{display:block;width:100%;flex:none;
+          padding:.7rem 1.1rem;
           font-size:.9rem;color:var(--muted);text-align:left;text-decoration:none}
   .moresheet a.active{color:var(--ink);font-weight:600}
   .moresheet form{margin:0}

@@ -123,3 +123,78 @@ def test_the_more_sheet_opens_without_javascript(pages):
             assert page.locator(".moresheet a", has_text="Налаштування").count() == 1
         finally:
             browser.close()
+
+
+@pytest.fixture
+def admin_pages(client, tmp_path):
+    """An ADMIN account: "Ще" then holds nine entries, not four. The original test used a
+    plain user and so never saw the sheet run out of room."""
+    email = "nav-admin@example.com"
+    _seed_user(email=email, password="pw", is_admin=True)
+    client.post("/login", data={"email": email, "password": "pw"})
+    seed_rich_history(_user_id(email))
+    stage_assets(tmp_path)
+    return stage_pages(client, tmp_path, {"dashboard": "/dashboard"})
+
+
+@pytest.mark.parametrize("height", [311, 500, 844])
+def test_the_more_sheet_never_squashes_its_rows(admin_pages, height):
+    """On a short screen the sheet hit the top of the viewport and flexbox compressed
+    every row to half its height, clipping the labels to unreadable slivers. Rows must
+    keep their size and the list must scroll instead."""
+    exe = chromium_path()
+    if not exe:
+        pytest.skip("no chromium binary available")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=exe)
+        try:
+            page = browser.new_page(viewport={"width": 390, "height": height},
+                                    has_touch=True, is_mobile=True)
+            page.route("**/*", local_only([]))
+            page.goto(admin_pages["dashboard"].as_uri())
+            page.click(".tabmore > summary")
+            m = page.evaluate("""() => {
+              const sheet = document.querySelector('.moresheet');
+              const items = [...sheet.querySelectorAll('a, button')];
+              const r = sheet.getBoundingClientRect();
+              return {
+                count: items.length,
+                minH: Math.min(...items.map(i => i.getBoundingClientRect().height)),
+                top: r.top,
+                fits: sheet.scrollHeight <= sheet.clientHeight,
+              };
+            }""")
+            assert m["count"] >= 9, "an admin should see the admin sections here"
+            # 0.7rem padding top and bottom plus a line of text is ~2.4rem; anything
+            # under 2rem means the row was compressed and its label clipped.
+            assert m["minH"] >= 32, (
+                f"rows squashed to {m['minH']}px at {height}px tall — the labels clip")
+            # The sheet stays on screen; a list too long for the space scrolls.
+            assert m["top"] >= -1, "the sheet overflowed off the top of the viewport"
+            if not m["fits"]:
+                assert page.evaluate(
+                    "() => getComputedStyle(document.querySelector('.moresheet')).overflowY"
+                ) in ("auto", "scroll")
+        finally:
+            browser.close()
+
+
+def test_every_more_entry_is_reachable_on_a_short_screen(admin_pages):
+    """Scrolling the sheet must actually get you to the last entry — sign-out is the one
+    at the bottom."""
+    exe = chromium_path()
+    if not exe:
+        pytest.skip("no chromium binary available")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=exe)
+        try:
+            page = browser.new_page(viewport={"width": 390, "height": 311},
+                                    has_touch=True, is_mobile=True)
+            page.route("**/*", local_only([]))
+            page.goto(admin_pages["dashboard"].as_uri())
+            page.click(".tabmore > summary")
+            logout = page.locator(".moresheet button.logout")
+            logout.scroll_into_view_if_needed()
+            assert logout.is_visible()
+        finally:
+            browser.close()

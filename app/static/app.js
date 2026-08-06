@@ -257,9 +257,9 @@
       }
     }, true);
 
-    // A page served from the cache carries an honest "data as of HH:MM" banner. When the
-    // background refresh lands, offer the fresh copy rather than silently swapping the
-    // numbers under the reader.
+    // The page is only served from the cache when the server couldn't be reached (see
+    // sw.js: network-first). If the request lands after we'd already given up, offer the
+    // fresh copy rather than letting the reader sit on a page we've labelled stale.
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data || e.data.type !== 'fresh') return;
       var banner = document.querySelector('.banner--warn .btext');
@@ -269,6 +269,8 @@
       link.href = window.location.href;
       link.className = 'blink';
       link.textContent = 'Зʼявились свіжі дані — оновити →';
+      // A text node, or the link glues itself to the sentence: "…станом на 13:07.Зʼявились".
+      banner.appendChild(document.createTextNode(' '));
       banner.appendChild(link);
     });
   }
