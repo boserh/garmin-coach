@@ -26,13 +26,11 @@ from yet).
 """
 import datetime as dt
 import logging
-from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.client import AnalystError
@@ -47,11 +45,11 @@ from app.garmin import plan_sync, repository
 from app.garmin.credentials import load_credentials
 from app.garmin.runtime import user_runtime
 from app.garmin.schemas import PlanOp
+from app.templating import create_templates
 
 logger = logging.getLogger("api")
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 router = APIRouter(tags=["chat"])
 

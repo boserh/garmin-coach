@@ -1,20 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Дашборд</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-  <link rel="manifest" href="/static/manifest.json">
-  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/static/icon.svg">
-  <meta name="theme-color" content="#090b0f">
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}Дашборд{% endblock %}
+
+{% block body %}
   {% set active = 'dashboard' %}
   {% include "_nav.html" %}
 
@@ -248,5 +236,4 @@
       <div class="crumb" style="margin-top:1rem"><a href="/me/activities">Усі тренування →</a></div>
     {% endif %}
   </div>
-</body>
-</html>
+{% endblock %}

@@ -14,6 +14,7 @@ up (CI installs only ``.[dev]``). Run it locally with::
 """
 import datetime as dt
 import os
+import re
 import shutil
 
 import anyio
@@ -141,9 +142,14 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
     act_id = _seed(_user_id(email))
 
     # The pages are rendered to files and loaded over file:// — copy the real stylesheet
-    # next to them so the layout under test is the shipped one, not a fixture.
+    # and the self-hosted webfont next to them so the layout under test is the shipped
+    # one, laid out in the shipped typeface, not a fixture in a fallback font.
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    shutil.copy(os.path.join(repo_root, "app", "static", "app.css"), tmp_path / "app.css")
+    static = os.path.join(repo_root, "app", "static")
+    css = open(os.path.join(static, "app.css"), encoding="utf-8").read()
+    (tmp_path / "app.css").write_text(css.replace("/static/fonts/", "fonts/"),
+                                      encoding="utf-8")
+    shutil.copytree(os.path.join(static, "fonts"), tmp_path / "fonts")
 
     pages = {"dashboard": "/dashboard", "me": "/me", "daily": "/me/daily_metrics",
              "activities": "/me/activities", "reports": "/me/report_logs",
@@ -155,21 +161,36 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
     for name, url in pages.items():
         r = client.get(url)
         assert r.status_code == 200, (name, r.status_code)
+        # UI-02: the stylesheet link carries a content-derived ?v=, so match the pattern
+        # rather than a literal — the previous hardcoded "?v=3" had silently stopped
+        # matching when the templates moved to "?v=4", which left this guard measuring
+        # an UNSTYLED page (and therefore passing on nothing at all).
+        html, subs = re.subn(r"/static/app\.css\?v=\S*?(?=[\"'])", "app.css", r.text)
+        assert subs == 1, (
+            f"{name}: expected exactly one /static/app.css?v=… link to rewrite, got "
+            f"{subs} — this guard only means something with the real stylesheet applied"
+        )
         path = tmp_path / f"{name}.html"
-        path.write_text(r.text.replace("/static/app.css?v=3", "app.css"), encoding="utf-8")
+        path.write_text(html, encoding="utf-8")
         files[name] = path
 
     failures = []
+    external = []
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=browser_path)
         for width in WIDTHS:
             page = browser.new_page(viewport={"width": width, "height": 844})
-            # The pages link Google Fonts; letting each navigation wait on the network
-            # turned a 2-second check into four minutes. Local files only — the layout
-            # under test is ours, and a missing webfont doesn't change element widths.
-            page.route("**/*", lambda route: (
-                route.continue_() if route.request.url.startswith("file://")
-                else route.abort()))
+            # Nothing may leave the machine: UI-02 moved the webfont in-repo, so any
+            # non-file:// request is a regression (a re-added CDN link) and is recorded
+            # rather than silently allowed to hang the run.
+            def _guard(route):
+                url = route.request.url
+                if url.startswith("file://"):
+                    route.continue_()
+                else:
+                    external.append(url)
+                    route.abort()
+            page.route("**/*", _guard)
             for name, path in files.items():
                 page.goto(path.as_uri())
                 m = page.evaluate(_PROBE)
@@ -180,4 +201,5 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
             page.close()
         browser.close()
 
+    assert not external, "pages requested external hosts: " + ", ".join(sorted(set(external)))
     assert not failures, "horizontal overflow:\n" + "\n".join(failures)

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Garmin Coach{% endblock %}</title>
+  {# ?v= comes from app.templating.ASSET_V — a digest of the asset bytes, so a changed
+     app.css invalidates itself and nobody has to remember to bump a number. #}
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
+  <script defer src="/static/app.js?v={{ asset_v }}"></script>
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <meta name="theme-color" content="#090b0f">
+  {% block head %}{% endblock %}
+</head>
+<body{% block body_attrs %}{% endblock %}>
+{% block body %}{% endblock %}
+</body>
+</html>

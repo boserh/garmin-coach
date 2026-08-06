@@ -9,11 +9,9 @@ import logging
 import math
 import time as _time
 import zipfile
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,11 +34,11 @@ from app.dependencies import get_session
 from app.garmin import repository, service
 from app.garmin.runtime import user_runtime
 from app.routers.admin import INDEX_COLS
+from app.templating import create_templates
 
 logger = logging.getLogger("api")
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 
 def _hm(hours):

@@ -12,7 +12,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import baselines
@@ -24,9 +23,9 @@ from app.dependencies import get_session
 from app.garmin import repository, service
 from app.routers.me import _act_meta, _nice_date, _pace_str, _ring_geom
 from app.routers.plan import _dm, _dow
+from app.templating import create_templates
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 templates.env.filters["dow"] = _dow
 templates.env.filters["dm"] = _dm
 

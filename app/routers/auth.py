@@ -1,9 +1,7 @@
 """Login / logout / self-registration routes for the web UI."""
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import login_session, logout_session
@@ -13,9 +11,9 @@ from app.core.ratelimit import RateLimiter
 from app.db import users
 from app.demo import ensure_demo_user
 from app.dependencies import get_session
+from app.templating import create_templates
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 router = APIRouter(tags=["auth"])
 

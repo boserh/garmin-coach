@@ -10,13 +10,11 @@ import hashlib
 import json
 import logging
 import time
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +40,7 @@ from app.garmin import exercises as _exercises
 from app.garmin import plan_sync, repository
 from app.garmin.credentials import load_credentials
 from app.garmin.runtime import user_runtime
+from app.templating import create_templates
 
 
 def _desc_hash(desc: str) -> str:
@@ -80,8 +79,7 @@ PLAN_GEN_KEY = "plan_gen"
 PLAN_GEN_STALE_S = 600
 _bg_tasks: set = set()
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 
 def _fmt_dist(dm: float) -> str:

@@ -1,54 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Чат</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-  <link rel="manifest" href="/static/manifest.json">
-  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <meta name="theme-color" content="#090b0f">
-  <style>
-    .thread { display: flex; flex-direction: column; gap: .9rem; margin: 1.5rem 0 1.2rem; }
-    .turn { max-width: min(34rem, 100%); padding: .8rem 1.05rem; border-radius: 14px;
-            font-size: .92rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-    .turn.me { align-self: flex-end; background: linear-gradient(180deg,#8fb0ff,#6d92f2);
-               color: #0a1020; border-bottom-right-radius: 4px; }
-    .turn.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--line);
-                color: var(--ink); border-bottom-left-radius: 4px; }
-    .turn.bot.fail { border-color: rgba(247,118,142,.35); color: #f7a8b8; }
-    .turn .kind { display: block; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
-                  color: var(--faint); margin-bottom: .3rem; }
-    .turn.me .kind { color: rgba(10,16,32,.55); }
-    .when { align-self: center; font-size: .7rem; color: var(--faint); margin: .5rem 0 .1rem;
-            letter-spacing: .02em; }
-    .loadmore { text-align: center; margin: 1.1rem 0 .2rem; }
-    .loadmore a { display: inline-block; padding: .5rem 1.1rem; border-radius: 10px;
-                  border: 1px solid var(--line-2); color: var(--muted); font-size: .85rem;
-                  background: var(--surface-2); text-decoration: none; }
-    .loadmore a:hover { color: var(--ink); }
-    .empty { color: var(--muted); font-size: .9rem; margin: 1.5rem 0; }
-    .composer { display: flex; gap: .6rem; align-items: flex-end; margin-top: 1rem; flex-wrap: wrap; }
-    .composer textarea { min-height: 3.1rem; max-height: 10rem; resize: vertical; flex: 1 1 14rem; }
-    .composer .btn { margin-top: 0; white-space: nowrap; }
-    .pending { margin: 0 0 1.2rem; }
-    .pending .actions { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: .9rem; }
-    .pending .btn { margin-top: 0; }
-    .pending .btn.alt { background: linear-gradient(180deg,#8fe0c9,#5fc2a8); }
-    .pending .btn.cancel { background: var(--surface-2); color: var(--muted);
-                            border: 1px solid var(--line-2); box-shadow: none; }
-    .composer.refine { margin-top: .8rem; }
-    .composer.refine textarea { min-height: 2.6rem; font-size: .88rem; }
-    .refine-thread { margin-top: .8rem; }
-    .refine-thread summary { cursor: pointer; font-size: .8rem; color: var(--muted); }
-    .refine-thread .turn { margin-top: .5rem; font-size: .85rem; }
-  </style>
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}Чат{% endblock %}
+
+{% block body %}
   {% set active = 'chat' %}
   {% include "_nav.html" %}
 
@@ -120,5 +74,4 @@
       {% endif %}
     {% endif %}
   </div>
-</body>
-</html>
+{% endblock %}

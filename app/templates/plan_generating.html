@@ -1,20 +1,14 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+{% extends "_base.html" %}
+
+{% block title %}Складаємо програму…{% endblock %}
+
+{% block head %}
   <!-- Poll: the page reloads every 5s until generation finishes (then GET /plan
        shows the plan, or the setup form with an error). -->
   <meta http-equiv="refresh" content="5">
-  <title>Складаємо програму…</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-</head>
-<body>
+{% endblock %}
+
+{% block body %}
   {% set active = 'plan' %}
   {% include "_nav.html" %}
   <div class="center">
@@ -23,5 +17,4 @@
     <p>Тренер аналізує форму, навантаження й історію бігу. Це займає до хвилини —
       сторінка оновиться сама. Можна не чекати: повернись пізніше на <a href="/plan">/plan</a>.</p>
   </div>
-</body>
-</html>
+{% endblock %}

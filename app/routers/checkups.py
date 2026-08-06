@@ -17,12 +17,10 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, WebSocket
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 
@@ -44,11 +42,11 @@ from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository
 from app.garmin.credentials import load_credentials
+from app.templating import create_templates
 
 logger = logging.getLogger("checkups")
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 templates.env.filters["oor"] = out_of_range_severity  # {{ r.value|oor(r.ref) }} -> minor|major|None
 
 router = APIRouter(tags=["checkups"])
