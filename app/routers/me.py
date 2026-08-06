@@ -16,11 +16,12 @@ from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
-from app import stepmatch
+from app import stepmatch, subjective
 from app.banners import banner
 from app.charts import run_charts as _run_charts
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
+from app.core.tz import user_today
 from app.db import lifestyle as lifestyle_db
 from app.db.models import (
     ActivityRecord,
@@ -781,6 +782,80 @@ async def me_resync_activity(
     return RedirectResponse(f"/me/activities/{row_id}?resynced=1", status_code=303)
 
 
+# ---- UI-04: the post-run check-in, in the browser ----
+# ActivityRecord.subjective feeds half the analytics (EP-12 trend, NF-04's pain/RPE
+# signals, NF-30, plan adaptation, the morning report), and the web could only READ it —
+# the one place you'd naturally log it, right after a run, sent you to Telegram instead.
+# Both entry points write through repository.set_subjective with the same vocabulary
+# (app.subjective.PAIN_PARTS), so a knee logged here is the same knee logged in the bot.
+
+
+@router.post("/me/activities/{row_id}/checkin")
+async def me_activity_checkin(
+    row_id: int,
+    rpe: str = Form(""),
+    pain: str = Form(""),        # a body-part slug, "none" for "no pain", "" for untouched
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Record RPE and/or a niggle for one activity. Idempotent by construction: a repeat
+    tap overwrites the field via ``set_subjective`` (no second row, no history to fork)."""
+    if user.is_demo:
+        return RedirectResponse(f"/me/activities/{row_id}?checkin=demo", status_code=303)
+
+    kwargs = {}
+    if rpe:
+        try:
+            value = int(rpe)
+        except ValueError:
+            return RedirectResponse(f"/me/activities/{row_id}?checkin=bad", status_code=303)
+        if not 1 <= value <= 10:
+            return RedirectResponse(f"/me/activities/{row_id}?checkin=bad", status_code=303)
+        kwargs["rpe"] = value
+    if pain == "none":
+        kwargs["pain"] = False
+    elif pain:
+        if pain not in subjective.PART_LABELS:
+            return RedirectResponse(f"/me/activities/{row_id}?checkin=bad", status_code=303)
+        kwargs["note"] = subjective.part_label(pain)
+    if not kwargs:
+        return RedirectResponse(f"/me/activities/{row_id}", status_code=303)
+
+    act = await repository.set_subjective(session, user.id, row_id, **kwargs)
+    if act is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    await session.commit()
+    return RedirectResponse(f"/me/activities/{row_id}?checkin=ok", status_code=303)
+
+
+@router.post("/me/lifestyle")
+async def me_lifestyle(
+    request: Request,
+    date: str = Form(""),
+    back: str = Form("/dashboard"),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """NF-28's evening log, in the browser. Multi-select (beer AND a late meal is one
+    evening), so the whole day is replaced by what's ticked — including an empty set,
+    which is data ("nothing happened"), not an absent row."""
+    if user.is_demo:
+        return RedirectResponse(_safe_back(back, "?lifestyle=demo"), status_code=303)
+    day = date or user_today(user).isoformat()
+    form = await request.form()
+    tags = [t for t in form.getlist("tags") if t in lifestyle_db.TAGS]
+    await lifestyle_db.upsert(session, user.id, day, tags)
+    return RedirectResponse(_safe_back(back, "?lifestyle=ok"), status_code=303)
+
+
+def _safe_back(back: str, suffix: str) -> str:
+    """Only ever redirect within this app — a form field is user input, and an open
+    redirect off a POST is a phishing primitive."""
+    if not back.startswith("/") or back.startswith("//"):
+        back = "/dashboard"
+    return f"{back}{suffix}"
+
+
 @router.post("/me/resync-days")
 async def me_resync_days(
     date_from: str = Form(...),
@@ -1099,11 +1174,21 @@ _REGEN_BANNERS = {
 }
 
 
+_CHECKIN_BANNERS = {
+    "ok": ("ok", "✅", "Записав."),
+    "bad": ("warn", "🤔", "Не зрозумів оцінку — спробуй ще раз."),
+    "demo": ("danger", "🎭", "Демо-акаунт: чекін вимкнено."),
+}
+
+
 def _activity_banners(*, resynced: bool, regen: str, hidden: bool, shown: bool,
-                      is_hidden: bool) -> list:
+                      is_hidden: bool, checkin: str = "") -> list:
     out = []
     if resynced:
         out.append(banner("ok", "Дані активності оновлено з Garmin.", icon="🔄"))
+    if checkin in _CHECKIN_BANNERS:
+        level, icon, text = _CHECKIN_BANNERS[checkin]
+        out.append(banner(level, text, icon=icon))
     if regen in _REGEN_BANNERS:
         level, icon, text = _REGEN_BANNERS[regen]
         link = "/settings" if regen == "nokey" else ""
@@ -1131,6 +1216,7 @@ async def me_row(
     regen: str = Query(""),             # ST-19: ok|err|nokey|wait after a regenerate attempt
     hidden: int = Query(0),             # ST-17: 1 right after hiding this activity
     shown: int = Query(0),              # ST-17: 1 right after un-hiding it
+    checkin: str = Query(""),           # UI-04: ok|bad|demo after a web check-in
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1200,7 +1286,8 @@ async def me_row(
              "analysis": obj.analysis, "user": user, "base": "/me", "token": "",
              "banners": _activity_banners(
                  resynced=bool(resynced), regen=regen, hidden=bool(hidden),
-                 shown=bool(shown), is_hidden=bool(obj.is_hidden)),
+                 shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin),
+             "pain_parts": subjective.PAIN_PARTS,
              "has_claude_key": bool(user.anthropic_key_enc)},
         )
 

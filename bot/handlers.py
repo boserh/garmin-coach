@@ -18,7 +18,7 @@ from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from app import deploy as deploy_ops
-from app import records, weather
+from app import records, subjective, weather
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
@@ -811,13 +811,10 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # The check-in status footer is appended below the activity analysis; we split it off
 # the current message text on each edit so re-taps rewrite (never stack) the footer.
 _CI_SEP = "\n— — —\n"
-# Common running niggles → (callback slug, Ukrainian label). Kept to buttons (not free
-# text) so the state stays entirely in callback_data — see the EP-12 pitfall.
-_PAIN_PARTS = [
-    ("knee", "коліно"), ("shin", "гомілка"), ("foot", "стопа"),
-    ("thigh", "стегно"), ("calf", "литка"), ("back", "спина"), ("other", "інше"),
-]
-_PART_LABELS = dict(_PAIN_PARTS)
+# Common running niggles, shared with the web check-in (UI-04) so both entry points offer
+# and store the SAME words — see app.subjective. Kept to buttons (not free text) so the
+# state stays entirely in callback_data — see the EP-12 pitfall.
+_PAIN_PARTS = subjective.PAIN_PARTS
 
 
 # Shown above the RPE 1-10 buttons so the numbers are self-explanatory without a legend
@@ -1016,7 +1013,7 @@ async def checkin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             act = await repository.set_subjective(session, user.id, aid, rpe=int(parts[3]))
             status, kb = (f"✅ RPE {parts[3]}/10. Щось боліло?", _pain_keyboard(aid))
         elif action == "part":
-            note = _PART_LABELS.get(parts[3], parts[3])
+            note = subjective.part_label(parts[3])
             act = await repository.set_subjective(session, user.id, aid, note=note)
             status, kb = (f"✅ Записав: 🩹 {note}.", None)
         else:  # ok — no pain

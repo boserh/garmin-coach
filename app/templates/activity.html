@@ -56,6 +56,10 @@
       {% if a.rpe %}<div class="bigstat"><div class="v">{{ a.rpe }}/10</div><div class="k">RPE</div></div>{% endif %}
       {% if a.pain %}<div class="bigstat"><div class="v">🩹</div><div class="k">{{ a.pain if a.pain is string else 'біль' }}</div></div>{% endif %}
     </div>
+    {# UI-04: RPE + niggle right here, where you land after a run — this column feeds
+       NF-04, EP-12, NF-30 and plan adaptation, and used to be writable only from the bot. #}
+    {% if not a.is_hidden %}{% with act = a %}{% include "_checkin.html" %}{% endwith %}{% endif %}
+
     {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
     {% if a.dynamics_line %}<div class="note" style="max-width:none">{{ a.dynamics_line }}</div>{% endif %}
     {% if a.route_line %}<div class="note" style="max-width:none">{{ a.route_line }}</div>{% endif %}

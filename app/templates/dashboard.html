@@ -143,6 +143,12 @@
     {% endif %}
 
     <p class="eyebrow" style="margin-top:2rem">Останні тренування</p>
+    {# UI-04: one tap from the home screen, only for a session fresh enough that the
+       question still has an honest answer (today/yesterday, no check-in yet). #}
+    {% if checkin_prompt %}
+      {% with act = checkin_prompt, compact = True %}{% include "_checkin.html" %}{% endwith %}
+    {% endif %}
+
     {% if not activities %}
       <div class="empty">Активностей поки немає.</div>
     {% else %}
@@ -166,6 +172,13 @@
         {% endfor %}
       </div>
       <div class="crumb" style="margin-top:1rem"><a href="/me/activities">Усі тренування →</a></div>
+    {% endif %}
+
+    {# NF-28: the evening log had a bot keyboard and a DB table but no way in from the
+       web. Same pill component as the check-in above. #}
+    {% if lifestyle %}
+    <p class="eyebrow" style="margin-top:2rem">Вечір</p>
+    {% include "_lifestyle.html" %}
     {% endif %}
   </div>
 {% endblock %}

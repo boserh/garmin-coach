@@ -10,7 +10,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,8 @@ from app.banners import banner
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
 from app.core.config import settings
+from app.core.tz import user_today
+from app.db import lifestyle as lifestyle_db
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository, service
@@ -64,10 +66,25 @@ def _activity_cards(rows: list) -> list:
         out.append({
             "id": a["id"], "date": a["date"], "type": a["type"], "emoji": emoji, "color": color,
             "dist_km": a["dist_km"], "dur_min": a["dur_min"], "avg_hr": a["avg_hr"],
-            "load": a["load"], "rpe": a["rpe"],
+            "load": a["load"], "rpe": a["rpe"], "has_checkin": a.get("has_checkin"),
             "pace": _pace_str(a["dist_km"], a["dur_min"]),
         })
     return out
+
+
+# UI-04: how fresh a session has to be before we ask how it went. Asking about every
+# un-rated run forever is nagging; asking about the one you just did is the feature.
+CHECKIN_PROMPT_DAYS = 2
+
+
+def _checkin_prompt(cards: list, today: dt.date) -> dict | None:
+    """The newest activity worth asking about — the latest one from today or yesterday
+    with no check-in at all — or ``None``, which is most days."""
+    cutoff = (today - dt.timedelta(days=CHECKIN_PROMPT_DAYS - 1)).isoformat()
+    for a in cards:
+        if a["date"] >= cutoff and not a.get("has_checkin"):
+            return a
+    return None
 
 
 # EP-17: multi-ring hero (Bevel-style Strain/Recovery/Sleep) — replaces the single
@@ -201,6 +218,7 @@ def _dashboard_banners(user, *, garmin_errors, backup, backup_warn_days, llm_bud
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
+    lifestyle_saved: str = Query("", alias="lifestyle"),   # UI-04: ok|demo after a POST
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -235,6 +253,17 @@ async def dashboard(
 
     activities = _activity_cards(await repository.list_activities(session, user.id, n=ACTIVITIES_N))
     month_cost = await repository.month_cost(session, user.id)
+
+    # UI-04: the two one-tap inputs the analytics are hungriest for and the web had no
+    # way to write — a fresh run's RPE, and tonight's lifestyle tags (NF-28).
+    today_local = user_today(user)
+    lifestyle_row = await lifestyle_db.get_day(session, user.id, today_local.isoformat())
+    lifestyle = {
+        "date": today_local.isoformat(),
+        "tags": list(lifestyle_row.tags or []) if lifestyle_row else [],
+        "labels": [(slug, lifestyle_db.label(slug)) for slug in lifestyle_db.TAG_ORDER],
+        "saved": lifestyle_saved == "ok",
+    }
 
     # NF-19: an aerobic-efficiency sparkline (weekly-median EF, GAP-honest) when there's a
     # real trend — the "faster at the same HR?" signal, reusing the shared chart primitive.
@@ -281,6 +310,8 @@ async def dashboard(
                 user, garmin_errors=garmin_errors, backup=backup,
                 backup_warn_days=settings.BACKUP_WARN_DAYS, llm_budget=llm_budget,
                 has_history=bool(trend)),
+            "checkin_prompt": _checkin_prompt(activities, today_local),
+            "lifestyle": lifestyle, "lifestyle_back": "/dashboard",
             "user": user, "rings": rings, "stat_cards": stat_cards,
             "charts": charts, "first_x": first_x, "last_x": last_x,
             "has_history": bool(trend),
