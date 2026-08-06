@@ -5,6 +5,8 @@ about what must NOT be reported: a tag with too few observations of either class
 phrased as causation, or a judgemental sentence about the user's evening.
 """
 import datetime as dt
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,7 +185,21 @@ def test_keyboard_marks_selected_tags():
     kb = lifestyle_keyboard("2026-08-05", ["alcohol"])
     labels = [b.text for row in kb.inline_keyboard for b in row]
     assert any(t.startswith("✓") and "алкоголь" in t for t in labels)
-    assert any("Нічого такого" in t for t in labels)
+
+
+def test_the_closing_button_matches_what_is_logged():
+    """With nothing logged the way out is «нічого такого»; once a tag is ticked that
+    button would silently wipe it, so it becomes «готово»."""
+    from bot.handlers import lifestyle_keyboard
+
+    empty = [b.text for row in lifestyle_keyboard("2026-08-05").inline_keyboard for b in row]
+    assert any("Нічого такого" in t for t in empty)
+    assert not any("Готово" in t for t in empty)
+
+    chosen = [b.text for row in lifestyle_keyboard("2026-08-05", ["alcohol"]).inline_keyboard
+              for b in row]
+    assert any("Готово" in t for t in chosen)
+    assert not any("Нічого такого" in t for t in chosen)
 
 
 def test_keyboard_callback_data_carries_the_date():
@@ -194,3 +210,79 @@ def test_keyboard_callback_data_carries_the_date():
     kb = lifestyle_keyboard("2026-08-05")
     data = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert all(d.startswith("ls:") and "2026-08-05" in d for d in data)
+
+
+# ---------- the prompt has to close (the buttons stayed up forever) ----------
+
+class _FakeCBQ:
+    """Just enough of a callback query for lifestyle_callback: it reads the tapped data
+    and the message it is attached to, and edits that message in place."""
+
+    def __init__(self, data, chat_id, text):
+        self.data = data
+        self.message = SimpleNamespace(chat=SimpleNamespace(id=chat_id), text=text)
+        self.edits = []          # (text, reply_markup) per edit
+
+    async def answer(self, *a, **kw):
+        pass
+
+    async def edit_message_text(self, text, reply_markup=None, **kw):
+        self.edits.append((text, reply_markup))
+
+
+@pytest.fixture
+def bot_session(session, monkeypatch):
+    import bot.handlers as handlers
+
+    @asynccontextmanager
+    async def maker():
+        yield session
+
+    monkeypatch.setattr(handlers, "async_session_maker", maker)
+    return session
+
+
+async def _tap(session, data, chat_id, text=None):
+    import bot.handlers as handlers
+
+    q = _FakeCBQ(data, chat_id, text if text is not None else handlers.LIFESTYLE_PROMPT)
+    await handlers.lifestyle_callback(SimpleNamespace(callback_query=q), None)
+    return q.edits[-1]
+
+
+async def _linked_user(session, chat_id):
+    u = User(email=f"ls{chat_id}@example.com", password_hash="x",
+             telegram_chat_id=chat_id, is_active=True, is_approved=True)
+    session.add(u)
+    await session.commit()
+    return u
+
+
+async def test_nothing_happened_closes_the_prompt(bot_session):
+    """The reported bug: after «✅ Записав: нічого такого» the seven options were still
+    sitting there, so an answered prompt looked unanswered."""
+    await _linked_user(bot_session, 900001)
+    text, markup = await _tap(bot_session, "ls:none:2026-08-05", 900001)
+    assert "нічого такого" in text
+    assert markup is None
+
+
+async def test_toggling_keeps_the_keyboard_open(bot_session):
+    """«можна кілька» — one tap must not end the prompt, or a second tag is unreachable."""
+    await _linked_user(bot_session, 900002)
+    text, markup = await _tap(bot_session, "ls:t:2026-08-05:alcohol", 900002)
+    assert "алкоголь" in text
+    assert markup is not None
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert any("Готово" in t for t in labels)   # ...and now there is a way out
+
+
+async def test_done_closes_the_prompt_and_keeps_the_tags(bot_session):
+    user = await _linked_user(bot_session, 900003)
+    await _tap(bot_session, "ls:t:2026-08-05:alcohol", 900003)
+    text, markup = await _tap(bot_session, "ls:done:2026-08-05", 900003)
+
+    assert markup is None
+    assert "алкоголь" in text            # closing is not discarding
+    row = await lifestyle_db.get_day(bot_session, user.id, "2026-08-05")
+    assert list(row.tags) == ["alcohol"]

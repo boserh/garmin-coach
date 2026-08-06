@@ -518,7 +518,16 @@ made non-negotiable:
   menu is a `<details>`, charts are server-rendered SVG. JS only removes reloads.
 - **Class names are global.** `.step` was already the plan's structured-step line when
   UI-08 reused the name, and `/plan` went into horizontal scroll — the mobile guard
-  caught it. Grep before naming.
+  caught it. Grep before naming. It happened again with `.fbar`: the DB browser's own
+  `<style>` block reused the activity filters' class, and since a page-private block only
+  overrides the properties it *names*, app.css's `flex-direction:column` leaked in and
+  turned `/ui`'s filter row into a right-aligned column. The DB browser's private copies
+  are `db`-prefixed now (`.dbfbar`, `.dbdate`).
+- **A centred layout needs its own width.** `body.auth` centres one child; that child had
+  none, so it took its max-content and the cards inside hugged its left edge — at 390px a
+  3px nudge, at 900px 170px off-centre. Hence `.authstack`. The phone-width guard cannot
+  see this class of bug, so `test_signed_out_pages_stay_centred_at_every_width` measures
+  the gutters at 900/390/320px.
 
 ## Design notes (per-feature)
 
