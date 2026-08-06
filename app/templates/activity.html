@@ -165,6 +165,37 @@
     </div>
     {% endif %}
 
+    {# UI-06: what this session actually moved, and whether each lift went up since the
+       last time it was trained. All from app/strengthstats.py — the page does no maths. #}
+    {% if strength %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">🏋️ Ця сесія</h2>
+    <div class="bigstats">
+      {% if strength.total_tonnage_kg %}
+      <div class="bigstat"><div class="v">{{ '%.0f'|format(strength.total_tonnage_kg) }}</div>
+        <div class="k">кг тонажу</div></div>
+      {% endif %}
+      {% if strength.total_reps %}
+      <div class="bigstat"><div class="v">{{ strength.total_reps }}</div><div class="k">повторів</div></div>
+      {% endif %}
+    </div>
+    <div class="fcast">
+      {% for l in strength.lifts %}
+      <div class="fc-row">
+        <span class="fc-type">{{ l.name }}</span>
+        {% if l.e1rm %}<span class="fc-date">≈{{ '%.1f'|format(l.e1rm) }} кг</span>{% endif %}
+        {% if l.delta is not none %}
+          <span class="fc-load {{ 'st-done' if l.delta > 0 else ('st-missed' if l.delta < 0 else '') }}">
+            {{ '%+.1f'|format(l.delta) }}</span>
+        {% elif l.tonnage_kg %}
+          <span class="fc-load">{{ '%.0f'|format(l.tonnage_kg) }} кг</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <p class="crumb">≈1ПМ — оцінка за Еплі, не заміряний максимум.
+      <a href="/strength">Прогресія силових →</a></p>
+    {% endif %}
+
     {% if a.exercise_rows %}
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">Вправи</h2>
     {% for e in a.exercise_rows %}

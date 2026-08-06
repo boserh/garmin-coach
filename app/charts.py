@@ -118,3 +118,42 @@ def run_charts(activity_series):
     first = f"{valid[0]:.1f} км" if valid else ""
     last = f"{valid[-1]:.1f} км" if valid else ""
     return charts, first, last
+
+
+def bar_series(values, labels):
+    """Scale a chronological value list to SVG coords for a **bar** chart (UI-06).
+
+    Weekly tonnage is a per-week total, not a continuous signal — drawing it as a line
+    implies values in between that don't exist. Bars start at zero (a truncated axis
+    would make a 5% week-over-week change look like a doubling), so ``ymin`` is always
+    0 and only ``ymax`` scales. Returns ``None`` with nothing to draw.
+
+    ``bars`` carries each rect's ``x/y/w/h`` plus the raw ``v``/``lbl``, and ``pts`` uses
+    the same 0..1-fraction shape as :func:`trend_series` so the shared tooltip component
+    in ``app.js`` works on a bar chart with no extra code.
+    """
+    vals = [(i, float(v)) for i, v in enumerate(values) if v is not None]
+    if not vals:
+        return None
+    n = len(values)
+    ymax = max(v for _i, v in vals) or 1.0
+    inner_w = SVG_W - 2 * SVG_PAD
+    inner_h = SVG_H - 2 * SVG_PAD
+    # A little air between bars, and never wider than the slot itself.
+    slot = inner_w / n
+    width = max(2.0, slot * 0.68)
+
+    bars = []
+    pts = []
+    for i, v in vals:
+        cx = SVG_PAD + slot * (i + 0.5)
+        h = (v / ymax) * inner_h
+        bars.append({
+            "x": round(cx - width / 2, 1), "y": round(SVG_H - SVG_PAD - h, 1),
+            "w": round(width, 1), "h": round(max(h, 0.5), 1),
+            "v": v, "lbl": labels[i] if i < len(labels) else "",
+        })
+        pts.append({"x": round((cx - SVG_PAD) / inner_w if inner_w else 0, 4), "v": v,
+                    "lbl": labels[i] if i < len(labels) else ""})
+    return {"bars": bars, "pts": pts, "ymin": 0.0, "ymax": ymax,
+            "last": vals[-1][1], "W": SVG_W, "H": SVG_H}

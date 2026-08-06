@@ -1174,6 +1174,50 @@ _REGEN_BANNERS = {
 }
 
 
+async def _strength_block(session, user_id: int, obj) -> dict | None:
+    """UI-06: this session's tonnage and per-exercise e1RM, with the change against the
+    previous time each lift was trained.
+
+    All from ``app.strengthstats`` over rows already in the DB — no Garmin request, no
+    formula in the router. ``None`` for anything that isn't a strength session with
+    stored sets, so the block simply doesn't render."""
+    from app import strengthstats
+
+    if not isinstance(obj.exercises, dict) or not obj.exercises:
+        return None
+    tonnage = strengthstats.session_tonnage(obj.exercises)
+    e1rm = strengthstats.session_e1rm(obj.exercises)
+    if not tonnage and not e1rm:
+        return None
+
+    # The most recent earlier session that trained each lift — "did it go up since last
+    # time" is the question a strength page exists to answer.
+    previous: dict = {}
+    for row in await repository.strength_sessions(session, user_id, weeks=52):
+        if not row.get("date") or row["date"] >= (obj.date or ""):
+            continue
+        for name, value in strengthstats.session_e1rm(row.get("exercises")).items():
+            previous[name] = value      # rows come oldest-first, so the last wins
+
+    lifts = []
+    for name in sorted(set(tonnage) | set(e1rm)):
+        prev = previous.get(name)
+        cur = e1rm.get(name)
+        lifts.append({
+            "name": name,
+            "tonnage_kg": tonnage.get(name),
+            "e1rm": cur,
+            "prev_e1rm": prev,
+            "delta": (round(cur - prev, 1) if cur is not None and prev is not None
+                      else None),
+        })
+    return {
+        "total_tonnage_kg": round(sum(tonnage.values()), 1) if tonnage else None,
+        "total_reps": sum(strengthstats.session_reps(obj.exercises).values()) or None,
+        "lifts": lifts,
+    }
+
+
 def _debrief_block(obj) -> dict | None:
     """UI-05: NF-23's per-km breakdown of a session, shown as a curve and two numbers
     instead of a paragraph in Telegram.
@@ -1309,6 +1353,7 @@ async def me_row(
                       **_ring_geom(obj.load / 2, 76)}   # load ~0..200 → 0..100%
         charts, first_x, last_x = _run_charts(obj.series or [])
         debrief = _debrief_block(obj)
+        strength = await _strength_block(session, user.id, obj)
         return templates.TemplateResponse(
             request, "activity.html",
             {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
@@ -1317,7 +1362,7 @@ async def me_row(
                  resynced=bool(resynced), regen=regen, hidden=bool(hidden),
                  shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin),
              "pain_parts": subjective.PAIN_PARTS,
-             "debrief": debrief,
+             "debrief": debrief, "strength": strength,
              "has_claude_key": bool(user.anthropic_key_enc)},
         )
 

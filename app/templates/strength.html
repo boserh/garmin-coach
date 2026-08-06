@@ -1,0 +1,140 @@
+{% extends "_base.html" %}
+
+{% block title %}Сила{% endblock %}
+
+{% block body %}
+  {% set active = 'strength' %}
+  {% include "_nav.html" %}
+
+  {#
+    UI-06. Three blocks, all from app/strengthstats.py: e1RM per lift, weekly tonnage,
+    stalls. This template does no arithmetic — a formula here would be a second copy of
+    NF-27's rules, and Epley's caveats live with Epley.
+  #}
+  <div class="wrap">
+    <p class="eyebrow">Сила</p>
+    <h1 class="title" style="font-size:1.7rem">Прогресія силових</h1>
+
+    {% if empty %}
+      <div class="banner banner--info" role="status">
+        <span class="bicon" aria-hidden="true">🏋️</span>
+        <div class="btext">Силових сесій із записаними підходами не знайдено. Щойно
+          Garmin синкне силове тренування з вагами й повтореннями, тут зʼявиться крива
+          ≈1ПМ і тижневий тонаж. Історію можна добити командою
+          <code>backfill-records</code>.</div>
+      </div>
+    {% else %}
+
+    <div class="stat-grid">
+      <div class="stile"><div class="sv">{{ '%.0f'|format(last_week.tonnage_kg) }}</div>
+        <div class="sl">кг за {{ last_week.week }}</div></div>
+      <div class="stile"><div class="sv">{{ last_week.reps }}</div><div class="sl">повторів</div></div>
+      <div class="stile"><div class="sv">{{ last_week.sessions }}</div><div class="sl">сесій</div></div>
+    </div>
+
+    {# ---------- e1RM per lift ---------- #}
+    <h2 class="sec">≈1ПМ по вправах</h2>
+    <div class="segbar" role="group" aria-label="Вправа">
+      {% for name in lifts %}
+        <a href="?exercise={{ name|urlencode }}" class="seg{% if name == chosen %} on{% endif %}"
+           {% if name == chosen %}aria-current="true"{% endif %}>{{ name }}</a>
+      {% endfor %}
+    </div>
+
+    {% if block %}
+      {% if block.series %}
+      <div class="charts">
+        <div class="chart" data-fmt="f1" data-pts='{{ block.series.pts|tojson }}'>
+          <div class="chead"><span style="color:var(--tempo)">●</span> {{ block.exercise }}
+            <span class="meta">— зараз ≈{{ '%.1f'|format(block.current) }} кг{% if block.trend %},
+              {{ '%+.1f'|format(block.trend.change_pct) }}% за {{ block.trend.weeks }} тиж{% endif %}</span></div>
+          <div class="cwrap">
+            <svg viewBox="0 0 {{ block.series.W }} {{ block.series.H }}" preserveAspectRatio="none"
+                 role="img" aria-label="≈1ПМ {{ block.exercise }}">
+              <polyline fill="none" stroke="var(--tempo)" stroke-width="2" stroke-linejoin="round"
+                        points="{{ block.series.points }}"/>
+              {% for x, y in block.series.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="var(--tempo)"/>{% endfor %}
+            </svg>
+            <div class="guide" style="background:var(--tempo)"></div>
+            <div class="tip" style="color:var(--tempo)"></div>
+          </div>
+          <div class="meta xaxis"><span>{{ block.first_week }}</span><span>{{ block.last_week }}</span></div>
+        </div>
+      </div>
+      {% elif block.current %}
+        {# One measurement is a measurement, not a trend — say so instead of drawing a line. #}
+        <div class="banner banner--muted" role="status">
+          <span class="bicon" aria-hidden="true">📌</span>
+          <div class="btext"><b>{{ block.exercise }}</b> — ≈{{ '%.1f'|format(block.current) }} кг.
+            Один запис: кривої ще немає, потрібен щонайменше другий тиждень із цією вправою.</div>
+        </div>
+      {% endif %}
+
+      {% if recent.get(block.exercise) %}
+        {% set r = recent[block.exercise] %}
+        <p class="meta">Останні {{ r.sessions }} сесій: робоча вага
+          <b>{{ '%.1f'|format(r.top_weight_kg) if r.top_weight_kg else '—' }}</b> кг
+          × <b>{{ r.typical_reps or '—' }}</b> повт.</p>
+      {% endif %}
+    {% endif %}
+
+    <details class="e1rm-note">
+      <summary>Що таке ≈1ПМ</summary>
+      <p class="meta">Це <b>оцінка</b> одноповторного максимуму за формулою Еплі
+        (<code>вага × (1 + повтори/30)</code>), а не заміряний максимум. Підходи понад
+        {{ e1rm_note.max_reps }} повторень не враховуються (формула там бреше), розминочні
+        підходи — легші за {{ e1rm_note.warmup_pct }}% від найважчого за день — теж
+        відкидаються, а значення сесії це <b>медіана</b> {{ e1rm_note.top_sets }} найважчих
+        підходів: один вдалий підхід — це шум, а не рекорд.</p>
+    </details>
+
+    {# ---------- weekly tonnage ---------- #}
+    <h2 class="sec">Тижневий тонаж</h2>
+    {% if tonnage %}
+    <div class="charts">
+      <div class="chart" data-fmt="int" data-pts='{{ tonnage.pts|tojson }}'>
+        <div class="chead">Кілограми за тиждень
+          <span class="meta">— максимум {{ '%.0f'|format(tonnage.ymax) }} кг за
+            {{ window_weeks }} тиж</span></div>
+        <div class="cwrap">
+          <svg viewBox="0 0 {{ tonnage.W }} {{ tonnage.H }}" preserveAspectRatio="none"
+               role="img" aria-label="Тижневий тонаж">
+            {% for b in tonnage.bars %}
+            <rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}"
+                  rx="1.5" fill="var(--long)" opacity=".85"/>
+            {% endfor %}
+          </svg>
+          <div class="guide" style="background:var(--long)"></div>
+          <div class="tip" style="color:var(--long)"></div>
+        </div>
+        <div class="meta xaxis"><span>{{ weeks[0].week }}</span><span>{{ weeks[-1].week }}</span></div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if last_week.by_exercise %}
+    <div class="fcast">
+      {% for name, s in last_week.by_exercise.items() %}
+      <div class="fc-row"><span class="fc-type">{{ name }}</span>
+        {% if s.e1rm %}<span class="fc-date">≈{{ '%.1f'|format(s.e1rm) }} кг</span>{% endif %}
+        <span class="fc-load">{{ '%.0f'|format(s.tonnage_kg) }} кг</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# ---------- stalls ---------- #}
+    {% if stalls %}
+    <h2 class="sec">Застої</h2>
+    <div class="sigs">
+      {% for s in stalls %}
+      <div class="sig sev-1">
+        <div class="sigtext">{{ s.detail }}</div>
+        <div class="sigmeta"><a href="/me/activities?f_type=strength_training">останні силові →</a></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% endif %}
+  </div>
+{% endblock %}

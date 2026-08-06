@@ -78,7 +78,7 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
     pages = {"dashboard": "/dashboard", "me": "/me", "daily": "/me/daily_metrics",
              "activities": "/me/activities", "reports": "/me/report_logs",
              "plan": "/plan", "chat": "/chat", "settings": "/settings",
-             "insights": "/insights"}
+             "insights": "/insights", "strength": "/strength"}
     if act_id:
         pages["activity"] = f"/me/activities/{act_id}"
     files = stage_pages(client, tmp_path, pages)

@@ -62,6 +62,22 @@ def seed_rich_history(uid):
                     dur_min=278 if i % 3 == 0 else 47, avg_hr=139, max_hr=171, load=118.5,
                     series=[{"d": j * 100, "p": 5.5, "hr": 140, "e": 100} for j in range(40)],
                     subjective={"rpe": 7, "pain": "коліно"}, analysis="Розбір."))
+            # UI-06: a few weeks of strength so /strength renders its charts rather than
+            # its empty state — the layout worth guarding is the populated one.
+            # Dated from yesterday back, so today's run stays the newest activity (the
+            # one the activity-page tests open).
+            for w in range(6):
+                s.add(ActivityRecord(
+                    user_id=uid, activity_id=1500 + w,
+                    date=(today - dt.timedelta(days=7 * w + 1)).isoformat(),
+                    type="strength_training", dur_min=55.0,
+                    exercises={"sets": {
+                        "Жим лежачи": {"count": 3, "reps": [5, 5, 5],
+                                       "weight_kg": [70.0 + w, 70.0 + w, 70.0 + w]},
+                        "Присідання зі штангою на спині": {
+                            "count": 3, "reps": [5, 5, 5],
+                            "weight_kg": [100.0 + w, 100.0 + w, 100.0 + w]},
+                    }}))
             await repository.create_plan(
                 s, uid, goal="general", goal_label="Загальна форма", target_date=None,
                 start_date=(today - dt.timedelta(days=14)).isoformat(), days_per_week=3,
