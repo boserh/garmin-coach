@@ -1005,7 +1005,14 @@ def lifestyle_keyboard(date: str, tags=None) -> InlineKeyboardMarkup:
         for slug in lifestyle_db.TAG_ORDER
     ]
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([InlineKeyboardButton("✅ Нічого такого", callback_data=f"ls:none:{date}")])
+    # The last row always ENDS the prompt (lifestyle_callback drops the keyboard on it).
+    # Which of the two it is depends on whether anything is logged: offering "нічого
+    # такого" next to three ticked tags invites a tap that silently wipes them.
+    rows.append([
+        InlineKeyboardButton("✔️ Готово", callback_data=f"ls:done:{date}")
+        if chosen else
+        InlineKeyboardButton("✅ Нічого такого", callback_data=f"ls:none:{date}")
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1025,7 +1032,8 @@ async def lifestyle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle the evening tag buttons. ``ls:t:<date>:<slug>`` toggles one tag;
     ``ls:none:<date>`` stores an EMPTY list — which is data, not a dismissal: without those
     "nothing happened" nights there is no control group and no association can ever be
-    computed. Zero Claude calls; a pure DB write."""
+    computed. ``ls:done:<date>`` writes nothing (each toggle already did) and just closes
+    the prompt. Zero Claude calls; a pure DB write."""
     q = update.callback_query
     await q.answer()
     from app.db import lifestyle as lifestyle_db
@@ -1039,11 +1047,18 @@ async def lifestyle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         if action == "none":
             tags = (await lifestyle_db.upsert(session, user.id, date, [])).tags
+        elif action == "done":
+            row = await lifestyle_db.get_day(session, user.id, date)
+            tags = list(row.tags or []) if row else []
         else:
             tags = await lifestyle_db.toggle_tag(session, user.id, date, parts[3])
+    # A keyboard still on screen means the bot is waiting for more input, so a terminal
+    # answer has to take it away — the rule checkin_callback already follows. Toggling
+    # keeps it (the prompt says «можна кілька»); "нічого такого" and "готово" end it.
+    # Without this the buttons sat under «✅ Записав: …» forever, looking unanswered.
     await q.edit_message_text(
         _ls_render(q.message.text, _lifestyle_status(tags)),
-        reply_markup=lifestyle_keyboard(date, tags),
+        reply_markup=None if action in ("none", "done") else lifestyle_keyboard(date, tags),
     )
 
 
