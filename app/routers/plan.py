@@ -620,6 +620,41 @@ async def _weather_chips(user: User, workouts) -> tuple:
     return chips, {c["date"] for c in conflicts}
 
 
+async def fueling_today(user: User, workouts, anchor_pace: Optional[float] = None,
+                        today: Optional[dt.date] = None) -> Optional[dict]:
+    """UI-05: NF-11's water/carb/salt plan for TODAY's key session, or ``None``.
+
+    ``fueling.advise`` has produced a ready plan since NF-11 shipped and it only ever
+    reached the morning report's prompt — the page showing the session itself said
+    nothing. Reuses the same memoised week forecast the weather chips already fetched
+    (no extra network call) and the module's own thresholds, and keeps NF-11's proximity
+    rule: today only, never a gel plan for Friday.
+
+    Best-effort, like the chips: no stored location or an Open-Meteo blip means no line,
+    never a broken page. Shared by ``/plan`` and ``/dashboard``.
+    """
+    from app import fueling as fueling_mod
+
+    today = today or dt.date.today()
+    today_iso = today.isoformat()
+    session_today = next(
+        (w for w in workouts if w.date == today_iso and w.status == "planned"), None)
+    if session_today is None or user.latitude is None or user.longitude is None:
+        return None
+    forecast = await _cached_forecast_week(user.latitude, user.longitude)
+    day = next((d for d in (forecast or []) if d.get("date") == today_iso), None)
+    if not day:
+        return None
+    return fueling_mod.advise(
+        {"type": session_today.type, "dist_km": session_today.dist_km,
+         "steps": session_today.steps},
+        day,
+        heat_feels_c=settings.FUELING_HEAT_FEELS_C,
+        min_duration_min=settings.FUELING_MIN_DURATION_MIN,
+        anchor_pace=anchor_pace,
+    )
+
+
 async def _race_pack_block(session, user: User, plan) -> Optional[dict]:
     """ST-13-style best-effort block (EP-05): the last generated race pack, shown while
     the target race is within ``race.PLAN_BLOCK_DAYS`` — a pure DB read (the pack itself
@@ -769,6 +804,7 @@ async def plan_page(
     compliance = await repository.weekly_compliance(session, plan.id)
     anchor_pace = await repository.typical_run_pace(session, user.id)
     weather_chips, weather_conflicts = await _weather_chips(user, workouts)
+    fueling = await fueling_today(user, workouts, anchor_pace)
     race_pack = await _race_pack_block(session, user, plan)
     race_debrief = await _race_debrief_block(session, user, plan)
     today_iso = dt.date.today().isoformat()
@@ -791,6 +827,7 @@ async def plan_page(
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
+         "fueling": fueling,
          "race_pack": race_pack, "race_debrief": race_debrief,
          "load_forecast": load_forecast,
          "season": (plan.intake or {}).get("season"), "season_sports": SEASON_SPORTS,

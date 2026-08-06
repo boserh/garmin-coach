@@ -29,7 +29,19 @@ from app.db.session import get_session
 from app.garmin.mfa import MFARequired
 from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import DemoModeUnavailable
-from app.routers import admin, auth, chat, checkups, dashboard, health, history, me, plan, reports
+from app.routers import (
+    admin,
+    auth,
+    chat,
+    checkups,
+    dashboard,
+    health,
+    history,
+    insights,
+    me,
+    plan,
+    reports,
+)
 from app.routers import settings as settings_router
 
 logger = logging.getLogger("api")
@@ -192,6 +204,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router)
     app.include_router(dashboard.router)
     app.include_router(me.router)
+    app.include_router(insights.router)
     app.include_router(plan.router)
     app.include_router(checkups.router)
     app.include_router(chat.router)

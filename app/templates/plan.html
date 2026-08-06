@@ -62,6 +62,8 @@
       </div>
     {% endif %}
 
+    {% include "_fueling.html" %}
+
     {% if not readonly and user.garmin_sync_enabled %}
       <div class="meta" style="margin-top:.6rem">
         {% if sync_summary %}

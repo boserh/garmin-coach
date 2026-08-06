@@ -102,6 +102,46 @@
     <div class="note" style="max-width:none"><div class="abody">{{ analysis }}</div></div>
     {% endif %}
 
+    {# UI-05: NF-23 has computed all of this since it shipped — the km curve, the halves
+       split, the fade point, decoupling — and it only ever reached the user as a
+       paragraph. Numbers straight from postrace.build_debrief; nothing computed here. #}
+    {% if debrief %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">🏁 Розбір по кілометрах</h2>
+    <div class="charts">
+      <div class="chart" data-fmt="pace" data-pts='{{ debrief.series.pts|tojson if debrief.series else "[]" }}'>
+        <div class="chead">Темп по км
+          <span class="meta">
+            {%- if debrief.halves %} — половини {{ debrief.halves.first }} / {{ debrief.halves.second }}
+              ({{ '%+.1f'|format(debrief.halves.delta_pct) }}%,
+              {{ 'негативний спліт' if debrief.halves.negative else 'позитивний спліт' }})
+            {%- endif %}</span></div>
+        {% if debrief.series %}
+        <div class="cwrap">
+          <svg viewBox="0 0 {{ debrief.series.W }} {{ debrief.series.H }}" preserveAspectRatio="none"
+               role="img" aria-label="Темп по кілометрах">
+            <polyline fill="none" stroke="var(--long)" stroke-width="2" stroke-linejoin="round"
+                      points="{{ debrief.series.points }}"/>
+            {% for x, y in debrief.series.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="var(--long)"/>{% endfor %}
+          </svg>
+          <div class="guide" style="background:var(--long)"></div>
+          <div class="tip" style="color:var(--long)"></div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="bigstats">
+      {% if debrief.fade_km %}
+      <div class="bigstat"><div class="v">{{ debrief.fade_km }}</div><div class="k">км — точка згасання</div></div>
+      {% else %}
+      <div class="bigstat"><div class="v">—</div><div class="k">згасання не було</div></div>
+      {% endif %}
+      {% if debrief.decoupling_pct is not none %}
+      <div class="bigstat"><div class="v">{{ '%+.1f'|format(debrief.decoupling_pct) }}%</div>
+        <div class="k">decoupling</div></div>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if charts %}
     <div class="charts">
       {% for c in charts %}

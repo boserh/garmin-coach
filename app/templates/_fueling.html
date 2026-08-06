@@ -1,0 +1,16 @@
+{#
+  UI-05: NF-11's fueling plan for today's key session.
+
+  `fueling.advise` has produced this since NF-11 shipped and it only ever reached the
+  morning report's prompt — the pages showing the session said nothing. Every number
+  here comes from the module; the template picks no thresholds of its own.
+#}
+{% if fueling %}
+<div class="banner banner--{{ 'warn' if fueling.hot else 'info' }}" role="status">
+  <span class="bicon" aria-hidden="true">{{ '🥵' if fueling.hot else '💧' }}</span>
+  <div class="btext">
+    <b>Заправка на сьогодні</b> (~{{ fueling.duration_min }} хв):
+    {{ fueling.notes | join('; ') }}.
+  </div>
+</div>
+{% endif %}

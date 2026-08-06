@@ -25,7 +25,7 @@ from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository, service
 from app.routers.me import _act_meta, _nice_date, _pace_str, _ring_geom
-from app.routers.plan import _dm, _dow
+from app.routers.plan import _dm, _dow, fueling_today
 from app.templating import create_templates
 
 templates = create_templates()
@@ -243,6 +243,7 @@ async def dashboard(
     plan = await repository.get_active_plan(session, user.id)
     upcoming = []
     load_forecast = None
+    fueling = None
     if plan is not None:
         window_end = (dt.date.today() + dt.timedelta(days=PLAN_WINDOW_DAYS)).isoformat()
         upcoming = [
@@ -250,6 +251,11 @@ async def dashboard(
             if w.date <= window_end
         ]
         load_forecast = await repository.load_forecast(session, user.id)
+        # UI-05: NF-11's water/carbs line for today's key session, from the same
+        # memoised forecast /plan already uses (no extra Open-Meteo call on a reload).
+        fueling = await fueling_today(
+            user, await repository.list_workouts(session, plan.id),
+            await repository.typical_run_pace(session, user.id))
 
     activities = _activity_cards(await repository.list_activities(session, user.id, n=ACTIVITIES_N))
     month_cost = await repository.month_cost(session, user.id)
@@ -311,6 +317,7 @@ async def dashboard(
                 backup_warn_days=settings.BACKUP_WARN_DAYS, llm_budget=llm_budget,
                 has_history=bool(trend)),
             "checkin_prompt": _checkin_prompt(activities, today_local),
+            "fueling": fueling,
             "lifestyle": lifestyle, "lifestyle_back": "/dashboard",
             "user": user, "rings": rings, "stat_cards": stat_cards,
             "charts": charts, "first_x": first_x, "last_x": last_x,

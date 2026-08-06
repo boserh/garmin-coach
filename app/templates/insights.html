@@ -1,0 +1,193 @@
+{% extends "_base.html" %}
+
+{% block title %}Інсайти{% endblock %}
+
+{% block body %}
+  {% set active = 'insights' %}
+  {% include "_nav.html" %}
+
+  {#
+    UI-05. Strict order — what to do now → what's ahead → what the history says. A block
+    with no signal is absent, not empty: six half-filled cards is a dump, not a page.
+    Every number here comes from the router (which got it from a pure module); nothing is
+    computed in this template, and no threshold is typed into it.
+  #}
+  <div class="wrap">
+    <p class="eyebrow">Інсайти</p>
+    <h1 class="title" style="font-size:1.7rem">Чому тренер каже те, що каже</h1>
+    <p class="meta">Усе на цій сторінці порахували детерміновані модулі з твоєї бази —
+      без жодного виклику Claude і жодного запиту до Garmin.</p>
+
+    {# ---------- ЩО РОБИТИ ЗАРАЗ ---------- #}
+    <h2 class="sec">Ризик зараз</h2>
+    <div class="banner banner--{{ risk.level }}" role="{{ 'alert' if risk.level in ('warn','danger') else 'status' }}">
+      <span class="bicon" aria-hidden="true">{{ risk.icon }}</span>
+      <div class="btext">
+        <b>{{ risk.head }}</b>
+        {% if risk.state == 'calibrating' %}
+          — потрібно {{ risk.min_history_days }} дн історії, зараз є {{ risk.history_days }}.
+          Радар мовчить навмисно: на короткій історії він давав би хибні тривоги.
+        {% elif risk.state == 'none' %}
+          — жоден із сигналів не спрацював.
+        {% endif %}
+      </div>
+    </div>
+
+    {% if risk.signals %}
+    <div class="sigs">
+      {% for s in risk.signals %}
+      <div class="sig sev-{{ s.severity }}">
+        <div class="sighead">
+          <span class="siglabel">{{ s.label }}</span>
+          <span class="sigsev" title="внесок у сумарний бал">+{{ s.severity }}</span>
+        </div>
+        <div class="sigtext">{{ s.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="crumb">Сумарний бал {{ risk.score }} ·
+      <a href="{{ risk.source[0] }}">звідки це: {{ risk.source[1] }} →</a></p>
+    {% endif %}
+
+    {% if ladder %}
+    <h2 class="sec">Повернення після болю</h2>
+    <div class="listcard">
+      <div class="lg">Крок {{ ladder.step.n }}/{{ ladder.last_step }} —
+        {{ ladder.step.label }}</div>
+      <div class="lm">{{ ladder.minutes }} хв на сесію</div>
+      <pre class="ladder-text">{{ ladder.text }}</pre>
+      <div class="crumb"><a href="{{ ladder.source[0] }}">звідки це: {{ ladder.source[1] }} →</a></div>
+    </div>
+    {% endif %}
+
+    {# ---------- ЩО ПОПЕРЕДУ ---------- #}
+    {% if load %}
+    <h2 class="sec">Навантаження цього тижня</h2>
+    <div class="chart" data-fmt="int" data-pts='{{ load.series.pts|tojson if load.series else "[]" }}'>
+      <div class="chead">
+        ACWR <b>{{ load.acwr }}</b>
+        <span class="meta">— тиждень {{ load.load }} проти типових {{ load.typical }}
+          ({{ '%+d'|format(load.delta_pct) }}%), поріг уваги {{ load.warn_acwr }},
+          високий {{ load.high_acwr }}</span>
+      </div>
+      {% if load.series %}
+      <div class="cwrap">
+        <svg viewBox="0 0 {{ load.series.W }} {{ load.series.H }}" preserveAspectRatio="none"
+             role="img" aria-label="Накопичене навантаження до кінця тижня">
+          <polyline fill="none" stroke="var(--tempo)" stroke-width="2" stroke-linejoin="round"
+                    points="{{ load.series.points }}"/>
+          {% for x, y in load.series.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="var(--tempo)"/>{% endfor %}
+        </svg>
+        <div class="guide" style="background:var(--tempo)"></div>
+        <div class="tip" style="color:var(--tempo)"></div>
+      </div>
+      {% endif %}
+    </div>
+    {% if load.sessions %}
+    <div class="fcast">
+      {% for s in load.sessions %}
+      <div class="fc-row"><span class="fc-date">{{ s.date }}</span>
+        <span class="fc-type">{{ s.type }}</span>
+        <span class="fc-load">+{{ s.load }}</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <p class="crumb"><a href="{{ load.source[0] }}">звідки це: {{ load.source[1] }} →</a></p>
+    {% endif %}
+
+    {# ---------- ЩО Я ПОМІТИВ ЗА ІСТОРІЄЮ ---------- #}
+    {% if correlations %}
+    <h2 class="sec">Що я помітив у твоїй історії</h2>
+    <div class="banner banner--info" role="status">
+      <span class="bicon" aria-hidden="true">ℹ️</span>
+      <div class="btext">Це <b>{{ correlations.note }}</b>. Нижче — статистичні звʼязки за
+        останні {{ correlations.window_days }} днів; пара потрапляє сюди лише від
+        {{ correlations.min_samples }} спостережень. Що причина, а що наслідок — вони не кажуть.</div>
+    </div>
+    <div class="sigs">
+      {% for f in correlations.findings %}
+      <div class="sig">
+        <div class="sigtext">{{ f.detail }}</div>
+        <div class="sigmeta">r = {{ f.r }} · n = {{ f.n }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="crumb"><a href="{{ correlations.source[0] }}">звідки це: {{ correlations.source[1] }} →</a></p>
+    {% endif %}
+
+    {% if recap %}
+    <h2 class="sec">Підсумок періоду</h2>
+    <div class="segbar" role="group" aria-label="Період підсумку">
+      {% for key, lbl in periods %}
+        <a href="?period={{ key }}&weeks={{ comparison.weeks if comparison else 4 }}"
+           class="seg{% if recap.period == key %} on{% endif %}"
+           {% if recap.period == key %}aria-current="true"{% endif %}>{{ lbl }}</a>
+      {% endfor %}
+    </div>
+    <div class="stat-grid">
+      <div class="stile"><div class="sv">{{ recap.stats.runs or 0 }}</div><div class="sl">пробіжок</div></div>
+      <div class="stile"><div class="sv">{{ '%.0f'|format(recap.stats.run_km or 0) }}</div><div class="sl">км</div></div>
+      {% if recap.stats.longest_run %}
+      <div class="stile"><div class="sv">{{ '%.1f'|format(recap.stats.longest_run) }}</div><div class="sl">найдовша, км</div></div>
+      {% endif %}
+      {% if recap.stats.vo2max %}
+      <div class="stile"><div class="sv">{{ recap.stats.vo2max }}</div><div class="sl">VO₂max</div></div>
+      {% endif %}
+    </div>
+    <p class="meta">{{ recap.label }} · {{ recap.range }}</p>
+    {% if recap.records %}
+    <div class="sigs">
+      {% for r in recap.records %}
+      <div class="sig"><div class="sigtext">🏅 {{ r.kind }} — {{ r.value }}
+        {% if r.previous_value %}<span class="sigmeta">(було {{ r.previous_value }})</span>{% endif %}
+        <span class="sigmeta">{{ r.date }}</span></div></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <p class="crumb"><a href="{{ recap.source[0] }}">звідки це: {{ recap.source[1] }} →</a></p>
+    {% endif %}
+
+    {% if comparison %}
+    <h2 class="sec">Ти проти себе торік</h2>
+    <div class="segbar" role="group" aria-label="Вікно порівняння">
+      {% for w in compare_spans %}
+        <a href="?period={{ recap.period if recap else 'year' }}&weeks={{ w }}"
+           class="seg{% if comparison.weeks == w %} on{% endif %}"
+           {% if comparison.weeks == w %}aria-current="true"{% endif %}>{{ w }} тиж</a>
+      {% endfor %}
+    </div>
+    <table class="cmp">
+      <thead><tr><th></th><th>{{ comparison.current_range }}</th><th>{{ comparison.past_range }}</th></tr></thead>
+      <tbody>
+        <tr><th>Пробіжок</th><td>{{ comparison.current.runs or 0 }}</td><td>{{ comparison.past.runs or 0 }}</td></tr>
+        <tr><th>Кілометрів</th><td>{{ '%.0f'|format(comparison.current.run_km or 0) }}</td>
+            <td>{{ '%.0f'|format(comparison.past.run_km or 0) }}</td></tr>
+        {% if comparison.current.typical_pace or comparison.past.typical_pace %}
+        <tr><th>Типовий темп</th><td>{{ comparison.current.typical_pace or '—' }}</td>
+            <td>{{ comparison.past.typical_pace or '—' }}</td></tr>
+        {% endif %}
+        {% if comparison.current.vo2max or comparison.past.vo2max %}
+        <tr><th>VO₂max</th><td>{{ comparison.current.vo2max or '—' }}</td>
+            <td>{{ comparison.past.vo2max or '—' }}</td></tr>
+        {% endif %}
+        {% if comparison.current.avg_hrv or comparison.past.avg_hrv %}
+        <tr><th>HRV</th><td>{{ comparison.current.avg_hrv or '—' }}</td>
+            <td>{{ comparison.past.avg_hrv or '—' }}</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+    <p class="crumb"><a href="{{ comparison.source[0] }}">звідки це: {{ comparison.source[1] }} →</a></p>
+    {% endif %}
+
+    {% if not has_any %}
+    <div class="banner banner--info" role="status">
+      <span class="bicon" aria-hidden="true">🌱</span>
+      <div class="btext">Замало даних. Радар травм вмикається від
+        {{ gates.injury_days }} днів історії, прогноз навантаження — від
+        {{ gates.forecast_days }}, а кореляції — від {{ gates.correlation_samples }}
+        спостережень за {{ gates.correlation_window }} днів. Зараз збережено
+        {{ gates.history_days }} дн. Синхронізуй Garmin і повертайся.</div>
+    </div>
+    {% endif %}
+  </div>
+{% endblock %}

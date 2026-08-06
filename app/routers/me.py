@@ -1174,6 +1174,34 @@ _REGEN_BANNERS = {
 }
 
 
+def _debrief_block(obj) -> dict | None:
+    """UI-05: NF-23's per-km breakdown of a session, shown as a curve and two numbers
+    instead of a paragraph in Telegram.
+
+    Built from the STORED series only — no splits fetch, so opening an activity page
+    still costs zero Garmin requests. ``build_debrief`` degrades honestly: a session
+    without enough kilometres yields no curve, and then there is nothing to show.
+    """
+    from app import postrace
+
+    d = postrace.build_debrief(
+        series=obj.series, dist_km=obj.dist_km, dur_min=obj.dur_min, avg_hr=obj.avg_hr)
+    curve = d.get("km_curve")
+    if not curve:
+        return None
+    return {
+        "curve": curve,
+        "halves": d.get("halves"),
+        "fade_km": d.get("fade_km"),
+        "decoupling_pct": d.get("decoupling_pct"),
+        "avg_pace": d.get("avg_pace_min_km"),
+        "avg_gap_pace": d.get("avg_gap_pace_min_km"),
+        # The same pace sparkline primitive the charts above use — one km per point.
+        "series": _trend_series([r.get("pace_min_km") for r in curve],
+                                [f"{r.get('km')} км" for r in curve]),
+    }
+
+
 _CHECKIN_BANNERS = {
     "ok": ("ok", "✅", "Записав."),
     "bad": ("warn", "🤔", "Не зрозумів оцінку — спробуй ще раз."),
@@ -1280,6 +1308,7 @@ async def me_row(
             strain = {"value": int(obj.load), "color": "#3aa0ff", "label": "Навантаження",
                       **_ring_geom(obj.load / 2, 76)}   # load ~0..200 → 0..100%
         charts, first_x, last_x = _run_charts(obj.series or [])
+        debrief = _debrief_block(obj)
         return templates.TemplateResponse(
             request, "activity.html",
             {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
@@ -1288,6 +1317,7 @@ async def me_row(
                  resynced=bool(resynced), regen=regen, hidden=bool(hidden),
                  shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin),
              "pain_parts": subjective.PAIN_PARTS,
+             "debrief": debrief,
              "has_claude_key": bool(user.anthropic_key_enc)},
         )
 

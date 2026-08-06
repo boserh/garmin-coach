@@ -27,6 +27,10 @@ from typing import List, Optional, Sequence
 # Pain on this many of the last ``TRIGGER_WINDOW_RUNS`` runs → offer the protocol. Two of five
 # rather than one: a single "yes it hurt" after a stumble is not a pattern, and the ticket's
 # own risk note is a false trigger from a one-off.
+# Where the protocol's state blob lives in ``bot_state`` — shared by the bot (which
+# drives the ladder) and the web (UI-05, which shows the current rung).
+STATE_KEY = "rtr_state"
+
 TRIGGER_PAIN_RUNS = 2
 TRIGGER_WINDOW_RUNS = 5
 

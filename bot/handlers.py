@@ -19,6 +19,7 @@ from telegram.ext import ContextTypes
 
 from app import deploy as deploy_ops
 from app import records, subjective, weather
+from app import returntorun as returntorun_mod
 from app.analysis import delivery
 from app.analysis.service import (
     AnalystError,
@@ -1588,7 +1589,9 @@ async def sickness_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ---------- RETURN TO RUN (NF-30) ----------
 
-RETURN_STATE_KEY = "rtr_state"       # the protocol's own state blob (app.returntorun)
+# The state key lives in app.returntorun so the web (UI-05) can read the same blob
+# without importing the bot.
+RETURN_STATE_KEY = returntorun_mod.STATE_KEY
 RETURN_WARNED_KEY = "rtr_warned"     # last time we offered it — the RETURN_GUARD_DAYS snooze
 
 # The one-tap pain scale after a protocol session. Four buttons rather than eleven: the

@@ -19,6 +19,7 @@
     <h1 class="title" style="font-size:1.7rem">Привіт{% if user.email %}, {{ user.email.split('@')[0] }}{% endif %}</h1>
 
     {% include "_banners.html" %}
+    {% include "_fueling.html" %}
 
     {% if has_history %}
       {% include "_hero_rings.html" %}

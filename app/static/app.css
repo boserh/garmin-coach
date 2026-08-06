@@ -705,3 +705,49 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
 .ckpain>summary:hover{color:var(--ink)}
 .ckpain form{margin-top:.5rem}
 .checkin .btn-ghost{margin-top:.7rem}
+
+/* ---- insights page (UI-05) ----
+   One card per signal / finding, so "why is the radar quiet?" reads as a list of
+   reasons instead of a paragraph. Severity tints the left edge with the same workout
+   tokens the rest of the app uses. */
+.sigs{display:flex;flex-direction:column;gap:.55rem;margin:.9rem 0 .3rem}
+.sig{padding:.75rem .95rem;border:1px solid var(--line-2);border-left:3px solid var(--line-2);
+     border-radius:12px;background:var(--surface);font-size:.9rem;line-height:1.55;
+     color:#c2c9d3}
+.sig.sev-1{border-left-color:var(--tempo)}
+.sig.sev-2{border-left-color:var(--intervals)}
+.sig.sev-3{border-left-color:var(--intervals)}
+.sighead{display:flex;align-items:baseline;justify-content:space-between;gap:.6rem;
+         margin-bottom:.3rem}
+.siglabel{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+          color:#b6bfca}
+.sigsev{font-size:.75rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.sigmeta{color:var(--faint);font-size:.8rem;margin-left:.35rem;
+         font-variant-numeric:tabular-nums}
+.ladder-text{margin:.6rem 0 0;white-space:pre-wrap;word-break:break-word;font:inherit;
+             font-size:.9rem;line-height:1.55;color:#c2c9d3}
+/* this week's remaining sessions, each with the load it adds */
+.fcast{margin:.7rem 0 .3rem}
+.fc-row{display:flex;gap:.7rem;align-items:baseline;padding:.4rem 0;
+        border-bottom:1px solid var(--line);font-size:.87rem;
+        font-variant-numeric:tabular-nums}
+.fc-row:last-child{border-bottom:0}
+.fc-date{color:var(--muted);flex:none}
+.fc-type{color:var(--ink);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.fc-load{color:var(--tempo);font-weight:600;flex:none}
+/* period / window switcher — links, so it works without JS and is bookmarkable */
+.segbar{display:flex;flex-wrap:wrap;gap:.4rem;margin:.9rem 0 .2rem}
+.seg{padding:.35rem .8rem;border:1px solid var(--line-2);border-radius:999px;
+     font-size:.83rem;color:var(--muted);background:var(--surface-2);text-decoration:none}
+.seg:hover{color:var(--ink);text-decoration:none}
+.seg.on{border-color:var(--accent);color:var(--ink);font-weight:650;
+        background:color-mix(in srgb, var(--accent) 16%, transparent)}
+.seg:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* the two-window comparison table; scrolls inside its own box on a narrow phone */
+.cmp{width:100%;border-collapse:collapse;margin:.9rem 0 .3rem;font-size:.88rem;
+     font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
+.cmp th,.cmp td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);
+                white-space:nowrap}
+.cmp thead th{color:var(--muted);font-weight:600;font-size:.8rem}
+.cmp tbody th{color:var(--muted);font-weight:500}
+.cmp tbody td{color:var(--ink)}
