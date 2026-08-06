@@ -14,7 +14,12 @@
     .tabs a:hover { color: #eef1f5; text-decoration: none; }
     .tabs a.active { background: #1a2029; border-color: #7aa2f7; color: #eef1f5; }
     .meta { color: #909aa8; }
-    .wrap { overflow: auto; max-height: 78vh; border: 1px solid #313a49; border-radius: 12px; }
+    {# NOT .wrap — that class is app.css's page column (max-width:46rem; margin:0 auto),
+       and since this block only adds overflow/border, the cap and the centering stayed:
+       the DB browser squeezed 12 columns into 46rem in the middle of a 1400px screen and
+       scrolled them inside that. This container is the full-width scroller. #}
+    .tscroll { width: 100%; overflow: auto; max-height: 78vh; overscroll-behavior-x: contain;
+               border: 1px solid #313a49; border-radius: 12px; }
     table { border-collapse: collapse; width: 100%; font-size: .85rem; font-variant-numeric: tabular-nums; }
     th, td { border-bottom: 1px solid #232a36; padding: .5rem .7rem; text-align: left;
              white-space: nowrap; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; }
@@ -160,7 +165,7 @@
     </div>
   {% endif %}
   {% set can_clear = base == '/ui' and table == 'bot_state' %}
-  <div class="wrap">
+  <div class="tscroll">
     <table>
       <thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}{% if can_clear %}<th></th>{% endif %}</tr></thead>
       <tbody>
