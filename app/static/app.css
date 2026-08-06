@@ -379,6 +379,13 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 
 /* ---- auth (login / register) ---- */
 body.auth{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}
+/* The column of cards on /login, /register and the post-registration page. It needs its
+   OWN width: as a bare flex item in the centred `body.auth` it was sized by its
+   max-content, so one card with longer prose (the "що знадобиться" list) made the whole
+   stack wider than the phone — and `justify-content:center` centres an over-wide item by
+   overflowing it equally on BOTH sides, which reads as "the form slid off to the left".
+   With the width here, `.authcard`'s `100%` resolves against the stack instead. */
+.authstack{display:flex;flex-direction:column;gap:1rem;width:min(21rem,100%)}
 .authcard{width:min(21rem,100%);padding:2rem 1.9rem;border:1px solid var(--line-2);border-radius:16px;
   background:var(--surface);box-shadow:0 24px 70px -35px rgba(0,0,0,.85)}
 .authcard .brand{font-size:1.4rem;font-weight:650;letter-spacing:-.025em;margin:0 0 .35rem}

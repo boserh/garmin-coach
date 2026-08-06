@@ -34,6 +34,7 @@ sync_playwright = pytest.importorskip(
 _PROBE = """() => {
   document.querySelectorAll('details').forEach(d => d.open = true);
   const doc = document.documentElement, vw = doc.clientWidth, seen = new Set(), bad = [];
+  const seenLeft = new Set(), left = [];
   for (const el of document.querySelectorAll('body *')) {
     const r = el.getBoundingClientRect();
     if (!r.width) continue;
@@ -43,6 +44,11 @@ _PROBE = """() => {
       const sel = el.tagName.toLowerCase() + cls;
       const box = `[${Math.round(r.left)}..${Math.round(r.right)}]`;
       if (!seen.has(sel)) { seen.add(sel); bad.push(sel + ' ' + box); }
+      // Off the LEFT edge is reported separately because scrollWidth cannot see it:
+      // the page scrolls right, never left, so an element centred while wider than the
+      // viewport hangs off both sides and the scrollWidth check passes on a form that
+      // is visibly cut in half. That is exactly how the auth stack shipped broken.
+      if (r.left < -1 && !seenLeft.has(sel)) { seenLeft.add(sel); left.push(sel + ' ' + box); }
     }
   }
   // Text nodes too: an unbreakable token (a long email in a heading) paints past the
@@ -57,7 +63,8 @@ _PROBE = """() => {
                n.parentElement.tagName.toLowerCase());
     }
   }
-  return {scrollW: doc.scrollWidth, clientW: vw, offenders: bad.slice(0, 6)};
+  return {scrollW: doc.scrollWidth, clientW: vw, offenders: bad.slice(0, 6),
+          leftOffenders: left.slice(0, 6)};
 }"""
 
 
@@ -79,7 +86,11 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
              "activities": "/me/activities", "reports": "/me/report_logs",
              "plan": "/plan", "chat": "/chat", "settings": "/settings",
              "insights": "/insights", "strength": "/strength",
-             "offline": "/offline", "info": "/info", "onboarding": "/onboarding"}
+             "offline": "/offline", "info": "/info", "onboarding": "/onboarding",
+             # The signed-out pages were never measured at all. Their own defect was a
+             # centring one (see the test below), but they belong in the overflow sweep
+             # too — they are the first thing anyone sees.
+             "login": "/login", "register": "/register"}
     if act_id:
         pages["activity"] = f"/me/activities/{act_id}"
     files = stage_pages(client, tmp_path, pages)
@@ -98,8 +109,122 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
                     failures.append(
                         f"{name} @{width}px: scrollWidth {m['scrollW']} > {m['clientW']} "
                         f"— {', '.join(m['offenders'])}")
+                if m["leftOffenders"]:
+                    failures.append(
+                        f"{name} @{width}px: off the left edge — "
+                        f"{', '.join(m['leftOffenders'])}")
             page.close()
         browser.close()
 
     assert not external, "pages requested external hosts: " + ", ".join(sorted(set(external)))
     assert not failures, "horizontal overflow:\n" + "\n".join(failures)
+
+
+# A page-private <style> block only overrides the properties it NAMES. Everything else
+# leaks in from whatever rule in app.css happens to share the class name — which is how
+# the DB browser's filter row became a right-aligned column: `.fbar` over there is the
+# activity filters on /me/activities, and its `flex-direction: column` (never
+# re-declared here) applied. Same failure as `.step` on /plan; see the CLAUDE.md rule.
+_FILTER_PROBE = """() => {
+  document.querySelectorAll('details').forEach(d => d.open = true);
+  // Structural, not by class name: renaming the class is exactly the fix, and a probe
+  // that keys on the new name would "pass" the old markup by failing to find it.
+  const form = document.querySelector('details.fwrap form');
+  if (!form) return {found: false};
+  const lefts = [...form.querySelectorAll('.ffield')]
+    .map(el => Math.round(el.getBoundingClientRect().left));
+  return {
+    found: true,
+    direction: getComputedStyle(form).flexDirection,
+    align: getComputedStyle(form).alignItems,
+    lefts: lefts,
+    formLeft: Math.round(form.getBoundingClientRect().left),
+  };
+}"""
+
+
+def test_db_browser_filters_lay_out_as_a_left_aligned_row(client, tmp_path):
+    """The filter fields start at the form's left edge, on every screen width.
+
+    Not an overflow bug, so the guard above can't see it: the fields stayed inside the
+    viewport, just pushed to the right at a different offset each — unusable, and
+    passing every test we had."""
+    browser_path = chromium_path()
+    if not browser_path:
+        pytest.skip("no chromium binary available")
+
+    email = "db-filters@example.com"
+    _seed_user(email=email, password="pw", is_admin=True)   # /ui is admin-only
+    client.post("/login", data={"email": email, "password": "pw"})
+
+    stage_assets(tmp_path)
+    files = stage_pages(client, tmp_path, {"ui_activities": "/ui/activities"})
+
+    failures = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=browser_path)
+        for width in WIDTHS:
+            page = browser.new_page(viewport={"width": width, "height": 844})
+            page.route("**/*", local_only([]))
+            page.goto(files["ui_activities"].as_uri())
+            m = page.evaluate(_FILTER_PROBE)
+            assert m["found"], "the DB browser's filter form was not rendered"
+            if m["direction"] != "row":
+                failures.append(f"@{width}px: flex-direction is {m['direction']}, not row")
+            # The FIRST field, not every field: this row wraps, and a field sharing a
+            # line with the one before it legitimately starts further right. What the
+            # bug did was push every field off the left edge, first one included.
+            if m["lefts"] and m["lefts"][0] != m["formLeft"]:
+                failures.append(
+                    f"@{width}px: the first filter field starts at {m['lefts'][0]}, "
+                    f"not at the form's left edge ({m['formLeft']})")
+            page.close()
+        browser.close()
+
+    assert not failures, "DB browser filters:\n" + "\n".join(failures)
+
+
+# Widths, not just phone widths. The auth stack's defect was invisible at 390px (a 3px
+# nudge) and glaring at 900px (the card sat 170px left of centre) — because the stack had
+# no width of its own, so it took its max-content and the cards hugged its left edge while
+# `body.auth` dutifully centred the oversized stack. Anything that only measures a phone
+# reports this page as fine.
+_CENTRE_PROBE = """() => {
+  const vw = document.documentElement.clientWidth;
+  return [...document.querySelectorAll('.authcard')].map(el => {
+    const r = el.getBoundingClientRect();
+    return {left: Math.round(r.left), rightGap: Math.round(vw - r.right)};
+  });
+}"""
+
+AUTH_WIDTHS = (900, 390, 320)
+
+
+def test_signed_out_pages_stay_centred_at_every_width(client, tmp_path):
+    """/login and /register are one centred column of cards — at any window size."""
+    browser_path = chromium_path()
+    if not browser_path:
+        pytest.skip("no chromium binary available")
+
+    stage_assets(tmp_path)
+    files = stage_pages(client, tmp_path, {"login": "/login", "register": "/register"})
+
+    failures = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=browser_path)
+        for width in AUTH_WIDTHS:
+            page = browser.new_page(viewport={"width": width, "height": 900})
+            page.route("**/*", local_only([]))
+            for name, path in files.items():
+                page.goto(path.as_uri())
+                cards = page.evaluate(_CENTRE_PROBE)
+                assert cards, f"{name}: no .authcard rendered"
+                for i, c in enumerate(cards):
+                    if abs(c["left"] - c["rightGap"]) > 2:
+                        failures.append(
+                            f"{name} @{width}px: card {i} off-centre — {c['left']}px on "
+                            f"the left, {c['rightGap']}px on the right")
+            page.close()
+        browser.close()
+
+    assert not failures, "auth pages off-centre:\n" + "\n".join(failures)
