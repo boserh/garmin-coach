@@ -278,7 +278,11 @@ summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
 .chead .meta{color:var(--muted)}
 .chart svg{display:block;width:100%;height:auto}
 .xaxis{display:flex;justify-content:space-between}
-.cwrap{position:relative}
+/* UI-01: the horizontal gesture belongs to the chart (scrub the series), the vertical
+   one to the page. `pan-y` says exactly that — scoped to .cwrap, never the body, or the
+   whole page would stop scrolling. */
+.cwrap{position:relative;touch-action:pan-y}
+.cwrap:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
 .guide{position:absolute;top:0;bottom:0;width:1px;display:none;pointer-events:none}
 .tip{position:absolute;top:.2rem;transform:translateX(-50%);display:none;pointer-events:none;
   background:var(--surface-2);border:1px solid var(--line-2);border-radius:7px;padding:.12rem .5rem;

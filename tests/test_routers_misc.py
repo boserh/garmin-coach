@@ -135,9 +135,10 @@ def test_activities_minimal_index_and_run_chart(auth_client):
     assert "<polyline" in detail
     assert "Темп, хв/км" in detail
     assert "Пульс" in detail
-    # hover tooltip: per-point data embedded + the mousemove handler present
+    # hover/touch tooltip: per-point data embedded, and the shared handler linked.
+    # UI-01: the handler is the one component in app.js, not a per-page inline script.
     assert "data-pts=" in detail
-    assert "mousemove" in detail
+    assert "/static/app.js?v=" in detail
 
 
 def test_ui_table_column_filters(auth_client):
