@@ -296,3 +296,22 @@
     });
   });
 })();
+
+// The chat reads oldest → newest, so the newest turn is at the bottom of the page: open
+// it there, the way every chat does. Only on the default view — after "Показати старіші"
+// the reader is looking at old messages and must not be yanked back down (the template
+// sets data-jump-latest only when no ?limit= was given).
+//
+// Progressive enhancement: with JS off the thread is still in the right order, you just
+// scroll it yourself.
+(function () {
+  'use strict';
+
+  if (!document.querySelector('.thread[data-jump-latest]')) return;
+  // The whole page, not the thread's last element: the composer sits below the thread,
+  // and stopping at the last bubble leaves it half-hidden under the fixed tab bar. The
+  // document's real bottom is where body's bottom padding guarantees clearance.
+  // 'auto', not 'smooth': this is the page's initial position, not a movement the reader
+  // should watch, and an animation on load also fights prefers-reduced-motion.
+  window.scrollTo({top: document.body.scrollHeight, behavior: 'auto'});
+})();

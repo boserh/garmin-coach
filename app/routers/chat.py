@@ -102,18 +102,24 @@ async def chat_page(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    # "Load more" grows the window (?limit=60, 90, …); newest exchanges come first, so older
-    # ones appear further down and each click reveals more below. Fetch one extra to know
-    # whether a "load more" link is still worth showing (has_more), then trim it off.
+    # "Load more" grows the window (?limit=60, 90, …) backwards in time. The query returns
+    # the newest exchanges first because that's the efficient way to take a window off the
+    # end; the page then REVERSES it, because a chat reads oldest → newest downward. It
+    # used to render the query order straight through, so the thread ran newest-first with
+    # the composer above it — a reverse-chronological feed, not a conversation.
     limit = max(CHAT_HISTORY_N, min(limit, CHAT_HISTORY_MAX))
     history = await repository.get_chat_history(session, user.id, n=limit + 1)
     has_more = len(history) > limit
     history = _with_local_time(history[:limit], _user_tz(user))
+    history.reverse()
     pending = await repository.get_pending_plan_edit(session, user.id)
     return templates.TemplateResponse(
         request, "chat.html",
         {"user": user, "history": history, "pending": pending,
          "has_more": has_more, "next_limit": limit + CHAT_HISTORY_N,
+         # Jump to the newest turn only on the default view — after "load more" the reader
+         # is looking at older messages and must not be yanked back to the bottom.
+         "jump_to_latest": "limit" not in request.query_params,
          "error": request.query_params.get("err")},
     )
 

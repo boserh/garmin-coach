@@ -83,7 +83,12 @@ def test_chat_page_renders_empty_state(auth_client):
     assert "Ще нема повідомлень" in r.text
 
 
-def test_chat_page_newest_first_and_load_more(auth_client):
+def test_chat_page_reads_like_a_chat_and_loads_older(auth_client):
+    """Oldest at the top, newest at the bottom, composer under the thread.
+
+    The window is still taken newest-first off the end (that's the efficient query), but
+    the page reverses it: rendering the query order straight through produced a
+    reverse-chronological feed where an answer sat above the question before it."""
     client, uid = auth_client
 
     async def seed():
@@ -96,18 +101,42 @@ def test_chat_page_newest_first_and_load_more(auth_client):
     anyio.run(seed)
 
     body = client.get("/chat").text
-    # newest exchange (34) appears before the older one (33) in the HTML → newest at top
-    assert body.index("питання номер 34") < body.index("питання номер 33")
+    # …33 before 34: time runs downward, like every chat.
+    assert body.index("питання номер 33") < body.index("питання номер 34")
+    # A turn's own answer still follows its question.
+    assert body.index("питання номер 34") < body.index("відповідь 34")
+    # The newest turn is the last thing in the thread, and the composer comes after it.
+    assert body.index("питання номер 34") < body.index('name="message"')
     # each turn carries a date/time label
     assert 'class="when"' in body
     # only the newest 30 are shown by default; #4 (35 - 31) is off the first page
     assert "питання номер 4" not in body
-    # a "load more" link is offered because there are >30
-    assert "Показати більше" in body and "/chat?limit=60" in body
+    # older ones live above, so the link that fetches them says so and sits above the thread
+    assert "Показати старіші" in body and "/chat?limit=60" in body
+    assert body.index("Показати старіші") < body.index("питання номер 33")
 
     # loading more reveals the older ones
     more = client.get("/chat?limit=60").text
     assert "питання номер 0" in more
+    assert more.index("питання номер 0") < more.index("питання номер 34")
+
+
+def test_the_page_opens_at_the_newest_turn_but_not_after_load_more(auth_client):
+    """A chat opens at the bottom. After "Показати старіші" it must not — the reader
+    just asked to look at old messages and would be yanked straight back down."""
+    client, uid = auth_client
+
+    async def seed():
+        async with async_session_maker() as s:
+            for i in range(35):
+                await repository.log_report(
+                    s, user_id=uid, kind="ask", model="claude-sonnet-5", ok=True,
+                    question=f"q{i}", report_text=f"a{i}",
+                )
+    anyio.run(seed)
+
+    assert 'data-jump-latest="1"' in client.get("/chat").text
+    assert 'data-jump-latest' not in client.get("/chat?limit=60").text
 
 
 # ---------- POST /chat ----------

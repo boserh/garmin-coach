@@ -49,7 +49,8 @@ def pages(client, tmp_path):
     client.post("/login", data={"email": email, "password": "pw"})
     seed_rich_history(_user_id(email))
     stage_assets(tmp_path)
-    return stage_pages(client, tmp_path, {"dashboard": "/dashboard", "plan": "/plan"})
+    return stage_pages(client, tmp_path,
+                       {"dashboard": "/dashboard", "plan": "/plan", "chat": "/chat"})
 
 
 @pytest.mark.parametrize("width", WIDTHS)
@@ -69,8 +70,11 @@ def test_the_top_row_is_one_line_on_a_phone(pages, width):
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_the_tab_bar_does_not_cover_the_content(pages, width):
-    with _page(pages["dashboard"], width) as page:
+@pytest.mark.parametrize("name", ["dashboard", "plan", "chat"])
+def test_the_tab_bar_does_not_cover_the_content(pages, width, name):
+    # /chat matters most here: its last element is the composer you type into, and the
+    # page opens scrolled to the bottom.
+    with _page(pages[name], width) as page:
         overlap = page.evaluate("""() => {
           const bar = document.querySelector('.tabbar').getBoundingClientRect();
           window.scrollTo(0, document.body.scrollHeight);
