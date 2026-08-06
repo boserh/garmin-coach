@@ -135,14 +135,40 @@
       {% endif %}
     </div>
     <p class="meta">{{ recap.label }} · {{ recap.range }}</p>
+    {# Labels, units and the "було" comparison all come from app/records.py — the same
+       formatter the bot's /records uses. Rendering `kind` raw once produced rows like
+       "e1rm:тяга гирі в нахилі — 42.0". #}
     {% if recap.records %}
-    <div class="sigs">
+    <div class="reclist">
       {% for r in recap.records %}
-      <div class="sig"><div class="sigtext">🏅 {{ r.kind }} — {{ r.value }}
-        {% if r.previous_value %}<span class="sigmeta">(було {{ r.previous_value }})</span>{% endif %}
-        <span class="sigmeta">{{ r.date }}</span></div></div>
+      <div class="rec">
+        <span class="rmedal" aria-hidden="true">🏅</span>
+        <span class="rname">{{ r.label }}</span>
+        <span class="rval">{{ r.value }}</span>
+        {% if r.previous %}<span class="rprev">було {{ r.previous }}</span>{% endif %}
+        <span class="rdate">{{ r.date }}</span>
+      </div>
       {% endfor %}
     </div>
+    {% endif %}
+
+    {# A quarter of lifting sets one e1RM record per exercise; a dozen of them would bury
+       the running milestones this recap is about. #}
+    {% if recap.lift_records %}
+    <details class="recfold">
+      <summary>🏋️ Силові рекорди за період — {{ recap.lift_records|length }}</summary>
+      <div class="reclist">
+        {% for r in recap.lift_records %}
+        <div class="rec">
+          <span class="rmedal" aria-hidden="true">🏅</span>
+          <span class="rname">{{ r.label }}</span>
+          <span class="rval">{{ r.value }}</span>
+          {% if r.previous %}<span class="rprev">було {{ r.previous }}</span>{% endif %}
+          <span class="rdate">{{ r.date }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
     {% endif %}
     <p class="crumb"><a href="{{ recap.source[0] }}">звідки це: {{ recap.source[1] }} →</a></p>
     {% endif %}
