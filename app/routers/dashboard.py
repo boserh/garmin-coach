@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import baselines
+from app.banners import banner
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
 from app.core.config import settings
@@ -136,6 +137,67 @@ def _stat_cards(day: dict) -> list:
     return cards
 
 
+def _dashboard_banners(user, *, garmin_errors, backup, backup_warn_days, llm_budget,
+                       has_history) -> list:
+    """The page's notices, as data (UI-07) — colour and ARIA role come from the level,
+    never from a hex typed into the template."""
+    out = []
+
+    if user.garmin_creds_invalid:
+        out.append(banner(
+            "danger", "Garmin не приймає збережені email/пароль — синк зупинено.",
+            icon="🔑", link="/settings", link_text="Оновити креденшели →"))
+
+    if garmin_errors and garmin_errors.get("count_24h"):
+        counts = garmin_errors.get("counts_24h") or {}
+        detail = ", ".join(f"{k}×{n}" for k, n in counts.items())
+        out.append(banner(
+            "warn",
+            f"Garmin API: {garmin_errors['count_24h']} збоїв за 24 год"
+            + (f" ({detail})" if detail else "")
+            + ". Можливо, тимчасова деградація неофіційного API.",
+            icon="⚠️", link="/status", link_text="Подивитись статус →"))
+
+    # OPS-08: a missing marker means backups were never configured; a stale one means
+    # they stopped. Both matter, and they read differently.
+    if backup and (backup.get("age_hours") is None
+                   or backup["age_hours"] >= backup_warn_days * 24
+                   or backup.get("rsync_ok") is False):
+        if backup.get("age_hours") is None:
+            text = "Бекап БД: маркер не знайдено — схоже, бекапи ще не налаштовані."
+        else:
+            text = f"Бекап БД: останній {backup['age_hours'] / 24:.1f} дн тому."
+        if backup.get("rsync_ok") is False:
+            text += " Off-SD копіювання (rsync) останнього разу не вдалось."
+        out.append(banner("warn", text, icon="⚠️", link="/status",
+                          link_text="Подивитись статус →"))
+
+    if llm_budget and (llm_budget.get("warn") or llm_budget.get("blocked")):
+        blocked = llm_budget.get("blocked")
+        text = (
+            ("Бюджет на Claude вичерпано: " if blocked else "Бюджет на Claude: ")
+            + f"${llm_budget['month_usd']:.2f} з ${llm_budget['month_limit']:.2f} за "
+              f"місяць ({llm_budget['pct']}%), прогноз "
+              f"${llm_budget['projected_month_usd']:.2f}."
+        )
+        if blocked:
+            text += " Нові виклики зупинені до наступного періоду."
+        elif llm_budget.get("soft_blocked"):
+            text += " Фонові звіти призупинені — команди ще працюють."
+        out.append(banner("danger" if blocked else "warn", text,
+                          icon="🛑" if blocked else "⚠️",
+                          link="/me/report_logs", link_text="Витрати →"))
+
+    if not has_history:
+        out.append(banner(
+            "info",
+            "Ще немає історії відновлення — після першого синку Garmin тут з'явиться "
+            "сьогоднішня готовність і тренди.",
+            icon="🌱", link="/settings", link_text="Перевірити налаштування →"))
+
+    return out
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
@@ -215,6 +277,10 @@ async def dashboard(
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
+            "banners": _dashboard_banners(
+                user, garmin_errors=garmin_errors, backup=backup,
+                backup_warn_days=settings.BACKUP_WARN_DAYS, llm_budget=llm_budget,
+                has_history=bool(trend)),
             "user": user, "rings": rings, "stat_cards": stat_cards,
             "charts": charts, "first_x": first_x, "last_x": last_x,
             "has_history": bool(trend),

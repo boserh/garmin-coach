@@ -18,54 +18,9 @@
     <p class="eyebrow">Дашборд</p>
     <h1 class="title" style="font-size:1.7rem">Привіт{% if user.email %}, {{ user.email.split('@')[0] }}{% endif %}</h1>
 
-    {% if user.garmin_creds_invalid %}
-      <div class="note" style="border-color:#f7768e;background:rgba(247,118,142,.08)">
-        🔑 Garmin не приймає збережені email/пароль — синк зупинено. Онови їх у
-        <a href="/settings">Налаштуваннях</a>.
-      </div>
-    {% endif %}
+    {% include "_banners.html" %}
 
-    {% if garmin_errors and garmin_errors.count_24h %}
-      <div class="note" style="border-color:#e0af68;background:rgba(224,175,104,.08)">
-        ⚠️ Garmin API: {{ garmin_errors.count_24h }} збоїв за 24 год
-        {% if garmin_errors.counts_24h %}(<span>{% for k, n in garmin_errors.counts_24h.items() %}{{ k }}×{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</span>){% endif %}.
-        Це може бути тимчасова деградація неофіційного API — дивись <a href="/status">/status</a>.
-      </div>
-    {% endif %}
-
-    {% if backup and (backup.age_hours is none or backup.age_hours >= backup_warn_days * 24 or backup.rsync_ok == false) %}
-      <div class="note" style="border-color:#e0af68;background:rgba(224,175,104,.08)">
-        ⚠️ Бекап БД:
-        {% if backup.age_hours is none %}
-          маркер не знайдено — схоже, бекапи ще не налаштовані/не запускались.
-        {% else %}
-          останній {{ (backup.age_hours / 24) | round(1) }} дн тому.
-        {% endif %}
-        {% if backup.rsync_ok == false %}Off-SD копіювання (rsync) останнього разу не вдалось.{% endif %}
-        Дивись <a href="/status">/status</a>.
-      </div>
-    {% endif %}
-
-    {% if llm_budget and (llm_budget.warn or llm_budget.blocked) %}
-      <div class="note" style="border-color:{{ '#f7768e' if llm_budget.blocked else '#e0af68' }};background:rgba({{ '247,118,142' if llm_budget.blocked else '224,175,104' }},.08)">
-        {% if llm_budget.blocked %}🛑 Бюджет на Claude вичерпано{% else %}⚠️ Бюджет на Claude{% endif %}:
-        ${{ '%.2f'|format(llm_budget.month_usd) }} з ${{ '%.2f'|format(llm_budget.month_limit) }}
-        за місяць ({{ llm_budget.pct }}%), прогноз ${{ '%.2f'|format(llm_budget.projected_month_usd) }}.
-        {% if llm_budget.blocked %}
-          Нові виклики зупинені до наступного періоду.
-        {% elif llm_budget.soft_blocked %}
-          Фонові звіти призупинені — команди ще працюють.
-        {% endif %}
-        Деталі — <a href="/me/report_logs">витрати</a>.
-      </div>
-    {% endif %}
-
-    {% if not has_history %}
-      <div class="note">
-        Ще немає історії відновлення — після першого синку Garmin тут з'явиться сьогоднішня
-        готовність і тренди. А поки що можна <a href="/settings">перевірити налаштування</a>.
-      </div>
-    {% else %}
+    {% if has_history %}
       {% include "_hero_rings.html" %}
 
       {% if stat_cards %}

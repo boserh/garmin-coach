@@ -1,0 +1,22 @@
+{#
+  UI-07: the one place a page-level notice is rendered.
+
+  Expects `banners` — a list the ROUTER builds, because "show this or not" is a
+  decision about data (is the backup stale? is the budget spent?) and belongs where the
+  data is. Each entry:
+
+      {level, icon, text, link, link_text}
+
+  `level` is one of info / ok / warn / danger / muted and drives both the colour (mixed
+  from the design tokens in app.css, never a hex in a template) and the ARIA role — a
+  warning has to interrupt a screen reader, a confirmation must not.
+#}
+{% for b in banners or [] %}
+  <div class="banner banner--{{ b.level }}"
+       role="{{ 'alert' if b.level in ('warn', 'danger') else 'status' }}">
+    {% if b.icon %}<span class="bicon" aria-hidden="true">{{ b.icon }}</span>{% endif %}
+    <div class="btext">{{ b.text }}
+      {% if b.link %}<a class="blink" href="{{ b.link }}">{{ b.link_text or 'Детальніше →' }}</a>{% endif %}
+    </div>
+  </div>
+{% endfor %}

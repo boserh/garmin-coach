@@ -8,15 +8,7 @@
   <div class="wrap" style="--accent:{{ a.color }}">
     <a class="back" href="/me/activities">← Тренування</a>
 
-    {% if resynced %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔄 Дані активності оновлено з Garmin.</div>{% endif %}
-    {% if regen == 'ok' %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔁 Розбір перегенеровано.</div>{% endif %}
-    {% if regen == 'err' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">⚠️ Не вдалося перегенерувати — попередній розбір збережено.</div>{% endif %}
-    {% if regen == 'nokey' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">🔑 Додай Claude-ключ у <a href="/settings">Налаштуваннях</a>, щоб генерувати розбір.</div>{% endif %}
-    {% if regen == 'wait' %}<div class="note" style="max-width:none;border-left:3px solid #e0af68">⏳ Зачекай хвилину перед повторною перегенерацією.</div>{% endif %}
-    {% if regen == 'demo' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">🎭 Демо-акаунт: перегенерація вимкнена.</div>{% endif %}
-    {% if hidden_banner %}<div class="note" style="max-width:none;border-left:3px solid #e0af68">🙈 Активність приховано — вона зникла з усіх списків, рекордів і матчингу.</div>{% endif %}
-    {% if shown_banner %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">👁 Активність знову видима.</div>{% endif %}
-    {% if a.is_hidden %}<div class="note" style="max-width:none;border-left:3px solid #565f89">🙈 Ця активність прихована.</div>{% endif %}
+    {% include "_banners.html" %}
 
     {% if strain %}
     <div class="hero-rec">

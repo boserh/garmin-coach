@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
 from app import stepmatch
+from app.banners import banner
 from app.charts import run_charts as _run_charts
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
@@ -1087,6 +1088,40 @@ async def me_table(
     )
 
 
+# UI-07: the activity page's outcome notices, as data. Every one of these used to be a
+# hand-styled `<div class="note" style="border-left:3px solid #9ece6a">` in the template.
+_REGEN_BANNERS = {
+    "ok": ("ok", "🔁", "Розбір перегенеровано."),
+    "err": ("danger", "⚠️", "Не вдалося перегенерувати — попередній розбір збережено."),
+    "nokey": ("danger", "🔑", "Додай Claude-ключ, щоб генерувати розбір."),
+    "wait": ("warn", "⏳", "Зачекай хвилину перед повторною перегенерацією."),
+    "demo": ("danger", "🎭", "Демо-акаунт: перегенерація вимкнена."),
+}
+
+
+def _activity_banners(*, resynced: bool, regen: str, hidden: bool, shown: bool,
+                      is_hidden: bool) -> list:
+    out = []
+    if resynced:
+        out.append(banner("ok", "Дані активності оновлено з Garmin.", icon="🔄"))
+    if regen in _REGEN_BANNERS:
+        level, icon, text = _REGEN_BANNERS[regen]
+        link = "/settings" if regen == "nokey" else ""
+        out.append(banner(level, text, icon=icon, link=link,
+                          link_text="Налаштування →" if link else ""))
+    if hidden:
+        out.append(banner(
+            "warn",
+            "Активність приховано — вона зникла з усіх списків, рекордів і матчингу.",
+            icon="🙈"))
+    if shown:
+        out.append(banner("ok", "Активність знову видима.", icon="👁"))
+    # The standing state, as opposed to the "you just did this" note above it.
+    if is_hidden and not hidden:
+        out.append(banner("muted", "Ця активність прихована.", icon="🙈"))
+    return out
+
+
 @router.get("/me/{table}/{row_id}", response_class=HTMLResponse)
 async def me_row(
     table: str,
@@ -1163,8 +1198,9 @@ async def me_row(
             request, "activity.html",
             {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
              "analysis": obj.analysis, "user": user, "base": "/me", "token": "",
-             "resynced": bool(resynced), "regen": regen,
-             "hidden_banner": bool(hidden), "shown_banner": bool(shown),
+             "banners": _activity_banners(
+                 resynced=bool(resynced), regen=regen, hidden=bool(hidden),
+                 shown=bool(shown), is_hidden=bool(obj.is_hidden)),
              "has_claude_key": bool(user.anthropic_key_enc)},
         )
 

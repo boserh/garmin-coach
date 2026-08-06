@@ -595,3 +595,80 @@ form.inline{display:inline}
 .refine-thread{margin-top:.8rem}
 .refine-thread summary{cursor:pointer;font-size:.8rem;color:var(--muted)}
 .refine-thread .turn{margin-top:.5rem;font-size:.85rem}
+
+/* ---- navigation (UI-07) ----
+   Two renderings of one section list (_nav.html): the horizontal row on a desktop, a
+   fixed bottom tab bar on a phone. The row used to wrap to 2–3 lines at 390px and eat
+   the top of every page; in standalone mode that's also where a thumb can't reach. */
+.topnav{display:flex;gap:1.35rem;align-items:center;flex-wrap:wrap;margin-bottom:2rem;
+        padding-bottom:.9rem;font-size:.85rem;border-bottom:1px solid var(--line)}
+.topnav a{color:#7a828f;text-decoration:none;letter-spacing:.01em;transition:color .12s}
+.topnav a:hover{color:var(--ink)}
+.topnav a.active{color:var(--ink);font-weight:600}
+.topnav .navhere{display:none;font-size:.95rem;font-weight:600;color:var(--ink);
+                 letter-spacing:-.01em}
+.topnav .logout-form{margin-left:auto}
+button.logout{background:none;border:0;padding:0;cursor:pointer;font:inherit;color:#4b525d;
+              letter-spacing:.01em;transition:color .12s}
+button.logout:hover{color:var(--intervals)}
+/* Keyboard reachability was inputs-only before UI-07; every nav target needs a ring. */
+.topnav a:focus-visible,.tabbar a:focus-visible,.tabmore>summary:focus-visible,
+button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
+                            border-radius:6px}
+
+.tabbar{display:none}
+
+@media (max-width:36rem){
+  /* The row collapses to the page's own name; the sections move to the bar below. */
+  .topnav{gap:.9rem;margin-bottom:1.4rem}
+  .topnav a,.topnav .logout-form{display:none}
+  .topnav .navhere{display:block}
+
+  .tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;
+          align-items:stretch;justify-content:space-around;
+          background:color-mix(in srgb, var(--bg) 92%, transparent);
+          backdrop-filter:blur(12px);border-top:1px solid var(--line-2);
+          padding-bottom:env(safe-area-inset-bottom)}
+  .tabbar a,.tabmore>summary{flex:1 1 0;min-width:0;display:flex;align-items:center;
+          justify-content:center;text-align:center;padding:.85rem .3rem;font-size:.78rem;
+          color:var(--faint);text-decoration:none;letter-spacing:.01em;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tabbar a.active,.tabmore>summary.active{color:var(--accent);font-weight:650}
+  .tabmore{flex:1 1 0;min-width:0;display:flex}
+  .tabmore>summary{cursor:pointer;list-style:none}
+  .tabmore>summary::-webkit-details-marker{display:none}
+  /* The overflow sheet sits directly on top of the bar it belongs to. `dvh`-free by
+     construction — it's anchored to the bottom inset, not to a viewport height. */
+  .moresheet{position:fixed;left:0;right:0;bottom:calc(3rem + env(safe-area-inset-bottom));
+          display:flex;flex-direction:column;gap:.1rem;padding:.5rem .3rem;
+          background:var(--surface);border-top:1px solid var(--line-2);
+          box-shadow:0 -14px 34px -18px rgba(0,0,0,.9)}
+  .moresheet a,.moresheet button.logout{display:block;width:100%;padding:.7rem 1.1rem;
+          font-size:.9rem;color:var(--muted);text-align:left;text-decoration:none}
+  .moresheet a.active{color:var(--ink);font-weight:600}
+  .moresheet form{margin:0}
+
+  /* Room for the bar, plus whatever the phone reserves for its home indicator. */
+  body{padding-bottom:calc(6rem + env(safe-area-inset-bottom))}
+}
+
+/* ---- banners (UI-07) ----
+   Five states on /dashboard and eight on the activity page each carried their own
+   inline `style="border-color:#…;background:rgba(…,.08)"` — the same warning amber
+   hand-typed in three places. One class + a level, colours mixed from the existing
+   tokens, and the level also decides the ARIA role (see _banners.html). */
+.banner{display:flex;gap:.65rem;align-items:flex-start;margin:0 0 .9rem;
+        padding:.8rem 1rem;border-radius:12px;font-size:.9rem;line-height:1.55;
+        border:1px solid var(--line-2);background:var(--surface);color:#c2c9d3}
+.banner .bicon{flex:none;line-height:1.5}
+.banner .btext{min-width:0}
+.banner .blink{display:inline-block;margin-top:.3rem;font-size:.85rem}
+.banner--info{border-color:color-mix(in srgb, var(--accent) 34%, transparent);
+              background:color-mix(in srgb, var(--accent) 8%, transparent)}
+.banner--ok{border-color:color-mix(in srgb, var(--easy) 34%, transparent);
+            background:color-mix(in srgb, var(--easy) 8%, transparent)}
+.banner--warn{border-color:color-mix(in srgb, var(--tempo) 40%, transparent);
+              background:color-mix(in srgb, var(--tempo) 8%, transparent)}
+.banner--danger{border-color:color-mix(in srgb, var(--intervals) 42%, transparent);
+                background:color-mix(in srgb, var(--intervals) 8%, transparent)}
+.banner--muted{border-color:var(--line-2);background:var(--surface-2);color:var(--muted)}
