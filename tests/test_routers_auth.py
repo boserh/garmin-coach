@@ -140,8 +140,8 @@ def test_admin_approves_then_user_can_login(auth_client):
         follow_redirects=False,
     )
     assert login.status_code == 303
-    # non-admin with no Garmin creds yet lands on /settings, not an empty dashboard
-    assert login.headers["location"] == "/settings"
+    # a just-approved account has nothing configured yet → the setup checklist
+    assert login.headers["location"] == "/onboarding"
 
 
 def test_admin_deletes_user(auth_client):

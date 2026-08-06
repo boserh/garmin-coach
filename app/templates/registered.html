@@ -1,0 +1,39 @@
+{% extends "_base.html" %}
+
+{% block title %}Реєстрацію надіслано{% endblock %}
+
+{% block body_attrs %} class="auth"{% endblock %}
+
+{% block body %}
+  {#
+    A successful registration used to bounce back to the login form with one line of
+    green text — which reads like an error page and answers none of the questions the
+    person actually has ("did it work?", "how long?", "what then?"). It gets its own
+    page: state, wait, and the three steps that come after, in order.
+  #}
+  <div style="display:flex;flex-direction:column;gap:1rem">
+  <div class="authcard">
+    <h1 class="brand">Готово ✅</h1>
+    <div class="sub">Акаунт <b>{{ email }}</b> створено. Вхід відкриється, щойно
+      адміністратор його підтвердить — це ручний крок, тож може зайняти якийсь час.</div>
+
+    <div class="sub" style="margin:.2rem 0 .5rem"><b>Далі, після першого входу:</b></div>
+    <ol class="obhow" style="margin:0">
+      <li>Підключити <b>Garmin Connect</b> — email і пароль, зберігаються зашифровано.</li>
+      <li>Додати <b>ключ Claude API</b> — аналіз іде з твого рахунку, витрати видно в застосунку.</li>
+      <li>Підключити <b>Telegram-бота</b> — одна кнопка, далі звіти приходять самі.</li>
+    </ol>
+    <div class="sub" style="margin:.7rem 0 0">Все три — на сторінці «Підключення», куди
+      кине одразу після входу.</div>
+
+    <a class="btn btn-ghost obact" href="/login" style="width:100%;text-align:center">
+      До входу →</a>
+  </div>
+
+  <form class="authcard" method="post" action="/demo-login">
+    <button class="btn btn-ghost" type="submit" style="margin-top:0">Поки що подивитись демо</button>
+    <div class="sub" style="margin-top:.5rem;text-align:center">Фейкові дані для перегляду —
+      без звернень до Garmin чи Claude, чекати підтвердження не треба.</div>
+  </form>
+  </div>
+{% endblock %}

@@ -17,8 +17,9 @@
  *   network-only            EVERYTHING else
  *
  * The deny-list is the important half: personal pages must never persist on the device.
- * /login, /register, /settings, /admin/*, /me/export and any non-GET are never cached,
- * are actively evicted if they somehow got in, and a POST /logout wipes every cache.
+ * /login, /register, /settings, /onboarding, /admin/*, /me/export and any non-GET are
+ * never cached, are actively evicted if they somehow got in, and a POST /logout wipes
+ * every cache.
  *
  * Kept deliberately tiny and dependency-free: a broken service worker is sticky, and
  * the version comes from the same ?v= digest as the rest of the assets, so a deploy
@@ -48,8 +49,11 @@ var PRECACHE = [
 var SWR_PATHS = ['/dashboard', '/plan'];
 
 // Never, under any circumstance, stored on the device.
+// /onboarding renders a live Telegram link token (app.core.tglink) — same class of
+// thing as the credentials form, and it must not outlive the tab on disk.
 var NEVER_CACHE = [
-  '/login', '/register', '/logout', '/settings', '/admin', '/me/export', '/status'
+  '/login', '/register', '/logout', '/settings', '/onboarding', '/admin', '/me/export',
+  '/status'
 ];
 
 function isNeverCache(url) {

@@ -39,6 +39,7 @@ from app.routers import (
     history,
     insights,
     me,
+    onboarding,
     plan,
     reports,
     strength,
@@ -202,13 +203,16 @@ def create_app() -> FastAPI:
         user = await session.get(User, uid)
         if user is None:
             return RedirectResponse("/login", status_code=303)
-        if not user.is_admin and not user.has_garmin_setup:
-            return RedirectResponse("/settings", status_code=303)
+        # Same rule as POST /login: an unfinished account goes to the checklist, not to
+        # a dashboard with nothing on it (and not to the raw settings form).
+        if not user.is_admin and not user.is_demo and not user.setup_complete:
+            return RedirectResponse("/onboarding", status_code=303)
         # EP-04: the dashboard is the product home (was /me).
         return RedirectResponse("/dashboard", status_code=303)
 
     app.include_router(auth.router)
     app.include_router(settings_router.router)
+    app.include_router(onboarding.router)
     app.include_router(dashboard.router)
     app.include_router(me.router)
     app.include_router(insights.router)

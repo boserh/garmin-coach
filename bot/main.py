@@ -45,6 +45,7 @@ async def _post_init(application: Application) -> None:
     # populate the Telegram "/" command menu (user-facing commands only; the
     # test_* debug commands stay hidden)
     await application.bot.set_my_commands([
+        BotCommand("start", "Підключити чат до акаунта / з чого почати"),
         BotCommand("help", "Список команд"),
         BotCommand("report", "Звіт відновлення за 7 днів"),
         BotCommand("ask", "Питання по всій історії, напр. /ask коли я біг швидше 5:00/км"),
@@ -79,6 +80,9 @@ def register_handlers(app: Application) -> None:
     The hidden system/admin commands (/deploy, /test_*) deliberately live on a SEPARATE
     bot process — see bot.admin_main — so deploy + debug traffic stays off this one.
     """
+    # /start must come before everything: it's the only command that runs for a chat with
+    # no account yet — that's the whole point of it (web account linking, app.core.tglink).
+    app.add_handler(CommandHandler("start", handlers.start_cmd))
     app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("report", handlers.report))
     app.add_handler(CommandHandler("ask", handlers.ask))

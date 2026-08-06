@@ -81,6 +81,20 @@ class User(Base):
         registration to /settings instead of an empty /dashboard."""
         return bool((self.garmin_email_enc and self.garmin_password_enc) or self.garth_token_enc)
 
+    @property
+    def setup_complete(self) -> bool:
+        """Whether the three things the coach cannot run without are in place: Garmin
+        credentials it can still use, a Claude key, and a linked Telegram chat. Drives
+        the /onboarding checklist, its nav entry and the dashboard banner — see
+        app.onboarding for the per-step detail. A password Garmin has since rejected
+        counts as missing: the sync is stopped either way."""
+        return bool(
+            self.has_garmin_setup
+            and not self.garmin_creds_invalid
+            and self.anthropic_key_enc
+            and self.telegram_chat_id
+        )
+
     # Location for the morning report's weather lookup. ``weather_location`` is the
     # geocoded display name ("City, Country"); lat/lon are resolved once on save (see
     # app.weather.geocode) so the morning job needs no extra geocoding. Null → no weather.

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import baselines
+from app import baselines, onboarding
 from app.banners import banner
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
@@ -154,11 +154,36 @@ def _stat_cards(day: dict) -> list:
     return cards
 
 
+def _setup_missing(user) -> list:
+    """Short names of the setup steps this account still owes, from the one place that
+    decides what "done" means (app.onboarding). The optional plan step is never in it,
+    so no plan query is needed here — see onboarding.missing_labels."""
+    if user.is_demo:
+        return []   # the demo account has nothing to configure and no way to do it
+    return onboarding.missing_labels(onboarding.build_steps(
+        has_garmin=user.has_garmin_setup,
+        garmin_invalid=user.garmin_creds_invalid,
+        has_anthropic=bool(user.anthropic_key_enc),
+        has_telegram=user.telegram_chat_id is not None,
+    ))
+
+
 def _dashboard_banners(user, *, garmin_errors, backup, backup_warn_days, llm_budget,
-                       has_history) -> list:
+                       has_history, setup_missing=()) -> list:
     """The page's notices, as data (UI-07) — colour and ARIA role come from the level,
     never from a hex typed into the template."""
     out = []
+
+    # First, because nothing else on this page can work until it's done. An account that
+    # never finished setup used to see only "ще немає історії" — true, and no help at all.
+    # Suppressed when a rejected Garmin password is the ONLY thing outstanding: the
+    # dedicated banner right below says the same thing with a better link.
+    if setup_missing and not (user.garmin_creds_invalid and len(setup_missing) == 1):
+        out.append(banner(
+            "warn",
+            "Налаштування не завершено: лишилось підключити "
+            + ", ".join(setup_missing) + ". До цього дані не тягнуться і звітів не буде.",
+            icon="🔌", link="/onboarding", link_text="Закінчити підключення →"))
 
     if user.garmin_creds_invalid:
         out.append(banner(
@@ -205,7 +230,9 @@ def _dashboard_banners(user, *, garmin_errors, backup, backup_warn_days, llm_bud
                           icon="🛑" if blocked else "⚠️",
                           link="/me/report_logs", link_text="Витрати →"))
 
-    if not has_history:
+    # Only once setup is done — before that, "нема історії" is a symptom, and the
+    # checklist banner above already names the cause.
+    if not has_history and not setup_missing:
         out.append(banner(
             "info",
             "Ще немає історії відновлення — після першого синку Garmin тут з'явиться "
@@ -315,7 +342,7 @@ async def dashboard(
             "banners": _dashboard_banners(
                 user, garmin_errors=garmin_errors, backup=backup,
                 backup_warn_days=settings.BACKUP_WARN_DAYS, llm_budget=llm_budget,
-                has_history=bool(trend)),
+                has_history=bool(trend), setup_missing=_setup_missing(user)),
             "checkin_prompt": _checkin_prompt(activities, today_local),
             "fueling": fueling,
             "lifestyle": lifestyle, "lifestyle_back": "/dashboard",
