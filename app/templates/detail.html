@@ -1,13 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ table }} — рядок</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% extends "_base.html" %}
+
+{% block title %}{{ table }} — рядок{% endblock %}
+
+{% block head %}
   <style>
     body { font-family: "Inter", system-ui, sans-serif; margin: 1.75rem; background: #090b0f; color: #eef1f5;
            -webkit-font-smoothing: antialiased; }
@@ -36,8 +31,9 @@
     .analysis h2 { font-size: 1rem; margin: 0 0 .5rem; color: #909aa8; font-weight: 600; }
     .analysis pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; line-height: 1.55; color: #d5dbe4; }
   </style>
-</head>
-<body>
+{% endblock %}
+
+{% block body %}
   {% set base = base or '/ui' %}
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
@@ -83,38 +79,4 @@
       </tr>
     {% endfor %}
   </table>
-  <script>
-    document.querySelectorAll('.chart[data-pts]').forEach(function (ch) {
-      var pts = JSON.parse(ch.dataset.pts), fmt = ch.dataset.fmt;
-      var wrap = ch.querySelector('.cwrap'),
-          tip = ch.querySelector('.tip'), guide = ch.querySelector('.guide');
-      function pace(v) {
-        var m = Math.floor(v), s = Math.round((v - m) * 60);
-        if (s === 60) { m++; s = 0; }
-        return m + ':' + (s < 10 ? '0' : '') + s + '/км';
-      }
-      function show(e) {
-        var r = wrap.getBoundingClientRect(), frac = (e.clientX - r.left) / r.width;
-        var best = null, bd = 2;
-        pts.forEach(function (p) { var d = Math.abs(p.x - frac); if (d < bd) { bd = d; best = p; } });
-        if (!best) return;
-        var x = best.x * r.width;
-        guide.style.left = x + 'px'; guide.style.display = 'block';
-        tip.style.left = Math.min(Math.max(x, 28), r.width - 28) + 'px';
-        tip.style.display = 'block';
-        var val = fmt === 'pace' ? pace(best.v)
-                 : fmt === 'speed' ? best.v.toFixed(1) + ' км/год'
-                 : fmt === 'power' ? Math.round(best.v) + ' Вт'
-                 : fmt === 'elev' ? Math.round(best.v) + ' м'
-                 : fmt === 'cadence' ? Math.round(best.v) + ' кр/хв'
-                 : Math.round(best.v) + ' уд';
-        tip.textContent = val + (best.d != null ? ' · ' + best.d.toFixed(2) + ' км' : '');
-      }
-      wrap.addEventListener('mousemove', show);
-      wrap.addEventListener('mouseleave', function () {
-        tip.style.display = 'none'; guide.style.display = 'none';
-      });
-    });
-  </script>
-</body>
-</html>
+{% endblock %}

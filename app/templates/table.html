@@ -1,13 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ table }} — Garmin DB</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% extends "_base.html" %}
+
+{% block title %}{{ table }} — Garmin DB{% endblock %}
+
+{% block head %}
   <style>
     body { font-family: "Inter", system-ui, sans-serif; margin: 1.75rem; background: #090b0f; color: #eef1f5;
            -webkit-font-smoothing: antialiased; }
@@ -52,8 +47,9 @@
       background: #1a2029; color: #eef1f5; font-size: .85rem; align-self: end; }
     .fbar a.clear { color: #909aa8; font-size: .82rem; align-self: end; padding-bottom: .45rem; }
   </style>
-</head>
-<body>
+{% endblock %}
+
+{% block body %}
   {% set base = base or '/ui' %}
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
@@ -185,5 +181,4 @@
       </tbody>
     </table>
   </div>
-</body>
-</html>
+{% endblock %}

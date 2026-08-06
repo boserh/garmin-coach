@@ -5,12 +5,10 @@ Telegram chat id (secrets are Fernet-encrypted via ``app.core.crypto`` on write 
 never rendered back). ``/admin/users`` lets an admin create further accounts.
 """
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,12 +22,12 @@ from app.garmin import mfa, plan_sync, providers, repository
 from app.garmin.credentials import load_credentials
 from app.garmin.mfa import MFANotPending, MFARequired
 from app.garmin.runtime import user_runtime
+from app.templating import create_templates
 from app.weather import geocode
 
 logger = logging.getLogger("api")
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 router = APIRouter(tags=["settings"])
 

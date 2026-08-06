@@ -1,5 +1,29 @@
 /* Editorial design system — dark, restrained, one accent, lots of air.
    Shared across the web UI; page-specific bits live in the templates. */
+
+/* Inter, self-hosted (UI-02). The app lives on a Pi on the home LAN, so a webfont from
+   a third-party CDN meant the first paint waited on the public internet and, offline,
+   fell back to a system font with different metrics than the layout guard measured.
+   Google serves Inter as ONE variable woff2 per subset — hence `font-weight:400 700`
+   over a single file rather than four static cuts. Refresh with
+   scripts/fetch_inter.py. */
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;
+  src:url('/static/fonts/inter-latin.woff2') format('woff2');
+  unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;
+  src:url('/static/fonts/inter-latin-ext.woff2') format('woff2');
+  unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;
+  src:url('/static/fonts/inter-cyrillic.woff2') format('woff2');
+  unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;
+  src:url('/static/fonts/inter-cyrillic-ext.woff2') format('woff2');
+  unicode-range:U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F}
+
 :root{
   --bg:#090b0f; --surface:#151a23; --surface-2:#1a2029; --line:#232a36; --line-2:#313a49;
   --ink:#eef1f5; --muted:#909aa8; --faint:#616b7a;
@@ -254,7 +278,11 @@ summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
 .chead .meta{color:var(--muted)}
 .chart svg{display:block;width:100%;height:auto}
 .xaxis{display:flex;justify-content:space-between}
-.cwrap{position:relative}
+/* UI-01: the horizontal gesture belongs to the chart (scrub the series), the vertical
+   one to the page. `pan-y` says exactly that — scoped to .cwrap, never the body, or the
+   whole page would stop scrolling. */
+.cwrap{position:relative;touch-action:pan-y}
+.cwrap:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
 .guide{position:absolute;top:0;bottom:0;width:1px;display:none;pointer-events:none}
 .tip{position:absolute;top:.2rem;transform:translateX(-50%);display:none;pointer-events:none;
   background:var(--surface-2);border:1px solid var(--line-2);border-radius:7px;padding:.12rem .5rem;
@@ -532,3 +560,231 @@ form.inline{display:inline}
    invisible on a phone, which is where /plan is read) */
 .numf{display:inline-flex;align-items:center;gap:.35rem;margin:0 .6rem .35rem 0}
 .numf label{color:var(--faint);font-size:.8rem;white-space:nowrap}
+
+/* ---- web chat (EP-11) ----
+   Lived as a page <style> until UI-02 folded every head into _base.html; the thread
+   bubbles are ordinary components, so they belong with the rest of the system. */
+.thread{display:flex;flex-direction:column;gap:.9rem;margin:1.5rem 0 1.2rem}
+.turn{max-width:min(34rem,100%);padding:.8rem 1.05rem;border-radius:14px;font-size:.92rem;
+      line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.turn.me{align-self:flex-end;background:linear-gradient(180deg,#8fb0ff,#6d92f2);color:#0a1020;
+         border-bottom-right-radius:4px}
+.turn.bot{align-self:flex-start;background:var(--surface);border:1px solid var(--line);
+          color:var(--ink);border-bottom-left-radius:4px}
+.turn.bot.fail{border-color:rgba(247,118,142,.35);color:#f7a8b8}
+.turn .kind{display:block;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;
+            color:var(--faint);margin-bottom:.3rem}
+.turn.me .kind{color:rgba(10,16,32,.55)}
+.when{align-self:center;font-size:.7rem;color:var(--faint);margin:.5rem 0 .1rem;letter-spacing:.02em}
+.loadmore{text-align:center;margin:1.1rem 0 .2rem}
+.loadmore a{display:inline-block;padding:.5rem 1.1rem;border-radius:10px;border:1px solid var(--line-2);
+            color:var(--muted);font-size:.85rem;background:var(--surface-2);text-decoration:none}
+.loadmore a:hover{color:var(--ink)}
+.empty{color:var(--muted);font-size:.9rem;margin:1.5rem 0}
+.composer{display:flex;gap:.6rem;align-items:flex-end;margin-top:1rem;flex-wrap:wrap}
+.composer textarea{min-height:3.1rem;max-height:10rem;resize:vertical;flex:1 1 14rem}
+.composer .btn{margin-top:0;white-space:nowrap}
+.pending{margin:0 0 1.2rem}
+.pending .actions{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.9rem}
+.pending .btn{margin-top:0}
+.pending .btn.alt{background:linear-gradient(180deg,#8fe0c9,#5fc2a8)}
+.pending .btn.cancel{background:var(--surface-2);color:var(--muted);border:1px solid var(--line-2);
+                     box-shadow:none}
+.composer.refine{margin-top:.8rem}
+.composer.refine textarea{min-height:2.6rem;font-size:.88rem}
+.refine-thread{margin-top:.8rem}
+.refine-thread summary{cursor:pointer;font-size:.8rem;color:var(--muted)}
+.refine-thread .turn{margin-top:.5rem;font-size:.85rem}
+
+/* ---- navigation (UI-07) ----
+   Two renderings of one section list (_nav.html): the horizontal row on a desktop, a
+   fixed bottom tab bar on a phone. The row used to wrap to 2–3 lines at 390px and eat
+   the top of every page; in standalone mode that's also where a thumb can't reach. */
+.topnav{display:flex;gap:1.35rem;align-items:center;flex-wrap:wrap;margin-bottom:2rem;
+        padding-bottom:.9rem;font-size:.85rem;border-bottom:1px solid var(--line)}
+.topnav a{color:#7a828f;text-decoration:none;letter-spacing:.01em;transition:color .12s}
+.topnav a:hover{color:var(--ink)}
+.topnav a.active{color:var(--ink);font-weight:600}
+.topnav .navhere{display:none;font-size:.95rem;font-weight:600;color:var(--ink);
+                 letter-spacing:-.01em}
+.topnav .logout-form{margin-left:auto}
+button.logout{background:none;border:0;padding:0;cursor:pointer;font:inherit;color:#4b525d;
+              letter-spacing:.01em;transition:color .12s}
+button.logout:hover{color:var(--intervals)}
+/* Keyboard reachability was inputs-only before UI-07; every nav target needs a ring. */
+.topnav a:focus-visible,.tabbar a:focus-visible,.tabmore>summary:focus-visible,
+button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
+                            border-radius:6px}
+
+.tabbar{display:none}
+
+@media (max-width:36rem){
+  /* The row collapses to the page's own name; the sections move to the bar below. */
+  .topnav{gap:.9rem;margin-bottom:1.4rem}
+  .topnav a,.topnav .logout-form{display:none}
+  .topnav .navhere{display:block}
+
+  .tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;
+          align-items:stretch;justify-content:space-around;
+          background:color-mix(in srgb, var(--bg) 92%, transparent);
+          backdrop-filter:blur(12px);border-top:1px solid var(--line-2);
+          padding-bottom:env(safe-area-inset-bottom)}
+  .tabbar a,.tabmore>summary{flex:1 1 0;min-width:0;display:flex;align-items:center;
+          justify-content:center;text-align:center;padding:.85rem .3rem;font-size:.78rem;
+          color:var(--faint);text-decoration:none;letter-spacing:.01em;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tabbar a.active,.tabmore>summary.active{color:var(--accent);font-weight:650}
+  .tabmore{flex:1 1 0;min-width:0;display:flex}
+  .tabmore>summary{cursor:pointer;list-style:none}
+  .tabmore>summary::-webkit-details-marker{display:none}
+  /* The overflow sheet sits directly on top of the bar it belongs to. `dvh`-free by
+     construction — it's anchored to the bottom inset, not to a viewport height. */
+  .moresheet{position:fixed;left:0;right:0;bottom:calc(3rem + env(safe-area-inset-bottom));
+          display:flex;flex-direction:column;gap:.1rem;padding:.5rem .3rem;
+          background:var(--surface);border-top:1px solid var(--line-2);
+          box-shadow:0 -14px 34px -18px rgba(0,0,0,.9)}
+  .moresheet a,.moresheet button.logout{display:block;width:100%;padding:.7rem 1.1rem;
+          font-size:.9rem;color:var(--muted);text-align:left;text-decoration:none}
+  .moresheet a.active{color:var(--ink);font-weight:600}
+  .moresheet form{margin:0}
+
+  /* Room for the bar, plus whatever the phone reserves for its home indicator. */
+  body{padding-bottom:calc(6rem + env(safe-area-inset-bottom))}
+}
+
+/* ---- banners (UI-07) ----
+   Five states on /dashboard and eight on the activity page each carried their own
+   inline `style="border-color:#…;background:rgba(…,.08)"` — the same warning amber
+   hand-typed in three places. One class + a level, colours mixed from the existing
+   tokens, and the level also decides the ARIA role (see _banners.html). */
+.banner{display:flex;gap:.65rem;align-items:flex-start;margin:0 0 .9rem;
+        padding:.8rem 1rem;border-radius:12px;font-size:.9rem;line-height:1.55;
+        border:1px solid var(--line-2);background:var(--surface);color:#c2c9d3}
+.banner .bicon{flex:none;line-height:1.5}
+.banner .btext{min-width:0}
+.banner .blink{display:inline-block;margin-top:.3rem;font-size:.85rem}
+.banner--info{border-color:color-mix(in srgb, var(--accent) 34%, transparent);
+              background:color-mix(in srgb, var(--accent) 8%, transparent)}
+.banner--ok{border-color:color-mix(in srgb, var(--easy) 34%, transparent);
+            background:color-mix(in srgb, var(--easy) 8%, transparent)}
+.banner--warn{border-color:color-mix(in srgb, var(--tempo) 40%, transparent);
+              background:color-mix(in srgb, var(--tempo) 8%, transparent)}
+.banner--danger{border-color:color-mix(in srgb, var(--intervals) 42%, transparent);
+                background:color-mix(in srgb, var(--intervals) 8%, transparent)}
+.banner--muted{border-color:var(--line-2);background:var(--surface-2);color:var(--muted)}
+
+/* ---- one-tap check-in (UI-04) ----
+   RPE, a niggle and NF-28's evening tags all share this pill row. Every pill is a real
+   <button>/<label> inside a real <form>: the site works with JS off, and the tap IS the
+   submit — a check-in that costs a separate "save" is a check-in that doesn't happen.
+   At 320px ten pills wrap to two lines rather than pushing the card off screen. */
+.checkin{margin:1.1rem 0;padding:.9rem 1rem;border:1px solid var(--line-2);border-radius:14px;
+         background:var(--surface)}
+.checkin--compact{margin:.2rem 0 1rem;padding:.7rem .9rem}
+.cklabel{font-size:.85rem;color:var(--muted);margin-bottom:.55rem}
+.ckok{color:var(--easy);margin-left:.4rem}
+.pillrow{display:flex;flex-wrap:wrap;gap:.35rem;min-width:0}
+.pillbtn{flex:0 0 auto;min-width:2.35rem;padding:.45rem .55rem;border:1px solid var(--line-2);
+         border-radius:9px;background:var(--surface-2);color:var(--muted);font:inherit;
+         font-size:.88rem;font-variant-numeric:tabular-nums;text-align:center;cursor:pointer;
+         transition:border-color .12s,color .12s,background .12s}
+.pillbtn.wide{min-width:auto;padding:.45rem .8rem;font-size:.85rem}
+.pillbtn:hover{border-color:var(--accent);color:var(--ink)}
+.pillbtn.on{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 16%, transparent);
+            color:var(--ink);font-weight:650}
+.pillbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* The lifestyle pills are checkboxes wearing the same clothes — multi-select, one submit. */
+.pillbtn input[type=checkbox]{position:absolute;opacity:0;width:0;height:0}
+.pillbtn:has(input:checked){border-color:var(--accent);color:var(--ink);font-weight:650;
+            background:color-mix(in srgb, var(--accent) 16%, transparent)}
+.pillbtn:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.ckpain{margin-top:.8rem}
+.ckpain>summary{cursor:pointer;font-size:.85rem;color:var(--muted);list-style:none;
+                padding:.25rem 0}
+.ckpain>summary::-webkit-details-marker{display:none}
+.ckpain>summary:hover{color:var(--ink)}
+.ckpain form{margin-top:.5rem}
+.checkin .btn-ghost{margin-top:.7rem}
+
+/* ---- insights page (UI-05) ----
+   One card per signal / finding, so "why is the radar quiet?" reads as a list of
+   reasons instead of a paragraph. Severity tints the left edge with the same workout
+   tokens the rest of the app uses. */
+.sigs{display:flex;flex-direction:column;gap:.55rem;margin:.9rem 0 .3rem}
+.sig{padding:.75rem .95rem;border:1px solid var(--line-2);border-left:3px solid var(--line-2);
+     border-radius:12px;background:var(--surface);font-size:.9rem;line-height:1.55;
+     color:#c2c9d3}
+.sig.sev-1{border-left-color:var(--tempo)}
+.sig.sev-2{border-left-color:var(--intervals)}
+.sig.sev-3{border-left-color:var(--intervals)}
+.sighead{display:flex;align-items:baseline;justify-content:space-between;gap:.6rem;
+         margin-bottom:.3rem}
+.siglabel{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+          color:#b6bfca}
+.sigsev{font-size:.75rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.sigmeta{color:var(--faint);font-size:.8rem;margin-left:.35rem;
+         font-variant-numeric:tabular-nums}
+.ladder-text{margin:.6rem 0 0;white-space:pre-wrap;word-break:break-word;font:inherit;
+             font-size:.9rem;line-height:1.55;color:#c2c9d3}
+/* this week's remaining sessions, each with the load it adds */
+.fcast{margin:.7rem 0 .3rem}
+.fc-row{display:flex;gap:.7rem;align-items:baseline;padding:.4rem 0;
+        border-bottom:1px solid var(--line);font-size:.87rem;
+        font-variant-numeric:tabular-nums}
+.fc-row:last-child{border-bottom:0}
+.fc-date{color:var(--muted);flex:none}
+.fc-type{color:var(--ink);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.fc-load{color:var(--tempo);font-weight:600;flex:none}
+/* period / window switcher — links, so it works without JS and is bookmarkable */
+.segbar{display:flex;flex-wrap:wrap;gap:.4rem;margin:.9rem 0 .2rem}
+.seg{padding:.35rem .8rem;border:1px solid var(--line-2);border-radius:999px;
+     font-size:.83rem;color:var(--muted);background:var(--surface-2);text-decoration:none}
+.seg:hover{color:var(--ink);text-decoration:none}
+.seg.on{border-color:var(--accent);color:var(--ink);font-weight:650;
+        background:color-mix(in srgb, var(--accent) 16%, transparent)}
+.seg:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* the two-window comparison table; scrolls inside its own box on a narrow phone */
+.cmp{width:100%;border-collapse:collapse;margin:.9rem 0 .3rem;font-size:.88rem;
+     font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
+.cmp th,.cmp td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);
+                white-space:nowrap}
+.cmp thead th{color:var(--muted);font-weight:600;font-size:.8rem}
+.cmp tbody th{color:var(--muted);font-weight:500}
+.cmp tbody td{color:var(--ink)}
+
+/* the Epley caveat, folded away under the e1RM chart (UI-06) */
+.e1rm-note{margin:.9rem 0 .2rem}
+.e1rm-note>summary{cursor:pointer;font-size:.83rem;color:var(--muted);list-style:none;
+                   padding:.3rem 0}
+.e1rm-note>summary::-webkit-details-marker{display:none}
+.e1rm-note>summary:hover{color:var(--ink)}
+
+/* ---- step-by-step plan vs actual (UI-08) ----
+   One row per scored interval: name, target range, a deviation marker growing from the
+   centre (left = faster, right = slower), and the actual pace. The marker is what makes
+   "the last two blew up" look different from "all eight came in a little slow" — the
+   "🎯 7/8" badge renders those identically.
+   Row class is `.sbrow`, NOT `.step`: `.step` is already the plan's structured-step line
+   and a collision here pushed /plan into horizontal scroll.
+   The strip scrolls inside its own card on a narrow phone rather than widening the page. */
+.stepbar{margin:.9rem 0 .2rem;border:1px solid var(--line-2);border-radius:12px;
+         background:var(--surface);overflow-x:auto}
+.stepbar .sbrow{display:grid;grid-template-columns:7.5rem 5rem minmax(4rem,1fr) 6.5rem;
+      gap:.6rem;align-items:center;padding:.5rem .8rem;font-size:.83rem;
+      font-variant-numeric:tabular-nums;border-bottom:1px solid var(--line);min-width:24rem}
+.stepbar .sbrow:last-child{border-bottom:0}
+.stepbar .sname{color:#c8d0db;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stepbar .splan{color:var(--faint)}
+.stepbar .sact{text-align:right;white-space:nowrap}
+.stepbar .sbrow.hit .sact{color:var(--easy)}
+.stepbar .sbrow.miss .sact{color:var(--intervals)}
+.stepbar .sdelta{color:var(--muted);margin-left:.35rem;font-size:.78rem}
+.stepbar .sgone{color:var(--muted);font-style:italic}
+/* the deviation marker: a zero line down the middle, the bar growing to one side */
+.stepbar .sbar{position:relative;height:.55rem;border-radius:3px;background:var(--surface-2);
+      min-width:3rem}
+.stepbar .szero{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--line-2)}
+.stepbar .sfill{position:absolute;top:0;bottom:0;border-radius:3px}
+.stepbar .sfill.slow{left:50%;background:var(--intervals);opacity:.75}
+.stepbar .sfill.fast{right:50%;background:var(--long);opacity:.75}
+.stepbar .sbrow.hit .sfill{background:var(--easy);opacity:.6}

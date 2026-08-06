@@ -1,22 +1,18 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Інфо</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}Інфо{% endblock %}
+
+{% block body %}
   {% set active = 'info' %}
   {% include "_nav.html" %}
   <div class="wrap prose">
     <p class="eyebrow">Довідка</p>
     <h1>Як це працює</h1>
+
+    {# UI-03: hidden until the browser says the PWA criteria are met (Chrome fires
+       beforeinstallprompt), so the button never promises something it can't do. #}
+    <p><button type="button" id="install-pwa" class="btn-ghost" hidden>
+      📲 Встановити застосунок на телефон</button></p>
     <p>Сервіс читає твої дані з Garmin Connect (сон, HRV, стрес, body battery,
        тренування, самопочуття) і дає Claude проаналізувати — у Telegram-боті або тут,
        у вебі. Поверх аналізу є персональна <b>програма тренувань</b>, яку сервіс
@@ -141,5 +137,4 @@
        тільки тобі за логіном. У Claude передається стиснена зведена статистика, не
        сирі вивантаження з Garmin.</p>
   </div>
-</body>
-</html>
+{% endblock %}

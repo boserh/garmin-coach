@@ -118,3 +118,80 @@ def run_charts(activity_series):
     first = f"{valid[0]:.1f} км" if valid else ""
     last = f"{valid[-1]:.1f} км" if valid else ""
     return charts, first, last
+
+
+def bar_series(values, labels):
+    """Scale a chronological value list to SVG coords for a **bar** chart (UI-06).
+
+    Weekly tonnage is a per-week total, not a continuous signal — drawing it as a line
+    implies values in between that don't exist. Bars start at zero (a truncated axis
+    would make a 5% week-over-week change look like a doubling), so ``ymin`` is always
+    0 and only ``ymax`` scales. Returns ``None`` with nothing to draw.
+
+    ``bars`` carries each rect's ``x/y/w/h`` plus the raw ``v``/``lbl``, and ``pts`` uses
+    the same 0..1-fraction shape as :func:`trend_series` so the shared tooltip component
+    in ``app.js`` works on a bar chart with no extra code.
+    """
+    vals = [(i, float(v)) for i, v in enumerate(values) if v is not None]
+    if not vals:
+        return None
+    n = len(values)
+    ymax = max(v for _i, v in vals) or 1.0
+    inner_w = SVG_W - 2 * SVG_PAD
+    inner_h = SVG_H - 2 * SVG_PAD
+    # A little air between bars, and never wider than the slot itself.
+    slot = inner_w / n
+    width = max(2.0, slot * 0.68)
+
+    bars = []
+    pts = []
+    for i, v in vals:
+        cx = SVG_PAD + slot * (i + 0.5)
+        h = (v / ymax) * inner_h
+        bars.append({
+            "x": round(cx - width / 2, 1), "y": round(SVG_H - SVG_PAD - h, 1),
+            "w": round(width, 1), "h": round(max(h, 0.5), 1),
+            "v": v, "lbl": labels[i] if i < len(labels) else "",
+        })
+        pts.append({"x": round((cx - SVG_PAD) / inner_w if inner_w else 0, 4), "v": v,
+                    "lbl": labels[i] if i < len(labels) else ""})
+    return {"bars": bars, "pts": pts, "ymin": 0.0, "ymax": ymax,
+            "last": vals[-1][1], "W": SVG_W, "H": SVG_H}
+
+
+def shade_zones(activity_series, ranges):
+    """SVG bands marking distance windows on an activity chart (UI-08).
+
+    ``activity_series`` is the run's per-point series (each point's ``d`` is cumulative
+    metres); ``ranges`` is ``[{from_m, to_m, hit}]`` — the actual distance windows of the
+    scored intervals. Returns ``[{x, w, hit}]`` in the same SVG coordinate space
+    :func:`run_series` draws in, so the bands line up with the curve exactly.
+
+    Why distance and not lap index: the curve's x axis is the series' own point index,
+    which is sampled by distance, so a band placed by lap number would drift from the
+    line it is supposed to mark. Ranges the series doesn't reach are dropped rather than
+    clamped — a band that isn't real shouldn't be drawn.
+    """
+    dists = [p.get("d") for p in (activity_series or [])]
+    usable = [d for d in dists if isinstance(d, (int, float))]
+    if len(usable) < 2 or not ranges:
+        return []
+    total = max(usable)
+    if total <= 0:
+        return []
+
+    def x_of(metres):
+        return SVG_PAD + min(1.0, max(0.0, metres / total)) * (SVG_W - 2 * SVG_PAD)
+
+    out = []
+    for r in ranges:
+        a, b = r.get("from_m"), r.get("to_m")
+        if not isinstance(a, (int, float)) or not isinstance(b, (int, float)) or b <= a:
+            continue
+        if a >= total:
+            continue
+        x0, x1 = x_of(a), x_of(b)
+        if x1 - x0 < 0.5:
+            continue
+        out.append({"x": round(x0, 1), "w": round(x1 - x0, 1), "hit": bool(r.get("hit"))})
+    return out

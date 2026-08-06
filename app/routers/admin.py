@@ -3,12 +3,10 @@
 Whitelisted models only (no arbitrary SQL). Token-gated like the other data
 endpoints; the token can be passed as ``?token=`` so plain browser links work.
 """
-from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -44,9 +42,9 @@ from app.db.models import (
 from app.dependencies import get_session
 from app.garmin import client as garmin_client
 from app.garmin import repository
+from app.templating import create_templates
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 # name → ORM model (whitelist; the path param is matched against these keys only).
 # llm_cache and job_runs are deliberately excluded — they already have dedicated

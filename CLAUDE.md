@@ -123,12 +123,27 @@ The web app also runs zero-config: `init_db()` in the lifespan creates tables on
 startup, so `uvicorn` works even before `alembic upgrade head`. Alembic remains the
 source of truth for schema changes.
 
-**Mobile-layout guard** (`tests/test_mobile_layout.py`): renders every user-facing page
-through the app, loads it in headless Chromium with the real `app.css` and asserts
-`scrollWidth <= clientWidth` at 390px and 320px (all `<details>` forced open, external
-requests blocked). Opt-in: `pytest.importorskip` + a Chromium-binary check, so it skips
-in CI (`.[dev]` only) — run locally after touching card/step/badge layout:
-`pip install playwright` then `./venv/bin/python -m pytest tests/test_mobile_layout.py`.
+**Browser guards** (opt-in: `pytest.importorskip` + a Chromium-binary check, so they
+skip in CI, which installs `.[dev]` only). Shared plumbing — seeding, page staging,
+the "no external host" route handler — lives in `tests/browser_helpers.py`. Run them
+locally after touching layout, charts, nav or the service worker:
+`pip install playwright` then `./venv/bin/python -m pytest tests/test_mobile_layout.py
+tests/test_chart_touch.py tests/test_nav_layout.py tests/test_pwa_offline.py`.
+
+- `test_mobile_layout.py` — every user-facing page rendered through the app, loaded in
+  headless Chromium with the real `app.css` **and the real self-hosted font**, asserting
+  `scrollWidth <= clientWidth` at 390px and 320px (all `<details>` forced open). It also
+  fails on any request to an external host, and on the CSS-link substitution not
+  matching — that substitution had silently stopped matching once and the guard spent a
+  while measuring an unstyled page, i.e. passing on nothing.
+- `test_chart_touch.py` (UI-01) — a touch pointer scrubs a chart and reads a value.
+- `test_nav_layout.py` (UI-07) — the top row is one line on a phone and the tab bar
+  doesn't overlap the content.
+- `test_pwa_offline.py` (UI-03) — starts a real uvicorn on loopback (a service worker
+  will not register over `file://`), then checks the offline dashboard, the `/offline`
+  fallback, and that no personal page is ever cached or survives sign-out.
+- `test_chart_tooltip.py` (UI-01) — the chart's pure formatting rules under **node**, no
+  browser at all.
 
 ### First-run bootstrap (multi-user)
 
@@ -250,8 +265,11 @@ app/
     matching.py                    plan-vs-actual matching (EP-01)
     token_info.py                   session token issue/expiry decoding (OPS-01)
     exercises.py                     Garmin exercise category taxonomy
-  weather.py            Open-Meteo geocode (settings) + forecast (today/week)
-  charts.py              inline-SVG chart helpers (series/trend_series/run_series/run_charts)
+  templating.py         UI-02: one Jinja env for every router + `asset_v` (asset-byte digest)
+  banners.py             UI-07: page notices as data — level → colour + ARIA role
+  weather.py              Open-Meteo geocode (settings) + forecast (today/week)
+  charts.py                inline-SVG chart helpers (series/trend_series/run_series/
+                           run_charts/bar_series/shade_zones)
   mcp_server.py            NF-08: personal read-only MCP server (stdio) over the /ask tools
   deploy.py                 OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
   race.py                    EP-05: race-pack target/distance mapping + narration-context builder
@@ -291,7 +309,9 @@ app/
     auth.py         GET/POST /login, GET /logout
     settings.py       /settings (own creds), /admin/users (admin)
     dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
-    health.py             GET /health (public), GET /status (login, per-user)
+    insights.py           GET /insights — UI-05: risk/load/correlations/recap, 0 LLM, 0 Garmin
+    strength.py            GET /strength — UI-06: e1RM per lift, weekly tonnage, stalls
+    health.py               GET /health + GET /offline (public), GET /status (login, per-user)
     reports.py               GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py                 GET /history?days=N — trends from DB, login, per-user
     plan.py                      GET/POST /plan — training-plan setup form + view, login, per-user
@@ -337,6 +357,14 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 - `GET /dashboard` — mobile-first overview: readiness today, 30-day trends, next 7 days
   of the active plan, last 5 activities, this month's AI cost. Pure DB read. Login;
   current user; post-login/root redirect for a non-admin.
+- `GET /insights` — UI-05: why the coach says what it says — active injury-risk signals,
+  the week's forward ACWR, correlations, the period recap and you-vs-you. Server-rendered
+  from the pure modules: **0 Claude calls, 0 Garmin requests** (guarded by tests). Login.
+- `GET /strength` — UI-06: e1RM per lift, weekly tonnage, stalls (NF-27). Same zero-cost
+  rule. Login.
+- `GET /offline` — the service worker's fallback page (public, no auth, no data).
+- `POST /me/activities/{id}/checkin`, `POST /me/lifestyle` — UI-04: RPE / niggle / the
+  evening lifestyle tags, written through the same path the bot uses.
 - `GET /status` — Garmin auth, DB stats, last morning report, cost.
 - `GET /report.json` — daily report (Sonnet). `GET /deep?q=...` — deep analysis (Opus).
 - `GET /history?days=N` — HRV/sleep/stress/body-battery trend from the DB.
@@ -450,6 +478,32 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent);
   `backfill-series --force` refetches runs that already have a series to pick up the
   `series:v3` channels.
+
+## Frontend conventions (UI batch, 2026-08)
+
+No build step, no bundler, no CDN — that stays a deliberate choice. What the UI batch
+made non-negotiable:
+
+- **One `<head>`.** Every page `extends "_base.html"`. `?v=` comes from
+  `app.templating.ASSET_V` (a digest of `app.css`/`app.js`/`sw.js` bytes), so nothing is
+  bumped by hand. Routers get their environment from `create_templates()`.
+- **Nothing loads from a third party.** Inter is in `app/static/fonts/`; the layout guard
+  fails on any request to an external host.
+- **One implementation per widget.** The chart tooltip lives once in `app.js`
+  (`.chart[data-pts]`, Pointer Events); the check-in pills once in `_checkin.html`; page
+  notices once in `_banners.html`. A second copy is what the tests are there to catch.
+- **Colour comes from tokens, never a hex in a template.** `.banner--info/ok/warn/danger/
+  muted` mixes from `--accent`/`--easy`/`--tempo`/`--intervals`; the level also picks the
+  ARIA role.
+- **Pages display, modules compute.** `/insights` and `/strength` re-derive nothing and
+  hardcode no threshold — a number in the markup is a second source of truth that goes
+  stale silently. Both are also **0 LLM / 0 Garmin**, enforced by tests that replace the
+  Anthropic client and the Garmin provider with functions that raise.
+- **It has to work without JavaScript.** Pills are `<button>`s in `<form>`s, the "Ще"
+  menu is a `<details>`, charts are server-rendered SVG. JS only removes reloads.
+- **Class names are global.** `.step` was already the plan's structured-step line when
+  UI-08 reused the name, and `/plan` went into horizontal scroll — the mobile guard
+  caught it. Grep before naming.
 
 ## Design notes (per-feature)
 

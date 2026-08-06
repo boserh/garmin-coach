@@ -271,7 +271,7 @@ async def load_forecast(
     today_s = today.isoformat()
     workouts = await list_workouts(session, plan.id)
     remaining = [
-        {"type": w.type, "dist_km": w.dist_km, "steps": w.steps}
+        {"type": w.type, "dist_km": w.dist_km, "steps": w.steps, "date": w.date}
         for w in workouts
         if w.status == "planned" and today_s <= w.date <= end
     ]
@@ -291,12 +291,22 @@ async def load_forecast(
         for n in range(1, loadforecast.MIN_CHRONIC_WEEKS + 1)
     ]
     anchor_pace = await typical_run_pace(session, user_id)
-    return loadforecast.forecast_week(
+    out = loadforecast.forecast_week(
         remaining_sessions=remaining, done_load=done_load,
         chronic_weekly_loads=chronic, history_days=history_days,
         anchor_pace=anchor_pace,
         warn_acwr=settings.FORECAST_ACWR_WARN, high_acwr=settings.FORECAST_ACWR_HIGH,
     )
+    # UI-05 shows the week as a trace, not a single number, so it needs the same
+    # per-session loads the total was summed from — scored by the module's own
+    # ``session_load``, never re-derived here. Additive: existing callers ignore it.
+    out["done_load"] = round(done_load, 1)
+    out["sessions"] = [
+        {"date": s["date"], "type": s["type"], "dist_km": s["dist_km"],
+         "load": round(loadforecast.session_load(s, anchor_pace), 1)}
+        for s in remaining
+    ]
+    return out
 
 
 async def weekly_compliance(

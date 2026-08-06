@@ -1,13 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Що коуч про мене знає</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% extends "_base.html" %}
+
+{% block title %}Що коуч про мене знає{% endblock %}
+
+{% block head %}
   <style>
     body { font-family: "Inter", system-ui, sans-serif; margin: 1.75rem; background: #090b0f; color: #eef1f5;
            -webkit-font-smoothing: antialiased; max-width: 46rem; }
@@ -25,8 +20,9 @@
     button:hover { border-color: #7aa2f7; color: #eef1f5; }
     .pinned { border-color: #7aa2f7; }
   </style>
-</head>
-<body>
+{% endblock %}
+
+{% block body %}
   {% set active = 'me' %}
   {% set base = '/me' %}
   {% set token = '' %}
@@ -77,5 +73,4 @@
   {% if stoplist %}
     <p class="meta">Відхилених тверджень: {{ stoplist | length }} — вони більше не зʼявляться.</p>
   {% endif %}
-</body>
-</html>
+{% endblock %}

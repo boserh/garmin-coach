@@ -135,9 +135,10 @@ def test_activities_minimal_index_and_run_chart(auth_client):
     assert "<polyline" in detail
     assert "Темп, хв/км" in detail
     assert "Пульс" in detail
-    # hover tooltip: per-point data embedded + the mousemove handler present
+    # hover/touch tooltip: per-point data embedded, and the shared handler linked.
+    # UI-01: the handler is the one component in app.js, not a per-page inline script.
     assert "data-pts=" in detail
-    assert "mousemove" in detail
+    assert "/static/app.js?v=" in detail
 
 
 def test_ui_table_column_filters(auth_client):
@@ -166,16 +167,22 @@ def test_ui_table_column_filters(auth_client):
     assert 'name="f_type"' in page
     assert '<option value="running">running</option>' in page
 
+    # /ui spans every user and is paginated, so each query below is pinned to this
+    # test's own June window — otherwise a module that seeds a lot of recent activities
+    # pushes these three rows off page 1 and the assertions fail for the wrong reason.
+    window = f"date_from=2026-06-01&date_to=2026-06-30&f_user_id={uid}"
+
     # exact-match dropdown filter narrows the rows to just that type — the
     # dropdown itself still lists every option (so it doesn't disappear once
     # picked), so assert on a *row*, not the presence of "cycling" anywhere.
-    filtered = auth_client.get("/ui/activities?f_type=running")
+    filtered = auth_client.get(f"/ui/activities?f_type=running&{window}")
     assert filtered.status_code == 200
     assert "2026-06-01" in filtered.text and "2026-06-10" in filtered.text
     assert "2026-06-05" not in filtered.text  # the cycling row's date
 
     # date-range filter excludes rows outside the window
-    ranged = auth_client.get("/ui/activities?date_from=2026-06-06")
+    ranged = auth_client.get(f"/ui/activities?date_from=2026-06-06&date_to=2026-06-30"
+                             f"&f_user_id={uid}")
     assert "2026-06-10" in ranged.text
     assert "2026-06-01" not in ranged.text
 

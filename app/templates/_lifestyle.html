@@ -1,0 +1,25 @@
+{#
+  UI-04: NF-28's evening lifestyle log, same pill component as the check-in.
+
+  Expects `lifestyle` = {date, tags, labels: [(slug, label), ...]} and `lifestyle_back`
+  (where to return after the POST). Multi-select — beer AND a late meal is one evening —
+  so these are checkboxes with one submit, not one-tap-per-pill: submitting the whole
+  set is what lets an empty set mean "nothing happened" instead of "not filled in".
+#}
+<div class="checkin">
+  <form method="post" action="/me/lifestyle" data-no-busy="1">
+    <input type="hidden" name="date" value="{{ lifestyle.date }}">
+    <input type="hidden" name="back" value="{{ lifestyle_back or '/dashboard' }}">
+    <div class="cklabel">Як пройшов вечір?
+      {% if lifestyle.saved %}<span class="ckok">збережено</span>{% endif %}</div>
+    <div class="pillrow" role="group" aria-label="Теги вечора">
+      {% for slug, lbl in lifestyle.labels %}
+        <label class="pillbtn wide{% if slug in lifestyle.tags %} on{% endif %}">
+          <input type="checkbox" name="tags" value="{{ slug }}"
+                 {% if slug in lifestyle.tags %}checked{% endif %}>{{ lbl }}
+        </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn-ghost">Записати вечір</button>
+  </form>
+</div>

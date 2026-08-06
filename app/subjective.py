@@ -23,6 +23,23 @@ from typing import List, Optional
 
 from app.statutil import mean
 
+# Common running niggles → (slug, Ukrainian label). Kept to a fixed list (not free text)
+# so the same words come back run after run and :func:`recurring_pain` can actually count
+# repeats. UI-04 moved this out of ``bot/handlers.py``: the web check-in has to offer the
+# SAME vocabulary, or the two entry points drift and a knee logged in the browser stops
+# matching a knee logged in Telegram.
+PAIN_PARTS: List[tuple] = [
+    ("knee", "коліно"), ("shin", "гомілка"), ("foot", "стопа"),
+    ("thigh", "стегно"), ("calf", "литка"), ("back", "спина"), ("other", "інше"),
+]
+PART_LABELS: dict = dict(PAIN_PARTS)
+
+
+def part_label(slug: str) -> str:
+    """The stored note for a body-part slug. An unknown slug is passed through — the
+    label IS the stored value, so a rename would orphan history."""
+    return PART_LABELS.get(slug, slug)
+
 WINDOW_DAYS = 14        # look back roughly two weeks, matching the injury radar's window
 RECENT_N = 6            # how many recent check-ins to hand the LLM verbatim
 PAIN_REPEAT = 2         # same body part reported this many times → a recurring niggle

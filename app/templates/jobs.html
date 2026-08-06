@@ -1,13 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% extends "_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block head %}
   <style>
     body { font-family: "Inter", system-ui, sans-serif; margin: 1.75rem; background: #090b0f; color: #eef1f5;
            -webkit-font-smoothing: antialiased; }
@@ -28,8 +23,9 @@
     .filters a { padding: .22rem .55rem; border: 1px solid #313a49; border-radius: 8px; color: #909aa8; font-size: .82rem; }
     .filters a.active { border-color: #7aa2f7; color: #eef1f5; }
   </style>
-</head>
-<body>
+{% endblock %}
+
+{% block body %}
   {% set active = 'ui' if base == '/ui' else 'me' %}
   {% include "_nav.html" %}
   {% set qf = '?token=' ~ token if token else '' %}
@@ -66,5 +62,4 @@
     </table>
   </div>
   {% endif %}
-</body>
-</html>
+{% endblock %}

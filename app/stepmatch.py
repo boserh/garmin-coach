@@ -75,16 +75,45 @@ def _is_hit(pace_actual: Optional[float], pace_range: Optional[list]) -> bool:
     return (fast - tol) <= pace_actual <= (slow + tol)
 
 
+def _pace_delta_s(pace_actual: Optional[float], pace_range: Optional[list]) -> Optional[int]:
+    """How far outside the target range the lap landed, in **seconds per km**, signed:
+    negative = faster than the fast edge, positive = slower than the slow edge, 0 inside.
+
+    Distance to the nearest EDGE, not to the midpoint (UI-08): a range is a range, and a
+    lap sitting on the fast edge missed by nothing, not by half the window. ``None`` when
+    there's no actual pace to compare — the step was never run."""
+    if pace_actual is None or not pace_range or len(pace_range) != 2:
+        return None
+    try:
+        fast, slow = sorted(float(p) for p in pace_range)
+    except (TypeError, ValueError):
+        return None
+    if pace_actual < fast:
+        return round((pace_actual - fast) * 60)
+    if pace_actual > slow:
+        return round((pace_actual - slow) * 60)
+    return 0
+
+
 def match(steps: Optional[list], laps: Optional[list]) -> Optional[dict]:
     """Pair the flattened plan steps with the activity's actual laps (same order — see
     :func:`flatten_steps`) and score each working (pace-targeted) step. ``laps`` is
     ``client.fetch_activity_splits``'s shape: ``[{"pace_min_km": float|None, ...}, ...]``.
 
-    Returns ``{"steps_hit", "steps_total", "misses": [{"step", "planned", "actual"}]}``,
-    or ``None`` when there's nothing structured to compare — no plan steps (a free run),
-    no actual laps at all, or no working step carries a pace target (an all-HR-zone
-    session, e.g. easy/long by effort). Fewer laps than steps (stopped early) scores the
-    un-lapped working steps as an honest miss with ``actual: null``.
+    Returns ``{"steps_hit", "steps_total", "misses": [...], "steps": [...]}``, or ``None``
+    when there's nothing structured to compare — no plan steps (a free run), no actual laps
+    at all, or no working step carries a pace target (an all-HR-zone session, e.g.
+    easy/long by effort). Fewer laps than steps (stopped early) scores the un-lapped
+    working steps as an honest miss with ``actual: null``.
+
+    UI-08 added ``steps`` — one entry per scored step
+    (``{step, kind, planned, actual, hit, delta_s, from_m, to_m}``) — so the per-interval
+    picture can be drawn instead of only counted. Purely **additive**: ``steps_hit`` /
+    ``steps_total`` / ``misses`` keep their exact previous meaning and stay the source of
+    truth for the counters, and a stored row written before this change simply has no
+    ``steps`` key (rendered as the badge alone, no migration). ``from_m``/``to_m`` are the
+    step's cumulative ACTUAL distance window, present only when the laps carry distances —
+    that's what lets the pace curve shade the intervals.
     """
     flat = flatten_steps(steps)
     if not flat or not laps:
@@ -93,27 +122,43 @@ def match(steps: Optional[list], laps: Optional[list]) -> Optional[dict]:
     hit = 0
     total = 0
     misses = []
+    scored = []
+    covered_m = 0.0        # cumulative actual distance walked through the laps so far
     for i, step in enumerate(flat):
+        lap = laps[i] if i < len(laps) else None
+        start_m = covered_m
+        lap_dist = lap.get("dist_m") if lap else None
+        if isinstance(lap_dist, (int, float)) and lap_dist > 0:
+            covered_m += float(lap_dist)
+
         if step.get("kind") not in _WORKING_KINDS:
             continue
         pace_range = step.get("pace_min_km")
         if not pace_range:
             continue   # an hr_zone-targeted working step has no pace to hit/miss on
         total += 1
-        lap = laps[i] if i < len(laps) else None
         actual_pace = lap.get("pace_min_km") if lap else None
-        if _is_hit(actual_pace, pace_range):
+        planned = [round(float(p), 2) for p in pace_range]
+        actual = round(actual_pace, 2) if actual_pace is not None else None
+        is_hit = _is_hit(actual_pace, pace_range)
+        if is_hit:
             hit += 1
         else:
-            misses.append({
-                "step": i + 1,
-                "planned": [round(float(p), 2) for p in pace_range],
-                "actual": round(actual_pace, 2) if actual_pace is not None else None,
-            })
+            misses.append({"step": i + 1, "planned": planned, "actual": actual})
+        scored.append({
+            "step": i + 1,
+            "kind": step.get("kind"),
+            "planned": planned,
+            "actual": actual,
+            "hit": is_hit,
+            "delta_s": _pace_delta_s(actual_pace, pace_range),
+            "from_m": round(start_m) if covered_m > start_m else None,
+            "to_m": round(covered_m) if covered_m > start_m else None,
+        })
 
     if total == 0:
         return None
-    return {"steps_hit": hit, "steps_total": total, "misses": misses}
+    return {"steps_hit": hit, "steps_total": total, "misses": misses, "steps": scored}
 
 
 def badge(step_match: Optional[dict]) -> Optional[str]:

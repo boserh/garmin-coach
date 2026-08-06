@@ -1,29 +1,68 @@
-<style>
-  .topnav { display: flex; gap: 1.35rem; align-items: center; flex-wrap: wrap;
-            margin-bottom: 2rem; padding-bottom: .9rem; font-size: .85rem;
-            border-bottom: 1px solid #1b1f28; }
-  .topnav a { color: #7a828f; text-decoration: none; letter-spacing: .01em; transition: color .12s; }
-  .topnav a:hover { color: #e7e9ee; }
-  .topnav a.active { color: #e7e9ee; font-weight: 600; }
-  .topnav .logout-form { margin-left: auto; }
-  .topnav button.logout { background: none; border: 0; padding: 0; cursor: pointer;
-            font: inherit; color: #4b525d; letter-spacing: .01em; transition: color .12s; }
-  .topnav button.logout:hover { color: #f7768e; }
-</style>
-<nav class="topnav">
-  <a href="/dashboard"{% if active == 'dashboard' %} class="active"{% endif %}>Дашборд</a>
-  <a href="/me"{% if active == 'me' %} class="active"{% endif %}>Мої дані</a>
-  <a href="/plan"{% if active == 'plan' %} class="active"{% endif %}>Програма</a>
-  <a href="/checkups"{% if active == 'checkups' %} class="active"{% endif %}>Аналізи</a>
-  <a href="/chat"{% if active == 'chat' %} class="active"{% endif %}>Чат</a>
-  <a href="/settings"{% if active == 'settings' %} class="active"{% endif %}>Налаштування</a>
-  <a href="/info"{% if active == 'info' %} class="active"{% endif %}>Інфо</a>
+{#
+  UI-07: one source of truth for the sections, rendered twice.
+
+  On a desktop it stays the horizontal row it always was. On a phone that row wrapped
+  to two or three lines and ate the top of every page — the worst place for the primary
+  action in a standalone PWA, since a thumb can't reach it. So below 36rem the links
+  collapse to the page's name and the sections move to a fixed bottom tab bar, with the
+  rarely-opened ones (settings, admin) behind "Ще" — a <details>, not a JS menu: this
+  site works without JS on purpose.
+#}
+{% set NAV_MAIN = [
+  ('/dashboard', 'dashboard', 'Дашборд'),
+  ('/plan',      'plan',      'Програма'),
+  ('/me',        'me',        'Мої дані'),
+  ('/chat',      'chat',      'Чат'),
+] %}
+{% set NAV_MORE = [
+  ('/insights',  'insights',  'Інсайти'),
+  ('/strength',  'strength',  'Сила'),
+  ('/checkups',  'checkups',  'Аналізи'),
+  ('/settings',  'settings',  'Налаштування'),
+  ('/info',      'info',      'Інфо'),
+] %}
+{% set NAV_ADMIN = [
+  ('/ui',           'ui',    'База даних'),
+  ('/admin/cache',  'cache', 'Кеші'),
+  ('/admin/users',  'users', 'Користувачі'),
+] %}
+{% set NAV_ALL = NAV_MAIN + NAV_MORE + NAV_ADMIN %}
+{% set here = (NAV_ALL | selectattr('1', 'equalto', active) | list | first) %}
+
+<nav class="topnav" aria-label="Розділи">
+  <span class="navhere">{{ here[2] if here else 'Garmin Coach' }}</span>
+  {% for href, key, label in NAV_MAIN + NAV_MORE %}
+    <a href="{{ href }}"{% if active == key %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
   {% if user and user.is_admin %}
-  <a href="/ui"{% if active == 'ui' %} class="active"{% endif %}>База даних</a>
-  <a href="/admin/cache"{% if active == 'cache' %} class="active"{% endif %}>Кеші</a>
-  <a href="/admin/users"{% if active == 'users' %} class="active"{% endif %}>Користувачі</a>
+    {% for href, key, label in NAV_ADMIN %}
+      <a href="{{ href }}"{% if active == key %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
   {% endif %}
   <form method="post" action="/logout" class="logout-form">
     <button type="submit" class="logout">Вихід</button>
   </form>
+</nav>
+
+{# Thumb-reachable duplicate for narrow screens; hidden (display:none) on desktop. #}
+<nav class="tabbar" aria-label="Основні розділи">
+  {% for href, key, label in NAV_MAIN %}
+    <a href="{{ href }}"{% if active == key %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+  <details class="tabmore">
+    <summary{% if here and here not in NAV_MAIN %} class="active"{% endif %}>Ще</summary>
+    <div class="moresheet">
+      {% for href, key, label in NAV_MORE %}
+        <a href="{{ href }}"{% if active == key %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+      {% if user and user.is_admin %}
+        {% for href, key, label in NAV_ADMIN %}
+          <a href="{{ href }}"{% if active == key %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+        {% endfor %}
+      {% endif %}
+      <form method="post" action="/logout">
+        <button type="submit" class="logout">Вихід</button>
+      </form>
+    </div>
+  </details>
 </nav>

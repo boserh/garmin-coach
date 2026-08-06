@@ -34,7 +34,11 @@ async def test_step_match_computed_for_pushed_structured_session(session):
     with patch.object(client, "fetch_activity_splits", return_value=_LAPS) as m:
         await jobs_module._step_match_for_activity(session, 1, act)
     m.assert_called_once_with(9999)
-    assert act.step_match == {"steps_hit": 1, "steps_total": 1, "misses": []}
+    assert act.step_match["steps_hit"] == 1
+    assert act.step_match["steps_total"] == 1
+    assert act.step_match["misses"] == []
+    # UI-08: the per-step detail rides along, additively.
+    assert [s["hit"] for s in act.step_match["steps"]] == [True]
 
 
 async def test_step_match_skipped_when_not_pushed():

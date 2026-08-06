@@ -1,17 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Налаштування</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}Налаштування{% endblock %}
+
+{% block body %}
   {% set active = 'settings' %}
   {% include "_nav.html" %}
   <div class="wrap">
@@ -19,9 +10,10 @@
     <h1 class="title" style="font-size:1.7rem">{{ user.email }}</h1>
 
     {% if user.garmin_creds_invalid %}
-    <div class="note" style="border-color:#f7768e;background:rgba(247,118,142,.08)">
-      🔑 <b>Garmin не приймає збережені email/пароль.</b> Онови їх нижче — синк
-      відновиться сам, щойно збережеш робочі креди.
+    <div class="banner banner--danger" role="alert">
+      <span class="bicon" aria-hidden="true">🔑</span>
+      <div class="btext"><b>Garmin не приймає збережені email/пароль.</b> Онови їх нижче —
+        синк відновиться сам, щойно збережеш робочі креди.</div>
     </div>
     {% endif %}
 
@@ -143,5 +135,4 @@
       <button class="btn" type="submit">Змінити пароль</button>
     </form>
   </div>
-</body>
-</html>
+{% endblock %}

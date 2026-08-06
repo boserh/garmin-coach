@@ -1,0 +1,39 @@
+{#
+  UI-04: the post-run check-in widget — RPE in one tap, a niggle in one more.
+
+  Expects `act` ({id, rpe, pain}) and, optionally, `compact` for the dashboard's
+  inline prompt. Each pill is a real <button> inside a real <form>, so it works with
+  JavaScript off; app.js only stops the double submit. No "save" step: the tap IS the
+  submit, because a check-in that costs two taps is a check-in that doesn't happen.
+#}
+<div class="checkin{% if compact %} checkin--compact{% endif %}">
+  <form method="post" action="/me/activities/{{ act.id }}/checkin" data-no-busy="1">
+    <div class="cklabel" id="ck-rpe-{{ act.id }}">
+      {% if act.rpe %}RPE {{ act.rpe }}/10 — змінити?{% else %}Як пройшло? RPE →{% endif %}
+    </div>
+    <div class="pillrow" role="group" aria-labelledby="ck-rpe-{{ act.id }}">
+      {% for n in range(1, 11) %}
+        <button type="submit" name="rpe" value="{{ n }}"
+                class="pillbtn{% if act.rpe == n %} on{% endif %}"
+                {% if act.rpe == n %}aria-pressed="true"{% else %}aria-pressed="false"{% endif %}
+                title="{% if n <= 3 %}дуже легко{% elif n <= 6 %}помірно{% elif n <= 8 %}важко{% else %}на межі{% endif %}">{{ n }}</button>
+      {% endfor %}
+    </div>
+  </form>
+
+  {% if not compact %}
+  <details class="ckpain"{% if act.pain %} open{% endif %}>
+    <summary>{% if act.pain %}🩹 {{ act.pain if act.pain is string else 'біль' }}{% else %}🩹 Щось боліло?{% endif %}</summary>
+    <form method="post" action="/me/activities/{{ act.id }}/checkin" data-no-busy="1">
+      <div class="pillrow" role="group" aria-label="Де боліло">
+        {% for slug, lbl in pain_parts %}
+          <button type="submit" name="pain" value="{{ slug }}"
+                  class="pillbtn wide{% if act.pain == lbl %} on{% endif %}">{{ lbl }}</button>
+        {% endfor %}
+        <button type="submit" name="pain" value="none"
+                class="pillbtn wide{% if act.pain is sameas false %} on{% endif %}">🆗 без болю</button>
+      </div>
+    </form>
+  </details>
+  {% endif %}
+</div>

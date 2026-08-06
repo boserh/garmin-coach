@@ -29,7 +29,20 @@ from app.db.session import get_session
 from app.garmin.mfa import MFARequired
 from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import DemoModeUnavailable
-from app.routers import admin, auth, chat, checkups, dashboard, health, history, me, plan, reports
+from app.routers import (
+    admin,
+    auth,
+    chat,
+    checkups,
+    dashboard,
+    health,
+    history,
+    insights,
+    me,
+    plan,
+    reports,
+    strength,
+)
 from app.routers import settings as settings_router
 
 logger = logging.getLogger("api")
@@ -45,6 +58,12 @@ class _RevalidatingStatic(StaticFiles):
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-cache"
+        # UI-03: a worker's default scope is its own directory, so one served from
+        # /static/ could only control /static/ — useless for page navigations. This
+        # header is what lets it claim the whole origin while living with the other
+        # assets (the alternative is a bespoke route just to move one file to /).
+        if path == "sw.js":
+            response.headers["Service-Worker-Allowed"] = "/"
         return response
 
 
@@ -192,6 +211,8 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router)
     app.include_router(dashboard.router)
     app.include_router(me.router)
+    app.include_router(insights.router)
+    app.include_router(strength.router)
     app.include_router(plan.router)
     app.include_router(checkups.router)
     app.include_router(chat.router)

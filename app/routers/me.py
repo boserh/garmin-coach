@@ -9,19 +9,20 @@ import logging
 import math
 import time as _time
 import zipfile
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
-from app import stepmatch
+from app import stepmatch, subjective
+from app.banners import banner
 from app.charts import run_charts as _run_charts
+from app.charts import shade_zones as _shade_zones
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
+from app.core.tz import user_today
 from app.db import lifestyle as lifestyle_db
 from app.db.models import (
     ActivityRecord,
@@ -36,11 +37,11 @@ from app.dependencies import get_session
 from app.garmin import repository, service
 from app.garmin.runtime import user_runtime
 from app.routers.admin import INDEX_COLS
+from app.templating import create_templates
 
 logger = logging.getLogger("api")
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = create_templates()
 
 
 def _hm(hours):
@@ -782,6 +783,80 @@ async def me_resync_activity(
     return RedirectResponse(f"/me/activities/{row_id}?resynced=1", status_code=303)
 
 
+# ---- UI-04: the post-run check-in, in the browser ----
+# ActivityRecord.subjective feeds half the analytics (EP-12 trend, NF-04's pain/RPE
+# signals, NF-30, plan adaptation, the morning report), and the web could only READ it —
+# the one place you'd naturally log it, right after a run, sent you to Telegram instead.
+# Both entry points write through repository.set_subjective with the same vocabulary
+# (app.subjective.PAIN_PARTS), so a knee logged here is the same knee logged in the bot.
+
+
+@router.post("/me/activities/{row_id}/checkin")
+async def me_activity_checkin(
+    row_id: int,
+    rpe: str = Form(""),
+    pain: str = Form(""),        # a body-part slug, "none" for "no pain", "" for untouched
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Record RPE and/or a niggle for one activity. Idempotent by construction: a repeat
+    tap overwrites the field via ``set_subjective`` (no second row, no history to fork)."""
+    if user.is_demo:
+        return RedirectResponse(f"/me/activities/{row_id}?checkin=demo", status_code=303)
+
+    kwargs = {}
+    if rpe:
+        try:
+            value = int(rpe)
+        except ValueError:
+            return RedirectResponse(f"/me/activities/{row_id}?checkin=bad", status_code=303)
+        if not 1 <= value <= 10:
+            return RedirectResponse(f"/me/activities/{row_id}?checkin=bad", status_code=303)
+        kwargs["rpe"] = value
+    if pain == "none":
+        kwargs["pain"] = False
+    elif pain:
+        if pain not in subjective.PART_LABELS:
+            return RedirectResponse(f"/me/activities/{row_id}?checkin=bad", status_code=303)
+        kwargs["note"] = subjective.part_label(pain)
+    if not kwargs:
+        return RedirectResponse(f"/me/activities/{row_id}", status_code=303)
+
+    act = await repository.set_subjective(session, user.id, row_id, **kwargs)
+    if act is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    await session.commit()
+    return RedirectResponse(f"/me/activities/{row_id}?checkin=ok", status_code=303)
+
+
+@router.post("/me/lifestyle")
+async def me_lifestyle(
+    request: Request,
+    date: str = Form(""),
+    back: str = Form("/dashboard"),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """NF-28's evening log, in the browser. Multi-select (beer AND a late meal is one
+    evening), so the whole day is replaced by what's ticked — including an empty set,
+    which is data ("nothing happened"), not an absent row."""
+    if user.is_demo:
+        return RedirectResponse(_safe_back(back, "?lifestyle=demo"), status_code=303)
+    day = date or user_today(user).isoformat()
+    form = await request.form()
+    tags = [t for t in form.getlist("tags") if t in lifestyle_db.TAGS]
+    await lifestyle_db.upsert(session, user.id, day, tags)
+    return RedirectResponse(_safe_back(back, "?lifestyle=ok"), status_code=303)
+
+
+def _safe_back(back: str, suffix: str) -> str:
+    """Only ever redirect within this app — a form field is user input, and an open
+    redirect off a POST is a phishing primitive."""
+    if not back.startswith("/") or back.startswith("//"):
+        back = "/dashboard"
+    return f"{back}{suffix}"
+
+
 @router.post("/me/resync-days")
 async def me_resync_days(
     date_from: str = Form(...),
@@ -1089,6 +1164,163 @@ async def me_table(
     )
 
 
+# UI-07: the activity page's outcome notices, as data. Every one of these used to be a
+# hand-styled `<div class="note" style="border-left:3px solid #9ece6a">` in the template.
+_REGEN_BANNERS = {
+    "ok": ("ok", "🔁", "Розбір перегенеровано."),
+    "err": ("danger", "⚠️", "Не вдалося перегенерувати — попередній розбір збережено."),
+    "nokey": ("danger", "🔑", "Додай Claude-ключ, щоб генерувати розбір."),
+    "wait": ("warn", "⏳", "Зачекай хвилину перед повторною перегенерацією."),
+    "demo": ("danger", "🎭", "Демо-акаунт: перегенерація вимкнена."),
+}
+
+
+# UI-08: the labels the step bar reads. The kind is the plan's own vocabulary.
+_STEP_KIND_LABELS = {"run": "відрізок", "tempo": "темповий", "interval": "інтервал"}
+
+
+def _stepbar_block(step_match) -> dict | None:
+    """UI-08: NF-14's per-step verdict as rows, not as "🎯 7/8 у цілі".
+
+    8×400 with the last two blown is a different session from an even shortfall on all
+    eight — one says endurance ran out, the other says the target pace was wrong — and
+    the counter renders them identically. ``steps`` is the additive field
+    ``stepmatch.match`` now returns; a row stored before that keeps rendering the badge
+    alone, which is why this returns ``None`` rather than inventing anything.
+    """
+    if not isinstance(step_match, dict):
+        return None
+    steps = step_match.get("steps")
+    if not steps:
+        return None
+    # The widest miss sets the scale, so the bars are comparable within one session.
+    worst = max((abs(s["delta_s"]) for s in steps
+                 if isinstance(s.get("delta_s"), (int, float))), default=0)
+    rows = []
+    for i, s in enumerate(steps, start=1):
+        delta = s.get("delta_s")
+        rows.append({
+            "n": i,
+            "label": _STEP_KIND_LABELS.get(s.get("kind"), s.get("kind") or "крок"),
+            "planned": s.get("planned"),
+            "actual": s.get("actual"),
+            "hit": s.get("hit"),
+            "delta_s": delta,
+            # Not run at all: the module already treats it as an honest miss, and the UI
+            # must say "не виконано" rather than draw a 0:00 that never happened.
+            "missing": s.get("actual") is None,
+            "width_pct": (round(100 * abs(delta) / worst) if worst and delta else 0),
+            "slower": bool(delta and delta > 0),
+        })
+    return {"rows": rows, "total": len(rows),
+            "hit": sum(1 for r in rows if r["hit"])}
+
+
+async def _strength_block(session, user_id: int, obj) -> dict | None:
+    """UI-06: this session's tonnage and per-exercise e1RM, with the change against the
+    previous time each lift was trained.
+
+    All from ``app.strengthstats`` over rows already in the DB — no Garmin request, no
+    formula in the router. ``None`` for anything that isn't a strength session with
+    stored sets, so the block simply doesn't render."""
+    from app import strengthstats
+
+    if not isinstance(obj.exercises, dict) or not obj.exercises:
+        return None
+    tonnage = strengthstats.session_tonnage(obj.exercises)
+    e1rm = strengthstats.session_e1rm(obj.exercises)
+    if not tonnage and not e1rm:
+        return None
+
+    # The most recent earlier session that trained each lift — "did it go up since last
+    # time" is the question a strength page exists to answer.
+    previous: dict = {}
+    for row in await repository.strength_sessions(session, user_id, weeks=52):
+        if not row.get("date") or row["date"] >= (obj.date or ""):
+            continue
+        for name, value in strengthstats.session_e1rm(row.get("exercises")).items():
+            previous[name] = value      # rows come oldest-first, so the last wins
+
+    lifts = []
+    for name in sorted(set(tonnage) | set(e1rm)):
+        prev = previous.get(name)
+        cur = e1rm.get(name)
+        lifts.append({
+            "name": name,
+            "tonnage_kg": tonnage.get(name),
+            "e1rm": cur,
+            "prev_e1rm": prev,
+            "delta": (round(cur - prev, 1) if cur is not None and prev is not None
+                      else None),
+        })
+    return {
+        "total_tonnage_kg": round(sum(tonnage.values()), 1) if tonnage else None,
+        "total_reps": sum(strengthstats.session_reps(obj.exercises).values()) or None,
+        "lifts": lifts,
+    }
+
+
+def _debrief_block(obj) -> dict | None:
+    """UI-05: NF-23's per-km breakdown of a session, shown as a curve and two numbers
+    instead of a paragraph in Telegram.
+
+    Built from the STORED series only — no splits fetch, so opening an activity page
+    still costs zero Garmin requests. ``build_debrief`` degrades honestly: a session
+    without enough kilometres yields no curve, and then there is nothing to show.
+    """
+    from app import postrace
+
+    d = postrace.build_debrief(
+        series=obj.series, dist_km=obj.dist_km, dur_min=obj.dur_min, avg_hr=obj.avg_hr)
+    curve = d.get("km_curve")
+    if not curve:
+        return None
+    return {
+        "curve": curve,
+        "halves": d.get("halves"),
+        "fade_km": d.get("fade_km"),
+        "decoupling_pct": d.get("decoupling_pct"),
+        "avg_pace": d.get("avg_pace_min_km"),
+        "avg_gap_pace": d.get("avg_gap_pace_min_km"),
+        # The same pace sparkline primitive the charts above use — one km per point.
+        "series": _trend_series([r.get("pace_min_km") for r in curve],
+                                [f"{r.get('km')} км" for r in curve]),
+    }
+
+
+_CHECKIN_BANNERS = {
+    "ok": ("ok", "✅", "Записав."),
+    "bad": ("warn", "🤔", "Не зрозумів оцінку — спробуй ще раз."),
+    "demo": ("danger", "🎭", "Демо-акаунт: чекін вимкнено."),
+}
+
+
+def _activity_banners(*, resynced: bool, regen: str, hidden: bool, shown: bool,
+                      is_hidden: bool, checkin: str = "") -> list:
+    out = []
+    if resynced:
+        out.append(banner("ok", "Дані активності оновлено з Garmin.", icon="🔄"))
+    if checkin in _CHECKIN_BANNERS:
+        level, icon, text = _CHECKIN_BANNERS[checkin]
+        out.append(banner(level, text, icon=icon))
+    if regen in _REGEN_BANNERS:
+        level, icon, text = _REGEN_BANNERS[regen]
+        link = "/settings" if regen == "nokey" else ""
+        out.append(banner(level, text, icon=icon, link=link,
+                          link_text="Налаштування →" if link else ""))
+    if hidden:
+        out.append(banner(
+            "warn",
+            "Активність приховано — вона зникла з усіх списків, рекордів і матчингу.",
+            icon="🙈"))
+    if shown:
+        out.append(banner("ok", "Активність знову видима.", icon="👁"))
+    # The standing state, as opposed to the "you just did this" note above it.
+    if is_hidden and not hidden:
+        out.append(banner("muted", "Ця активність прихована.", icon="🙈"))
+    return out
+
+
 @router.get("/me/{table}/{row_id}", response_class=HTMLResponse)
 async def me_row(
     table: str,
@@ -1098,6 +1330,7 @@ async def me_row(
     regen: str = Query(""),             # ST-19: ok|err|nokey|wait after a regenerate attempt
     hidden: int = Query(0),             # ST-17: 1 right after hiding this activity
     shown: int = Query(0),              # ST-17: 1 right after un-hiding it
+    checkin: str = Query(""),           # UI-04: ok|bad|demo after a web check-in
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1161,12 +1394,25 @@ async def me_row(
             strain = {"value": int(obj.load), "color": "#3aa0ff", "label": "Навантаження",
                       **_ring_geom(obj.load / 2, 76)}   # load ~0..200 → 0..100%
         charts, first_x, last_x = _run_charts(obj.series or [])
+        stepbar = _stepbar_block(obj.step_match)
+        # UI-08: shade the scored intervals on the pace curve, so "7/8" is readable off
+        # the line itself rather than only as a number next to it.
+        if stepbar and charts:
+            zones = _shade_zones(obj.series or [], (obj.step_match or {}).get("steps") or [])
+            for c in charts:
+                if c.get("fmt") == "pace":
+                    c["zones"] = zones
+        debrief = _debrief_block(obj)
+        strength = await _strength_block(session, user.id, obj)
         return templates.TemplateResponse(
             request, "activity.html",
             {"a": a, "strain": strain, "charts": charts, "first_x": first_x, "last_x": last_x,
              "analysis": obj.analysis, "user": user, "base": "/me", "token": "",
-             "resynced": bool(resynced), "regen": regen,
-             "hidden_banner": bool(hidden), "shown_banner": bool(shown),
+             "banners": _activity_banners(
+                 resynced=bool(resynced), regen=regen, hidden=bool(hidden),
+                 shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin),
+             "pain_parts": subjective.PAIN_PARTS,
+             "debrief": debrief, "strength": strength, "stepbar": stepbar,
              "has_claude_key": bool(user.anthropic_key_enc)},
         )
 

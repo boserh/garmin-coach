@@ -1,0 +1,21 @@
+{% extends "_base.html" %}
+
+{% block title %}Офлайн{% endblock %}
+
+{% block body_attrs %} class="auth"{% endblock %}
+
+{% block body %}
+  {# UI-03: the fallback for a page the service worker doesn't have. Deliberately plain
+     and self-contained — it has to render with no network at all, so it links only to
+     the two pages the worker keeps offline. #}
+  <div class="authcard">
+    <h1 class="brand">Немає звʼязку</h1>
+    <div class="sub">Сервер зараз недосяжний — схоже, ти поза домашньою мережею або Pi
+      перезавантажується.</div>
+    <p class="muted">Збережені копії, які відкриються без мережі:</p>
+    <p><a href="/dashboard">Дашборд →</a></p>
+    <p><a href="/plan">Програма →</a></p>
+    <p class="muted" style="margin-top:1.4rem">Коли звʼязок повернеться, сторінки
+      оновляться самі.</p>
+  </div>
+{% endblock %}

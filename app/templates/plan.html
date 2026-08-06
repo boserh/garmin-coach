@@ -1,17 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Програма тренувань</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}Програма тренувань{% endblock %}
+
+{% block body %}
   {% set active = 'plan' %}
   {% include "_nav.html" %}
 
@@ -49,10 +40,11 @@
       {% endif %}
     </div>
     {% if plan.status == "paused" %}
-      <div class="summary" style="border-left:3px solid #e0af68">
-        <b>⏸ План на паузі</b> — ти в протоколі повернення після болю (NF-30). Сесії нікуди
-        не зникли; план повернеться сам, коли протокол завершиться. Поточний крок і питання
-        про біль приходять у Telegram.
+      <div class="banner banner--warn" role="alert" style="margin-top:1.3rem">
+        <span class="bicon" aria-hidden="true">⏸</span>
+        <div class="btext"><b>План на паузі</b> — ти в протоколі повернення після болю
+          (NF-30). Сесії нікуди не зникли; план повернеться сам, коли протокол
+          завершиться. Поточний крок і питання про біль приходять у Telegram.</div>
       </div>
     {% endif %}
     {% if plan.summary %}<div class="summary">{{ plan.summary }}</div>{% endif %}
@@ -69,6 +61,8 @@
         <div style="white-space:pre-wrap;margin-top:.5rem">{{ race_debrief.text }}</div>
       </div>
     {% endif %}
+
+    {% include "_fueling.html" %}
 
     {% if not readonly and user.garmin_sync_enabled %}
       <div class="meta" style="margin-top:.6rem">
@@ -87,6 +81,17 @@
         <form class="inline" method="post" action="/plan/sync" style="display:inline">
           <button class="abtn toggle" type="submit">🔄 Синхронізувати зараз</button>
         </form>
+      </div>
+    {% endif %}
+
+    {# UI-08: stepmatch.aggregate has existed since NF-14 and was never shown. One bad
+       session and a plan that's systematically off your current pace look identical
+       until you see the share across sessions. #}
+    {% if step_agg %}
+      <div class="meta" style="margin-top:.6rem">
+        🎯 За {{ step_agg.sessions }} структурні сесії:
+        <b>{{ (step_agg.hit_rate * 100)|round|int }}%</b> кроків у цілі
+        <span class="sep">·</span>{{ step_agg.steps_hit }}/{{ step_agg.steps_total }}
       </div>
     {% endif %}
 
@@ -321,5 +326,4 @@
     </div>
     {% endif %}
   </div>
-</body>
-</html>
+{% endblock %}

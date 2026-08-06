@@ -2,8 +2,9 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,10 +15,12 @@ from app.dependencies import get_session
 from app.garmin import service
 from app.garmin.repository import get_state
 from app.garmin.runtime import user_runtime
+from app.templating import create_templates
 
 logger = logging.getLogger("web")
 
 router = APIRouter(tags=["health"])
+templates = create_templates()
 
 MORNING_STATE_KEY = "morning_sent_date"
 
@@ -25,6 +28,16 @@ MORNING_STATE_KEY = "morning_sent_date"
 @router.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@router.get("/offline", response_class=HTMLResponse)
+async def offline(request: Request):
+    """UI-03: the service worker's fallback for a page it doesn't have cached.
+
+    Public and login-free on purpose — it is fetched at install time, before anyone has
+    signed in, and it contains nothing personal. Carries no data of its own: the point
+    is that it renders with no network at all."""
+    return templates.TemplateResponse(request, "offline.html", {"user": None})
 
 
 @router.get("/status")

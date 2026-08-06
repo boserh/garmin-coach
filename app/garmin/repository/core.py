@@ -74,7 +74,11 @@ async def list_activities(session: AsyncSession, user_id: int, n: int = 5) -> Li
     return [
         {"id": a.id, "date": a.date, "type": a.type, "dist_km": a.dist_km,
          "dur_min": a.dur_min, "avg_hr": a.avg_hr, "load": a.load,
-         "rpe": (a.subjective or {}).get("rpe")}
+         "rpe": (a.subjective or {}).get("rpe"),
+         # UI-04: the dashboard needs to know whether a check-in happened at all —
+         # "no RPE" and "no check-in" are different (a run can be logged as pain-free
+         # without a number), and only the latter is worth prompting for.
+         "has_checkin": bool(a.subjective)}
         for a in rows
     ]
 

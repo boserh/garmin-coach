@@ -1,0 +1,125 @@
+"""UI-07: the navigation must not eat the page, and must not cover it either.
+
+Assertions about layout, so they need the real CSS in a real engine. Opt-in exactly
+like the other browser tests (``playwright`` + a Chromium binary)::
+
+    ./venv/bin/python -m pytest tests/test_nav_layout.py
+"""
+from contextlib import contextmanager
+
+import pytest
+
+from tests.browser_helpers import (
+    chromium_path,
+    local_only,
+    seed_rich_history,
+    stage_assets,
+    stage_pages,
+)
+from tests.web_helpers import _seed_user, _user_id
+
+sync_playwright = pytest.importorskip(
+    "playwright.sync_api", reason="playwright not installed"
+).sync_playwright
+
+WIDTHS = (390, 320)
+
+
+@contextmanager
+def _page(path, width):
+    exe = chromium_path()
+    if not exe:
+        pytest.skip("no chromium binary available")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=exe)
+        try:
+            page = browser.new_page(viewport={"width": width, "height": 844},
+                                    has_touch=True, is_mobile=True)
+            page.route("**/*", local_only([]))
+            page.goto(path.as_uri())
+            yield page
+        finally:
+            browser.close()
+
+
+@pytest.fixture
+def pages(client, tmp_path):
+    email = "nav-layout@example.com"
+    _seed_user(email=email, password="pw", is_admin=False)
+    client.post("/login", data={"email": email, "password": "pw"})
+    seed_rich_history(_user_id(email))
+    stage_assets(tmp_path)
+    return stage_pages(client, tmp_path, {"dashboard": "/dashboard", "plan": "/plan"})
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_the_top_row_is_one_line_on_a_phone(pages, width):
+    """It used to wrap to two or three lines of links at 390px and push the actual page
+    below the fold. On a phone it now shows only where you are."""
+    with _page(pages["dashboard"], width) as page:
+        h = page.evaluate(
+            "() => document.querySelector('.topnav').getBoundingClientRect().height")
+        assert h <= 64, f"top nav is {h}px tall at {width}px — more than one line"
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('.topnav .navhere')).display"
+        ) == "block"
+        # Every link is in the bar below instead — not merely hidden with no replacement.
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('.tabbar')).display") == "flex"
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_the_tab_bar_does_not_cover_the_content(pages, width):
+    with _page(pages["dashboard"], width) as page:
+        overlap = page.evaluate("""() => {
+          const bar = document.querySelector('.tabbar').getBoundingClientRect();
+          window.scrollTo(0, document.body.scrollHeight);
+          const last = [...document.querySelectorAll('.wrap > *')].pop();
+          return last.getBoundingClientRect().bottom - bar.top;
+        }""")
+        assert overlap <= 0, (
+            f"the fixed tab bar overlaps the last {overlap}px of the page at {width}px — "
+            "body's bottom padding has to leave room for it")
+
+
+def test_the_bar_is_gone_on_a_desktop_width(pages):
+    with _page(pages["dashboard"], 1280) as page:
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('.tabbar')).display") == "none"
+        # …and the full row is back, links and all.
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('.topnav a')).display") != "none"
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('.topnav .navhere')).display"
+        ) == "none"
+
+
+def test_every_section_is_reachable_by_keyboard(pages):
+    """Focus styles existed only on inputs before UI-07; a nav you can tab through but
+    can't see is not keyboard-navigable."""
+    with _page(pages["dashboard"], 1280) as page:
+        page.locator(".topnav a").first.focus()
+        outline = page.evaluate(
+            "() => getComputedStyle(document.activeElement).outlineWidth")
+        assert outline not in ("", "0px"), "focused nav link has no visible ring"
+        assert page.evaluate("() => document.activeElement.tagName") == "A"
+
+
+def test_the_more_sheet_opens_without_javascript(pages):
+    """"Ще" is a <details>, not a JS dropdown — the site works with scripts off."""
+    exe = chromium_path()
+    if not exe:
+        pytest.skip("no chromium binary available")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=exe)
+        try:
+            page = browser.new_page(viewport={"width": 390, "height": 844},
+                                    java_script_enabled=False)
+            page.route("**/*", local_only([]))
+            page.goto(pages["dashboard"].as_uri())
+            assert not page.locator(".moresheet").is_visible()
+            page.locator(".tabmore > summary").click()
+            assert page.locator(".moresheet").is_visible()
+            assert page.locator(".moresheet a", has_text="Налаштування").count() == 1
+        finally:
+            browser.close()

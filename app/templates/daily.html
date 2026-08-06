@@ -1,17 +1,8 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Відновлення</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}Відновлення{% endblock %}
+
+{% block body %}
   {% set active = 'me' %}
   {% include "_nav.html" %}
   <div class="wrap">
@@ -64,29 +55,6 @@
         </div>
       {% endfor %}
     </div>
-    <script>
-      document.querySelectorAll('.chart[data-pts]').forEach(function (ch) {
-        var pts = JSON.parse(ch.dataset.pts), fmt = ch.dataset.fmt;
-        var wrap = ch.querySelector('.cwrap'),
-            tip = ch.querySelector('.tip'), guide = ch.querySelector('.guide');
-        function show(e) {
-          var r = wrap.getBoundingClientRect(), frac = (e.clientX - r.left) / r.width;
-          var best = null, bd = 2;
-          pts.forEach(function (p) { var d = Math.abs(p.x - frac); if (d < bd) { bd = d; best = p; } });
-          if (!best) return;
-          var x = best.x * r.width;
-          guide.style.left = x + 'px'; guide.style.display = 'block';
-          tip.style.left = Math.min(Math.max(x, 42), r.width - 42) + 'px';
-          tip.style.display = 'block';
-          tip.textContent = (fmt === 'f1' ? best.v.toFixed(1) : Math.round(best.v))
-                            + (best.lbl ? ' · ' + best.lbl : '');
-        }
-        wrap.addEventListener('mousemove', show);
-        wrap.addEventListener('mouseleave', function () {
-          tip.style.display = 'none'; guide.style.display = 'none';
-        });
-      });
-    </script>
     {% endif %}
 
     {% if not days %}<div class="empty">Поки що немає даних.</div>{% endif %}
@@ -134,5 +102,4 @@
     </div>
     {% endif %}
   </div>
-</body>
-</html>
+{% endblock %}

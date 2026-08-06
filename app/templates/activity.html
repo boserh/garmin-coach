@@ -1,31 +1,14 @@
-<!doctype html>
-<html lang="uk">
-<head>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ a.label }} — {{ a.date }}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
-  <script defer src="/static/app.js?v=1"></script>
-</head>
-<body>
+{% extends "_base.html" %}
+
+{% block title %}{{ a.label }} — {{ a.date }}{% endblock %}
+
+{% block body %}
   {% set active = 'me' %}
   {% include "_nav.html" %}
   <div class="wrap" style="--accent:{{ a.color }}">
     <a class="back" href="/me/activities">← Тренування</a>
 
-    {% if resynced %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔄 Дані активності оновлено з Garmin.</div>{% endif %}
-    {% if regen == 'ok' %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">🔁 Розбір перегенеровано.</div>{% endif %}
-    {% if regen == 'err' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">⚠️ Не вдалося перегенерувати — попередній розбір збережено.</div>{% endif %}
-    {% if regen == 'nokey' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">🔑 Додай Claude-ключ у <a href="/settings">Налаштуваннях</a>, щоб генерувати розбір.</div>{% endif %}
-    {% if regen == 'wait' %}<div class="note" style="max-width:none;border-left:3px solid #e0af68">⏳ Зачекай хвилину перед повторною перегенерацією.</div>{% endif %}
-    {% if regen == 'demo' %}<div class="note" style="max-width:none;border-left:3px solid #f7768e">🎭 Демо-акаунт: перегенерація вимкнена.</div>{% endif %}
-    {% if hidden_banner %}<div class="note" style="max-width:none;border-left:3px solid #e0af68">🙈 Активність приховано — вона зникла з усіх списків, рекордів і матчингу.</div>{% endif %}
-    {% if shown_banner %}<div class="note" style="max-width:none;border-left:3px solid #9ece6a">👁 Активність знову видима.</div>{% endif %}
-    {% if a.is_hidden %}<div class="note" style="max-width:none;border-left:3px solid #565f89">🙈 Ця активність прихована.</div>{% endif %}
+    {% include "_banners.html" %}
 
     {% if strain %}
     <div class="hero-rec">
@@ -73,7 +56,40 @@
       {% if a.rpe %}<div class="bigstat"><div class="v">{{ a.rpe }}/10</div><div class="k">RPE</div></div>{% endif %}
       {% if a.pain %}<div class="bigstat"><div class="v">🩹</div><div class="k">{{ a.pain if a.pain is string else 'біль' }}</div></div>{% endif %}
     </div>
+    {# UI-04: RPE + niggle right here, where you land after a run — this column feeds
+       NF-04, EP-12, NF-30 and plan adaptation, and used to be writable only from the bot. #}
+    {% if not a.is_hidden %}{% with act = a %}{% include "_checkin.html" %}{% endwith %}{% endif %}
+
     {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
+
+    {# UI-08: which interval was missed, by how much, and in which direction. "7/8" reads
+       the same whether the last two blew up (endurance ran out) or all eight came in a
+       little slow (the target pace was wrong) — and those call for opposite fixes.
+       Only rendered when the stored match carries per-step detail; an older row keeps
+       showing the badge above and nothing else. #}
+    {% if stepbar %}
+    <div class="stepbar">
+      {% for r in stepbar.rows %}
+      <div class="sbrow {{ 'hit' if r.hit else 'miss' }}{{ ' gone' if r.missing else '' }}">
+        <div class="sname">{{ r.label }} {{ r.n }}/{{ stepbar.total }}</div>
+        <div class="splan">{{ '%.2f'|format(r.planned[0]) }}–{{ '%.2f'|format(r.planned[1]) }}</div>
+        <div class="sbar" aria-hidden="true">
+          <span class="szero"></span>
+          {% if r.width_pct %}
+          <span class="sfill {{ 'slow' if r.slower else 'fast' }}"
+                style="width:{{ r.width_pct / 2 }}%"></span>
+          {% endif %}
+        </div>
+        <div class="sact">
+          {% if r.missing %}<span class="sgone">не виконано</span>
+          {% else %}{{ '%.2f'|format(r.actual) }}
+            {% if r.delta_s %}<span class="sdelta">{{ '%+d'|format(r.delta_s) }} с</span>{% endif %}
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if a.dynamics_line %}<div class="note" style="max-width:none">{{ a.dynamics_line }}</div>{% endif %}
     {% if a.route_line %}<div class="note" style="max-width:none">{{ a.route_line }}</div>{% endif %}
 
@@ -115,6 +131,46 @@
     <div class="note" style="max-width:none"><div class="abody">{{ analysis }}</div></div>
     {% endif %}
 
+    {# UI-05: NF-23 has computed all of this since it shipped — the km curve, the halves
+       split, the fade point, decoupling — and it only ever reached the user as a
+       paragraph. Numbers straight from postrace.build_debrief; nothing computed here. #}
+    {% if debrief %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">🏁 Розбір по кілометрах</h2>
+    <div class="charts">
+      <div class="chart" data-fmt="pace" data-pts='{{ debrief.series.pts|tojson if debrief.series else "[]" }}'>
+        <div class="chead">Темп по км
+          <span class="meta">
+            {%- if debrief.halves %} — половини {{ debrief.halves.first }} / {{ debrief.halves.second }}
+              ({{ '%+.1f'|format(debrief.halves.delta_pct) }}%,
+              {{ 'негативний спліт' if debrief.halves.negative else 'позитивний спліт' }})
+            {%- endif %}</span></div>
+        {% if debrief.series %}
+        <div class="cwrap">
+          <svg viewBox="0 0 {{ debrief.series.W }} {{ debrief.series.H }}" preserveAspectRatio="none"
+               role="img" aria-label="Темп по кілометрах">
+            <polyline fill="none" stroke="var(--long)" stroke-width="2" stroke-linejoin="round"
+                      points="{{ debrief.series.points }}"/>
+            {% for x, y in debrief.series.dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2" fill="var(--long)"/>{% endfor %}
+          </svg>
+          <div class="guide" style="background:var(--long)"></div>
+          <div class="tip" style="color:var(--long)"></div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="bigstats">
+      {% if debrief.fade_km %}
+      <div class="bigstat"><div class="v">{{ debrief.fade_km }}</div><div class="k">км — точка згасання</div></div>
+      {% else %}
+      <div class="bigstat"><div class="v">—</div><div class="k">згасання не було</div></div>
+      {% endif %}
+      {% if debrief.decoupling_pct is not none %}
+      <div class="bigstat"><div class="v">{{ '%+.1f'|format(debrief.decoupling_pct) }}%</div>
+        <div class="k">decoupling</div></div>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if charts %}
     <div class="charts">
       {% for c in charts %}
@@ -127,6 +183,12 @@
           </div>
           <div class="cwrap">
             <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img" aria-label="{{ c.label }}">
+              {# UI-08: the scored intervals, behind the line — so "7/8 у цілі" is
+                 readable off the curve and not only as a number beside it. #}
+              {% for z in c.zones or [] %}
+              <rect x="{{ z.x }}" y="0" width="{{ z.w }}" height="{{ s.H }}"
+                    fill="{{ 'var(--easy)' if z.hit else 'var(--intervals)' }}" opacity=".13"/>
+              {% endfor %}
               <polyline fill="none" stroke="{{ c.color }}" stroke-width="2" stroke-linejoin="round" points="{{ s.points }}"/>
             </svg>
             <div class="guide" style="background: {{ c.color }}66"></div>
@@ -136,6 +198,37 @@
         </div>
       {% endfor %}
     </div>
+    {% endif %}
+
+    {# UI-06: what this session actually moved, and whether each lift went up since the
+       last time it was trained. All from app/strengthstats.py — the page does no maths. #}
+    {% if strength %}
+    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">🏋️ Ця сесія</h2>
+    <div class="bigstats">
+      {% if strength.total_tonnage_kg %}
+      <div class="bigstat"><div class="v">{{ '%.0f'|format(strength.total_tonnage_kg) }}</div>
+        <div class="k">кг тонажу</div></div>
+      {% endif %}
+      {% if strength.total_reps %}
+      <div class="bigstat"><div class="v">{{ strength.total_reps }}</div><div class="k">повторів</div></div>
+      {% endif %}
+    </div>
+    <div class="fcast">
+      {% for l in strength.lifts %}
+      <div class="fc-row">
+        <span class="fc-type">{{ l.name }}</span>
+        {% if l.e1rm %}<span class="fc-date">≈{{ '%.1f'|format(l.e1rm) }} кг</span>{% endif %}
+        {% if l.delta is not none %}
+          <span class="fc-load {{ 'st-done' if l.delta > 0 else ('st-missed' if l.delta < 0 else '') }}">
+            {{ '%+.1f'|format(l.delta) }}</span>
+        {% elif l.tonnage_kg %}
+          <span class="fc-load">{{ '%.0f'|format(l.tonnage_kg) }} кг</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <p class="crumb">≈1ПМ — оцінка за Еплі, не заміряний максимум.
+      <a href="/strength">Прогресія силових →</a></p>
     {% endif %}
 
     {% if a.exercise_rows %}
@@ -153,33 +246,4 @@
     {% endif %}
   </div>
 
-  <script>
-    document.querySelectorAll('.chart[data-pts]').forEach(function (ch) {
-      var pts = JSON.parse(ch.dataset.pts), fmt = ch.dataset.fmt;
-      var wrap = ch.querySelector('.cwrap'),
-          tip = ch.querySelector('.tip'), guide = ch.querySelector('.guide');
-      function pace(v) {
-        var m = Math.floor(v), s = Math.round((v - m) * 60);
-        if (s === 60) { m++; s = 0; }
-        return m + ':' + (s < 10 ? '0' : '') + s + '/км';
-      }
-      function show(e) {
-        var r = wrap.getBoundingClientRect(), frac = (e.clientX - r.left) / r.width;
-        var best = null, bd = 2;
-        pts.forEach(function (p) { var d = Math.abs(p.x - frac); if (d < bd) { bd = d; best = p; } });
-        if (!best) return;
-        var x = best.x * r.width;
-        guide.style.left = x + 'px'; guide.style.display = 'block';
-        tip.style.left = Math.min(Math.max(x, 28), r.width - 28) + 'px';
-        tip.style.display = 'block';
-        tip.textContent = (fmt === 'pace' ? pace(best.v) : Math.round(best.v) + ' уд')
-                          + (best.d != null ? ' · ' + best.d.toFixed(2) + ' км' : '');
-      }
-      wrap.addEventListener('mousemove', show);
-      wrap.addEventListener('mouseleave', function () {
-        tip.style.display = 'none'; guide.style.display = 'none';
-      });
-    });
-  </script>
-</body>
-</html>
+{% endblock %}
