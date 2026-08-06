@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import format as fmt
 from app import goal as goal_mod
 from app import race as race_mod
-from app import weather
+from app import stepmatch, weather
 from app.analysis.service import (
     ADJUST_LEVELS,
     AnalystError,
@@ -805,6 +805,10 @@ async def plan_page(
     anchor_pace = await repository.typical_run_pace(session, user.id)
     weather_chips, weather_conflicts = await _weather_chips(user, workouts)
     fueling = await fueling_today(user, workouts, anchor_pace)
+    # UI-08: stepmatch.aggregate has existed since NF-14 and was shown nowhere. "78% of
+    # steps in target over 4 structured sessions" is the difference between one bad day
+    # and a plan that's systematically off the athlete's current pace.
+    step_agg = stepmatch.aggregate(await repository.recent_step_match(session, plan.id))
     race_pack = await _race_pack_block(session, user, plan)
     race_debrief = await _race_debrief_block(session, user, plan)
     today_iso = dt.date.today().isoformat()
@@ -827,7 +831,7 @@ async def plan_page(
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
-         "fueling": fueling,
+         "fueling": fueling, "step_agg": step_agg,
          "race_pack": race_pack, "race_debrief": race_debrief,
          "load_forecast": load_forecast,
          "season": (plan.intake or {}).get("season"), "season_sports": SEASON_SPORTS,

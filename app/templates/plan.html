@@ -84,6 +84,17 @@
       </div>
     {% endif %}
 
+    {# UI-08: stepmatch.aggregate has existed since NF-14 and was never shown. One bad
+       session and a plan that's systematically off your current pace look identical
+       until you see the share across sessions. #}
+    {% if step_agg %}
+      <div class="meta" style="margin-top:.6rem">
+        🎯 За {{ step_agg.sessions }} структурні сесії:
+        <b>{{ (step_agg.hit_rate * 100)|round|int }}%</b> кроків у цілі
+        <span class="sep">·</span>{{ step_agg.steps_hit }}/{{ step_agg.steps_total }}
+      </div>
+    {% endif %}
+
     {% if load_forecast %}
       {% set lf = load_forecast %}
       <div class="meta" style="margin-top:.6rem">

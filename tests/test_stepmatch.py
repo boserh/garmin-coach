@@ -55,7 +55,9 @@ def test_match_steady_intervals_all_hit():
     steps = [_repeat(4, _interval(pace=(4.5, 4.7)))]
     laps = [_lap(4.55), _lap(4.6), _lap(4.65), _lap(4.6)]
     result = stepmatch.match(steps, laps)
-    assert result == {"steps_hit": 4, "steps_total": 4, "misses": []}
+    assert result["steps_hit"] == 4
+    assert result["steps_total"] == 4
+    assert result["misses"] == []
 
 
 def test_match_blew_up_at_the_end():
@@ -148,3 +150,61 @@ def test_aggregate_sums_across_sessions():
 def test_aggregate_none_when_empty():
     assert stepmatch.aggregate([]) is None
     assert stepmatch.aggregate(None) is None
+
+
+# ---------- UI-08: the per-step detail ----------
+
+def test_per_step_detail_is_additive_and_agrees_with_the_counters():
+    """``steps_hit``/``steps_total``/``misses`` stay the source of truth for the numbers;
+    ``steps`` must never disagree with them, or the page and the badge tell two stories."""
+    steps = [_repeat(4, _interval(pace=(4.5, 4.7)))]
+    laps = [_lap(4.55), _lap(4.6), _lap(5.3), _lap(5.5)]
+    r = stepmatch.match(steps, laps)
+
+    assert len(r["steps"]) == r["steps_total"]
+    assert sum(1 for s in r["steps"] if s["hit"]) == r["steps_hit"]
+    assert [s["step"] for s in r["steps"] if not s["hit"]] == [m["step"] for m in r["misses"]]
+
+
+def test_delta_is_signed_and_measured_from_the_nearest_edge():
+    """A range is a range: a lap on the fast edge missed by nothing, not by half the
+    window. Negative = faster than the target, positive = slower."""
+    steps = [_repeat(3, _interval(pace=(4.5, 4.7)))]
+    # inside · 12 s/km slower than the slow edge · 12 s/km faster than the fast edge
+    laps = [_lap(4.6), _lap(4.9), _lap(4.3)]
+    deltas = [s["delta_s"] for s in stepmatch.match(steps, laps)["steps"]]
+    assert deltas == [0, 12, -12]
+
+
+def test_a_step_that_was_never_run_reports_no_actual_rather_than_zero():
+    """Stopped after two of four: the module already calls the rest an honest miss, and
+    the UI must not turn a missing lap into a 0:00 that never happened."""
+    steps = [_repeat(4, _interval(pace=(4.5, 4.7)))]
+    r = stepmatch.match(steps, [_lap(4.6), _lap(4.6)])
+    tail = r["steps"][2:]
+    assert [s["actual"] for s in tail] == [None, None]
+    assert [s["delta_s"] for s in tail] == [None, None]
+    assert all(s["hit"] is False for s in tail)
+    assert r["steps_hit"] == 2 and r["steps_total"] == 4
+
+
+def test_step_windows_follow_the_actual_lap_distances():
+    """The shaded bands on the pace curve are placed by distance, so each scored step
+    carries the cumulative actual window it occupied — warm-up included in the offset."""
+    steps = [{"kind": "warmup", "dist_m": 1000},
+             _repeat(2, _interval(dist_m=400), _recovery())]
+    laps = [{"dist_m": 1000.0, "pace_min_km": 6.0},
+            {"dist_m": 400.0, "pace_min_km": 4.6},
+            {"dist_m": 200.0, "pace_min_km": 7.0},
+            {"dist_m": 400.0, "pace_min_km": 4.6},
+            {"dist_m": 200.0, "pace_min_km": 7.0}]
+    windows = [(s["from_m"], s["to_m"]) for s in stepmatch.match(steps, laps)["steps"]]
+    assert windows == [(1000, 1400), (1600, 2000)]
+
+
+def test_laps_without_distances_simply_have_no_window():
+    """Some watches report a lap with no distance; a band we can't place must be absent,
+    not guessed."""
+    steps = [_repeat(2, _interval())]
+    r = stepmatch.match(steps, [{"pace_min_km": 4.6}, {"pace_min_km": 4.6}])
+    assert all(s["from_m"] is None and s["to_m"] is None for s in r["steps"])

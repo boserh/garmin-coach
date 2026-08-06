@@ -758,3 +758,33 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
                    padding:.3rem 0}
 .e1rm-note>summary::-webkit-details-marker{display:none}
 .e1rm-note>summary:hover{color:var(--ink)}
+
+/* ---- step-by-step plan vs actual (UI-08) ----
+   One row per scored interval: name, target range, a deviation marker growing from the
+   centre (left = faster, right = slower), and the actual pace. The marker is what makes
+   "the last two blew up" look different from "all eight came in a little slow" — the
+   "🎯 7/8" badge renders those identically.
+   Row class is `.sbrow`, NOT `.step`: `.step` is already the plan's structured-step line
+   and a collision here pushed /plan into horizontal scroll.
+   The strip scrolls inside its own card on a narrow phone rather than widening the page. */
+.stepbar{margin:.9rem 0 .2rem;border:1px solid var(--line-2);border-radius:12px;
+         background:var(--surface);overflow-x:auto}
+.stepbar .sbrow{display:grid;grid-template-columns:7.5rem 5rem minmax(4rem,1fr) 6.5rem;
+      gap:.6rem;align-items:center;padding:.5rem .8rem;font-size:.83rem;
+      font-variant-numeric:tabular-nums;border-bottom:1px solid var(--line);min-width:24rem}
+.stepbar .sbrow:last-child{border-bottom:0}
+.stepbar .sname{color:#c8d0db;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stepbar .splan{color:var(--faint)}
+.stepbar .sact{text-align:right;white-space:nowrap}
+.stepbar .sbrow.hit .sact{color:var(--easy)}
+.stepbar .sbrow.miss .sact{color:var(--intervals)}
+.stepbar .sdelta{color:var(--muted);margin-left:.35rem;font-size:.78rem}
+.stepbar .sgone{color:var(--muted);font-style:italic}
+/* the deviation marker: a zero line down the middle, the bar growing to one side */
+.stepbar .sbar{position:relative;height:.55rem;border-radius:3px;background:var(--surface-2);
+      min-width:3rem}
+.stepbar .szero{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--line-2)}
+.stepbar .sfill{position:absolute;top:0;bottom:0;border-radius:3px}
+.stepbar .sfill.slow{left:50%;background:var(--intervals);opacity:.75}
+.stepbar .sfill.fast{right:50%;background:var(--long);opacity:.75}
+.stepbar .sbrow.hit .sfill{background:var(--easy);opacity:.6}

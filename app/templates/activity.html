@@ -61,6 +61,35 @@
     {% if not a.is_hidden %}{% with act = a %}{% include "_checkin.html" %}{% endwith %}{% endif %}
 
     {% if a.step_badge %}<div class="note" style="max-width:none">{{ a.step_badge }}</div>{% endif %}
+
+    {# UI-08: which interval was missed, by how much, and in which direction. "7/8" reads
+       the same whether the last two blew up (endurance ran out) or all eight came in a
+       little slow (the target pace was wrong) — and those call for opposite fixes.
+       Only rendered when the stored match carries per-step detail; an older row keeps
+       showing the badge above and nothing else. #}
+    {% if stepbar %}
+    <div class="stepbar">
+      {% for r in stepbar.rows %}
+      <div class="sbrow {{ 'hit' if r.hit else 'miss' }}{{ ' gone' if r.missing else '' }}">
+        <div class="sname">{{ r.label }} {{ r.n }}/{{ stepbar.total }}</div>
+        <div class="splan">{{ '%.2f'|format(r.planned[0]) }}–{{ '%.2f'|format(r.planned[1]) }}</div>
+        <div class="sbar" aria-hidden="true">
+          <span class="szero"></span>
+          {% if r.width_pct %}
+          <span class="sfill {{ 'slow' if r.slower else 'fast' }}"
+                style="width:{{ r.width_pct / 2 }}%"></span>
+          {% endif %}
+        </div>
+        <div class="sact">
+          {% if r.missing %}<span class="sgone">не виконано</span>
+          {% else %}{{ '%.2f'|format(r.actual) }}
+            {% if r.delta_s %}<span class="sdelta">{{ '%+d'|format(r.delta_s) }} с</span>{% endif %}
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if a.dynamics_line %}<div class="note" style="max-width:none">{{ a.dynamics_line }}</div>{% endif %}
     {% if a.route_line %}<div class="note" style="max-width:none">{{ a.route_line }}</div>{% endif %}
 
@@ -154,6 +183,12 @@
           </div>
           <div class="cwrap">
             <svg viewBox="0 0 {{ s.W }} {{ s.H }}" preserveAspectRatio="none" role="img" aria-label="{{ c.label }}">
+              {# UI-08: the scored intervals, behind the line — so "7/8 у цілі" is
+                 readable off the curve and not only as a number beside it. #}
+              {% for z in c.zones or [] %}
+              <rect x="{{ z.x }}" y="0" width="{{ z.w }}" height="{{ s.H }}"
+                    fill="{{ 'var(--easy)' if z.hit else 'var(--intervals)' }}" opacity=".13"/>
+              {% endfor %}
               <polyline fill="none" stroke="{{ c.color }}" stroke-width="2" stroke-linejoin="round" points="{{ s.points }}"/>
             </svg>
             <div class="guide" style="background: {{ c.color }}66"></div>

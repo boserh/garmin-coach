@@ -19,6 +19,7 @@ from app import format as fmt
 from app import stepmatch, subjective
 from app.banners import banner
 from app.charts import run_charts as _run_charts
+from app.charts import shade_zones as _shade_zones
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
 from app.core.tz import user_today
@@ -1174,6 +1175,47 @@ _REGEN_BANNERS = {
 }
 
 
+# UI-08: the labels the step bar reads. The kind is the plan's own vocabulary.
+_STEP_KIND_LABELS = {"run": "відрізок", "tempo": "темповий", "interval": "інтервал"}
+
+
+def _stepbar_block(step_match) -> dict | None:
+    """UI-08: NF-14's per-step verdict as rows, not as "🎯 7/8 у цілі".
+
+    8×400 with the last two blown is a different session from an even shortfall on all
+    eight — one says endurance ran out, the other says the target pace was wrong — and
+    the counter renders them identically. ``steps`` is the additive field
+    ``stepmatch.match`` now returns; a row stored before that keeps rendering the badge
+    alone, which is why this returns ``None`` rather than inventing anything.
+    """
+    if not isinstance(step_match, dict):
+        return None
+    steps = step_match.get("steps")
+    if not steps:
+        return None
+    # The widest miss sets the scale, so the bars are comparable within one session.
+    worst = max((abs(s["delta_s"]) for s in steps
+                 if isinstance(s.get("delta_s"), (int, float))), default=0)
+    rows = []
+    for i, s in enumerate(steps, start=1):
+        delta = s.get("delta_s")
+        rows.append({
+            "n": i,
+            "label": _STEP_KIND_LABELS.get(s.get("kind"), s.get("kind") or "крок"),
+            "planned": s.get("planned"),
+            "actual": s.get("actual"),
+            "hit": s.get("hit"),
+            "delta_s": delta,
+            # Not run at all: the module already treats it as an honest miss, and the UI
+            # must say "не виконано" rather than draw a 0:00 that never happened.
+            "missing": s.get("actual") is None,
+            "width_pct": (round(100 * abs(delta) / worst) if worst and delta else 0),
+            "slower": bool(delta and delta > 0),
+        })
+    return {"rows": rows, "total": len(rows),
+            "hit": sum(1 for r in rows if r["hit"])}
+
+
 async def _strength_block(session, user_id: int, obj) -> dict | None:
     """UI-06: this session's tonnage and per-exercise e1RM, with the change against the
     previous time each lift was trained.
@@ -1352,6 +1394,14 @@ async def me_row(
             strain = {"value": int(obj.load), "color": "#3aa0ff", "label": "Навантаження",
                       **_ring_geom(obj.load / 2, 76)}   # load ~0..200 → 0..100%
         charts, first_x, last_x = _run_charts(obj.series or [])
+        stepbar = _stepbar_block(obj.step_match)
+        # UI-08: shade the scored intervals on the pace curve, so "7/8" is readable off
+        # the line itself rather than only as a number next to it.
+        if stepbar and charts:
+            zones = _shade_zones(obj.series or [], (obj.step_match or {}).get("steps") or [])
+            for c in charts:
+                if c.get("fmt") == "pace":
+                    c["zones"] = zones
         debrief = _debrief_block(obj)
         strength = await _strength_block(session, user.id, obj)
         return templates.TemplateResponse(
@@ -1362,7 +1412,7 @@ async def me_row(
                  resynced=bool(resynced), regen=regen, hidden=bool(hidden),
                  shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin),
              "pain_parts": subjective.PAIN_PARTS,
-             "debrief": debrief, "strength": strength,
+             "debrief": debrief, "strength": strength, "stepbar": stepbar,
              "has_claude_key": bool(user.anthropic_key_enc)},
         )
 
