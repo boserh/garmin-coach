@@ -735,7 +735,8 @@ in the house and therefore disappears whenever you leave it.
 `app/static/sw.js` is deliberately tiny and dependency-free (a broken worker is sticky).
 Three strategies — cache-first for `/static/*`, stale-while-revalidate for `GET /dashboard`
 and `GET /plan`, network-only for everything else — and a **deny-list that overrides all
-three**: `/login`, `/register`, `/logout`, `/settings`, `/admin/*`, `/me/export`, `/status`
+three**: `/login`, `/register`, `/logout`, `/settings`, `/onboarding`, `/admin/*`,
+`/me/export`, `/status`
 and any non-GET are never cached, are evicted if an older worker ever stored them, and
 `POST /logout` wipes every cache (the page also messages the worker on submit, because a
 navigation can outrun a `postMessage`; the shell then legitimately re-warms — CSS and fonts
@@ -762,3 +763,46 @@ the logo).
 
 `tests/test_pwa_offline.py` starts a real uvicorn on a loopback port: a service worker will
 not register over `file://`, and `http://127.0.0.1` is a secure context.
+
+
+## Registration → setup flow
+
+The failure was never a crash. Registration ended on the login page with one green
+sentence, the first login dropped the user into `/settings` — eleven fields, no statement
+of which three matter — and nothing anywhere said the Telegram bot had to be connected at
+all. People filled in Garmin, saw a silent app, and assumed it was broken.
+
+Three pieces:
+
+- **`app/onboarding.py`** — the checklist as data, pure (flags in, step dicts out), the
+  same shape as `app.banners`. Garmin → Claude key → Telegram are `required`; the plan is
+  the payoff step and is deliberately excluded from `progress()`, so a configured account
+  never reads as unfinished. A Garmin password Garmin has since **rejected** counts as
+  *not done* (`garmin_creds_invalid`): credentials are stored, the sync is stopped, and a
+  tick there would be a lie in the one state that needs action. `User.setup_complete`
+  mirrors the same three, and everything else reads it — the post-login redirect, the nav
+  entry (present only while unfinished), the `/dashboard` banner.
+- **`app/routers/onboarding.py` + `onboarding.html`** — `GET /onboarding`, a pure DB read
+  (0 Claude, 0 Garmin, guarded by a test): one card per step, live status, the action next
+  to it. Classes are `.ob*` — `.step`/`.steps` are already the plan's structured-step line
+  and its container, and that exact collision pushed `/plan` into horizontal scroll once
+  already.
+- **`app/core/tglink.py`** — Telegram linking as a signed deep link instead of a copied
+  chat id. The old flow was: find `@userinfobot`, message it, copy a number, paste it into
+  a form, and get no feedback if you got it wrong. Now the web renders
+  `t.me/<bot>?start=<token>`; Telegram hands the token back as `/start <token>`, so the
+  chat id and the web account arrive in the same update and the bot links them itself.
+  The token is an `itsdangerous` blob (user id, 24h TTL, own salt) — no table, no
+  migration, no cleanup. It does require the bot and web processes to share
+  `APP_SECRET_KEY` (they already do, same `.env`); without it `tglink.available()` is
+  False and both pages fall back to the manual chat-id field, rather than offering a
+  button that cannot work.
+
+`bot/handlers.start_cmd` is the one command deliberately **not** wrapped in
+`@bot_command`: its whole job is to run for a chat `_resolve_user` would reject, and the
+signed token is what authorises it. `telegram_chat_id` is UNIQUE, so re-linking hands the
+chat over (clearing the previous owner) instead of hitting the constraint — both halves
+are proved, the token for the web account and the incoming update for the chat. A bare
+`/start` explains the actual order of operations; every linking reply ends with what the
+account still owes (`onboarding.missing_labels`), because sending someone away with
+"готово" when there's no Claude key yet just moves the confusion one step on.

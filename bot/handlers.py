@@ -18,7 +18,7 @@ from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from app import deploy as deploy_ops
-from app import records, subjective, weather
+from app import onboarding, records, subjective, weather
 from app import returntorun as returntorun_mod
 from app.analysis import delivery
 from app.analysis.service import (
@@ -29,6 +29,7 @@ from app.analysis.service import (
     run_plan_edit,
     run_plan_extension,
 )
+from app.core import tglink
 from app.core.config import settings
 from app.core.tz import user_today
 from app.db import users
@@ -63,9 +64,24 @@ PROPOSAL_HINT = "\n\n💬 Питання чи корекція? Просто н�
 
 _REPORT_Q = "Оціни відновлення і дай пораду до наступної запланованої пробіжки."
 _DEEP_Q = "Глибокий розбір сну, HRV і навантаження за два тижні."
+# A chat we can't map to an account. The old text ("додай цей chat_id у налаштуваннях")
+# assumed the person already had a web account open in front of them and knew what a chat
+# id was; both replies now name the actual first step and the one-tap way to do it.
 _NOT_REGISTERED = (
-    "Тебе не зареєстровано. Додай цей chat_id у налаштуваннях веб-кабінету, "
-    "щоб бот працював з твоїми даними."
+    "Цей чат ще не підключено до акаунта.\n\n"
+    "Зареєструйся у веб-застосунку, увійди — і на сторінці «Підключення» натисни "
+    "«Підключити Telegram». Кнопка відкриє цей чат і зв'яже його сама, chat ID "
+    "переписувати не треба.\n\n/start — коротко про порядок дій."
+)
+START_UNLINKED = (
+    "👋 Це персональний тренер поверх Garmin Connect: читає сон, HRV, стрес і тренування "
+    "й розбирає їх через Claude.\n\n"
+    "Щоб він запрацював, потрібен акаунт у веб-застосунку — там зберігаються твої "
+    "креденшели Garmin і твій ключ Claude:\n"
+    "1. зареєструйся й дочекайся підтвердження адміністратором;\n"
+    "2. увійди — відкриється сторінка «Підключення» з трьома кроками;\n"
+    "3. на кроці Telegram натисни кнопку — вона поверне тебе сюди вже підключеним.\n\n"
+    "/help — що вміє бот."
 )
 MFA_REQUIRED_MSG = (
     "🔐 Garmin просить код підтвердження (MFA). Заверши вхід у Налаштуваннях "
@@ -114,6 +130,7 @@ HELP_TEXT = (
     "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n"
     "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n"
     "/race — race pack: пейсинг/харчування/чекліст до цільового старту (Opus)\n\n"
+    "/start — підключити цей чат до акаунта (або перевірити, що ще не налаштовано)\n"
     "/help — цей список"
 )
 
@@ -181,6 +198,83 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/help — static list of commands. No DB/user lookup: useful even before registration."""
     logger.info("CMD /help")
     await update.message.reply_text(HELP_TEXT)
+
+
+def _setup_tail(user: "User") -> str:
+    """What this account still owes, appended to a linking reply. Sending someone away
+    with "готово" when there's no Claude key yet just moves the confusion one step on."""
+    missing = onboarding.missing_labels(onboarding.build_steps(
+        has_garmin=user.has_garmin_setup,
+        garmin_invalid=user.garmin_creds_invalid,
+        has_anthropic=bool(user.anthropic_key_enc),
+        has_telegram=user.telegram_chat_id is not None,
+    ))
+    if not missing:
+        return ("\n\nВсе налаштовано. Напиши /report — зроблю звіт зараз, "
+                "або чекай на ранковий.")
+    return ("\n\nЩе лишилось у вебі: " + ", ".join(missing)
+            + ".\nВідкрий сторінку «Підключення» — там покроково.")
+
+
+async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/start [token] — the Telegram half of web account linking (see app.core.tglink).
+
+    Deliberately NOT wrapped in ``@bot_command``: this is the one command whose whole job
+    is to run for a chat that ``_resolve_user`` would reject, and the token is what
+    authorises it — it's signed with APP_SECRET_KEY and can only have come from a logged-in
+    session on /onboarding or /settings.
+
+    A bare /start (someone found the bot before the web) explains the actual order of
+    operations instead of the old flat "тебе не зареєстровано".
+    """
+    chat = update.effective_chat
+    token = (ctx.args or [""])[0] if ctx.args else ""
+    logger.info(f"CMD /start chat_id={chat.id if chat else '?'} token={'yes' if token else 'no'}")
+
+    async with async_session_maker() as session:
+        if not token:
+            known = await users.get_by_chat_id(session, chat.id) if chat else None
+            if known is not None and known.is_active and known.is_approved:
+                await update.message.reply_text(
+                    f"Цей чат уже підключено до акаунта {known.email}." + _setup_tail(known))
+            else:
+                await update.message.reply_text(START_UNLINKED)
+            return
+
+        user_id = tglink.parse_token(token)
+        if user_id is None:
+            await update.message.reply_text(
+                "🔗 Посилання недійсне або протухло (діє добу).\n"
+                "Відкрий у вебі сторінку «Підключення» ще раз і натисни кнопку — "
+                "вона згенерує свіже.")
+            return
+
+        user = await session.get(User, user_id)
+        if user is None:
+            await update.message.reply_text("🔗 Акаунта з цього посилання вже не існує.")
+            return
+        if not (user.is_active and user.is_approved):
+            await update.message.reply_text(
+                "🔗 Акаунт ще не підтверджено адміністратором (або деактивовано) — "
+                "підключимо, щойно доступ відкриють.")
+            return
+
+        # telegram_chat_id is UNIQUE: hand the chat over rather than blowing up on the
+        # constraint. Someone re-linking their own chat to a second account, or a shared
+        # phone, is a normal thing to do — and both sides of this swap were proved:
+        # the token proves the web account, the incoming update proves the chat.
+        previous = await users.get_by_chat_id(session, chat.id)
+        if previous is not None and previous.id != user.id:
+            previous.telegram_chat_id = None
+            logger.info(f"TG relink chat_id={chat.id} {previous.id} → {user.id}")
+        user.telegram_chat_id = chat.id
+        await session.commit()
+        logger.info(f"TG linked user={user.id} chat_id={chat.id}")
+
+        await update.message.reply_text(
+            f"✅ Підключено до акаунта {user.email}.\n"
+            "Сюди приходитимуть ранковий звіт, питання про самопочуття після пробіжки "
+            "й пропозиції змінити план." + _setup_tail(user))
 
 
 async def report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

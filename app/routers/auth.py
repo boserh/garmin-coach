@@ -71,10 +71,12 @@ async def login_submit(
     if user.is_admin:
         return RedirectResponse("/ui", status_code=303)
     # EP-04: a non-admin lands on the dashboard (readiness/trends/plan/cost at a
-    # glance) instead of the raw settings form — unless there's no Garmin data to
-    # show yet, in which case /settings (enter creds) is the more useful landing.
-    if not user.has_garmin_setup:
-        return RedirectResponse("/settings", status_code=303)
+    # glance) instead of the raw settings form — unless setup isn't finished, in which
+    # case the dashboard is an empty page that explains nothing. /onboarding names the
+    # three things that are missing and links straight to each; /settings used to be
+    # this landing and it only ever showed an eleven-field form.
+    if not user.is_demo and not user.setup_complete:
+        return RedirectResponse("/onboarding", status_code=303)
     return RedirectResponse("/dashboard", status_code=303)
 
 
@@ -129,10 +131,9 @@ async def register_submit(
         session, email=email, password_hash=await hash_password_async(password),
         is_admin=False, is_approved=False,
     )
-    return _login_page(
-        request,
-        info="Реєстрацію надіслано. Увійти можна буде після підтвердження адміністратором.",
-    )
+    # Its own page, not a green line on the login form: it has to say what happens next
+    # (an admin approves) AND what setup follows, which is where people got stuck.
+    return templates.TemplateResponse(request, "registered.html", {"email": email})
 
 
 @router.post("/demo-login")

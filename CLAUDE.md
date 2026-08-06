@@ -239,6 +239,7 @@ app/
     crypto.py          Fernet encrypt/decrypt for creds + bcrypt password hashing
     tz.py              canonical per-user timezone: user_tz / user_today (ST-14)
     auth.py            current_user / require_admin deps; session login/logout helpers
+    tglink.py           signed t.me/?start= deep link that links a Telegram chat to an account
   db/
     base.py            async engine + sessionmaker + declarative Base; init_db/dispose_db
     session.py         get_session() request dependency
@@ -267,6 +268,7 @@ app/
     exercises.py                     Garmin exercise category taxonomy
   templating.py         UI-02: one Jinja env for every router + `asset_v` (asset-byte digest)
   banners.py             UI-07: page notices as data — level → colour + ARIA role
+  onboarding.py           pure setup checklist: which of Garmin/Claude/Telegram is still missing
   weather.py              Open-Meteo geocode (settings) + forecast (today/week)
   charts.py                inline-SVG chart helpers (series/trend_series/run_series/
                            run_charts/bar_series/shade_zones)
@@ -306,8 +308,9 @@ app/
     reports.py             activity/checkup/supplement analysis, /ask agent + tools, compare/wrapped/insights
     prompts.py               SYSTEM_* prompt templates
   routers/
-    auth.py         GET/POST /login, GET /logout
+    auth.py         GET/POST /login, GET /logout, GET/POST /register
     settings.py       /settings (own creds), /admin/users (admin)
+    onboarding.py       GET /onboarding — setup checklist, 0 LLM, 0 Garmin
     dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
     insights.py           GET /insights — UI-05: risk/load/correlations/recap, 0 LLM, 0 Garmin
     strength.py            GET /strength — UI-06: e1RM per lift, weekly tonnage, stalls
@@ -322,7 +325,7 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /checkups, /log (NF-28), /forget (EP-18), /deploy (admin), /test_*
+  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /checkups, /log (NF-28), /forget (EP-18), /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job
 alembic/           migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/              pytest
@@ -352,7 +355,12 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
 ## Web endpoints
 
 - `GET/POST /login`, `GET /logout`, `GET/POST /register` — cookie-session auth +
-  self-registration (new users await admin approval before they can log in).
+  self-registration (new users await admin approval before they can log in). A successful
+  `POST /register` renders its own "what happens next" page, not a line on the login form.
+- `GET /onboarding` — the setup checklist a fresh account lands on: Garmin creds, Claude
+  key, Telegram bot (+ the optional first plan), each with live status and its action.
+  Pure DB read (0 Claude, 0 Garmin, guarded). Login; the post-login/root redirect for any
+  non-admin whose `User.setup_complete` is False.
 - `GET /health` — liveness (public, no auth).
 - `GET /dashboard` — mobile-first overview: readiness today, 30-day trends, next 7 days
   of the active plan, last 5 activities, this month's AI cost. Pure DB read. Login;
@@ -457,7 +465,14 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   The bot's `on_error` and the morning job both catch `MFARequired` with a friendly
   "finish login in /settings" message; FastAPI covers JSON endpoints with a 409.
 - **Registration**: `/register` is public — self-signup creates an unapproved,
-  non-admin user that cannot log in until an admin approves it at `/admin/users`.
+  non-admin user that cannot log in until an admin approves it at `/admin/users`. After
+  approval the first login goes to `/onboarding` (see `app.onboarding`), which is also the
+  only place the "Підключення" nav entry appears — and it disappears once setup is done.
+- **Telegram linking**: `app.core.tglink` mints a signed, 24h `t.me/<bot>?start=<token>`
+  deep link; the bot's `/start <token>` (the one handler that runs for an unresolved chat)
+  reads the user id back out and sets `telegram_chat_id` itself. Needs bot and web to share
+  `APP_SECRET_KEY`; without it the UI falls back to the manual @userinfobot chat-id field.
+  Re-linking hands a chat over rather than tripping the UNIQUE constraint.
 - **Active flag**: `is_active` is a separate admin off-switch from approval — deactivated
   keeps data but blocks login + bot reports. Admins can't deactivate themselves.
 - **Bot**: one global `TELEGRAM_BOT_TOKEN`; chat mapped to user by `telegram_chat_id`

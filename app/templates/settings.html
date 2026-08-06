@@ -17,25 +17,21 @@
     </div>
     {% endif %}
 
-    {% set configured = has_garmin_password and has_anthropic and telegram_chat_id %}
-    {% if not configured %}
-    <div class="note">
-      <b>Як почати</b> — заповни три поля нижче:
-      <ol>
-        <li><b>Garmin email + пароль</b> — звідки беруться дані сну й тренувань.</li>
-        <li><b>Claude API ключ</b> — для аналізу (взяти на console.anthropic.com → Billing).</li>
-        <li><b>Telegram chat ID</b> — куди бот шле звіти (дізнатись: напиши <b>@userinfobot</b>).</li>
-      </ol>
-      <div style="margin-top:.7rem;color:var(--muted)">Далі знайди бота
-        {% if bot_username %}<a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a>{% else %}у Telegram{% endif %}
-        і напиши йому <b>/report</b> — або відкрий «Мої дані».
-        Детальніше — на сторінці <a href="/info">Інфо</a>.</div>
+    {# The step-by-step "how do I start" lives on /onboarding now — one checklist with
+       live status, instead of a static note above a form that can't tick anything off. #}
+    {% if not user.setup_complete and not user.is_demo %}
+    <div class="banner banner--info" role="status">
+      <span class="bicon" aria-hidden="true">🔌</span>
+      <div class="btext">Налаштування ще не завершено — на сторінці «Підключення» видно,
+        що саме лишилось і що це дає.
+        <a class="blink" href="/onboarding">Відкрити чекліст →</a></div>
     </div>
     {% endif %}
     {% if saved %}<div class="saved">✅ Збережено.</div>{% endif %}
 
+    {# id anchors: /onboarding links straight at the field a step is about. #}
     <form class="form" method="post" action="/settings">
-      <label for="garmin_email">Garmin email</label>
+      <label id="garmin" for="garmin_email">Garmin email</label>
       <input id="garmin_email" name="garmin_email" type="email" value="{{ garmin_email }}" autocomplete="off">
 
       <label for="garmin_password">Garmin пароль</label>
@@ -45,14 +41,30 @@
         {% if has_garth_token %}Сесію Garmin збережено.{% else %}Сесію ще не створено — буде логін при першому звіті.{% endif %}
       </div>
 
-      <label for="anthropic_key">Claude API ключ</label>
+      <label id="claude" for="anthropic_key">Claude API ключ</label>
       <input id="anthropic_key" name="anthropic_key" type="password" autocomplete="off"
              placeholder="{% if has_anthropic %}•••••••• (без змін){% else %}не задано{% endif %}">
+      <div class="hint">Свій ключ з
+        <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+        → API keys; у Billing має бути поповнений баланс. Аналіз оплачується з нього.</div>
 
-      <label for="telegram_chat_id">Telegram chat ID</label>
+      <label id="telegram" for="telegram_chat_id">Telegram chat ID</label>
       <input id="telegram_chat_id" name="telegram_chat_id" type="text" inputmode="numeric"
              value="{{ telegram_chat_id }}">
-      <div class="hint">Чат, у який бот шле звіти. Дізнатись свій можна в @userinfobot.</div>
+      <div class="hint">
+        {% if telegram_link %}Заповнюється кнопкою нижче — вписувати вручну не треба.
+        {% else %}Чат, у який бот шле звіти. Дізнатись свій можна в @userinfobot.{% endif %}
+      </div>
+      {% if telegram_link %}
+      {# One tap instead of "message @userinfobot, copy the number, paste it here": the
+         link carries a signed token, the bot reads it out of /start and links the chat
+         itself (app.core.tglink). Opens in a new tab so unsaved fields above survive. #}
+      <a class="btn-ghost obact" href="{{ telegram_link }}" target="_blank" rel="noopener">
+        {% if telegram_chat_id %}🔗 Перепідключити Telegram{% else %}🔗 Підключити Telegram{% endif %}</a>
+      <div class="hint">Відкриє бота
+        {% if bot_username %}@{{ bot_username }}{% endif %} — натисни там «Start».
+        Посилання персональне й діє добу; після підключення онови цю сторінку.</div>
+      {% endif %}
 
       <label for="weather_location">Локація для погоди</label>
       <input id="weather_location" name="weather_location" type="text" autocomplete="off"

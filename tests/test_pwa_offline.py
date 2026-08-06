@@ -247,7 +247,8 @@ def test_the_worker_never_caches_a_personal_path():
     """A source-level guard on the deny-list, so the browser test isn't the only thing
     standing between a credentials page and the device's disk."""
     sw = (STATIC / "sw.js").read_text(encoding="utf-8")
-    for path in ("/login", "/register", "/logout", "/settings", "/admin", "/me/export"):
+    for path in ("/login", "/register", "/logout", "/settings", "/onboarding",
+                 "/admin", "/me/export"):
         assert f"'{path}'" in sw, f"{path} dropped out of NEVER_CACHE"
     # Only these two pages are ever stored, and only as whole navigations.
     assert "var SWR_PATHS = ['/dashboard', '/plan'];" in sw

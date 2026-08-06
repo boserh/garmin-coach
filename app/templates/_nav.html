@@ -14,7 +14,16 @@
   ('/me',        'me',        'Мої дані'),
   ('/chat',      'chat',      'Чат'),
 ] %}
-{% set NAV_MORE = [
+{#
+  The setup checklist is a nav entry only while it has something to say. A permanent
+  "Підключення" link on a configured account is a dead end; an account that never
+  finished setup, on the other hand, has to be able to get back to it from anywhere —
+  that's the whole failure this batch fixes. The demo account can't configure anything,
+  so it never sees it.
+#}
+{% set NAV_ONBOARD = ('/onboarding', 'onboarding', 'Підключення') %}
+{% set setup_todo = user and not user.is_demo and not user.setup_complete %}
+{% set NAV_MORE = ([NAV_ONBOARD] if setup_todo else []) + [
   ('/insights',  'insights',  'Інсайти'),
   ('/strength',  'strength',  'Сила'),
   ('/checkups',  'checkups',  'Аналізи'),
@@ -26,7 +35,9 @@
   ('/admin/cache',  'cache', 'Кеші'),
   ('/admin/users',  'users', 'Користувачі'),
 ] %}
-{% set NAV_ALL = NAV_MAIN + NAV_MORE + NAV_ADMIN %}
+{# NAV_ALL only resolves the current page's label, so it always carries the onboarding
+   entry — otherwise a configured user opening /onboarding directly gets no page name. #}
+{% set NAV_ALL = NAV_MAIN + NAV_MORE + NAV_ADMIN + [NAV_ONBOARD] %}
 {% set here = (NAV_ALL | selectattr('1', 'equalto', active) | list | first) %}
 
 <nav class="topnav" aria-label="Розділи">

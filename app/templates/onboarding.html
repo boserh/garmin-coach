@@ -1,0 +1,78 @@
+{% extends "_base.html" %}
+
+{% block title %}Підключення{% endblock %}
+
+{% block body %}
+  {% set active = 'onboarding' %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <p class="eyebrow">Початок</p>
+    <h1 class="title" style="font-size:1.7rem">
+      {% if complete %}Все підключено{% else %}Залишилось {{ total - done }} з {{ total }}{% endif %}
+    </h1>
+    <p class="obintro">
+      {% if complete %}
+        Сервіс має все, що потрібно: дані з Garmin, ключ для аналізу і бот у Telegram.
+        Ранковий звіт прийде сам — між 07:00 і 12:00, щойно годинник синкнеться.
+      {% else %}
+        Три речі, і коуч запрацює. Дані з Garmin, твій ключ Claude для аналізу,
+        бот у Telegram для звітів — у такому порядку.
+      {% endif %}
+    </p>
+
+    {# Progress over the REQUIRED steps only (app.onboarding.progress) — the optional
+       plan step must not make a configured account read as unfinished. #}
+    <div class="obbar" role="img"
+         aria-label="Готово {{ done }} з {{ total }} обов'язкових кроків">
+      {% for i in range(total) %}
+        <span class="obseg{% if i < done %} on{% endif %}"></span>
+      {% endfor %}
+    </div>
+
+    <ol class="oblist">
+      {% for s in steps %}
+      <li class="obstep{% if s.done %} done{% endif %}{% if not s.required %} opt{% endif %}">
+        <div class="obnum" aria-hidden="true">{{ '✓' if s.done else loop.index }}</div>
+        <div class="obbody">
+          <h2 class="obtitle">
+            {{ s.title }}
+            {% if s.done %}<span class="obtag ok">готово</span>
+            {% elif not s.required %}<span class="obtag opt">не обов'язково</span>{% endif %}
+          </h2>
+          <p class="obwhy">{{ s.why }}</p>
+          {% if s.note %}<p class="obnote obnote--{{ s.note_level }}">{{ s.note }}</p>{% endif %}
+          {# A numbered list of one item is just a stray "1." — the Telegram step is one
+             tap, and it should read like one. #}
+          {% if not s.done %}
+            {% if s.how | length == 1 %}
+              <p class="obhow one">{{ s.how[0] }}</p>
+            {% else %}
+              <ol class="obhow">
+                {% for line in s.how %}<li>{{ line }}</li>{% endfor %}
+              </ol>
+            {% endif %}
+          {% endif %}
+          {% if s.action %}
+            <a class="btn-ghost obact" href="{{ s.action }}"
+               {% if s.action.startswith('http') %}target="_blank" rel="noopener"{% endif %}
+            >{{ s.action_text }}</a>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+
+    {% if complete %}
+    <div class="note">
+      <b>Що далі</b>
+      <ul style="margin:.5rem 0 0;padding-left:1.2rem">
+        <li>Перший синк уже міг статись — подивись <a href="/dashboard">Дашборд</a>.</li>
+        <li>Напиши боту{% if bot_url %} <a href="{{ bot_url }}" target="_blank" rel="noopener">@{{ bot_username }}</a>{% endif %}
+            <code>/report</code>, щоб отримати звіт просто зараз.</li>
+        <li>Повний перелік команд і того, що робиться автоматично — на сторінці
+            <a href="/info">Інфо</a>.</li>
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+{% endblock %}

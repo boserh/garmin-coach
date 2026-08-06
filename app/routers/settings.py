@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import current_user, require_admin
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt, hash_password_async, verify_password_async
+from app.core.tglink import deep_link
 from app.db import users
 from app.db.models import User
 from app.dependencies import get_session
@@ -72,6 +73,9 @@ async def settings_form(request: Request, user: User = Depends(current_user)):
             "garmin": request.query_params.get("garmin"),
             "garmin_mfa_pending": mfa.has_pending(user.id),
             "bot_username": settings.TELEGRAM_BOT_USERNAME,
+            # None when APP_SECRET_KEY or the bot username is unset — the template then
+            # falls back to the manual @userinfobot chat-id instructions.
+            "telegram_link": deep_link(user.id),
         },
     )
 
