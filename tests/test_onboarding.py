@@ -9,6 +9,7 @@ names the missing pieces, and the Telegram step is one tap instead of a copied c
 The page itself must also stay free: /onboarding is a pure DB read, and a checklist that
 quietly cost a Claude call per view would be a bad trade for a nicer sentence.
 """
+import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -128,6 +129,22 @@ def test_link_unavailable_without_a_shared_secret(monkeypatch):
     monkeypatch.setattr(tglink.settings, "APP_SECRET_KEY", SECRET)
     monkeypatch.setattr(tglink.settings, "TELEGRAM_BOT_USERNAME", None)
     assert tglink.deep_link(1) is None
+
+
+def test_token_obeys_telegrams_start_parameter_rules(monkeypatch):
+    """Telegram documents a ?start= payload as at most 64 characters of A-Z a-z 0-9 _ -.
+    The first cut used itsdangerous, whose tokens are joined with DOTS
+    ("MQ.anZMaQ._Epkc…") — url-safe in general, outside Telegram's set here, so the
+    payload a client passed on was anyone's guess. Nothing in the app could notice: the
+    link rendered, the button looked fine, and the tap simply did not link the account.
+    """
+    monkeypatch.setattr(tglink.settings, "APP_SECRET_KEY", SECRET)
+    # Across the whole id range the column can hold, not just the id this install has.
+    for user_id in (1, 42, 999_999, 2**31 - 1):
+        token = tglink.make_token(user_id)
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", token), f"uid={user_id}: {token!r}"
+        assert len(token) <= tglink.START_PARAM_MAX, f"uid={user_id}: {len(token)} chars"
+        assert tglink.parse_token(token) == user_id
 
 
 def test_deep_link_points_at_the_bot_with_a_start_payload(monkeypatch):
