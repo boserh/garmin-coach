@@ -127,6 +127,76 @@ def test_register_rejects_duplicate_email(auth_client):
     assert r.status_code == 409
 
 
+def _pending_count() -> int:
+    """Unapproved accounts already in the shared test DB. The cap tests set their limit
+    relative to this rather than assuming an empty queue — earlier modules register users
+    too, and the DB file lives for the whole run."""
+
+    async def go():
+        async with async_session_maker() as s:
+            return await users.count_pending(s)
+
+    return anyio.run(go)
+
+
+def test_register_closes_while_approval_queue_is_full(client):
+    from app.core.config import settings
+
+    # Two signups' headroom rather than the real 5 — each one pays for a bcrypt hash.
+    with patch.object(settings, "REGISTRATION_PENDING_MAX", _pending_count() + 2):
+        for i in range(2):
+            r = client.post(
+                "/register", data={"email": f"q{i}@example.com", "password": "secret1"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 200
+
+        blocked = client.post(
+            "/register", data={"email": "over@example.com", "password": "secret1"},
+            follow_redirects=False,
+        )
+        assert blocked.status_code == 403
+        assert _user_id("over@example.com") is None
+
+        # ...and the form itself is gone, not just failing on submit
+        page = client.get("/register")
+        assert page.status_code == 200
+        assert 'action="/register"' not in page.text
+
+
+def test_register_reopens_once_an_admin_clears_the_queue(auth_client):
+    from app.core.config import settings
+
+    with patch.object(settings, "REGISTRATION_PENDING_MAX", _pending_count() + 1):
+        auth_client.post("/register", data={"email": "first@example.com", "password": "secret1"})
+        blocked = auth_client.post(
+            "/register", data={"email": "second@example.com", "password": "secret1"},
+            follow_redirects=False,
+        )
+        assert blocked.status_code == 403
+
+        auth_client.post(f"/admin/users/{_user_id('first@example.com')}/approve")
+
+        reopened = auth_client.post(
+            "/register", data={"email": "second@example.com", "password": "secret1"},
+            follow_redirects=False,
+        )
+        assert reopened.status_code == 200
+        assert _user_id("second@example.com") is not None
+
+
+def test_register_cap_of_zero_disables_the_gate(client):
+    from app.core.config import settings
+
+    with patch.object(settings, "REGISTRATION_PENDING_MAX", 0):
+        for i in range(3):
+            r = client.post(
+                "/register", data={"email": f"z{i}@example.com", "password": "secret1"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 200
+
+
 def test_admin_approves_then_user_can_login(auth_client):
     auth_client.post("/register", data={"email": "pend@example.com", "password": "secret1"})
     uid = _user_id("pend@example.com")

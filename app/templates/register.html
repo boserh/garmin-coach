@@ -6,6 +6,16 @@
 
 {% block body %}
   <div class="authstack">
+  {# The signup cap (REGISTRATION_PENDING_MAX) closes the form while the approval queue
+     is full. Rendering the fields anyway would only collect a password we're about to
+     throw away. #}
+  {% if closed %}
+  <div class="authcard">
+    <h1 class="brand">Реєстрація</h1>
+    <div class="err">{{ error }}</div>
+    <div class="alt">Вже є акаунт? <a href="/login">Увійти</a></div>
+  </div>
+  {% else %}
   <form class="authcard" method="post" action="/register">
     <h1 class="brand">Реєстрація</h1>
     <div class="sub">Акаунт створюється одразу; вхід відкриється після підтвердження
@@ -19,6 +29,7 @@
     {% if error %}<div class="err">{{ error }}</div>{% endif %}
     <div class="alt">Вже є акаунт? <a href="/login">Увійти</a></div>
   </form>
+  {% endif %}
 
   {# What people used to discover only after logging in and finding a silent app: this
      is BYO-credentials. Saying it before the form is a fairer trade than after. #}

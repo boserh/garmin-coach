@@ -44,7 +44,9 @@ dev = [
 ]
 mcp = [
     # NF-08: personal read-only MCP server over the DB — opt-in, not a base dep.
-    "mcp",
+    # >=2: 1.x exposed FastMCP (`mcp.server.fastmcp`), which 2.0 replaced with MCPServer,
+    # and the OAuth server the http transport is built on lives in 2.x's mcp.server.auth.
+    "mcp>=2",
 ]
 garth = [
     # OPS-10 rollback only: reinstates the pre-migration engine. Pair it with

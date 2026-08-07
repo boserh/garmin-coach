@@ -1,0 +1,46 @@
+{% extends "_base.html" %}
+
+{% block title %}Доступ до даних — Garmin{% endblock %}
+
+{% block body_attrs %} class="auth"{% endblock %}
+
+{% block body %}
+  <div class="authstack">
+  {% if expired %}
+  <div class="authcard">
+    <h1 class="brand">Запит застарів</h1>
+    <div class="sub">Посилання на підтвердження діє недовго і лише один раз. Повернись
+      до клієнта і почни підключення заново.</div>
+  </div>
+  {% else %}
+  <form class="authcard" method="post" action="/oauth/consent">
+    <h1 class="brand">Доступ до даних</h1>
+    <div class="sub"><b>{{ client_name }}</b> просить доступ до твоїх даних у цьому
+      застосунку. Увійди, щоб підтвердити — це той самий email і пароль, що на сайті.</div>
+
+    <input type="hidden" name="req" value="{{ req }}">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" autocomplete="current-password"
+           required>
+    <button class="btn" type="submit" name="action" value="allow">Дозволити</button>
+    <button class="btn btn-ghost" type="submit" name="action" value="deny">Відхилити</button>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  </form>
+
+  {# Saying what the token can and cannot do, before it is granted rather than in a
+     changelog afterwards. Every tool behind this scope is read-only. #}
+  <div class="authcard">
+    <div class="sub" style="margin:0 0 .6rem"><b>Що отримає застосунок</b></div>
+    <ol class="obhow" style="margin:0">
+      <li><b>Тільки читання</b> — тренування, щоденні метрики, план. Нічого змінити
+          чи видалити він не може.</li>
+      <li><b>Без Garmin і Claude</b> — дані беруться з уже збереженої історії, жодних
+          звернень до Garmin і жодних витрат на твій ключ Claude.</li>
+      <li>Доступ можна будь-коли відкликати в налаштуваннях.</li>
+    </ol>
+  </div>
+  {% endif %}
+  </div>
+{% endblock %}

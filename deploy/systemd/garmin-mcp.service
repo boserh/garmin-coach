@@ -1,0 +1,24 @@
+[Unit]
+Description=Garmin Bot — remote MCP server (NF-08, http transport)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/garmin_bot
+EnvironmentFile=/home/pi/garmin_bot/.env
+# Needs the opt-in extra: pip install -e ".[mcp]"
+# MCP_PUBLIC_URL must be set in .env (the OAuth issuer — the public HTTPS origin this
+# is reached at). The process refuses to start without it rather than guessing one.
+#
+# --host 127.0.0.1 is deliberate and should stay: this speaks plain HTTP and carries
+# bearer tokens, so it must never be reachable except through the tunnel/proxy that
+# terminates TLS in front of it. The DNS-rebinding allow-list is derived from
+# MCP_PUBLIC_URL, so the loopback bind does not break the proxied Host header.
+ExecStart=/home/pi/garmin_bot/venv/bin/python -m app.mcp_server \
+    --transport http --host 127.0.0.1 --port 8788
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
