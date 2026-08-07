@@ -831,8 +831,16 @@ Three pieces:
   a form, and get no feedback if you got it wrong. Now the web renders
   `t.me/<bot>?start=<token>`; Telegram hands the token back as `/start <token>`, so the
   chat id and the web account arrive in the same update and the bot links them itself.
-  The token is an `itsdangerous` blob (user id, 24h TTL, own salt) — no table, no
-  migration, no cleanup. It does require the bot and web processes to share
+  The token is a signed blob (user id + issued-at + a truncated HMAC, 24h TTL, its own
+  salt) — no table, no migration, no cleanup. It is signed by hand rather than with
+  `itsdangerous` because Telegram allows a `?start=` payload of at most 64 characters
+  from `A-Z a-z 0-9 _ -`, and `URLSafeTimedSerializer` joins its parts with **dots**
+  (`MQ.anZMaQ._Epkc…`) — url-safe in general, outside Telegram's set here, so what a
+  client did with the payload was anyone's guess and the button silently linked nothing.
+  Moving the serializer's separator doesn't help either: it un-signs by splitting from
+  the right, and its own base64url alphabet already contains both remaining candidates.
+  Fixed-width fields + one HMAC = exactly 32 base64url characters, no separator at all.
+  It does require the bot and web processes to share
   `APP_SECRET_KEY` (they already do, same `.env`); without it `tglink.available()` is
   False and both pages fall back to the manual chat-id field, rather than offering a
   button that cannot work.
