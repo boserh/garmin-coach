@@ -42,9 +42,10 @@ def _reset_user_id():
     mcp_server._user_id = None
 
 
-def test_require_user_id_raises_before_init():
+def test_current_user_id_raises_before_init():
+    # stdio with no --email bound yet and (being stdio) no access token to fall back on.
     with pytest.raises(RuntimeError):
-        mcp_server._require_user_id()
+        mcp_server._current_user_id()
 
 
 async def test_resolve_user_id_unknown_email_exits(session, monkeypatch):

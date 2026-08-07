@@ -94,10 +94,30 @@ async def logout_get():
     return RedirectResponse("/settings", status_code=303)
 
 
+_REGISTRATION_CLOSED_MSG = (
+    "Реєстрація тимчасово закрита: кілька заявок ще чекають на підтвердження. "
+    "Спробуй пізніше."
+)
+
+
+async def _registration_closed(session: AsyncSession) -> bool:
+    """Whether the pending-approval queue is at its ceiling. The rate limiter above is
+    a burst guard — it forgets everything each window, so it never bounds the TOTAL
+    number of unapproved rows a patient script can create. This does."""
+    cap = settings.REGISTRATION_PENDING_MAX
+    return bool(cap) and await users.count_pending(session) >= cap
+
+
 @router.get("/register", response_class=HTMLResponse)
-async def register_form(request: Request):
+async def register_form(
+    request: Request, session: AsyncSession = Depends(get_session)
+):
+    # Say it on the GET too: showing a form that can only fail wastes the visitor's
+    # time (and their password).
+    closed = await _registration_closed(session)
     return templates.TemplateResponse(
-        request, "register.html", {"error": None}
+        request, "register.html",
+        {"error": _REGISTRATION_CLOSED_MSG if closed else None, "closed": closed},
     )
 
 
@@ -113,6 +133,14 @@ async def register_submit(
             request, "register.html",
             {"error": _RATE_LIMIT_MSG},
             status_code=429,
+        )
+    # Re-checked here and not just on the GET: the form can be posted directly, and the
+    # queue can fill between rendering the page and submitting it.
+    if await _registration_closed(session):
+        return templates.TemplateResponse(
+            request, "register.html",
+            {"error": _REGISTRATION_CLOSED_MSG, "closed": True},
+            status_code=403,
         )
     email = email.strip().lower()
     if len(password) < 6:

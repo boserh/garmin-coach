@@ -11,6 +11,11 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_garmin.db"
 # many times in a row with the same email. Dedicated rate-limit tests build their own
 # limiter instead of relying on this default.
 os.environ["LOGIN_RATE_LIMIT"] = "0"
+# Same reasoning for the signup cap: the test DB file is shared by the whole run, so
+# unapproved accounts pile up across modules and would close registration for every test
+# that happens to run later. The cap's own tests set it explicitly, relative to whatever
+# is already pending.
+os.environ["REGISTRATION_PENDING_MAX"] = "0"
 # PERF-05's Garmin pacer is a real time.sleep() spacer, process-wide — against a
 # FakeProvider it's pure wall-clock waste (real Garmin is never touched in tests).
 # 0 disables it (app.core.config's own comment on GARMIN_RPS).

@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     LOGIN_RATE_LIMIT: int = 5          # max attempts per window before a 429
     LOGIN_RATE_WINDOW_S: int = 300     # window length in seconds (default 5 min)
 
+    # Self-registration closes once this many accounts sit unapproved. The per-IP rate
+    # limit above only slows a signup flood down — it resets every window, so a patient
+    # script still fills the users table and buries the real applicants in the admin
+    # queue. This is the standing ceiling: an admin approving or deleting the backlog is
+    # what reopens the form. 0 disables the cap (unbounded signups).
+    REGISTRATION_PENDING_MAX: int = 5
+
     # Secure-only session cookie + HSTS. Defaults ON: the deployed site is HTTPS, and
     # without the Secure flag the session cookie rides along on any plain-HTTP request
     # to the same host — readable by anyone on the path. Turn OFF only to develop over
@@ -98,6 +105,18 @@ class Settings(BaseSettings):
     # the next N seconds" is a one-way door, so it must never fire from a dev box.
     SESSION_HTTPS_ONLY: bool = True
     HSTS_MAX_AGE: int = 31536000       # 1 year; 0 omits the header entirely
+
+    # --- Remote MCP server (NF-08, http transport) ---
+    # The public HTTPS origin the MCP server is reached at, e.g. https://mcp.example.com.
+    # It is the OAuth *issuer*, so it must match what the client actually connected to —
+    # a mismatch fails discovery rather than degrading. Unset → `--transport http` refuses
+    # to start (there is no safe default to guess), and stdio is unaffected.
+    MCP_PUBLIC_URL: Optional[str] = None
+    # Ceiling on dynamically registered OAuth clients (RFC 7591 registration is
+    # unauthenticated by design — Claude registers itself — so it needs a bound; without
+    # one it is an open row factory). Reached → registration is refused until an admin
+    # clears the table.
+    MCP_OAUTH_MAX_CLIENTS: int = 20
 
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by

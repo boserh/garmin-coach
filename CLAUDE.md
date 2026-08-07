@@ -185,6 +185,9 @@ Optional, with defaults:
 | `APP_SECRET_KEY` | `` (empty) | Fernet master key: encrypts stored creds + signs cookie sessions. Empty → sessions signed with an ephemeral per-process key (a fixed fallback let anyone forge an admin cookie); loud error + `/login` banner. Credential encryption still hard-requires it. |
 | `LOGIN_RATE_LIMIT` | `5` | max `POST /login`/`POST /register` attempts per window before 429; `0` disables (tests). In-memory + per-process by design. |
 | `LOGIN_RATE_WINDOW_S` | `300` | rate-limit window (s). |
+| `REGISTRATION_PENDING_MAX` | `5` | self-registration closes while this many accounts sit unapproved (the rate limit is a burst guard and resets; this is the standing ceiling). An admin approving/deleting the backlog reopens it. `0` disables. |
+| `MCP_PUBLIC_URL` | `` (unset) | NF-08 http transport: the public HTTPS origin the remote MCP server is reached at — also the OAuth issuer, so it must match what clients connect to. Unset → `--transport http` refuses to start; stdio unaffected. |
+| `MCP_OAUTH_MAX_CLIENTS` | `20` | ceiling on dynamically registered OAuth clients (RFC 7591 registration is unauthenticated by design, so it needs a bound). |
 | `GARMIN_PROVIDER` | `gconn` | Garmin auth engine: `gconn` (native `python-garminconnect`) or `garth` (rollback — needs `pip install -e ".[garth]"`). |
 | `GARMIN_RPS` | `3.0` | process-wide Garmin request rate cap (req/s); `0` disables. |
 | `GARMIN_RETRIES` | `2` | 429 retries w/ exponential backoff in `client._api`. |
@@ -245,8 +248,9 @@ app/
   db/
     base.py            async engine + sessionmaker + declarative Base; init_db/dispose_db
     session.py         get_session() request dependency
-    models.py           ORM: User, DailyMetric, ActivityRecord, ReportLog, LlmCache, BotState, HealthCheckup, Supplement (user-scoped)
-    users.py            user queries: get_by_email / get_by_chat_id / create_user
+    models.py           ORM: User, DailyMetric, ActivityRecord, ReportLog, LlmCache, BotState, HealthCheckup, Supplement, OAuthClient/OAuthGrant (user-scoped)
+    users.py            user queries: get_by_email / get_by_id / get_by_chat_id / create_user / count_pending
+    oauth.py            NF-08: OAuth client/grant storage — tokens hashed, client docs encrypted
     llm_cache.py        async get/put over llm_cache — the cross-process Claude dedup cache
     lifestyle.py          NF-28: lifestyle-tag vocabulary + user-scoped CRUD
     profile.py             EP-18: encrypted read/write of the athlete profile
@@ -274,7 +278,10 @@ app/
   weather.py              Open-Meteo geocode (settings) + forecast (today/week)
   charts.py                inline-SVG chart helpers (series/trend_series/run_series/
                            run_charts/bar_series/shade_zones)
-  mcp_server.py            NF-08: personal read-only MCP server (stdio) over the /ask tools
+  mcp_server.py            NF-08: personal read-only MCP server over the /ask tools —
+                           stdio (one --email user) or http (per-request OAuth identity)
+  mcp_oauth.py             NF-08: the OAuth 2.1 authorization server + consent screen
+                           that makes the http transport safe to expose
   deploy.py                 OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
   race.py                    EP-05: race-pack target/distance mapping + narration-context builder
   gear.py                     NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
@@ -390,7 +397,8 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   DB backup — see NF-13 below). Login; current user; linked from `/me`.
 - `GET/POST /checkups`, `GET/POST /checkups/{id}`, `/checkups/supplements` — health
   checkups + supplement tracking (see below). Login; current user.
-- `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save).
+- `GET /settings` — manage own Garmin/Claude/Telegram creds (encrypted on save);
+  `POST /settings/mcp/revoke` disconnects every MCP client holding a token (NF-08).
 - `GET /admin/users` — list/create users (admin only); `POST /admin/users/{id}/impersonate`
   starts a read-only borrowed session, `POST /impersonate/stop` ends it (see below).
 - `GET /ui` + `GET /ui/{table}` + `/ui/{table}/{id}` — raw DB browser (whitelisted
@@ -471,6 +479,12 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   non-admin user that cannot log in until an admin approves it at `/admin/users`. After
   approval the first login goes to `/onboarding` (see `app.onboarding`), which is also the
   only place the "Підключення" nav entry appears — and it disappears once setup is done.
+  Signup **closes** while `REGISTRATION_PENDING_MAX` accounts sit unapproved: the per-IP
+  rate limiter is a burst guard that forgets each window, so it never bounds the total a
+  patient script can create. The form is hidden on the GET and the POST 403s (re-checked
+  there — the queue can fill between render and submit). Approving or deleting the backlog
+  reopens it. Tests disable it in `conftest.py` (the test DB file is shared by the whole
+  run, so pending accounts pile up across modules).
 - **Telegram linking**: `app.core.tglink` mints a signed, 24h `t.me/<bot>?start=<token>`
   deep link; the bot's `/start <token>` (the one handler that runs for an unresolved chat)
   reads the user id back out and sets `telegram_chat_id` itself. Needs bot and web to share
@@ -511,6 +525,54 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   need an `unpush-plan` + `push-plan`);
   `backfill-series --force` refetches runs that already have a series to pick up the
   `series:v3` channels.
+
+## Remote MCP server (NF-08, http transport)
+
+`app.mcp_server` serves the same five read-only tools over two transports, and the
+difference between them is **who a request speaks for**:
+
+- **stdio** (default, unchanged): the client launches it as a local child process, so
+  there is nothing to authenticate — `--email` binds the process to one user for its
+  lifetime. This is the personal-tool shape the feature was written for.
+- **http**: a public endpoint (Claude's *web* connector runs in Anthropic's cloud and
+  cannot reach a local process). Identity is per-request, from an OAuth 2.1 access token
+  whose subject is the user id — so this mode is genuinely multi-user, and `--email` is
+  **refused** rather than ignored.
+
+Run it as its own process/hostname (`deploy/systemd/garmin-mcp.service`), not mounted
+into the web app: the SDK puts the OAuth endpoints at the root, and its DCR endpoint is
+`/register` — which the web app already uses for signup.
+
+**The OAuth server** (`app.mcp_oauth`). The SDK (`mcp.server.auth`) implements the
+protocol — `/authorize`, `/token`, `/register` (RFC 7591 DCR, so Claude registers itself),
+`/revoke`, both metadata documents, PKCE verification, redirect-URI matching. Ours is the
+storage (`app.db.oauth`) and the idea of a user. Load-bearing details:
+
+- **The consent screen is the whole boundary.** `authorize()` is reached by an anonymous
+  browser: it parks the request and returns a URL, granting nothing. The code is minted
+  only after that page authenticates an account (same bcrypt hashes as the web login).
+  Unapproved / deactivated / demo accounts are refused there, and again on every
+  `load_access_token` — so an admin switching an account off kills live tokens now,
+  rather than after the token's hour runs out.
+- **Secrets are hashed at rest** (`token_hash` = SHA-256). A database copy yields no
+  usable token. Client documents can't be hashed (the SDK compares `client_secret` in
+  plaintext) so they're Fernet-encrypted instead.
+- **Codes are single-use** (`consume_grant` deletes as it reads) and refresh tokens
+  **rotate**; a refresh may narrow scopes, never widen them.
+- **DCR is capped** (`MCP_OAUTH_MAX_CLIENTS`) — it is an unauthenticated write endpoint
+  by protocol design.
+- **Transport security is passed explicitly**, not left to the SDK's default. That default
+  keys off the *bind* address: binding to 127.0.0.1 (right, behind a tunnel) auto-enables
+  DNS-rebinding protection allowing only `localhost`/`127.0.0.1`, and every real request
+  then arrives with `Host: <public hostname>` and is refused. The allow-list is derived
+  from `MCP_PUBLIC_URL` instead.
+
+`POST /settings/mcp/revoke` disconnects everything (all-or-nothing: the clients are
+dynamic registrations the user never named). The consent screen promises this, so it has
+to exist.
+
+Note the SDK version: `mcp` 2.0 removed `FastMCP` (`mcp.server.fastmcp`) in favour of
+`MCPServer`, so the extra pins `mcp>=2`.
 
 ## Frontend conventions (UI batch, 2026-08)
 

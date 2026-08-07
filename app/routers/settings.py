@@ -22,7 +22,7 @@ from app.core.impersonate import (
 )
 from app.core.impersonate import clear as clear_impersonation
 from app.core.tglink import deep_link
-from app.db import users
+from app.db import oauth, users
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import mfa, plan_sync, providers, repository
@@ -57,11 +57,20 @@ async def info_page(request: Request, user: User = Depends(current_user)):
 
 
 @router.get("/settings", response_class=HTMLResponse)
-async def settings_form(request: Request, user: User = Depends(current_user)):
+async def settings_form(
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
     return templates.TemplateResponse(
         request, "settings.html",
         {
             "user": user,
+            # NF-08 http transport: which MCP clients currently hold a token for this
+            # account. The consent screen promises the access can be taken back — this
+            # is where that promise is kept.
+            "mcp_clients": await oauth.active_clients_for_user(session, user.id),
+            "mcp": request.query_params.get("mcp"),
             "garmin_email": _safe_decrypt(user.garmin_email_enc),
             "has_garmin_password": bool(user.garmin_password_enc),
             "has_anthropic": bool(user.anthropic_key_enc),
@@ -239,6 +248,23 @@ async def change_password(
     user.password_hash = await hash_password_async(new_password)
     await session.commit()
     return RedirectResponse("/settings?pw=ok", status_code=303)
+
+
+@router.post("/settings/mcp/revoke")
+async def mcp_revoke(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Disconnect every MCP client holding a token for this account (NF-08).
+
+    All-or-nothing on purpose: per-client revocation would need the UI to name clients
+    the user never chose (they are dynamic registrations), and "cut it all off" is the
+    action someone reaching for this button actually wants. Reconnecting is one consent
+    screen away.
+    """
+    dropped = await oauth.revoke_user_grants(session, user.id)
+    logger.warning(f"MCP OAuth: user {user.id} revoked all grants ({dropped} rows)")
+    return RedirectResponse("/settings?mcp=revoked", status_code=303)
 
 
 @router.get("/admin/users", response_class=HTMLResponse)

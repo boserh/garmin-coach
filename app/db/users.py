@@ -1,7 +1,7 @@
 """User-account queries, kept apart from the Garmin history repository."""
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User
@@ -20,10 +20,28 @@ async def eligible_users(
     return (await session.execute(select(User).where(*conds))).scalars().all()
 
 
+async def count_pending(session: AsyncSession) -> int:
+    """How many self-registered accounts are still waiting for an admin. Drives the
+    signup cap (``REGISTRATION_PENDING_MAX``) — see app.routers.auth. Deactivated
+    accounts still count: an admin who wants the form open again has to actually clear
+    the queue (approve or delete), not park it. The demo singleton is never in it."""
+    return (
+        await session.execute(
+            select(func.count())
+            .select_from(User)
+            .where(User.is_approved.is_(False), User.is_demo.is_(False))
+        )
+    ).scalar_one()
+
+
 async def get_by_email(session: AsyncSession, email: str) -> Optional[User]:
     return (
         await session.execute(select(User).where(User.email == email.lower().strip()))
     ).scalar_one_or_none()
+
+
+async def get_by_id(session: AsyncSession, user_id: int) -> Optional[User]:
+    return await session.get(User, user_id)
 
 
 async def get_by_chat_id(session: AsyncSession, chat_id: int) -> Optional[User]:

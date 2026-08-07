@@ -1,51 +1,76 @@
 """NF-08: personal read-only MCP server over the stored history.
 
-Thin stdio MCP wrapper around the same read-only, user-scoped tools EP-09's ``/ask``
-agent uses (:func:`app.analysis.reports._run_ask_tool`) — "talk to your own data" from
-Claude Desktop/Code without the bot/web UI. Zero Garmin calls, zero LLM cost on our
-side (the MCP client's own subscription pays for inference). Single-user: the process
-binds to one user (``--email``) for its whole lifetime — a personal tool, not a
-multi-tenant endpoint, so there's no per-request auth to design.
+Thin MCP wrapper around the same read-only, user-scoped tools EP-09's ``/ask`` agent uses
+(:func:`app.analysis.reports._run_ask_tool`) — "talk to your own data" from Claude
+Desktop/Code/web without the bot/web UI. Zero Garmin calls, zero LLM cost on our side
+(the MCP client's own subscription pays for inference).
+
+Two transports, and the difference between them is *who the request speaks for*:
+
+``--transport stdio`` (default)
+    The client launches this as a local child process, so there is no request to
+    authenticate: the process binds to one user (``--email``) for its whole lifetime.
+    This is the personal-tool shape NF-08 was written for.
+
+``--transport http``
+    A public endpoint (Claude's web connector cannot reach a local process). Identity
+    therefore comes per-request from an OAuth 2.1 access token, whose subject is the user
+    id — see :mod:`app.mcp_oauth`. The server is multi-user in this mode; each call is
+    scoped to the token's own account and nothing else.
+
+Every tool is read-only in both modes and funnels through the single dispatch point in
+``_run_ask_tool`` — the same validation/caps as ``/ask`` (row caps, whitelisted daily
+fields). Adding a write tool here would defeat NF-08's whole point (its own ticket names
+scope creep as the main risk) — keep it read-only.
 
 Run (opt-in dependency — ``./venv/bin/python -m pip install -e ".[mcp]"``)::
 
     ./venv/bin/python -m app.mcp_server --email me@example.com
+    ./venv/bin/python -m app.mcp_server --transport http --port 8788   # + MCP_PUBLIC_URL
 
-Then point a client at this command (Claude Desktop's ``claude_desktop_config.json``,
-or ``claude mcp add``). Every tool is read-only and funnels through the single
-dispatch point in ``_run_ask_tool`` — the same validation/caps as ``/ask`` (row caps,
-whitelisted daily fields). Adding a write tool here would defeat NF-08's whole point
-(its own ticket names scope creep as the main risk) — keep it read-only.
-
-**Python version note**: the ``mcp`` package requires Python >=3.10 on every release —
-it will not install into the project's Python 3.9 venv (the Pi deployment baseline;
-see CI/``pyproject.toml``). This module is meant to run wherever the MCP *client*
-(Claude Desktop/Code) lives, not necessarily on the Pi — point ``DATABASE_URL`` at the
-same DB (or copy it) and run this from a separate 3.10+ venv if the Pi itself stays on
-3.9.
+For stdio, point a client at that command (Claude Desktop's ``claude_desktop_config.json``
+or ``claude mcp add``). For http, put it behind HTTPS and add ``$MCP_PUBLIC_URL`` as a
+custom connector; the OAuth dance (including client registration) happens by itself.
 """
 import argparse
 import asyncio
 import logging
 from typing import List, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.settings import (
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
+from mcp.server.mcpserver import MCPServer
 
+from app.core.config import settings
 from app.core.logging import setup as setup_logging
 from app.db import users
 from app.db.base import async_session_maker, init_db
 
 logger = logging.getLogger("mcp")
 
-mcp = FastMCP("garmin-coach")
-
+# Bound once at startup in stdio mode, and never set in http mode — where identity has to
+# come from the access token instead. Keeping it None there is what makes the fallback in
+# _current_user_id() unreachable rather than merely unlikely.
 _user_id: Optional[int] = None
 
 
-def _require_user_id() -> int:
-    if _user_id is None:
-        raise RuntimeError("MCP server not initialised with a user — call main() first")
-    return _user_id
+def _current_user_id() -> int:
+    """Whose data this call may read.
+
+    Over http the SDK's RequireAuthMiddleware has already rejected anything without a
+    valid token by the time a tool body runs, so the token is present and its subject is
+    authoritative. Over stdio there is no token and the process-bound user stands in.
+    """
+    token = get_access_token()
+    if token is not None and token.subject:
+        return int(token.subject)
+    if _user_id is not None:
+        return _user_id
+    raise RuntimeError("MCP call with no authenticated user and no bound --email user")
 
 
 async def _call(name: str, **args) -> dict:
@@ -54,10 +79,9 @@ async def _call(name: str, **args) -> dict:
     from app.analysis.reports import _run_ask_tool
 
     async with async_session_maker() as session:
-        return await _run_ask_tool(session, _require_user_id(), name, args)
+        return await _run_ask_tool(session, _current_user_id(), name, args)
 
 
-@mcp.tool()
 async def query_activities(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     type: Optional[str] = None, min_dist_km: Optional[float] = None,
@@ -73,7 +97,6 @@ async def query_activities(
     )
 
 
-@mcp.tool()
 async def query_daily(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     fields: Optional[List[str]] = None,
@@ -84,7 +107,6 @@ async def query_daily(
     return await _call("query_daily", date_from=date_from, date_to=date_to, fields=fields)
 
 
-@mcp.tool()
 async def aggregate_weekly(metric: str, weeks: int = 12) -> dict:
     """One metric bucketed per ISO week (oldest first) over the last `weeks` weeks
     (default 12, max 26). `metric` is a running-volume aggregate (run_km/run_count/
@@ -92,7 +114,6 @@ async def aggregate_weekly(metric: str, weeks: int = 12) -> dict:
     return await _call("aggregate_weekly", metric=metric, weeks=weeks)
 
 
-@mcp.tool()
 async def get_activity_detail(id: int) -> dict:
     """Full detail on one activity by its DB id (from query_activities): for runs,
     pace/HR broken into ~6 segments (not the raw point series); strength exercises;
@@ -101,7 +122,6 @@ async def get_activity_detail(id: int) -> dict:
     return await _call("get_activity_detail", id=id)
 
 
-@mcp.tool()
 async def get_training_plan(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
 ) -> dict:
@@ -111,6 +131,89 @@ async def get_training_plan(
     ends inclusive; omit either for an open range, omit both for the whole plan).
     Returns {"plan": null} if there's no active plan."""
     return await _call("get_training_plan", date_from=date_from, date_to=date_to)
+
+
+_TOOLS = (
+    query_activities,
+    query_daily,
+    aggregate_weekly,
+    get_activity_detail,
+    get_training_plan,
+)
+
+
+def build_server(*, public_url: Optional[str] = None) -> MCPServer:
+    """The MCP server, with OAuth wired up when ``public_url`` is given.
+
+    Auth is configured per transport rather than always-on: over stdio there is no HTTP
+    request to carry a token, and the SDK refuses auth settings without one.
+    """
+    kwargs = {}
+    if public_url:
+        from app.mcp_oauth import SCOPE, DbOAuthProvider
+
+        base = public_url.rstrip("/")
+        kwargs = {
+            "auth": AuthSettings(
+                issuer_url=base,
+                # RFC 8707: the token is bound to THIS resource, so one leaked to another
+                # MCP server can't be replayed against us (and vice versa).
+                resource_server_url=f"{base}/mcp",
+                required_scopes=[SCOPE],
+                client_registration_options=ClientRegistrationOptions(
+                    enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]
+                ),
+                revocation_options=RevocationOptions(enabled=True),
+            ),
+            "auth_server_provider": DbOAuthProvider(base),
+        }
+
+    server = MCPServer("garmin-coach", **kwargs)
+    for fn in _TOOLS:
+        server.tool()(fn)
+
+    if public_url:
+        from app.mcp_oauth import consent_get, consent_post
+
+        server.custom_route("/oauth/consent", methods=["GET"])(consent_get)
+        server.custom_route("/oauth/consent", methods=["POST"])(consent_post)
+
+    return server
+
+
+def _http_app(server: MCPServer, public_url: str):
+    """The ASGI app for http transport: the SDK's Starlette app (MCP endpoint, OAuth
+    endpoints, both metadata documents, session-manager lifespan) plus our static files,
+    which the consent page's stylesheet comes from.
+
+    The transport-security settings are passed explicitly and not left to the SDK's
+    default. That default keys off the *bind* address: binding to 127.0.0.1 — which is
+    exactly right behind a tunnel — auto-enables DNS-rebinding protection with an
+    allow-list of ``localhost``/``127.0.0.1``, and every real request then arrives with
+    ``Host: <public hostname>`` and is refused. So the allow-list has to name the public
+    origin instead, which keeps the protection AND lets the proxy through.
+    """
+    from urllib.parse import urlparse
+
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.routing import Mount
+    from starlette.staticfiles import StaticFiles
+
+    from app.templating import STATIC_DIR
+
+    base = public_url.rstrip("/")
+    app = server.streamable_http_app(
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[urlparse(base).netloc],
+            allowed_origins=[base],
+        )
+    )
+    # Appended last, so it can never shadow an MCP or OAuth route.
+    app.routes.append(
+        Mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    )
+    return app
 
 
 async def _resolve_user_id(email: str) -> int:
@@ -128,13 +231,48 @@ async def _resolve_user_id(email: str) -> int:
 def main(argv=None) -> None:
     setup_logging()
     parser = argparse.ArgumentParser(description="Personal read-only MCP server (NF-08).")
-    parser.add_argument("--email", required=True, help="which user's data this server exposes")
+    parser.add_argument(
+        "--transport", choices=("stdio", "http"), default="stdio",
+        help="stdio: a local child process bound to one --email user (default). "
+             "http: a public endpoint, per-request OAuth identity.",
+    )
+    parser.add_argument("--email", help="stdio only: which user's data this server exposes")
+    parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="http only: bind address. Keep the default and put a reverse proxy or "
+             "tunnel in front — binding to 0.0.0.0 publishes it to the whole network.",
+    )
+    parser.add_argument("--port", type=int, default=8788, help="http only: bind port")
     args = parser.parse_args(argv)
 
-    global _user_id
-    _user_id = asyncio.run(_resolve_user_id(args.email))
-    logger.info(f"MCP server bound to user_id={_user_id} ({args.email})")
-    mcp.run()   # stdio transport; blocks until the client disconnects
+    if args.transport == "stdio":
+        if not args.email:
+            raise SystemExit("--email is required for --transport stdio")
+        global _user_id
+        _user_id = asyncio.run(_resolve_user_id(args.email))
+        logger.info(f"MCP server bound to user_id={_user_id} ({args.email})")
+        build_server().run()  # stdio transport; blocks until the client disconnects
+        return
+
+    # http: identity per request, so no --email binding — and no way to fall back to one.
+    if not settings.MCP_PUBLIC_URL:
+        raise SystemExit(
+            "MCP_PUBLIC_URL must be set for --transport http (the OAuth issuer — it has "
+            "to match the public HTTPS origin clients connect to, e.g. "
+            "https://mcp.example.com)."
+        )
+    if args.email:
+        # Silently ignoring it would leave the operator believing the endpoint is
+        # restricted to that one account, which is the opposite of how http mode works.
+        raise SystemExit("--email is meaningless with --transport http: every request "
+                         "carries its own OAuth identity.")
+    import uvicorn
+
+    asyncio.run(init_db())
+    logger.info(f"MCP server (http) on {args.host}:{args.port}, issuer {settings.MCP_PUBLIC_URL}")
+    public = settings.MCP_PUBLIC_URL
+    uvicorn.run(_http_app(build_server(public_url=public), public),
+                host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

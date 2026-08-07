@@ -591,3 +591,55 @@ class CheckupAttachment(Base):
     media_type: Mapped[str] = mapped_column(String(64))
     data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class OAuthClient(Base):
+    """An OAuth client registered against the remote MCP server (NF-08 http transport).
+
+    Written by RFC 7591 Dynamic Client Registration — Claude registers itself the first
+    time a user adds the connector, so there is no client id to copy by hand. The whole
+    ``OAuthClientInformationFull`` document is kept as one Fernet-encrypted JSON blob in
+    ``data_enc`` rather than as columns: it carries the client *secret*, which the SDK
+    compares in plaintext, and its shape is the SDK's to change, not ours.
+
+    Registration is capped (``MCP_OAUTH_MAX_CLIENTS``) — DCR is by design an unauthenticated
+    write endpoint, and without a ceiling it is an open row factory."""
+
+    __tablename__ = "oauth_clients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    data_enc: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class OAuthGrant(Base):
+    """One issued OAuth artifact: a pending authorization request, an authorization code,
+    an access token or a refresh token (``kind``).
+
+    **Secrets are stored hashed, never in the clear** (``token_hash`` = SHA-256 of the
+    value we handed out). Lookup is always by exact value, so hashing costs nothing and a
+    leaked database copy yields no usable token. This is the one thing that must not be
+    "simplified" later.
+
+    ``user_id`` is the resource owner the grant speaks for — it rides through code →
+    access token as the OAuth ``subject`` and is what scopes every MCP tool call. A
+    ``pending`` row has no user yet: it is the parked authorization request, waiting for
+    someone to actually log in on the consent page.
+
+    ``data`` holds the per-kind extras (PKCE challenge, redirect URI, state, resource
+    indicator) — they differ per kind and none of them is queried."""
+
+    __tablename__ = "oauth_grants"
+    __table_args__ = (Index("ix_oauth_grants_kind_expires", "kind", "expires_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # pending|code|access|refresh
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    scopes: Mapped[Optional[dict]] = mapped_column(JSON)   # list[str]
+    expires_at: Mapped[float] = mapped_column(Float)        # epoch seconds
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    data: Mapped[Optional[dict]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

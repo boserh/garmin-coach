@@ -146,5 +146,21 @@
 
       <button class="btn" type="submit">Змінити пароль</button>
     </form>
+
+    {# NF-08: only rendered once something is actually connected — an empty section here
+       would explain a feature most accounts never turn on. #}
+    {% if mcp_clients %}
+    <hr class="divide">
+    <h2 class="sec">Підключені MCP-клієнти</h2>
+    {% if mcp == "revoked" %}<div class="saved">✅ Доступ відкликано.</div>{% endif %}
+    <div class="sub">Мають доступ на читання твоєї історії (тренування, метрики, план).
+      Витрат на Claude це не створює — платить підписка клієнта.</div>
+    <ul class="obhow">
+      {% for name in mcp_clients %}<li>{{ name }}</li>{% endfor %}
+    </ul>
+    <form class="form" method="post" action="/settings/mcp/revoke">
+      <button class="btn btn-ghost" type="submit">Відкликати доступ</button>
+    </form>
+    {% endif %}
   </div>
 {% endblock %}
