@@ -504,7 +504,11 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   `list-workouts`, `backfill-records` (running bests **and** NF-27's strength e1RM /
   tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
   stored activities; idempotent, paced, 0 LLM cost), `backfill-routes` (NF-33 route
-  clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent);
+  clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent),
+  `fix-plan-steps [--apply]` (re-cut planned sessions whose `steps` disagree with their
+  `dist_km` — repairs rows written before the write path reconciled them; dry run by
+  default, 0 Garmin, 0 LLM, and it names the sessions already pushed to the calendar that
+  need an `unpush-plan` + `push-plan`);
   `backfill-series --force` refetches runs that already have a series to pick up the
   `series:v3` channels.
 
