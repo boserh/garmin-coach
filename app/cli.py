@@ -471,6 +471,58 @@ async def _unpush_plan(email: str, date: str = None) -> int:
     return 0
 
 
+async def _fix_plan_steps(email: str, apply: bool) -> int:
+    """Repair planned sessions whose headline ``dist_km`` and structured ``steps`` disagree
+    — rows written before the write path reconciled them (an adaptation that eased only the
+    distance left the original steps in place, so the header said 5 km while the workout on
+    the watch was still 6 km).
+
+    Pure DB: 0 Claude calls, 0 Garmin requests. Read-only unless ``--apply``. The stored
+    ``dist_km`` is the coach's intent, so the steps are re-cut to it (``app.plansteps``).
+    Sessions already pushed to Garmin still carry the OLD workout — the printed list tells
+    you which; ``unpush-plan`` + ``push-plan`` re-pushes them."""
+    from app import plansteps
+    from app.garmin import repository
+
+    async with cli_user(email) as (session, user):
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+        fixed = pushed = 0
+        for w in await repository.list_workouts(session, plan.id):
+            gap = plansteps.mismatch(w.dist_km, w.steps)
+            if gap is None or gap <= plansteps.TOLERANCE:
+                continue
+            was = plansteps.total_dist_m(w.steps) or 0.0
+            steps = plansteps.scale_steps(w.steps, w.dist_km)
+            if steps is None:
+                continue
+            fixed += 1
+            note = ""
+            if w.garmin_workout_id is not None:
+                pushed += 1
+                note = "  [pushed to Garmin — needs a re-push]"
+            print(f"  {w.date} {w.type or '':<10} dist_km={w.dist_km} "
+                  f"steps {was:.0f}m → {plansteps.total_dist_m(steps):.0f}m{note}")
+            if apply:
+                w.steps = steps
+        if apply:
+            await session.commit()
+        if not fixed:
+            print("Nothing to fix — every session's steps match its distance.")
+            return 0
+        print(f"{'Fixed' if apply else 'Would fix'} {fixed} session(s).")
+        if not apply:
+            print("Re-run with --apply to write the changes.")
+        elif pushed:
+            print(f"{pushed} of them are already on the Garmin calendar with the old "
+                  f"workout — re-push with:\n"
+                  f"  python -m app.cli unpush-plan --email {email}\n"
+                  f"  python -m app.cli push-plan --email {email}")
+    return 0
+
+
 async def _trigger_plan_adapt(email: str) -> int:
     """Manually run the weekly plan-adaptation review (EP-02) for one user, outside
     Sunday's schedule — same call plan_adapt_job makes. Pure-DB + one Claude call, no
@@ -704,6 +756,13 @@ def main(argv=None) -> int:
              "(real Claude call — sends the usual ✅/❌ proposal to Telegram if it has one)")
     tpa.add_argument("--email", required=True)
 
+    fps = sub.add_parser(
+        "fix-plan-steps",
+        help="Re-cut planned sessions whose steps disagree with their dist_km — "
+             "no Garmin calls, no LLM cost, read-only without --apply")
+    fps.add_argument("--email", required=True)
+    fps.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
+
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
@@ -758,6 +817,8 @@ def main(argv=None) -> int:
         return _run(_push_plan(args.email, args.days, args.dry_run, args.date))
     if args.cmd == "unpush-plan":
         return _run(_unpush_plan(args.email, args.date))
+    if args.cmd == "fix-plan-steps":
+        return _run(_fix_plan_steps(args.email, args.apply))
     if args.cmd == "trigger-plan-adapt":
         return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":

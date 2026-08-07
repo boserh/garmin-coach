@@ -2,11 +2,13 @@
 step-match, plan creation/archival/extension, strength days and plan-op apply. Split
 out of the flat ``repository.py`` (B1)."""
 import datetime as dt
+import logging
 from typing import List, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import plansteps
 from app.db.models import (
     ActivityRecord,
     PlannedWorkout,
@@ -16,12 +18,34 @@ from app.db.models import (
 from app.garmin import exercises
 from app.garmin.repository.core import _dump_steps
 
+logger = logging.getLogger("api")
+
 # ---------- TRAINING PLAN ----------
 
 # NF-30: a plan in the return-to-run protocol is "paused", NOT archived — it keeps its future
 # sessions and stays the user's current plan, so /plan still shows it and the protocol can hand
 # it back afterwards. Anything that asks for "the current plan" must therefore see it.
 CURRENT_PLAN_STATUSES = ("active", "paused")
+
+
+def _consistent(dist_km, steps, *, steps_given: bool, where: str):
+    """Store a headline distance and its structured steps only in agreement — see
+    ``app.plansteps``. ``steps`` is already ``_dump_steps``-serialized.
+
+    Both columns are model output written independently, and an adaptation that eases a
+    session ("зменшую лонг до 5 км") returns a `modify` with ``dist_km`` and no ``steps``,
+    which used to leave the original 6000 m step in place: the header said 5.0 km while the
+    workout pushed to Garmin was still the full one. Every mismatch is logged — the numbers
+    are supposed to agree at the source (the prompts demand it), so one showing up here means
+    a prompt regressed, not just a row to patch."""
+    gap = plansteps.mismatch(dist_km, steps)
+    if gap is not None and gap > plansteps.TOLERANCE:
+        logger.warning(
+            "PLAN dist/steps mismatch (%s): dist_km=%s steps=%.0fm (%.0f%%) — %s",
+            where, dist_km, plansteps.total_dist_m(steps) or 0.0, gap * 100,
+            "steps win" if steps_given else "steps rescaled",
+        )
+    return plansteps.reconcile(dist_km, steps, steps_given=steps_given)
 
 
 async def get_active_plan(session: AsyncSession, user_id: int):
@@ -464,10 +488,14 @@ async def create_plan(
     session.add(plan)
     await session.flush()  # assign plan.id
     for w in workouts:
+        dist_km, steps = _consistent(
+            w.dist_km, _dump_steps(getattr(w, "steps", None)),
+            steps_given=True, where=f"create {w.date}",
+        )
         session.add(PlannedWorkout(
             plan_id=plan.id, user_id=user_id, date=w.date, week=w.week,
-            type=w.type, dist_km=w.dist_km, description=w.description,
-            steps=_dump_steps(getattr(w, "steps", None)), status="planned",
+            type=w.type, dist_km=dist_km, description=w.description,
+            steps=steps, status="planned",
         ))
     await session.commit()
     return plan
@@ -510,11 +538,15 @@ async def append_workouts(
     added = 0
     for w in workouts:
         base_week = getattr(w, "week", None) or 1
+        dist_km, steps = _consistent(
+            w.dist_km, _dump_steps(getattr(w, "steps", None)),
+            steps_given=True, where=f"extend {w.date}",
+        )
         session.add(PlannedWorkout(
             plan_id=plan.id, user_id=plan.user_id, date=w.date,
             week=base_week + week_offset,
-            type=w.type, dist_km=w.dist_km, description=w.description,
-            steps=_dump_steps(getattr(w, "steps", None)), status="planned",
+            type=w.type, dist_km=dist_km, description=w.description,
+            steps=steps, status="planned",
         ))
         added += 1
     await session.commit()
@@ -649,11 +681,15 @@ async def apply_plan_ops(
     affected: List[PlannedWorkout] = []
     for op in ops:
         if op.action == "add":
+            dist_km, steps = _consistent(
+                op.dist_km, _dump_steps(getattr(op, "steps", None)),
+                steps_given=True, where=f"add {op.date}",
+            )
             w = PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
-                type=op.type or "easy", dist_km=op.dist_km,
+                type=op.type or "easy", dist_km=dist_km,
                 description=op.description or "",
-                steps=_dump_steps(getattr(op, "steps", None)),
+                steps=steps,
                 garmin_template_id=getattr(op, "garmin_template_id", None),
                 strength_plan=_sanitize_strength(getattr(op, "strength", None)),
                 status="planned",
@@ -673,12 +709,20 @@ async def apply_plan_ops(
         elif op.action == "modify":
             if op.type is not None:
                 w.type = op.type
-            if op.dist_km is not None:
-                w.dist_km = op.dist_km
             if op.description is not None:
                 w.description = op.description
-            if getattr(op, "steps", None) is not None:
-                w.steps = _dump_steps(op.steps)
+            # Distance and steps are ONE decision, not two independent columns: a modify that
+            # only eases the distance must re-cut the stale steps (they are what reaches the
+            # watch), and one that sends new steps redefines the distance.
+            new_steps = getattr(op, "steps", None)
+            if new_steps is not None or op.dist_km is not None:
+                steps_given = new_steps is not None
+                steps = _dump_steps(new_steps) if steps_given else w.steps
+                dist_km = op.dist_km if op.dist_km is not None else w.dist_km
+                w.dist_km, w.steps = _consistent(
+                    dist_km, steps, steps_given=steps_given,
+                    where=f"modify {op.date}",
+                )
             if getattr(op, "garmin_template_id", None) is not None:
                 w.garmin_template_id = op.garmin_template_id
             if getattr(op, "strength", None) is not None:

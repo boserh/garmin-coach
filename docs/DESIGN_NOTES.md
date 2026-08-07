@@ -112,6 +112,32 @@ zero Claude calls. `run_weather_plan_check` returns move/modify-only ops
 EP-02's `_send_adapt_proposal`/`adapt_callback`. `_has_pending_proposal` ensures only one
 unanswered ✅/❌ proposal at a time across all automatic proposers.
 
+## dist_km vs steps consistency (`app/plansteps.py`)
+
+A planned session states its volume twice: the headline `PlannedWorkout.dist_km` and the
+structured `steps` (which is what `workout_export` turns into the watch workout). Both are
+model output, and every proposer (adaptation, weather, `/sick`, chat edits) may legally send
+a `modify` with only `dist_km` — `apply_plan_ops` used to write that column alone and leave
+the old steps, so an eased long run showed "5.0 км" in the header with a 6000 m step under
+it, and the run pushed to Garmin was still the un-eased one. The easing existed on screen
+only. `/plan`'s `~NN хв` estimate reads `steps`, so the card contradicted even itself.
+
+`plansteps.reconcile` is the single decision, called from every write (`create_plan`,
+`append_workouts`, `apply_plan_ops` add/modify): steps written **together with** a distance
+win (they reach the watch, so they define the session and `dist_km` follows their total); a
+distance arriving **alone** over pre-existing steps is the coach's intent, so the stale steps
+are re-cut to it. Re-cutting puts the change on the work steps (`run`/`ride`) and leaves the
+warmup/cooldown as prescribed — a coach cutting volume cuts the work — falling back to
+proportional scaling only when the fixed parts alone already exceed the target. `repeat`
+blocks keep their `reps`; only distances move. A session whose steps are purely time-based
+has nothing to reconcile (`total_dist_m` → `None`, never 0).
+
+Every mismatch logs a WARNING (`PLAN dist/steps mismatch`): the prompts demand agreement at
+the source, so one appearing here means a prompt regressed, not merely a row to patch. Rows
+written before this existed are repaired by `python -m app.cli fix-plan-steps --email … [--apply]`
+(0 Garmin, 0 LLM, dry-run by default); it also names the sessions already on the calendar,
+which still carry the old workout until an `unpush-plan` + `push-plan`.
+
 ## Sick/travel mode (NF-03)
 
 `/sick [днів]` triggers a *block rebuild*: skip missed/near-term days, ease the return,
