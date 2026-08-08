@@ -29,4 +29,12 @@ cd "$REPO_ROOT"
 REPO_OWNER="$(stat -c '%U' "$REPO_ROOT")"
 sudo -u "$REPO_OWNER" "$REPO_ROOT/venv/bin/python" -m alembic upgrade head
 /bin/systemctl reload garmin-web.service
+# garmin-mcp (NF-08 http transport) is OPTIONAL: it needs the `mcp` extra and an
+# MCP_PUBLIC_URL, so most hosts don't run it. Restart it only where the unit actually
+# exists — `set -e` would otherwise abort the whole deploy here, before the line below
+# ever restarts the bots. Without this the deploy pulled new code that the MCP process
+# then kept not running.
+if /bin/systemctl cat garmin-mcp.service >/dev/null 2>&1; then
+  /bin/systemctl restart --no-block garmin-mcp.service
+fi
 exec /bin/systemctl restart --no-block garmin-bot.service garmin-admin-bot.service
