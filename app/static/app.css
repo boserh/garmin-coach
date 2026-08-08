@@ -893,3 +893,111 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
         border-color:color-mix(in srgb, var(--intervals) 42%, transparent);
         background:color-mix(in srgb, var(--intervals) 8%, transparent)}
 .obact{display:inline-block;margin-top:.8rem}
+
+/* ---- single-day recovery page (/me/daily_metrics/{id}) ---- */
+/* One idea, repeated: a physiological number is drawn against the range it normally
+   sits in for this person. The band row below is that idea; every other block on the
+   page stays quiet so it reads as the page's signature rather than one effect of many.
+   Geometry (core edges, marker position, segment widths) is computed in app.dayview —
+   nothing here re-derives a threshold. */
+.dv-hero{display:flex;align-items:center;gap:1.6rem;flex-wrap:wrap;margin:1.4rem 0 .4rem;
+  padding:1.5rem 1.7rem;border-radius:22px;border:1px solid var(--line-2);
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 20px 46px -22px rgba(0,0,0,.85)}
+.dv-herotext{min-width:11rem;flex:1 1 12rem}
+.dv-date{margin:0;font-size:clamp(1.35rem,4.4vw,1.75rem);font-weight:700;
+  letter-spacing:-.03em;line-height:1.15}
+.dv-pills{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem}
+.dv-verdicttext{margin:.75rem 0 0;color:#c2c9d3;font-size:.9rem;line-height:1.5}
+.dv-missing{margin:.6rem 0 0;font-size:.82rem;line-height:1.45;color:var(--tempo)}
+.dv-note{margin:.55rem 0 0;color:var(--muted);font-size:.82rem;line-height:1.5;max-width:34rem}
+
+/* the band row */
+.dv-bands{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(13.5rem,100%),1fr));
+  gap:.7rem;margin-top:1rem}
+.dv-band{padding:.9rem 1.05rem 1rem;border:1px solid var(--line-2);border-radius:15px;
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 8px 24px -14px rgba(0,0,0,.75)}
+.dv-bhead{display:flex;align-items:baseline;justify-content:space-between;gap:.2rem .6rem;
+  flex-wrap:wrap}
+.dv-blabel{color:var(--muted);font-size:.8rem}
+.dv-bval{font-size:1.3rem;font-weight:750;letter-spacing:-.025em;color:var(--ink);
+  font-variant-numeric:tabular-nums;margin-left:auto}
+.dv-bval small{font-size:.7rem;font-weight:600;color:var(--faint);margin-left:.15rem}
+.dv-track{position:relative;height:.5rem;margin:.85rem 0 .55rem;border-radius:999px;
+  background:var(--surface-2);border:1px solid var(--line)}
+.dv-core{position:absolute;top:-1px;bottom:-1px;border-radius:999px;
+  background:color-mix(in srgb,var(--accent) 26%,transparent);
+  border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+.dv-tick{position:absolute;top:-.18rem;bottom:-.18rem;width:1px;background:var(--line-2)}
+.dv-mark{position:absolute;top:50%;width:.72rem;height:.72rem;border-radius:50%;
+  transform:translate(-50%,-50%);background:var(--ink);
+  box-shadow:0 0 0 3px var(--surface),0 0 10px -1px rgba(255,255,255,.35)}
+.dv-mark.is-good{background:var(--easy);box-shadow:0 0 0 3px var(--surface),0 0 12px -1px var(--easy)}
+.dv-mark.is-warn{background:var(--tempo);box-shadow:0 0 0 3px var(--surface),0 0 12px -1px var(--tempo)}
+.dv-bfoot{display:flex;align-items:baseline;justify-content:space-between;gap:.15rem .5rem;
+  flex-wrap:wrap;font-size:.76rem}
+.dv-verdict{color:var(--muted)}
+.dv-verdict.is-good{color:var(--easy)}
+.dv-verdict.is-warn{color:var(--tempo)}
+.dv-delta{color:var(--faint);font-variant-numeric:tabular-nums;text-align:right;margin-left:auto}
+
+/* the per-section cards */
+.dv-card{margin-top:.75rem;padding:1.1rem 1.25rem;border:1px solid var(--line-2);
+  border-radius:16px;background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 8px 24px -14px rgba(0,0,0,.75)}
+.dv-card .dv-band{padding:0;border:0;border-radius:0;background:none;box-shadow:none}
+.dv-cardhead{display:flex;align-items:baseline;flex-wrap:wrap;gap:.7rem}
+.dv-big{font-size:1.6rem;font-weight:750;letter-spacing:-.03em;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.dv-when{color:var(--muted);font-size:.84rem;font-variant-numeric:tabular-nums}
+
+/* sleep architecture */
+.dv-sleep{display:flex;gap:2px;height:1rem;margin:.95rem 0 .7rem;border-radius:7px;
+  overflow:hidden;background:var(--surface-2)}
+.dv-seg{display:block;height:100%}
+.dv-seg--deep{background:var(--accent)}
+.dv-seg--rem{background:var(--race)}
+.dv-seg--light{background:color-mix(in srgb,var(--long) 55%,var(--surface-2))}
+.dv-seg--awake{background:var(--line-2)}
+.dv-legend{list-style:none;margin:0;padding:0;display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(10.5rem,100%),1fr));
+  gap:.3rem .95rem;font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.dv-legend b{color:var(--ink);font-weight:600;margin-left:.35rem}
+.dv-dot{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;
+  margin-right:.4rem;vertical-align:.02rem}
+.dv-pct{color:var(--faint);margin-left:.3rem}
+.dv-need{margin-top:1rem}
+.dv-needbar{height:.35rem;border-radius:999px;background:var(--surface-2);
+  border:1px solid var(--line);overflow:hidden}
+.dv-needfill{display:block;height:100%;background:var(--tempo)}
+.dv-needfill.is-good{background:var(--easy)}
+.dv-needtext{margin-top:.4rem;color:var(--muted);font-size:.8rem}
+
+/* body battery span */
+.dv-bbtrack{position:relative;height:.6rem;margin-bottom:1.5rem;border-radius:999px;
+  background:var(--surface-2);border:1px solid var(--line)}
+.dv-bbspan{position:absolute;top:-1px;bottom:-1px;border-radius:999px;
+  background:linear-gradient(90deg,var(--intervals),var(--tempo),var(--easy))}
+.dv-bbend{position:absolute;top:1.05rem;transform:translateX(-50%);color:var(--faint);
+  font-size:.75rem;font-variant-numeric:tabular-nums}
+.dv-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.9rem}
+.dv-chip{font-size:.8rem;padding:.2rem .65rem;border-radius:20px;color:var(--muted);
+  background:var(--surface-2);border:1px solid var(--line-2);white-space:nowrap;
+  font-variant-numeric:tabular-nums}
+.dv-chip.is-good{color:var(--easy);border-color:color-mix(in srgb,var(--easy) 34%,transparent)}
+.dv-chip.is-warn{color:var(--tempo);border-color:color-mix(in srgb,var(--tempo) 34%,transparent)}
+
+/* label/value grid — the long tail of watch fields */
+.dv-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(8.5rem,100%),1fr));
+  gap:.85rem 1.1rem;margin:1rem 0 0}
+.dv-kv>div{min-width:0}
+.dv-kv dt{color:var(--muted);font-size:.75rem;line-height:1.35}
+.dv-kv dd{margin:.15rem 0 0;color:var(--ink);font-size:1rem;font-weight:600;
+  font-variant-numeric:tabular-nums}
+.dv-more{margin-top:2.9rem}
+.dv-more>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;
+  gap:.4rem;font-size:.85rem;color:var(--muted);border:1px solid var(--line-2);
+  border-radius:20px;padding:.28rem .8rem;background:var(--surface);user-select:none}
+.dv-more>summary::-webkit-details-marker{display:none}
+.dv-more>summary:hover{border-color:var(--accent);color:var(--ink)}

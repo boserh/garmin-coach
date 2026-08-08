@@ -15,8 +15,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import dayview, stepmatch, subjective
 from app import format as fmt
-from app import stepmatch, subjective
 from app.banners import banner
 from app.charts import run_charts as _run_charts
 from app.charts import shade_zones as _shade_zones
@@ -474,77 +474,203 @@ def _fmt_dist(m) -> str:
     return f"{m / 1000:.1f} км" if m >= 1000 else f"{int(m)} м"
 
 
+# Keys the day page renders somewhere other than a label/value row — in the hero, a
+# band gauge, the sleep bar. Listing them here is what keeps them out of "Інше" twice.
 _SKIP_KEYS = frozenset({
     "resting_hr", "readiness_score", "auto_activities",
     "sleep_feedback", "hrs_feedback", "hrv_feedback",
-    "readiness_feedback", "acwr_feedback", "endurance_class",
+    "readiness_feedback", "readiness_level", "acwr_feedback", "endurance_class",
     "hrv_5day_high",
+    # drawn as geometry, not text
+    "hrv_avg", "hrv_baseline_low", "hrv_baseline_high", "hrv_weekly_avg", "hrv_5min_high",
+    "sleep_need_h", "sleep_need_feedback", "bb_high", "bb_low", "bb_change",
+    "steps", "distance_m",
 })
 
-_SECTIONS_DEF = [
-    ("Сон", [
-        ("overnight_hrv",    "HRV нічний",       None),
-        ("avg_hr_sleep",     "пульс уві сні",    None),
-        ("awake_count",      "пробуджень",        None),
-        ("restless_moments", "неспок. моменти",   None),
-        ("sleep_need_h",     "потреба, год",      None),
-        ("skin_temp_dev_c",  "темп. шкіри °C",   None),
-        ("spo2_avg",         "SpO₂ %",            None),
-        ("respiration_avg",  "дихання / хв",      None),
-        ("body_battery_change", "BB зміна",       None),
-    ]),
-    ("HRV (деталі)", [
-        ("hrv_weekly_avg",   "тижн. серед.",      None),
-        ("hrv_5min_high",    "5хв макс",          None),
-        ("hrv_baseline_low", "норма від",         None),
-        ("hrv_baseline_high","норма до",          None),
-    ]),
-    ("Тренувальне навантаження", [
-        ("recovery_time_h",  "відновлення, год",  None),
-        ("acute_load",       "гостре навант.",    None),
-        ("acwr_pct",         "ACWR %",            None),
-    ]),
-    ("Активність дня", [
-        ("steps",            "кроки",             None),
-        ("distance_m",       "відстань",          _fmt_dist),
-        ("calories",         "ккал",              None),
-        ("moderate_min",     "помірна, хв",       None),
-        ("active_min",       "активні, хв",       None),
-        ("floors",           "поверхи",           None),
-        ("min_hr",           "мін. пульс",        None),
-        ("bb_high",          "BB макс",           None),
-        ("bb_low",           "BB мін",            None),
-    ]),
-    ("Прогнози", [
-        ("race_5k_s",        "5К",                _fmt_race),
-        ("race_10k_s",       "10К",               _fmt_race),
-        ("race_half_s",      "напівмарафон",      _fmt_race),
-        ("race_marathon_s",  "марафон",           _fmt_race),
-        ("vo2max",           "VO₂max",            None),
-        ("fitness_age",      "фітнес-вік",        None),
-        ("endurance_score",  "витривалість",      None),
-    ]),
-]
+
+def _fmt_dev(v) -> str:
+    """Skin-temperature deviation: the sign is the whole point of the number."""
+    return f"{v:+.1f}" if isinstance(v, (int, float)) else str(v)
 
 
-def _day_sections(ex: dict) -> list:
-    known = {k for _, fields in _SECTIONS_DEF for k, *_ in fields} | _SKIP_KEYS
-    out = []
-    for title, fields in _SECTIONS_DEF:
-        items = [
-            {"label": lbl, "value": fmt(ex[k]) if fmt else ex[k]}
-            for k, lbl, fmt in fields if ex.get(k) is not None
-        ]
-        if items:
-            out.append({"title": title, "rows": items})
-    leftovers = [
-        {"label": k.replace("_", " "), "value": v}
-        for k, v in ex.items()
+# Groups the template lays out as cards. The keys are the ones ``_daily_extra`` /
+# ``_daily_extra_metrics`` actually write — several of these used to be guesses
+# (``calories``, ``floors``, ``body_battery_change``), so the real values fell through
+# to an "Інше" dump of raw English key names at the bottom of the page.
+_GROUPS = {
+    "sleep": [
+        ("avg_hr_sleep",      "пульс уві сні",     None),
+        ("overnight_hrv",     "HRV за ніч",        None),
+        ("awake_count",       "пробуджень",         None),
+        ("restless_moments",  "неспокійні моменти", None),
+        ("avg_sleep_stress",  "стрес уві сні",      None),
+        ("spo2_avg",          "SpO₂, сер. %",       None),
+        ("spo2_low",          "SpO₂, мін. %",       None),
+        ("respiration_avg",   "дихання, /хв",       None),
+        ("skin_temp_dev_c",   "темп. шкіри, °C",    _fmt_dev),
+        ("breathing_disruption_sev", "збої дихання", dayview.humanize),
+    ],
+    "load": [
+        ("recovery_time_h",   "відновлення, год",   None),
+        ("acute_load",        "гостре навантаження", None),
+        ("acwr_pct",          "ACWR, %",            None),
+    ],
+    "activity": [
+        ("active_kcal",       "активні ккал",       None),
+        ("moderate_min",      "помірна, хв",        None),
+        ("vigorous_min",      "інтенсивна, хв",     None),
+        ("floors_up",         "поверхів угору",     None),
+        ("min_hr",            "мін. пульс",         None),
+    ],
+    "predictions": [
+        ("race_5k_s",         "5 км",               _fmt_race),
+        ("race_10k_s",        "10 км",              _fmt_race),
+        ("race_half_s",       "напівмарафон",       _fmt_race),
+        ("race_marathon_s",   "марафон",            _fmt_race),
+        ("vo2max",            "VO₂max",             None),
+        ("endurance_score",   "витривалість",       None),
+    ],
+}
+
+
+def _rows(ex: dict, group: str) -> list:
+    return [
+        {"label": lbl, "value": f(ex[k]) if f else ex[k]}
+        for k, lbl, f in _GROUPS[group] if ex.get(k) is not None
+    ]
+
+
+def _leftover_rows(ex: dict) -> list:
+    """Anything the watch sent that no group claims — shown de-shouted rather than as a
+    raw ``sleep_need_feedback: HIGHLY_INCREASED`` line."""
+    known = {k for fields in _GROUPS.values() for k, *_ in fields} | _SKIP_KEYS
+    return [
+        {"label": k.replace("_", " "), "value": dayview.humanize(v) if isinstance(v, str) else v}
+        for k, v in sorted(ex.items())
         if k not in known and v is not None and isinstance(v, (int, float, str))
     ]
-    if leftovers:
-        out.append({"title": "Інше", "rows": leftovers})
+
+
+async def _prior_days(session, user_id: int, before: str, days: int = 45) -> list:
+    """The stored days immediately *before* the one being viewed — the sample every band
+    on the page is drawn against. Anchored on the viewed date, not on today: opening a
+    day from March must compare it with March, not with the last six weeks."""
+    start = ""
+    try:
+        d = dt.date.fromisoformat((before or "")[:10])
+        start = (d - dt.timedelta(days=days)).isoformat()
+    except (ValueError, TypeError):
+        return []
+    return list((await session.execute(
+        select(DailyMetric)
+        .where(DailyMetric.user_id == user_id,
+               DailyMetric.date < before, DailyMetric.date >= start)
+        .order_by(DailyMetric.date)
+    )).scalars().all())
+
+
+def _col(rows, name: str) -> list:
+    """One metric's history, reading through ``extra`` for the keys with no column."""
+    return [getattr(r, name, None) if hasattr(r, name) else (r.extra or {}).get(name)
+            for r in rows]
+
+
+def _ex_col(rows, key: str) -> list:
+    return [(r.extra or {}).get(key) for r in rows]
+
+
+def _delta_text(delta, *, hours: bool = False) -> str:
+    """A signed difference against the personal median, in the metric's own units."""
+    if delta is None:
+        return ""
+    if hours:
+        mins = round(delta * 60)
+        if mins == 0:
+            return "як зазвичай"
+        return ("+" if mins > 0 else "−") + _hm(abs(mins) / 60)
+    if abs(delta) < 0.05:
+        return "як зазвичай"
+    val = round(delta, 1)
+    val = int(val) if float(val).is_integer() else val
+    return f"+{val}" if delta > 0 else f"−{abs(val)}"
+
+
+def _key_metrics(m, ex: dict, prior: list) -> list:
+    """The five numbers the page leads with, each with its own personal band."""
+    specs = [
+        ("Сон, бал", m.sleep_score, _col(prior, "sleep_score"), False, False, ""),
+        ("Тривалість сну", m.sleep_h, _col(prior, "sleep_h"), False, True, ""),
+        ("HRV за ніч", m.hrv_avg, _col(prior, "hrv_avg"), False, False, "мс"),
+        ("Пульс спокою", ex.get("resting_hr"), _ex_col(prior, "resting_hr"), True, False, ""),
+        ("Стрес, середній", m.stress_avg, _col(prior, "stress_avg"), True, False, ""),
+    ]
+    out = []
+    for label, value, history, lower_better, hours, unit in specs:
+        if value is None:
+            continue
+        # HRV is the one metric with a manufacturer-supplied normal range; everything
+        # else infers one from this person's own recent weeks.
+        if label.startswith("HRV"):
+            g = dayview.hrv_gauge(
+                value,
+                baseline_low=ex.get("hrv_baseline_low"), baseline_high=ex.get("hrv_baseline_high"),
+                weekly_avg=ex.get("hrv_weekly_avg"), night_high=ex.get("hrv_5min_high"),
+            ) or dayview.history_gauge(history, value)
+        else:
+            g = dayview.history_gauge(history, value, lower_better=lower_better)
+        out.append({
+            "label": label, "unit": unit,
+            "value": _hm(value) if hours else value,
+            "gauge": g,
+            "delta": _delta_text(g.get("delta"), hours=hours) if g else "",
+        })
     return out
+
+
+def _day_view(m, ex: dict, prior: list) -> dict:
+    """Everything the day template paints, computed once here so the markup stays markup."""
+    score = ex.get("readiness_score")
+    metric = "готовність"
+    if score is None:
+        score, metric = m.sleep_score, "сон, бал"
+    hero = None
+    if score is not None:
+        color, band_label = _recovery_band(score)
+        hero = {"value": int(score), "color": color, "band": band_label, "metric": metric,
+                **_ring_geom(score, _RING_R)}
+    verdict = ex.get("readiness_feedback") or ex.get("sleep_feedback") or ex.get("hrv_feedback")
+    need = ex.get("sleep_need_h")
+    return {
+        "hero": hero,
+        "verdict": dayview.humanize(verdict) if verdict else "",
+        "metrics": _key_metrics(m, ex, prior),
+        "sleep": {
+            "total": m.sleep_h,
+            "segments": dayview.sleep_segments(
+                deep=m.deep_h, rem=m.rem_h, light=m.light_h, awake=m.awake_h),
+            "start": ex.get("sleep_start"), "end": ex.get("sleep_end"),
+            "need": need,
+            "need_feedback": dayview.humanize(ex["sleep_need_feedback"])
+            if ex.get("sleep_need_feedback") else "",
+            "need_bar": dayview.ratio_bar(m.sleep_h, need),
+            "rows": _rows(ex, "sleep"),
+        },
+        "battery": {
+            "span": dayview.battery_span(ex.get("bb_low"), ex.get("bb_high")),
+            "charged": m.bb_charged, "drained": m.bb_drained,
+            "change": ex.get("bb_change"), "stress_max": m.stress_max,
+        },
+        "activity": {
+            "steps": ex.get("steps"),
+            "steps_gauge": dayview.history_gauge(_ex_col(prior, "steps"), ex.get("steps")),
+            "distance": _fmt_dist(ex["distance_m"]) if ex.get("distance_m") is not None else "",
+            "rows": _rows(ex, "activity"),
+        },
+        "load": _rows(ex, "load"),
+        "predictions": _rows(ex, "predictions"),
+        "other": _leftover_rows(ex),
+        "sample": len(prior),
+    }
 
 
 async def _daily_cards(session, user_id, limit, offset):
@@ -1445,10 +1571,11 @@ async def me_row(
             await repository.read_history(session, user.id, days=30)
         )
         incomplete = completeness.labels(completeness.daily_completeness(obj, expected))
+        prior = await _prior_days(session, user.id, obj.date)
         return templates.TemplateResponse(
             request, "day.html",
             {"m": obj, "date": _nice_date(obj.date), "hrv_color": _hrv_color(obj.hrv_status),
-             "extra": ex, "sections": _day_sections(ex), "incomplete": incomplete,
+             "extra": ex, "d": _day_view(obj, ex, prior), "incomplete": incomplete,
              "user": user, "base": "/me", "token": ""},
         )
 
