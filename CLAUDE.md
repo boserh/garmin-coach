@@ -310,6 +310,8 @@ app/
   routes.py                                          NF-33: pure route fingerprint/similarity/repeat comparison (no track stored)
   postrace.py                                         NF-23: pure post-race maths — GAP km curve, split, fade point, decoupling
   returntorun.py                                       NF-30: pure walk/run return-after-pain ladder + stop rule
+  dayview.py                                            pure geometry for the day page's bands (personal range,
+                                                        HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
   analysis/
     service.py           analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     budget.py             OPS-11: the spend breaker — period ceilings + a per-call ceiling

@@ -2,66 +2,185 @@
 
 {% block title %}Відновлення — {{ date }}{% endblock %}
 
+{#- One band row: the value, where it sat inside the personal normal range, the verdict.
+    Defined once and reused by every metric on the page — a second copy of this markup is
+    exactly the drift the UI tests exist to catch. -#}
+{% macro band(item) %}
+<div class="dv-band">
+  <div class="dv-bhead">
+    <span class="dv-blabel">{{ item.label }}</span>
+    <span class="dv-bval">{{ item.value }}{% if item.unit %}<small>{{ item.unit }}</small>{% endif %}</span>
+  </div>
+  {% if item.gauge %}
+  <div class="dv-track" aria-hidden="true">
+    <span class="dv-core" style="left:{{ item.gauge.core_start }}%;width:{{ item.gauge.core_width }}%"></span>
+    {% for mk in item.gauge.marks or [] %}
+    <span class="dv-tick" style="left:{{ mk.pos }}%"></span>
+    {% endfor %}
+    <span class="dv-mark{% if item.gauge.good is true %} is-good{% elif item.gauge.good is false %} is-warn{% endif %}"
+          style="left:{{ item.gauge.pos }}%"></span>
+  </div>
+  <div class="dv-bfoot">
+    <span class="dv-verdict{% if item.gauge.good is true %} is-good{% elif item.gauge.good is false %} is-warn{% endif %}">{{ item.gauge.verdict }}</span>
+    <span class="dv-delta">
+      {%- for mk in item.gauge.marks or [] %}{{ mk.label }} {{ mk.value }}{% if not loop.last %} · {% endif %}{% endfor -%}
+      {%- if item.delta %}{% if item.gauge.marks %} · {% endif %}{{ item.delta }}{% endif -%}
+    </span>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro kv(rows) %}
+{% if rows %}
+<dl class="dv-kv">
+  {% for r in rows %}
+  <div><dt>{{ r.label }}</dt><dd>{{ r.value }}</dd></div>
+  {% endfor %}
+</dl>
+{% endif %}
+{% endmacro %}
+
 {% block body %}
   {% set active = 'me' %}
   {% include "_nav.html" %}
   <div class="wrap">
     <a class="back" href="/me/daily_metrics">← Відновлення</a>
-    <div class="ahead">
-      <div>
-        <div class="atitle" style="font-size:1.4rem">{{ date }}</div>
-        {% if m.hrv_status %}<div style="margin-top:.45rem"><span class="hrvpill" style="background:{{ hrv_color }}">HRV {{ m.hrv_status }}</span></div>{% endif %}
-        {% if incomplete %}<div style="margin-top:.45rem"><span class="hrvpill" style="background:#e0af68">⚠️ неповний день</span>
-          <span style="color:#8a92a6;font-size:.85rem"> — немає: {{ incomplete|join(', ') }}</span></div>{% endif %}
+
+    <section class="dv-hero">
+      {% if d.hero %}
+      <div class="ringbox">
+        <svg viewBox="0 0 176 176" style="filter:drop-shadow(0 0 13px {{ d.hero.color }}66)">
+          <circle cx="88" cy="88" r="{{ d.hero.r }}" fill="none" stroke="#252b37" stroke-width="13"/>
+          <circle cx="88" cy="88" r="{{ d.hero.r }}" fill="none" stroke="{{ d.hero.color }}" stroke-width="13"
+                  stroke-linecap="round" class="ring-anim"
+                  stroke-dasharray="{{ d.hero.circ }}" stroke-dashoffset="{{ d.hero.circ - d.hero.dash }}"
+                  style="--from:{{ d.hero.circ }};--to:{{ d.hero.circ - d.hero.dash }}"/>
+        </svg>
+        <div class="ringc">
+          <div class="ringv" style="color:{{ d.hero.color }}">{{ d.hero.value }}</div>
+          <div class="ringl">{{ d.hero.metric }}</div>
+        </div>
+      </div>
+      {% endif %}
+      <div class="dv-herotext">
+        <h1 class="dv-date">{{ date }}</h1>
+        <div class="dv-pills">
+          {% if d.hero %}<span class="hrvpill" style="background:{{ d.hero.color }}">{{ d.hero.band }}</span>{% endif %}
+          {% if m.hrv_status %}<span class="hrvpill" style="background:{{ hrv_color }}">HRV {{ m.hrv_status }}</span>{% endif %}
+        </div>
+        {% if d.verdict %}<p class="dv-verdicttext">{{ d.verdict }}</p>{% endif %}
+        {% if incomplete %}
+        <p class="dv-missing">Неповний день — немає: {{ incomplete|join(', ') }}</p>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if d.metrics %}
+    <h2 class="sec">Проти твоєї норми</h2>
+    <p class="dv-note">
+      {% if d.sample %}Смуга — діапазон, у якому ці показники тримаються зазвичай
+      ({{ d.sample }} попередніх {% if d.sample == 1 %}день{% elif d.sample < 5 %}дні{% else %}днів{% endif %});
+      для HRV — балансний коридор Garmin.{% else %}Історії ще немає — з часом тут з’явиться твій звичний діапазон.{% endif %}
+    </p>
+    <div class="dv-bands">
+      {% for item in d.metrics %}{{ band(item) }}{% endfor %}
+    </div>
+    {% endif %}
+
+    {% if d.sleep.segments or d.sleep.rows or d.sleep.start %}
+    <h2 class="sec">Сон</h2>
+    <div class="dv-card">
+      <div class="dv-cardhead">
+        <span class="dv-big">{{ d.sleep.total|hm or '—' }}</span>
+        {% if d.sleep.start and d.sleep.end %}
+        <span class="dv-when">{{ d.sleep.start }} → {{ d.sleep.end }}</span>
+        {% endif %}
+      </div>
+      {% if d.sleep.segments %}
+      <div class="dv-sleep" aria-hidden="true">
+        {% for s in d.sleep.segments %}
+        <span class="dv-seg dv-seg--{{ s.key }}" style="width:{{ s.pct }}%"></span>
+        {% endfor %}
+      </div>
+      <ul class="dv-legend">
+        {% for s in d.sleep.segments %}
+        <li><i class="dv-dot dv-seg--{{ s.key }}"></i>{{ s.label }}
+          <b>{{ s.hours|hm }}</b><span class="dv-pct">{{ s.pct|round|int }}%</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if d.sleep.need %}
+      <div class="dv-need">
+        <div class="dv-needbar" aria-hidden="true">
+          {% if d.sleep.need_bar %}
+          <span class="dv-needfill{% if d.sleep.need_bar.met %} is-good{% endif %}"
+                style="width:{{ d.sleep.need_bar.pct }}%"></span>
+          {% endif %}
+        </div>
+        <div class="dv-needtext">
+          Потреба {{ d.sleep.need|hm }}{% if d.sleep.need_feedback %} · {{ d.sleep.need_feedback }}{% endif %}{% if d.sleep.need_bar and not d.sleep.need_bar.met %} · бракує {{ d.sleep.need_bar.gap|hm }}{% endif %}
+        </div>
+      </div>
+      {% endif %}
+      {{ kv(d.sleep.rows) }}
+    </div>
+    {% endif %}
+
+    {% if d.battery.span or d.battery.charged or d.battery.drained %}
+    <h2 class="sec">Body Battery</h2>
+    <div class="dv-card">
+      {% if d.battery.span %}
+      <div class="dv-bbtrack">
+        <span class="dv-bbspan" style="left:{{ d.battery.span.start }}%;width:{{ d.battery.span.width }}%"></span>
+        <span class="dv-bbend" style="left:{{ d.battery.span.start }}%">{{ d.battery.span.low }}</span>
+        <span class="dv-bbend" style="left:{{ d.battery.span.start + d.battery.span.width }}%">{{ d.battery.span.high }}</span>
+      </div>
+      <div class="dv-when">діапазон за добу</div>
+      {% endif %}
+      <div class="dv-chips">
+        {% if d.battery.charged %}<span class="dv-chip is-good">+{{ d.battery.charged }} заряд</span>{% endif %}
+        {% if d.battery.drained %}<span class="dv-chip is-warn">−{{ d.battery.drained }} розряд</span>{% endif %}
+        {% if d.battery.stress_max %}<span class="dv-chip">{{ d.battery.stress_max }} пік стресу</span>{% endif %}
       </div>
     </div>
+    {% endif %}
 
-    <div class="bigstats">
-      {% if m.sleep_score %}<div class="bigstat"><div class="v">{{ m.sleep_score }}</div><div class="k">сон бал</div></div>{% endif %}
-      {% if m.sleep_h %}<div class="bigstat"><div class="v" style="font-size:1.15rem">{{ m.sleep_h|hm }}</div><div class="k">сон</div></div>{% endif %}
-      {% if m.hrv_avg %}<div class="bigstat"><div class="v">{{ m.hrv_avg }}</div><div class="k">HRV avg</div></div>{% endif %}
-      {% if extra.resting_hr %}<div class="bigstat"><div class="v">{{ extra.resting_hr }}</div><div class="k">RHR</div></div>{% endif %}
-      {% if m.stress_avg %}<div class="bigstat"><div class="v">{{ m.stress_avg }}</div><div class="k">стрес сер</div></div>{% endif %}
-      {% if extra.readiness_score %}<div class="bigstat"><div class="v">{{ extra.readiness_score }}</div><div class="k">готовність</div></div>{% endif %}
-    </div>
-
-    {% if m.deep_h or m.rem_h or m.light_h or m.awake_h %}
-    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Сон</h2>
-    <div class="mrow">
-      {% if m.deep_h %}<span class="mchip"><b>{{ m.deep_h|hm }}</b><span class="u">глибокий</span></span>{% endif %}
-      {% if m.rem_h %}<span class="mchip"><b>{{ m.rem_h|hm }}</b><span class="u">REM</span></span>{% endif %}
-      {% if m.light_h %}<span class="mchip"><b>{{ m.light_h|hm }}</b><span class="u">легкий</span></span>{% endif %}
-      {% if m.awake_h %}<span class="mchip"><b>{{ m.awake_h|hm }}</b><span class="u">неспання</span></span>{% endif %}
+    {% if d.activity.steps or d.activity.rows or d.activity.distance %}
+    <h2 class="sec">Рух за день</h2>
+    <div class="dv-card">
+      {% if d.activity.steps %}
+      {{ band({'label': 'Кроки', 'value': d.activity.steps, 'unit': '',
+               'gauge': d.activity.steps_gauge,
+               'delta': ''}) }}
+      {% endif %}
+      {% if d.activity.distance %}<div class="dv-when">{{ d.activity.distance }} пройдено</div>{% endif %}
+      {% if extra.auto_activities %}
+      <div class="auto-acts-list">
+        {% for act in extra.auto_activities.split(';') %}{% set act = act.strip() %}
+        {% if act %}<span class="auto-act-pill">{{ act }}</span>{% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      {{ kv(d.activity.rows) }}
     </div>
     {% endif %}
 
-    {% if m.bb_charged or m.bb_drained or m.stress_max %}
-    <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .6rem">Body Battery / стрес</h2>
-    <div class="mrow">
-      {% if m.bb_charged %}<span class="mchip"><b>+{{ m.bb_charged }}</b><span class="u">заряд</span></span>{% endif %}
-      {% if m.bb_drained %}<span class="mchip"><b>−{{ m.bb_drained }}</b><span class="u">розряд</span></span>{% endif %}
-      {% if m.stress_max %}<span class="mchip"><b>{{ m.stress_max }}</b><span class="u">стрес макс</span></span>{% endif %}
-    </div>
+    {% if d.load %}
+    <h2 class="sec">Тренувальне навантаження</h2>
+    <div class="dv-card">{{ kv(d.load) }}</div>
     {% endif %}
 
-    {% if extra.auto_activities %}
-    <h2 class="sec">Авто-активності</h2>
-    <div class="auto-acts-list">
-      {% for act in extra.auto_activities.split(';') %}
-        {% set act = act.strip() %}{% if act %}
-        <span class="auto-act-pill">{{ act }}</span>
-        {% endif %}
-      {% endfor %}
-    </div>
+    {% if d.predictions %}
+    <h2 class="sec">Прогнози Garmin</h2>
+    <div class="dv-card">{{ kv(d.predictions) }}</div>
     {% endif %}
 
-    {% for sec in sections %}
-    <h2 class="sec">{{ sec.title }}</h2>
-    <div class="mrow">
-      {% for item in sec.rows %}
-      <span class="mchip"><b>{{ item.value }}</b><span class="u">{{ item.label }}</span></span>
-      {% endfor %}
-    </div>
-    {% endfor %}
+    {% if d.other %}
+    <details class="dv-more">
+      <summary>Решта показників дня</summary>
+      <div class="dv-card">{{ kv(d.other) }}</div>
+    </details>
+    {% endif %}
   </div>
 {% endblock %}
