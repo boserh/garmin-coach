@@ -111,6 +111,103 @@ async def test_run_ask_tool_get_training_plan_no_plan(session):
     assert got == {"plan": None}
 
 
+async def _plan_with(session, *workouts):
+    from app.db.models import PlannedWorkout, TrainingPlan
+
+    plan = TrainingPlan(user_id=1, goal="first_5k", status="active")
+    session.add(plan)
+    await session.flush()
+    for kw in workouts:
+        session.add(PlannedWorkout(plan_id=plan.id, user_id=1, status="planned", **kw))
+    await session.commit()
+
+
+async def test_get_training_plan_strength_exercises_from_snapshot(session):
+    """ST-09's hole, second half: a cloned-template strength day reads as nothing but
+    description="Day 1" unless the tool hands over the stored exercises."""
+    await _plan_with(session, {
+        "date": "2026-06-10", "type": "strength", "description": "Day 1",
+        "garmin_template_id": 931013083,
+        "strength_snapshot": {"name": "Day 1", "blocks": [
+            {"reps": 3, "rest_s": 90, "exercises": [
+                {"category": "SQUAT", "exercise": "BARBELL_BACK_SQUAT", "reps": 8},
+            ]},
+        ]},
+    })
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    ref = got["sessions"][0]["detail"]
+    detail = got["session_details"][ref]
+    assert detail["name"] == "Day 1"
+    assert detail["blocks"][0]["sets"] == 3
+    assert detail["blocks"][0]["rest_s"] == 90
+    ex = detail["blocks"][0]["exercises"][0]
+    assert ex["category"] == "SQUAT" and ex["reps"] == 8
+    assert ex["name"] and ex["name"] != "SQUAT"   # readable label, not a raw Garmin code
+
+
+async def test_get_training_plan_strength_from_scratch_plan_wins(session):
+    """A from-scratch session (strength_plan) takes precedence over any snapshot, and its
+    per-exercise weight rides along."""
+    await _plan_with(session, {
+        "date": "2026-06-10", "type": "strength", "description": "Силова",
+        "strength_plan": {"name": "Ноги", "blocks": [
+            {"reps": 4, "exercises": [
+                {"category": "DEADLIFT", "exercise": "BARBELL_DEADLIFT",
+                 "reps": 5, "weight_kg": 80.0},
+            ]},
+        ]},
+        "strength_snapshot": {"name": "Day 2", "exercises": [{"category": "BENCH_PRESS"}]},
+    })
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    detail = got["session_details"][got["sessions"][0]["detail"]]
+    assert detail["name"] == "Ноги"
+    assert detail["blocks"][0]["exercises"][0]["weight_kg"] == 80.0
+
+
+async def test_get_training_plan_legacy_flat_snapshot(session):
+    """Older snapshots stored a flat exercise list — still surfaced, as one block."""
+    await _plan_with(session, {
+        "date": "2026-06-10", "type": "strength", "description": "Day 2",
+        "strength_snapshot": {"exercises": [{"category": "BENCH_PRESS", "reps": 10}]},
+    })
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    detail = got["session_details"][got["sessions"][0]["detail"]]
+    assert [e["category"] for e in detail["blocks"][0]["exercises"]] == ["BENCH_PRESS"]
+
+
+async def test_get_training_plan_repeated_sessions_share_one_detail(session):
+    """Day 1 recurs every week; inlining a copy per date is what would blow the token
+    budget, so identical details are stored once and referenced."""
+    snap = {"name": "Day 1", "blocks": [
+        {"reps": 3, "exercises": [{"category": "SQUAT"}]}]}
+    await _plan_with(
+        session,
+        {"date": "2026-06-10", "type": "strength", "strength_snapshot": snap},
+        {"date": "2026-06-17", "type": "strength", "strength_snapshot": dict(snap)},
+        {"date": "2026-06-20", "type": "tempo", "dist_km": 8.0,
+         "steps": [{"kind": "warmup", "dist_m": 1000}]},
+    )
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    refs = [s.get("detail") for s in got["sessions"]]
+    assert refs[0] == refs[1] != refs[2]
+    assert len(got["session_details"]) == 2
+    assert got["session_details"][refs[2]]["steps"][0]["kind"] == "warmup"
+
+
+async def test_get_training_plan_no_stored_detail_says_nothing(session):
+    """An empty snapshot deserialises to Python None (the JSON-null gotcha) — the session
+    is returned without a `detail` key rather than with an empty one."""
+    await _plan_with(
+        session,
+        {"date": "2026-06-10", "type": "strength", "description": "Day 1",
+         "strength_snapshot": None, "strength_plan": None},
+        {"date": "2026-06-11", "type": "easy", "dist_km": 6.0},
+    )
+    got = await reports._run_ask_tool(session, 1, "get_training_plan", {})
+    assert all("detail" not in s for s in got["sessions"])
+    assert "session_details" not in got
+
+
 # ---------- run_ask_agent loop ----------
 
 async def test_run_ask_agent_answers_without_tools(session, monkeypatch):

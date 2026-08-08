@@ -5,6 +5,7 @@ package ``__init__`` re-exports every public name so ``from app.garmin import re
 and ``repository.X`` keep working unchanged. ``stats`` imports ``query_daily`` /
 ``ASK_DAILY_FIELDS`` from here."""
 import datetime as dt
+import json
 from typing import Dict, List, Optional
 
 from sqlalchemy import delete, func, select
@@ -183,6 +184,75 @@ async def latest_daily_date(session: AsyncSession, user_id: int) -> Optional[str
     ).scalar_one_or_none()
 
 
+def _plan_strength_detail(w) -> Optional[dict]:
+    """The stored exercises of a strength session, straight from the DB — never a live
+    Garmin fetch, this runs on read-only tool paths (same rule as ST-09's report context).
+
+    Priority mirrors ``/plan``'s accordion: a from-scratch day keeps its session in
+    ``strength_plan``, a cloned-template day in the build-time ``strength_snapshot`` —
+    whose older rows hold a flat exercise list instead of blocks. Returns
+    ``{name?, blocks:[{sets?, rest_s?, exercises:[{name, category?, exercise?, reps?,
+    weight_kg?}]}]}`` or ``None`` when nothing is stored. NB the JSON-null gotcha: an
+    "empty" snapshot deserialises to Python ``None``, so truthiness is the filter."""
+    from app.garmin import exercises as catalog
+
+    src = None
+    plan = getattr(w, "strength_plan", None)
+    if isinstance(plan, dict) and plan.get("blocks"):
+        src = plan
+    else:
+        snap = getattr(w, "strength_snapshot", None)
+        if isinstance(snap, dict):
+            if snap.get("blocks"):
+                src = snap
+            elif snap.get("exercises"):   # legacy flat snapshot → one implicit block
+                src = {"name": snap.get("name"),
+                       "blocks": [{"exercises": snap["exercises"]}]}
+    if src is None:
+        return None
+
+    def _exercise(e: dict) -> dict:
+        cat, name = (e.get("category") or ""), (e.get("exercise") or "")
+        # A readable label first (the consumer shouldn't have to decode Garmin codes),
+        # the codes after — they're what an activity's logged sets are keyed by, so a
+        # plan-vs-actual question can line the two up.
+        out = {"name": catalog.label(cat, name)}
+        for k in ("category", "exercise", "reps", "weight_kg"):
+            if e.get(k) is not None:
+                out[k] = e[k]
+        return out
+
+    blocks = []
+    for b in src.get("blocks") or []:
+        exs = [_exercise(e) for e in (b.get("exercises") or [])
+               if e.get("category") or e.get("exercise")]
+        if not exs:
+            continue
+        block: dict = {}
+        if b.get("reps"):        # a block's `reps` is how many SETS/rounds it runs
+            block["sets"] = int(b["reps"])
+        if b.get("rest_s"):
+            block["rest_s"] = b["rest_s"]
+        block["exercises"] = exs
+        blocks.append(block)
+    if not blocks:
+        return None
+    out = {"blocks": blocks}
+    if src.get("name"):
+        out["name"] = src["name"]
+    return out
+
+
+def _plan_session_detail(w) -> Optional[dict]:
+    """What a planned session actually IS beyond its one-line ``description``: the
+    structured steps of a run, or the exercises of a strength day. ``None`` when the row
+    carries neither."""
+    if (getattr(w, "type", None) or "") == "strength":
+        return _plan_strength_detail(w)
+    steps = getattr(w, "steps", None)
+    return {"steps": steps} if steps else None
+
+
 async def query_training_plan(
     session: AsyncSession, user_id: int, *,
     date_from: Optional[str] = None, date_to: Optional[str] = None,
@@ -194,7 +264,15 @@ async def query_training_plan(
     goal, target date) had no real data to answer from — only whatever a daily report
     happened to mention about today/tomorrow. Read-only, user-scoped, capped at ``limit``
     sessions (never above ``ASK_MAX_ROWS``). Returns ``{"plan": None}`` if there's no active
-    plan (an archived one isn't visible here — that's a deliberate v1 scope, not a bug)."""
+    plan (an archived one isn't visible here — that's a deliberate v1 scope, not a bug).
+
+    Each session also links to its structured detail (a run's steps, a strength day's
+    exercises) through ``session_details``: without it a strength day reads as nothing but
+    ``description="Day 1"`` and the answer either says "no details" or invents the
+    exercises from history — the same hole ST-09 closed for the morning report. The detail
+    lives in a shared table rather than inline because a plan repeats the same session over
+    and over (Day 1/Day 2 every week), and inlining a copy per date is what would blow the
+    ``/ask`` token budget."""
     plan = (
         await session.execute(
             select(TrainingPlan).where(
@@ -211,19 +289,33 @@ async def query_training_plan(
         stmt = stmt.where(PlannedWorkout.date <= date_to)
     stmt = stmt.order_by(PlannedWorkout.date).limit(max(1, min(limit, ASK_MAX_ROWS)))
     rows = (await session.execute(stmt)).scalars().all()
-    return {
+    details: Dict[str, dict] = {}   # ref → detail, deduped across repeated sessions
+    refs: Dict[str, str] = {}       # canonical JSON of a detail → its ref
+    sessions = []
+    for w in rows:
+        row = {"date": w.date, "week": w.week, "type": w.type, "dist_km": w.dist_km,
+               "description": w.description, "status": w.status}
+        detail = _plan_session_detail(w)
+        if detail:
+            key = json.dumps(detail, sort_keys=True, ensure_ascii=False)
+            ref = refs.get(key)
+            if ref is None:
+                ref = refs[key] = f"d{len(refs) + 1}"
+                details[ref] = detail
+            row["detail"] = ref
+        sessions.append(row)
+    out = {
         "plan": {
             "goal": plan.goal, "goal_label": plan.goal_label,
             "target_date": plan.target_date, "start_date": plan.start_date,
             "days_per_week": plan.days_per_week, "intensity": plan.intensity,
             "summary": plan.summary,
         },
-        "sessions": [
-            {"date": w.date, "week": w.week, "type": w.type, "dist_km": w.dist_km,
-             "description": w.description, "status": w.status}
-            for w in rows
-        ],
+        "sessions": sessions,
     }
+    if details:
+        out["session_details"] = details
+    return out
 
 
 async def get_activity(session: AsyncSession, user_id: int, row_id: int):

@@ -554,10 +554,15 @@ def _ask_tools() -> list:
                 "intensity, the coach's approach summary, and its dated sessions (date, "
                 "week, type, dist_km, description, status: planned/done/partial/missed/"
                 "skipped) in a date range (both dates inclusive; omit either end for an "
-                "open range — omit both for the whole plan). Use this for anything about "
-                "\"the program\" itself — upcoming sessions, the goal, adherence — not "
-                "query_activities, which is actual completed workouts. Returns "
-                "{\"plan\": null} if there's no active plan."
+                "open range — omit both for the whole plan). A session's `detail` key "
+                "(when present) looks up its structured content in the top-level "
+                "`session_details` map: {\"steps\": [...]} for a run, {\"name\"?, "
+                "\"blocks\": [{\"sets\"?, \"rest_s\"?, \"exercises\": [{\"name\", "
+                "\"reps\"?, \"weight_kg\"?}]}]} for a strength day — sessions that repeat "
+                "share one entry. A session with no `detail` genuinely has none stored. "
+                "Use this for anything about \"the program\" itself — upcoming sessions, "
+                "the goal, adherence — not query_activities, which is actual completed "
+                "workouts. Returns {\"plan\": null} if there's no active plan."
             ),
             "input_schema": {
                 "type": "object",
