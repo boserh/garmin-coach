@@ -293,6 +293,19 @@ def test_info_when_logged_in(auth_client):
     assert "Як це працює" in r.text
 
 
+def test_info_shows_the_mcp_endpoint_only_when_it_is_deployed(auth_client, monkeypatch):
+    from app.routers import settings as settings_router
+
+    # Not configured → no instructions for an endpoint that doesn't answer.
+    monkeypatch.setattr(settings_router.settings, "MCP_PUBLIC_URL", None)
+    assert "mcpurl" not in auth_client.get("/info").text
+
+    monkeypatch.setattr(settings_router.settings, "MCP_PUBLIC_URL", "https://mcp.example.com/")
+    body = auth_client.get("/info").text
+    # The address clients paste — the /mcp path, and no doubled slash from the setting.
+    assert "https://mcp.example.com/mcp" in body
+
+
 def test_ui_daily_metrics_has_trend_chart(auth_client):
     import datetime as dt
 

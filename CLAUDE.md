@@ -571,6 +571,12 @@ storage (`app.db.oauth`) and the idea of a user. Load-bearing details:
 dynamic registrations the user never named). The consent screen promises this, so it has
 to exist.
 
+`/info` carries the end-user connect instructions (the `{MCP_PUBLIC_URL}/mcp` address to
+paste into a custom connector), and hides the whole section where the transport isn't
+deployed. `scripts/restart_services.sh` restarts `garmin-mcp.service` **if the unit
+exists** — it's optional (needs the extra + `MCP_PUBLIC_URL`), and an unguarded restart
+would abort the deploy under `set -e` before the bots ever restart.
+
 Note the SDK version: `mcp` 2.0 removed `FastMCP` (`mcp.server.fastmcp`) in favour of
 `MCPServer`, so the extra pins `mcp>=2`.
 

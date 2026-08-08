@@ -758,6 +758,11 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
          font-variant-numeric:tabular-nums}
 .ladder-text{margin:.6rem 0 0;white-space:pre-wrap;word-break:break-word;font:inherit;
              font-size:.9rem;line-height:1.55;color:#c2c9d3}
+/* the MCP endpoint address on /info — a URL long enough to push a 320px phone into
+   horizontal scroll unless it is allowed to break mid-string */
+.mcpurl{margin:.6rem 0;padding:.55rem .7rem;background:var(--surface);
+        border:1px solid var(--line);border-radius:8px;color:var(--ink);
+        font-size:.85rem;white-space:pre-wrap;word-break:break-all}
 /* this week's remaining sessions, each with the load it adds */
 .fcast{margin:.7rem 0 .3rem}
 .fc-row{display:flex;gap:.7rem;align-items:baseline;padding:.4rem 0;

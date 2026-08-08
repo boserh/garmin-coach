@@ -52,7 +52,16 @@ def _safe_decrypt(token):
 async def info_page(request: Request, user: User = Depends(current_user)):
     return templates.TemplateResponse(
         request, "info.html",
-        {"user": user, "bot_username": settings.TELEGRAM_BOT_USERNAME},
+        {
+            "user": user,
+            "bot_username": settings.TELEGRAM_BOT_USERNAME,
+            # The MCP endpoint clients connect to, or None where the http transport
+            # isn't deployed — the section is hidden then (see info.html).
+            "mcp_url": (
+                settings.MCP_PUBLIC_URL.rstrip("/") + "/mcp"
+                if settings.MCP_PUBLIC_URL else None
+            ),
+        },
     )
 
 
