@@ -129,6 +129,14 @@ async def get_training_plan(
     coach's approach summary, and its dated sessions (date, week, type, dist_km,
     description, status: planned/done/partial/missed/skipped) in a date range (both
     ends inclusive; omit either for an open range, omit both for the whole plan).
+
+    A session's `detail` key (when present) looks its structured content up in the
+    top-level `session_details` map: {"steps": [...]} for a run, {"name"?, "blocks":
+    [{"sets"?, "rest_s"?, "exercises": [{"name", "reps"?, "weight_kg"?}]}]} for a
+    strength day. Sessions repeating the same content share one entry. A session
+    without `detail` genuinely has none stored — say so rather than guessing the
+    exercises from past activities.
+
     Returns {"plan": null} if there's no active plan."""
     return await _call("get_training_plan", date_from=date_from, date_to=date_to)
 

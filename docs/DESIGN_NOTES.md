@@ -553,6 +553,22 @@ mid-tool-use returns an honest "уточни питання", never a guess. Ded
 + `latest_daily_date`; `ReportLog(kind="ask", tool_rounds=<n>)`. Bot-only (pure-DB
 `load_credentials`, no MFA risk).
 
+**`get_training_plan` returns session CONTENT, not just its one-line description.** A
+strength day's `description` is the template's name ("Day 1") and its `dist_km` is null,
+so a plan row on its own says nothing about the session — the tool answered "there are no
+details" for a day whose exercises were sitting in the DB all along (same shape as ST-09's
+hole in the morning report, one path over). Each session now carries a `detail` ref into a
+top-level `session_details` map: `{"steps": …}` for a run, `{name?, blocks:[{sets?,
+rest_s?, exercises:[{name, category?, exercise?, reps?, weight_kg?}]}]}` for a strength
+day, read **from the DB only** (`strength_plan` → `strength_snapshot`, incl. the legacy
+flat-list shape) — no live template fetch on a read-only tool path. Exercises carry the
+human `label()` *and* the Garmin codes, which is what an activity's logged sets are keyed
+by, so plan-vs-actual lines up. The map is shared rather than inlined because a plan
+repeats the same session weekly: inlining Day 1's exercises on every date is what would
+eat `MAX_ASK_TOTAL_TOKENS`. No `detail` key = genuinely nothing stored, and `SYSTEM_ASK_
+TOOLS` says to report that instead of reconstructing exercises from `query_activities`
+(the exact hallucination ST-09 documented).
+
 ## Day-over-day continuity & relative day labels
 
 - `run_analysis` (report/morning, not `/deep`) feeds the **previous day's** report via
