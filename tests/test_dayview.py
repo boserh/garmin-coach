@@ -4,7 +4,6 @@ import pytest
 
 from app import dayview
 
-
 # ---- percentile -------------------------------------------------------------------
 
 def test_percentile_interpolates_and_ignores_non_numbers():
