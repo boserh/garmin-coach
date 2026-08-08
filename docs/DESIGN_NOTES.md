@@ -165,6 +165,21 @@ recovery metric (RHR, HRV, sleep score/hours, stress, body battery) →
 per-metric valence. `MIN_SAMPLES`=14 gates a metric in. Zero-LLM; feeds `run_analysis`
 (report/morning, not `/deep`) and the dedup-cache key.
 
+**Two windows** — the 90-day median is a *stable reference*, and that is the point for the
+threshold readers (`health.detect`, `sleepnudge`, the dashboard ring, all still on
+`p50`/`band`), but it is also why the morning report quoted the identical "медіана 51 /
+коридор 44–49" every day for weeks: with ~90 integer samples clustered on three or four
+values, one day in and one day out cannot move the middle rank. Arithmetic, not a bug — but
+useless in a daily narration. So each metric also carries `recent` (`{p50, band, n, days}`
+over `RECENT_DAYS`=28, gated by its own `RECENT_MIN_SAMPLES`=10), `pos_recent`, and `trend`
+(signed `recent.p50 - p50`, omitted when it rounds to zero). The prompt narrates `recent`
+as "your norm now", uses `trend` for drift, and is told **not** to recite baseline numbers
+that didn't change. The recent slice is cut **by date**, not by position — `read_history`
+returns one row per *stored* day, so a positional tail reaches months back across a sync
+gap (positional only as a fallback for undated rows). `cur` also carries `stale_days` when
+the most recent non-null predates the newest day in the slice (Garmin fills some metrics
+late), so a two-day-old HRV is no longer narrated as this morning's.
+
 ## Injury-risk radar (NF-04)
 
 Pure-Python (`app/injury.py`): fuses repeated pain (≥2× same body part/14d, from
