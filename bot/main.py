@@ -156,9 +156,15 @@ def main() -> None:
         time=time(hour=PLAN_SYNC_HOUR, tzinfo=handlers.TZ),
     )
     # EP-02 adaptive plan: weekly review. days follow PTB's 0=Sunday..6=Saturday.
+    # The minute offset is what keeps it behind the digest — they share the 21:00 hour,
+    # and same-time run_daily jobs have no defined order.
     app.job_queue.run_daily(
         plan_adapt_job,
-        time=time(hour=settings.PLAN_ADAPT_HOUR, tzinfo=handlers.TZ),
+        time=time(
+            hour=settings.PLAN_ADAPT_HOUR,
+            minute=settings.PLAN_ADAPT_MINUTE,
+            tzinfo=handlers.TZ,
+        ),
         days=(settings.PLAN_ADAPT_WEEKLY_DOW,),
     )
     # EP-07 weekly digest: Sunday-evening retrospective (before the adaptation review).
