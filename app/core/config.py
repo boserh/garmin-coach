@@ -148,7 +148,12 @@ class Settings(BaseSettings):
     # --- Adaptive plan (EP-02) ---
     # Weekly review: hour (Europe/Warsaw) + day-of-week it runs on. python-telegram-bot's
     # JobQueue.run_daily ``days`` convention is 0=Sunday..6=Saturday.
-    PLAN_ADAPT_HOUR: int = 20
+    # The review shares its hour with the digest now that both evening jobs sit at 21:00,
+    # so it carries a minute offset: two run_daily jobs at the SAME time have no defined
+    # order (and both take a Claude call of unpredictable length), which would break the
+    # "recap lands before the proposal" rule DIGEST_HOUR's comment relies on.
+    PLAN_ADAPT_HOUR: int = 21
+    PLAN_ADAPT_MINUTE: int = 20
     PLAN_ADAPT_WEEKLY_DOW: int = 0  # Sunday
     # Morning one-off nudge fires only when today's readiness score is below this AND
     # today's plan session is tempo/intervals/long.
@@ -157,8 +162,9 @@ class Settings(BaseSettings):
     # --- Weekly digest (EP-07) ---
     # Sunday-evening retrospective (volume/compliance vs last week, recovery/fitness
     # trends, honest progress-to-goal). Same run_daily days convention as the adaptive
-    # job (0=Sunday); scheduled before the adaptation review so the recap lands first.
-    DIGEST_HOUR: int = 19
+    # job (0=Sunday); scheduled before the adaptation review so the recap lands first
+    # (kept by PLAN_ADAPT_MINUTE now that both share the 21:00 evening slot).
+    DIGEST_HOUR: int = 21
     DIGEST_WEEKLY_DOW: int = 0  # Sunday
 
     # --- Weather-aware planning (EP-13) ---
