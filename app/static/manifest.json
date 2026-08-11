@@ -1,7 +1,7 @@
 {
   "id": "/dashboard",
-  "name": "Garmin Coach",
-  "short_name": "Coach",
+  "name": "Bihun Coach",
+  "short_name": "Bihun",
   "description": "Готовність, тренди відновлення й план тренувань в один погляд.",
   "start_url": "/dashboard",
   "scope": "/",

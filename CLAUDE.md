@@ -84,7 +84,9 @@ ad-hoc script** that imports `app.analysis.service` / `build_payload_cached` wit
 
 ## What this is
 
-A personal **Garmin → Claude** analyzer with a shared core reused by two front-ends:
+**Bihun** (the product name — "Bihun Coach" where a longer form reads better; the web
+title, PWA manifest, MCP server name and export filenames all use it) — a personal
+**Garmin → Claude** analyzer with a shared core reused by two front-ends:
 
 - a **Telegram bot** (`bot/`) — commands + a scheduled morning report;
 - a **FastAPI web layer** (`app/`) — JSON endpoints for reports, status, and history.

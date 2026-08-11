@@ -23,7 +23,12 @@ from app.db.models import (
     User,
 )
 
-DEMO_EMAIL = "demo@garmin-coach.local"
+DEMO_EMAIL = "demo@bihun.local"
+# The pre-rename address. `ensure_demo_user` looks the account up by email, so without
+# this an existing install would silently seed a SECOND demo account and leave the old
+# one orphaned in /admin/users. Migration `343cc3f80d00` renames the row in place; this
+# constant is the fallback for a DB that somehow skipped it.
+_LEGACY_DEMO_EMAIL = "demo@garmin-coach.local"
 
 _RNG_SEED = 20260101
 _HISTORY_DAYS = 90
@@ -41,6 +46,12 @@ async def ensure_demo_user(session: AsyncSession) -> User:
     existing = await users_db.get_by_email(session, DEMO_EMAIL)
     if existing is not None:
         return existing
+    # Adopt (rather than duplicate) a demo account created under the old name.
+    legacy = await users_db.get_by_email(session, _LEGACY_DEMO_EMAIL)
+    if legacy is not None:
+        legacy.email = DEMO_EMAIL
+        await session.commit()
+        return legacy
 
     user = User(
         email=DEMO_EMAIL,
