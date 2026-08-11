@@ -1,13 +1,13 @@
 {% extends "_base.html" %}
 
-{% block title %}Вхід — Garmin{% endblock %}
+{% block title %}Вхід — Bihun{% endblock %}
 
 {% block body_attrs %} class="auth"{% endblock %}
 
 {% block body %}
   <div class="authstack">
   <form class="authcard" method="post" action="/login">
-    <h1 class="brand">Garmin → Claude</h1>
+    <h1 class="brand">Bihun</h1>
     <div class="sub">Увійди, щоб побачити звіти й програму тренувань.</div>
     {% if insecure_secret %}<div class="err">⚠️ APP_SECRET_KEY не задано — сесії підписані тимчасовим ключем і не переживуть рестарт. Задай ключ у .env.</div>{% endif %}
     <label for="email">Email</label>

@@ -878,7 +878,7 @@ async def me_export(
         zf.writestr("routes.json", json.dumps(route_rows, ensure_ascii=False, indent=2))
     buf.seek(0)
 
-    fname = f"garmin-coach-export-{dt.date.today().isoformat()}.zip"
+    fname = f"bihun-export-{dt.date.today().isoformat()}.zip"
     return StreamingResponse(
         buf, media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},

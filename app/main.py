@@ -90,7 +90,7 @@ def create_app() -> FastAPI:
     # internal guards, cost paths and cache behaviour. Scanners already fetch it
     # (a 200 on /openapi.json in the middle of a .env sweep is what surfaced this).
     app = FastAPI(
-        title="Garmin → Claude", version="1.0.0", lifespan=lifespan, openapi_url=None
+        title="Bihun", version="1.0.0", lifespan=lifespan, openapi_url=None
     )
 
     # Signed cookie sessions for web login. APP_SECRET_KEY doubles as the signing

@@ -1,8 +1,8 @@
-# Garmin → Claude
+# Bihun
 
 [![CI](https://github.com/boserh/garmin-coach/actions/workflows/ci.yml/badge.svg)](https://github.com/boserh/garmin-coach/actions/workflows/ci.yml)
 
-A personal Garmin → Claude analyzer with a **shared core** reused by two front-ends: a
+**Bihun** — a personal Garmin → Claude analyzer with a **shared core** reused by two front-ends: a
 **Telegram bot** and a **FastAPI web layer**. It pulls health and training data,
 aggregates it into compact daily summaries, sends those to Claude for analysis, and
 persists history/cost in a database — growing from a "smart daily report" into an

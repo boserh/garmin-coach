@@ -176,7 +176,7 @@ def build_server(*, public_url: Optional[str] = None) -> MCPServer:
             "auth_server_provider": DbOAuthProvider(base),
         }
 
-    server = MCPServer("garmin-coach", **kwargs)
+    server = MCPServer("bihun", **kwargs)
     for fn in _TOOLS:
         server.tool()(fn)
 

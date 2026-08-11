@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "garmin-bot"
+name = "bihun"
 version = "1.0.0"
-description = "Garmin → Claude analysis: a Telegram bot + FastAPI web layer over a shared core."
+description = "Bihun — Garmin → Claude analysis: a Telegram bot + FastAPI web layer over a shared core."
 # OPS-10: garminconnect >= 0.3.6 (the post-Cloudflare auth engine) requires >= 3.12.
 # The Pi already runs 3.13.5; a dev venv on an older Python must be recreated.
 requires-python = ">=3.12"

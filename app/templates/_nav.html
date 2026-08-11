@@ -41,7 +41,7 @@
 {% set here = (NAV_ALL | selectattr('1', 'equalto', active) | list | first) %}
 
 <nav class="topnav" aria-label="Розділи">
-  <span class="navhere">{{ here[2] if here else 'Garmin Coach' }}</span>
+  <span class="navhere">{{ here[2] if here else 'Bihun' }}</span>
   {% for href, key, label in NAV_MAIN + NAV_MORE %}
     <a href="{{ href }}"{% if active == key %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
   {% endfor %}
