@@ -205,7 +205,7 @@ async def ui_index(
     return templates.TemplateResponse(
         request, "index.html",
         {"counts": counts, "user": user,
-         "base": "/ui", "title": "Garmin DB",
+         "base": "/ui", "title": "Bihun DB",
          "token": request.query_params.get("token", "")},
     )
 
