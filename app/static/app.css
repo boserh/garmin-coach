@@ -539,9 +539,18 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .listcard .lg{font-weight:600;color:var(--ink)}
 .listcard .lm{color:var(--muted);font-size:.85rem;margin-top:.25rem;font-variant-numeric:tabular-nums}
 
-/* ---- data table (users) ---- */
+/* ---- data table (users, cache) ----
+   A column count picked for a laptop does not fit a phone: /admin/users is 8 columns and
+   /admin/cache's hit-rate table is 5, so both pushed the PAGE into horizontal scroll and
+   the last column ended up off-screen with no way to reach it. The table scrolls inside
+   `.dscroll` instead, and cells stop wrapping so the columns stay readable while it does.
+   NOT `.tscroll`: the DB browser's page-private <style> blocks own that name with their
+   own geometry (max-height, border), and class names are global — see the `.step`/`.fbar`
+   note in CLAUDE.md. */
+.dscroll{margin:1.4rem 0;overflow-x:auto;overscroll-behavior-x:contain}
+.dscroll>.dtable{margin:0}
 .dtable{border-collapse:collapse;width:100%;margin:1.4rem 0;font-size:.9rem}
-.dtable th,.dtable td{text-align:left;padding:.55rem .8rem;border-bottom:1px solid var(--line);vertical-align:middle}
+.dtable th,.dtable td{text-align:left;padding:.55rem .8rem;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap}
 .dtable th{color:var(--muted);font-weight:600;font-size:.8rem;letter-spacing:.02em}
 .dtable tr:hover td{background:var(--surface)}
 .dtable .pending td{background:rgba(224,175,104,.06)}

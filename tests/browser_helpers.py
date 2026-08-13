@@ -109,6 +109,24 @@ def seed_rich_history(uid):
     return anyio.run(go)
 
 
+def seed_report_logs(uid, kinds, per_kind=3):
+    """A few `report_logs` rows per kind, so the admin cache page's hit-rate table has
+    rows to measure. An empty table is narrow and proves nothing about its layout."""
+    from app.db.base import async_session_maker
+    from app.db.models import ReportLog
+
+    async def go():
+        async with async_session_maker() as s:
+            for kind in kinds:
+                for i in range(per_kind):
+                    s.add(ReportLog(user_id=uid, kind=kind, model="claude-sonnet-5",
+                                    input_tokens=1200, output_tokens=400, cost_usd=0.0123,
+                                    ok=True, cached=bool(i)))
+            await s.commit()
+
+    anyio.run(go)
+
+
 def stage_assets(tmp_path):
     """Copy the real stylesheet + the self-hosted font next to the staged pages, so the
     layout under test is the shipped one, laid out in the shipped typeface."""

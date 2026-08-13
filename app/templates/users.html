@@ -9,46 +9,48 @@
     <p class="eyebrow">Адміністрування</p>
     <h1 class="title" style="font-size:1.7rem">Користувачі</h1>
 
-    <table class="dtable">
-      <tr><th>ID</th><th>Email</th><th>Статус</th><th>Адмін</th><th>Garmin</th><th>Claude</th><th>Telegram</th><th></th></tr>
-      {% for u in users %}
-      <tr {% if not u.is_approved %}class="pending"{% endif %}>
-        <td>{{ u.id }}</td>
-        <td>{{ u.email }}</td>
-        <td>
-          {% if not u.is_approved %}<span class="pill wait">очікує</span>
-          {% elif not u.is_active %}<span class="pill off">вимкнено</span>
-          {% else %}<span class="pill ok">активний</span>{% endif %}
-        </td>
-        <td>{{ "так" if u.is_admin else "" }}</td>
-        <td>{{ "✓" if u.garmin_password_enc else "—" }}</td>
-        <td>{{ "✓" if u.anthropic_key_enc else "—" }}</td>
-        <td>{{ u.telegram_chat_id or "—" }}</td>
-        <td>
-          {% if not u.is_approved %}
-          <form method="post" action="/admin/users/{{ u.id }}/approve">
-            <button class="abtn approve" type="submit">Підтвердити</button>
-          </form>{% endif %}
-          {% if u.id != current_user_id %}
-            {% if not u.is_admin %}
-            {# Read-only borrowed session (app.core.impersonate) — the point is to see
-               the user's own pages; admins are excluded on purpose. #}
-            <form method="post" action="/admin/users/{{ u.id }}/impersonate">
-              <button class="abtn imp" type="submit">Переглянути як</button>
+    <div class="dscroll">
+      <table class="dtable">
+        <tr><th>ID</th><th>Email</th><th>Статус</th><th>Адмін</th><th>Garmin</th><th>Claude</th><th>Telegram</th><th></th></tr>
+        {% for u in users %}
+        <tr {% if not u.is_approved %}class="pending"{% endif %}>
+          <td>{{ u.id }}</td>
+          <td>{{ u.email }}</td>
+          <td>
+            {% if not u.is_approved %}<span class="pill wait">очікує</span>
+            {% elif not u.is_active %}<span class="pill off">вимкнено</span>
+            {% else %}<span class="pill ok">активний</span>{% endif %}
+          </td>
+          <td>{{ "так" if u.is_admin else "" }}</td>
+          <td>{{ "✓" if u.garmin_password_enc else "—" }}</td>
+          <td>{{ "✓" if u.anthropic_key_enc else "—" }}</td>
+          <td>{{ u.telegram_chat_id or "—" }}</td>
+          <td>
+            {% if not u.is_approved %}
+            <form method="post" action="/admin/users/{{ u.id }}/approve">
+              <button class="abtn approve" type="submit">Підтвердити</button>
             </form>{% endif %}
-            {% if u.is_approved %}
-            <form method="post" action="/admin/users/{{ u.id }}/active">
-              <input type="hidden" name="active" value="{{ 0 if u.is_active else 1 }}">
-              <button class="abtn toggle" type="submit">{{ "Деактивувати" if u.is_active else "Активувати" }}</button>
+            {% if u.id != current_user_id %}
+              {% if not u.is_admin %}
+              {# Read-only borrowed session (app.core.impersonate) — the point is to see
+                 the user's own pages; admins are excluded on purpose. #}
+              <form method="post" action="/admin/users/{{ u.id }}/impersonate">
+                <button class="abtn imp" type="submit">Переглянути як</button>
+              </form>{% endif %}
+              {% if u.is_approved %}
+              <form method="post" action="/admin/users/{{ u.id }}/active">
+                <input type="hidden" name="active" value="{{ 0 if u.is_active else 1 }}">
+                <button class="abtn toggle" type="submit">{{ "Деактивувати" if u.is_active else "Активувати" }}</button>
+              </form>{% endif %}
+            <form method="post" action="/admin/users/{{ u.id }}/delete"
+                  onsubmit="return confirm('Видалити {{ u.email }} та всі його дані?');">
+              <button class="abtn del" type="submit">Видалити</button>
             </form>{% endif %}
-          <form method="post" action="/admin/users/{{ u.id }}/delete"
-                onsubmit="return confirm('Видалити {{ u.email }} та всі його дані?');">
-            <button class="abtn del" type="submit">Видалити</button>
-          </form>{% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
 
     {% if error %}<div class="err" style="margin:1rem 0">{{ error }}</div>{% endif %}
     <h2 class="sec" style="font-size:1.1rem">Додати користувача</h2>

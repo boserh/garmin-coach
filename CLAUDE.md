@@ -137,7 +137,11 @@ tests/test_chart_touch.py tests/test_nav_layout.py tests/test_pwa_offline.py`.
   `scrollWidth <= clientWidth` at 390px and 320px (all `<details>` forced open). It also
   fails on any request to an external host, and on the CSS-link substitution not
   matching — that substitution had silently stopped matching once and the guard spent a
-  while measuring an unstyled page, i.e. passing on nothing.
+  while measuring an unstyled page, i.e. passing on nothing. A second sweep covers the
+  **admin** pages (`/admin/cache`, `/admin/jobs`, `/admin/users`, `/ui`, `/ui/{table}`) —
+  they were exempt, and `/admin/cache` shipped with its last column off-screen on a phone.
+  Its data is seeded (`seed_report_logs`) because an empty table is narrow and measures
+  nothing.
 - `test_chart_touch.py` (UI-01) — a touch pointer scrubs a chart and reads a value.
 - `test_nav_layout.py` (UI-07) — the top row is one line on a phone and the tab bar
   doesn't overlap the content.

@@ -18,6 +18,7 @@ from tests.browser_helpers import (
     WIDTHS,
     chromium_path,
     local_only,
+    seed_report_logs,
     seed_rich_history,
     stage_assets,
     stage_pages,
@@ -126,6 +127,53 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
         browser.close()
 
     assert not external, "pages requested external hosts: " + ", ".join(sorted(set(external)))
+    assert not failures, "horizontal overflow:\n" + "\n".join(failures)
+
+
+def test_admin_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
+    """The admin pages were never measured, and /admin/cache shipped unusable on a phone:
+    its hit-rate table is five columns wide with nothing to scroll inside, so the PAGE
+    scrolled and the last column sat off-screen. These are read on a phone like every
+    other page — the DB browser's own tables already scroll inside a `.tscroll` box, which
+    is the shape the rest has to match."""
+    browser_path = chromium_path()
+    if not browser_path:
+        pytest.skip("no chromium binary available")
+
+    email = "admin-layout@example.com"
+    _seed_user(email=email, password="pw", is_admin=True)
+    client.post("/login", data={"email": email, "password": "pw"})
+    uid = _user_id(email)
+    seed_rich_history(uid)
+    # The hit-rate table is only as wide as its widest row, so an empty one measures
+    # nothing: seed the longest real `kind` names and a three-digit rate.
+    seed_report_logs(uid, kinds=("supplements", "checkup_ocr", "race_debrief", "morning"))
+
+    stage_assets(tmp_path)
+    files = stage_pages(client, tmp_path, {
+        "admin_cache": "/admin/cache",
+        "admin_jobs": "/admin/jobs",
+        "admin_users": "/admin/users",
+        "ui_index": "/ui",
+        "ui_table": "/ui/activities",
+    })
+
+    failures = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=browser_path)
+        for width in WIDTHS:
+            page = browser.new_page(viewport={"width": width, "height": 844})
+            page.route("**/*", local_only([]))
+            for name, path in files.items():
+                page.goto(path.as_uri())
+                m = page.evaluate(_PROBE)
+                if m["scrollW"] > m["clientW"]:
+                    failures.append(
+                        f"{name} @{width}px: scrollWidth {m['scrollW']} > {m['clientW']} "
+                        f"— {', '.join(m['offenders'])}")
+            page.close()
+        browser.close()
+
     assert not failures, "horizontal overflow:\n" + "\n".join(failures)
 
 
