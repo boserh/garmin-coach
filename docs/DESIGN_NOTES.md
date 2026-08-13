@@ -585,6 +585,16 @@ TOOLS` says to report that instead of reconstructing exercises from `query_activ
   analysis at midnight). `daterel.annotate` copies, never mutates (payload is shared
   with the dedup cache and PERF-05's 30s memo). `run_analysis` takes `today` from
   `app.core.tz.user_today(user)` — ST-14's per-user "today", not the process's.
+- **A named output slot outranks the reading rule.** The labels were all in the prompt
+  and the report still narrated позавчора's windsurf session as "вчора" — because the
+  `ФОРМАТ ВІДПОВІДІ` spec named that paragraph *«Вчорашнє навантаження»*. On a day whose
+  yesterday held no activity, the model filled the slot it was told to write with the
+  newest session it had, and inherited the slot's word. Output-shape lines must stay
+  relative-word-free (the slot is «Нещодавнє навантаження» now, and says explicitly to
+  report an empty yesterday as empty); `tests/test_daterel.py` asserts the wording.
+  `daily[].extra.auto_activities` has the same trap one level down — it's nested inside a
+  daily row and has no `day` of its own, so the prompt spells out that its day is the
+  **parent** row's label, not that of a neighbouring `recent_activities[]` entry.
 
 ## Exercise names & run series
 

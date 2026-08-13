@@ -116,6 +116,32 @@ def test_report_context_labels_daily_activities_and_planned():
     assert sent["data"]["planned_runs"][0]["day"] == "через 4 дн (нд)"
 
 
+def test_load_recap_slot_is_not_hardcoded_to_yesterday():
+    """The report's output spec used to name the load paragraph «Вчорашнє навантаження».
+    On a day whose yesterday held NO activity, that named slot beat the day-label rule: the
+    analyst filled it with the newest session it had (windsurfing from позавчора) and called
+    it "вчора". The slot must stay relative-word-free so the label on the record decides."""
+    from app.analysis import prompts
+
+    assert "Вчорашнє навантаження" not in prompts.SYSTEM
+    assert "Нещодавнє навантаження" in prompts.SYSTEM
+
+
+def test_activity_on_a_day_before_an_empty_yesterday_keeps_its_own_label():
+    """The reported bug, as data: the last activity is позавчора and yesterday is empty —
+    the record must still carry «позавчора», never inherit "the newest one is yesterday"."""
+    payload = {
+        "daily": [{"date": "2026-08-11"}, {"date": "2026-08-12"}, {"date": "2026-08-13"}],
+        "recent_activities": [{"date": "2026-08-11", "type": "windsurfing_v2",
+                               "dur_min": 148.2}],
+        "planned_runs": [],
+    }
+    sent = _capture_prompt(payload, today="2026-08-13")
+    assert sent["data"]["recent_activities"][0]["day"] == "позавчора (вт)"
+    # yesterday is present in the context as a day of its own, with nothing attached to it
+    assert [d["day"] for d in sent["data"]["daily"]][1] == "вчора (ср)"
+
+
 def test_tomorrows_plan_session_is_labelled_tomorrow_not_today():
     # plan_today is a *window* (today+tomorrow); when today's session is absent (no
     # session, or already done/skipped) the remaining entry is tomorrow's — the exact
