@@ -146,6 +146,51 @@ move/modify/skip, dated `today-SICK_LOOKBACK_DAYS..today+SICK_WINDOW_DAYS` (14/1
 Ignores `adjust_level` deliberately (illness overrides the plan's normal bounds).
 Non-medical wording; reuses the plan-edit confirm flow.
 
+## Declared away periods (NF-34)
+
+**The bug was a divergence, not a missing feature.** The daily report *appeared* to know
+about a vacation ("вже після відпустки") because it reads yesterday's report and the coach
+memory, so one mention leaked forward a day at a time. The Sunday digest read neither, and
+scored the same deliberately empty week as *«compliance 0%… ні, відстаєш»*. In the data a
+planned week off and a collapsed week are the same zero — only the athlete knows which, so
+the athlete has to be able to say it once, somewhere every surface reads.
+
+`AwayPeriod` (`away_periods`: start/end/kind/note) + pure rules in `app/away.py` +
+storage/context in `app/db/away.py`. `kind` is closed and tiny — `rest`/`active`/`sport`/
+`work` — with a per-kind `expect` line, because the *load* is the whole point: a beach week
+detrains, a trekking week is quiet volume on tired legs, a kite week is daily fatigue with
+zero running. The athlete's own words live in `note`.
+
+- **One context helper, like the profile.** `away_db.build_context` is called by the daily
+  report, the digest, `/ask`, plan generation, adaptation and `/sick`; `AWAY_BLOCK` is
+  appended to all of those prompts in one place (`prompts.py`). Two surfaces knowing
+  different things about the same week is the defect, so there is exactly one wording and
+  one reader. `None` (not an empty dict) for someone who never declared a period — their
+  prompts stay byte-for-byte pre-NF-34.
+- **`days_in_week` is computed in Python**, from the ISO week the digest is judging — the
+  same rule as the relative day labels: never leave date arithmetic to the model.
+- **It is context, not an indulgence.** The block says so explicitly: missed *runs* inside
+  the period aren't a compliance failure, but visible load (kiting, hiking) and a sunk HRV
+  are still reported as usual — and catching up the missed volume on return is called out
+  as the injury it is.
+- **Three doors, one validator.** `/away 16.08-24.08 кайт` (pure parsing, 0 Claude), the
+  `/me/profile` form, and — how it will actually happen most of the time — a `/plan` edit
+  ("зсунь тренування, я у відпустці"). The edit prompt returns an extra `away` field
+  (`AwayOp`), which rides *with* the pending proposal and is written on the same ✅
+  (`away_db.apply_pending`, shared by the bot's `plan_callback` and `/chat/confirm`): one
+  request is one decision, so ❌ leaves no trace and ✅ records the trip even when there are
+  no plan operations at all. An LLM-proposed period goes through the same
+  `away.normalize` bounds as a typed one, and `from_op` swallows junk rather than sinking
+  the edit it rode along with.
+- **Bounded on purpose** (`MAX_DAYS` 120): an open-ended "away" would silence the coach's
+  compliance judgement forever, which would be a worse bug than the one being fixed.
+- **The nudges stay quiet**: `_sickness_check_for_user` returns before the detector runs
+  while a period is active — three missed sessions during a kite week is not an illness to
+  repair, and that DM is exactly the nag this feature exists to stop.
+- Part of the dedup-cache keys (`_cache_key`, `_ask_cache_key`, `_DIGEST_KEY_FIELDS`):
+  declaring a trip has to produce a fresh report, not a hit on the one written before the
+  coach knew.
+
 ## Personal records (EP-14)
 
 Pure-Python (`app/records.py`): fastest 5K/10K/half (±5% distance, pace floor

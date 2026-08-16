@@ -45,6 +45,12 @@ ASSET_V = asset_version()
 def create_templates() -> Jinja2Templates:
     """A ``Jinja2Templates`` bound to the shared directory, with the globals every
     page's ``<head>`` needs. Routers add their own filters on top."""
+    from app import away as away_rules
+
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.globals["asset_v"] = ASSET_V
+    # NF-34: one rendering of an away period ("🪁 інший спорт · 16.08-24.08 · кайт"), shared
+    # by the chat's proposal card and the profile page — the same string the bot sends, so
+    # the three surfaces can't describe the same trip three ways.
+    templates.env.filters["away_line"] = away_rules.describe
     return templates

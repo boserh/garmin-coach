@@ -19,6 +19,17 @@
              border: 1px solid #313a49; border-radius: 8px; padding: .25rem .6rem; cursor: pointer; }
     button:hover { border-color: #7aa2f7; color: #eef1f5; }
     .pinned { border-color: #7aa2f7; }
+    h2 { font-size: 1.05rem; margin: 1.6rem 0 .3rem; }
+    .away form.add { display: flex; flex-wrap: wrap; gap: .5rem; margin: .7rem 0; }
+    .away input, .away select { font: inherit; font-size: .85rem; background: #151a23;
+             color: #eef1f5; border: 1px solid #313a49; border-radius: 8px; padding: .3rem .5rem;
+             min-width: 0; }
+    .away input[type=text] { flex: 1 1 14rem; }
+    .away .row { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
+             border: 1px solid #313a49; border-radius: 12px; padding: .55rem .9rem; margin: .5rem 0; }
+    .away .row .line { flex: 1 1 16rem; min-width: 0; }
+    .away .now { border-color: #7aa2f7; }
+    .err { color: #f7a2a2; font-size: .85rem; }
   </style>
 {% endblock %}
 
@@ -73,4 +84,49 @@
   {% if stoplist %}
     <p class="meta">Відхилених тверджень: {{ stoplist | length }} — вони більше не зʼявляться.</p>
   {% endif %}
+
+  {# NF-34: the half of "what the coach knows" that the athlete writes themselves. #}
+  <section class="away">
+    <h2>🏖 Відпустка / поїздки</h2>
+    <p class="meta">
+      Оголоси період, коли ти не тренуєшся як звичайно — і напиши, що саме там робитимеш.
+      Пропущені сесії в ці дні не рахуються за зрив плану, а тижневий підсумок пояснить
+      обсяг саме цим. Тип важливий: пляж, гори й кайт-тиждень — це три різні навантаження.
+    </p>
+    {% if away_error %}<p class="err">{{ away_error }}</p>{% endif %}
+
+    <form class="add" method="post" action="/me/away">
+      <input type="date" name="start" value="{{ today }}" required aria-label="Початок">
+      <input type="date" name="end" required aria-label="Кінець">
+      <select name="kind" aria-label="Тип">
+        {% for slug in away_kinds %}
+          <option value="{{ slug }}">{{ away_kind_label(slug) }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="note" maxlength="200"
+             placeholder="Що робитимеш: кайт щодня / гори, 15 км пішки / лежатиму">
+      <button type="submit">Додати</button>
+    </form>
+
+    {% if away_periods %}
+      {% for p in away_periods %}
+        <div class="row {{ 'now' if p.status == 'active' else '' }}">
+          <div class="line">
+            {{ p.line }}
+            <div class="meta">
+              {% if p.status == 'active' %}триває зараз
+              {% elif p.status == 'upcoming' %}попереду
+              {% else %}завершилась{% endif %}
+            </div>
+          </div>
+          <form method="post" action="/me/away/{{ p.id }}/delete">
+            <button type="submit">✕ прибрати</button>
+          </form>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="meta">Поки нічого не оголошено. З бота — те саме одним рядком:
+        <code>/away 16.08-24.08 кайт</code>.</p>
+    {% endif %}
+  </section>
 {% endblock %}

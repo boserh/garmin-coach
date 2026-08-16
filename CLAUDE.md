@@ -255,6 +255,7 @@ app/
     oauth.py            NF-08: OAuth client/grant storage — tokens hashed, client docs encrypted
     llm_cache.py        async get/put over llm_cache — the cross-process Claude dedup cache
     lifestyle.py          NF-28: lifestyle-tag vocabulary + user-scoped CRUD
+    away.py                NF-34: away-period CRUD + the one away prompt-context helper
     profile.py             EP-18: encrypted read/write of the athlete profile
     checkups.py          user-scoped CRUD for HealthCheckup
     supplements.py        user-scoped CRUD for Supplement
@@ -302,6 +303,8 @@ app/
   fueling.py                                NF-11: pure heat/duration fueling calculator
   sleepnudge.py                              NF-16: pure sleep-debt detector
   sickness.py                                 NF-18: pure missed-session streak detector
+  away.py                                      NF-34: pure away-period rules — parsing,
+                                               validation, week overlap, prompt block
   records.py                                  EP-14: pure personal-record detector
   stepmatch.py                                 NF-14: pure step-level plan-vs-actual matcher
   checkup_reminders.py                          pure next_due_date reminder logic
@@ -338,7 +341,8 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /checkups, /log (NF-28), /forget (EP-18), /deploy (admin), /test_*
+  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /forget (EP-18),
+                      /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job
 alembic/           migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/              pytest
@@ -396,6 +400,8 @@ responses are collapsed to ~12 fields/day and never sent to the LLM.
   streaming (v1 scope, see EP-11 below). Login; current user.
 - `GET /me/profile` + `POST /me/profile/forget|pin` — EP-18: what the coach remembers,
   with evidence links; "this isn't true" deletes + stop-lists, "this matters" pins.
+  `POST /me/away` + `POST /me/away/{id}/delete` — NF-34: the half the athlete writes
+  themselves, a declared absence (dates + kind + "what I'll actually be doing").
 - `POST /me/activities/{id}/route-name` — NF-33: name the route this run belongs to.
 - `GET /me/export` — streamed ZIP of everything this account owns (portability, not a
   DB backup — see NF-13 below). Login; current user; linked from `/me`.
@@ -422,7 +428,8 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   user) + `PlannedWorkout` (dated session with `steps` JSON), `PersonalRecord` (one row
   per beaten best — history, not just current), `HealthCheckup`, `Supplement`,
   `LifestyleLog` (NF-28 — one evening's self-reported tags; `tags=[]` is data, not an
-  absent row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory).
+  absent row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory),
+  `AwayPeriod` (NF-34 — a declared vacation/trip with what the athlete will be doing).
   `ActivityRecord.zones` (NF-24) holds HR time-in-zone + training effect;
   `ActivityRecord.route_id` → `Route` (NF-33 — a fingerprint, never a stored track).
 - **DB as cache**: past days served from the DB; today always refetched.

@@ -9,6 +9,7 @@ import logging
 import math
 import time as _time
 import zipfile
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -845,6 +846,10 @@ async def me_export(
     # text we hold, so a portability export that silently omitted it would be dishonest.
     from app.db import profile as profile_db
     profile_facts, _profile_stoplist = await profile_db.get_profile(session, user.id)
+    # NF-34: declared away periods — the athlete's own words about their own life, so the
+    # same portability argument as the lifestyle log applies.
+    from app.db import away as away_db_export
+    away_rows = await away_db_export.read_all(session, user.id)
     # NF-33: routes (an AC of the ticket) — user-scoped like everything else here.
     from app.garmin.repository import routes as routes_repo
     route_rows = [_export_row(r, _EXPORT_ROUTE_COLS)
@@ -876,6 +881,7 @@ async def me_export(
         zf.writestr("athlete_profile.json",
                     json.dumps(profile_facts, ensure_ascii=False, indent=2))
         zf.writestr("routes.json", json.dumps(route_rows, ensure_ascii=False, indent=2))
+        zf.writestr("away_periods.json", json.dumps(away_rows, ensure_ascii=False, indent=2))
     buf.seek(0)
 
     fname = f"bihun-export-{dt.date.today().isoformat()}.zip"
@@ -1135,17 +1141,74 @@ async def me_profile(
     was drawn from. Transparency is not a nicety here — a profile the user cannot inspect is
     a profile they cannot correct, and an uncorrectable wrong fact quietly steers advice for
     months (the poisoning failure mode). Pure DB read, user-scoped."""
+    from app import away as away_rules
     from app import profile as profile_rules
+    from app.db import away as away_db
     from app.db import profile as profile_db
 
     facts, stoplist = await profile_db.get_profile(session, user.id)
     shown = profile_rules.select(facts)
+    # NF-34 lives on this page because it is the same question — "what does the coach know
+    # about my life?" — except this half the athlete writes themselves. Past periods are
+    # kept visible for a while: they explain last week's numbers, which is exactly when
+    # someone comes looking.
+    today = user_today(user)
+    periods = await away_db.list_periods(
+        session, user.id, since=today - dt.timedelta(days=away_rules.RECENT_DAYS))
+    for p in periods:
+        p["status"] = away_rules.status(p, today)
+        p["line"] = away_rules.describe(p)
     return templates.TemplateResponse(
         request, "profile.html",
         {"user": user, "facts": shown, "total": len(facts),
          "hidden": max(0, len(facts) - len(shown)), "stoplist": stoplist,
-         "max_facts": profile_rules.MAX_FACTS},
+         "max_facts": profile_rules.MAX_FACTS,
+         "away_periods": periods, "away_kinds": away_rules.KINDS,
+         "away_kind_label": away_rules.label,
+         "away_error": request.query_params.get("away_err"),
+         "today": today.isoformat()},
     )
+
+
+@router.post("/me/away")
+async def me_away_add(
+    request: Request,
+    start: str = Form(""),
+    end: str = Form(""),
+    kind: str = Form(""),
+    note: str = Form(""),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """NF-34: declare an absence from the web. Same ``app.away.normalize`` bounds as the
+    ``/away`` command and the plan-edit proposal — one validator, three doors."""
+    from app import away as away_rules
+    from app.db import away as away_db
+
+    try:
+        data = away_rules.normalize(start, end, kind, note, today=user_today(user))
+    except away_rules.AwayError as e:
+        return RedirectResponse(f"/me/profile?away_err={quote(str(e))}", status_code=303)
+    await away_db.save(session, user.id, data)
+    await session.commit()
+    logger.info(f"AWAY stored user={user.id} {data['start_date']}..{data['end_date']} "
+                f"kind={data['kind']} (from web)")
+    return RedirectResponse("/me/profile", status_code=303)
+
+
+@router.post("/me/away/{row_id}/delete")
+async def me_away_delete(
+    row_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Remove a declared period (plans change). User-scoped: another user's id simply
+    isn't found."""
+    from app.db import away as away_db
+
+    await away_db.delete(session, user.id, row_id)
+    await session.commit()
+    return RedirectResponse("/me/profile", status_code=303)
 
 
 @router.post("/me/profile/forget")

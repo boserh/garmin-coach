@@ -118,7 +118,7 @@ async def test_run_analysis_includes_fueling_for_todays_heavy_session(session, m
                       api_key=None, weather=None, plan_today=None, fitness=None,
                       records=None, norm=None, subjective=None, health_alerts=None,
                       fueling=None, today=None, intensity_ctx=None,
-             athlete_profile=None):
+             athlete_profile=None, away_ctx=None):
         captured["fueling"] = fueling
         return "звіт", service.CallStats(kind=kind or "report", model="m")
 
@@ -153,7 +153,7 @@ async def test_run_analysis_omits_fueling_without_weather(session, monkeypatch):
                       api_key=None, weather=None, plan_today=None, fitness=None,
                       records=None, norm=None, subjective=None, health_alerts=None,
                       fueling=None, today=None, intensity_ctx=None,
-             athlete_profile=None):
+             athlete_profile=None, away_ctx=None):
         captured["fueling"] = fueling
         return "звіт", service.CallStats(kind=kind or "report", model="m")
 

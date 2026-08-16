@@ -85,7 +85,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                fueling: Optional[dict] = None,
                today: Optional[str] = None,
                intensity: Optional[dict] = None,
-               athlete_profile: Optional[dict] = None) -> str:
+               athlete_profile: Optional[dict] = None,
+               away: Optional[dict] = None) -> str:
     # ``today`` is the user's own date (their timezone, ST-14) when the caller knows it —
     # it is part of the prompt (and of every relative-day label built from it), so it must
     # be part of the key. Falls back to the process date for callers without a user.
@@ -112,6 +113,9 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         # EP-18: without the profile in the key, editing a fact would change the prompt but
         # not the hash — the coach would "learn" something and keep serving the old report.
         "athlete_profile": athlete_profile,
+        # NF-34: same rule — declaring a vacation must produce a NEW report today, not a
+        # cache hit on the one written before the coach knew.
+        "away": away,
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -119,7 +123,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
 
 def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list,
                    last_data_date: Optional[str] = None,
-                   athlete_profile: Optional[dict] = None) -> str:
+                   athlete_profile: Optional[dict] = None,
+                   away: Optional[dict] = None) -> str:
     # EP-09: keyed on a coarse daily-data slice (last_data_date — the most recent stored
     # daily_metrics date, a pure-DB proxy for "has anything changed") rather than the
     # calendar date alone, so a repeat question before today's data has synced is still a
@@ -134,6 +139,7 @@ def _ask_cache_key(reports: list, question: str, model: str, recent_asks: list,
         "ask": True,
         # EP-18: the profile is part of what /ask reads, so it keys the cache too.
         "athlete_profile": athlete_profile,
+        "away": away,          # NF-34 — same reason
     }
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -189,6 +195,7 @@ _DIGEST_KEY_FIELDS = (
     "sleep_regularity",
     "intensity",   # NF-24 — prompt context, therefore key material
     "strength",    # NF-27 — same
+    "away",        # NF-34 — declaring a vacation must not return the pre-vacation digest
 )
 # NF-28's lifestyle findings are a separate context key, so they must be listed here too —
 # without it a newly-logged tag would change the prompt but not the hash, and /insights

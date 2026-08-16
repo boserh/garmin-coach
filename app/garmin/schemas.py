@@ -175,6 +175,23 @@ class PlanOp(BaseModel):
     reps: Optional[int] = None
 
 
+class AwayOp(BaseModel):
+    """NF-34: an away period the model recognised in a plan-edit request.
+
+    Not a ``PlanOp``: rescheduling sessions around a trip and recording THAT THERE IS A TRIP
+    are two different writes to two different tables, and the second one has to outlive the
+    plan. Asking «зсунь тренування, я у відпустці 16-24.08» is how most people will declare
+    one, so the edit path mints the period — but it lands in ``away_periods`` (through the
+    same ``app.away.normalize`` bounds as a hand-typed one), not in the plan."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    start: Optional[str] = None            # ISO
+    end: Optional[str] = None              # ISO
+    kind: Optional[str] = None             # rest / active / sport / work
+    note: Optional[str] = None             # the athlete's own words about what they'll do
+
+
 class PlanEdit(BaseModel):
     """Proposed changes to the active plan: a human-readable summary + operations.
 
@@ -195,6 +212,9 @@ class PlanEdit(BaseModel):
     # proposal stays as it is); a correction → a full new `operations` set, with
     # `answer` optionally saying in one line what changed. Empty on a first proposal.
     answer: Optional[str] = None
+    # NF-34: an away period declared in passing ("зсунь усе, я у відпустці 16-24.08 — кайт").
+    # Applied together with the operations, on the same confirmation.
+    away: Optional[AwayOp] = None
 
 
 PlanStep.model_rebuild()  # resolve the self-referential `steps` forward ref

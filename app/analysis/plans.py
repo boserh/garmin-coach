@@ -30,6 +30,7 @@ from app.analysis.prompts import (
     SYSTEM_WEATHER_PLAN,
 )
 from app.core.config import settings
+from app.db import away as away_db
 from app.db import profile as profile_db
 from app.garmin import exercises
 from app.garmin.schemas import GeneratedPlan, PlanEdit, StrengthSession
@@ -398,6 +399,9 @@ async def run_plan_generation(
         # EP-18: a year of "what actually works on this athlete" beats a generic template —
         # this is the whole point of keeping a profile at all.
         "athlete_profile": await profile_db.build_context(session, user_id),
+        # NF-34: a trip already on the calendar. A plan built as if those weeks were normal
+        # training weeks is wrong the day it is generated.
+        "away": await away_db.build_context(session, user_id),
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
     try:
@@ -666,6 +670,9 @@ async def run_plan_edit(
         # valid exercise-name variants per category in the plan's templates (may be empty
         # without the catalog); an invalid name is otherwise dropped to a bare category
         "exercise_variants": exercise_variants,
+        # NF-34: periods already declared, so a follow-up edit ("а перенеси ще й довгу")
+        # doesn't re-propose the same trip — and doesn't schedule into it.
+        "away": await away_db.build_context(session, user_id),
     }
     if pending:
         context["pending"] = {
@@ -895,6 +902,9 @@ async def run_plan_adaptation(
         # EP-18: adaptation is where a remembered constraint pays off most — "intervals in
         # the heat get abandoned" should stop the model from proposing them again.
         "athlete_profile": await profile_db.build_context(session, user_id),
+        # NF-34: missed sessions inside a declared absence are not a compliance problem to
+        # adapt away — without this the weekly review "fixes" a vacation.
+        "away": await away_db.build_context(session, user_id),
     }
     try:
         edit, stats = await _run_claude(
@@ -1079,6 +1089,9 @@ async def run_sick_check(
         "days_to_target": days_to_target,
         "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
                       "description": w.description} for w in ws],
+        # NF-34: /sick covers travel too, so a declared period says exactly which days are
+        # gone and what the body was doing on them.
+        "away": await away_db.build_context(session, user_id, today),
     }
     try:
         edit, stats = await _run_claude(
