@@ -81,6 +81,16 @@ concurrent workers don't trip "database is locked".
   ACWR `acwr_pct`/`acwr_feedback`), user summary (steps/distance/calories/intensity
   minutes/floors), VO2max, race-time predictions, endurance score. Fed to plan
   generation as a `fitness` snapshot + `weekly_volume` + `recovery` trend.
+- **`recoveryTime` is MINUTES** (`service.recovery_hours`, migration `d8e9f0a1b2c3`). It was
+  stored straight into `extra["recovery_time_h"]`, so the watch's ordinary "19h" arrived in
+  every prompt as **1164 годин** — 48 days — and the EP-02 adaptation job proposed a real
+  plan rebuild justified by it. That is what makes a unit bug more than cosmetic here: the
+  number isn't displayed, it's *read as evidence*. The converter also drops anything past
+  `RECOVERY_MAX_H` (168h, above Garmin's own ~4-day ceiling) instead of forwarding a DTO
+  shape we no longer understand, `SYSTEM`/`SYSTEM_PLAN_ADAPT` now say the field is hours and
+  that a physically impossible value must be ignored rather than acted on, and the migration
+  rescales stored history unconditionally (every row came from the one buggy write path, so
+  there is no unit ambiguity to guess about).
 - **Sync awareness**: `synced_today`/`has_data`/`last_data_date` distinguish "watch
   hasn't synced" from "bad recovery." Morning job runs ~10s after startup then every
   15 min; window (07–12 Europe/Warsaw) + once-a-day guard live in `morning_job`.

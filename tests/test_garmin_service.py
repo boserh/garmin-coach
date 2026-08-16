@@ -41,7 +41,8 @@ class FakeProvider:
             return {"avgStressLevel": 25, "maxStressLevel": 70}
         if "trainingreadiness" in path:
             return [{"score": 63, "level": "MODERATE", "feedbackShort": "OK",
-                     "recoveryTime": 2, "acuteLoad": 110, "acwrFactorPercent": 95,
+                     # MINUTES (Garmin's unit) — 1164 min is the 19h the watch shows
+                     "recoveryTime": 1164, "acuteLoad": 110, "acwrFactorPercent": 95,
                      "acwrFactorFeedback": "VERY_GOOD"}]
         if "bodyBattery" in path:
             return [{"charged": 50, "drained": 40}]
@@ -81,6 +82,9 @@ def test_build_payload_shape(monkeypatch):
     # `extra` collects the unprocessed scalars + training readiness
     assert day.extra["resting_hr"] == 48
     assert day.extra["readiness_score"] == 63 and day.extra["acwr_pct"] == 95
+    # Garmin sends recoveryTime in MINUTES; the field is hours, and it used to go in raw —
+    # so an ordinary 19h recovery reached the prompts as "1164 годин" (48 days).
+    assert day.extra["recovery_time_h"] == 19.4
     assert day.extra["sleep_start"] == "22:50" and day.extra["sleep_end"] == "06:40"
     assert day.extra["sleep_need_h"] == 8.0           # 480 min / 60
     assert day.extra["spo2_avg"] == 96.0 and day.extra["hrv_weekly_avg"] == 55
@@ -186,3 +190,24 @@ def test_payload_dump_keys_are_stable(monkeypatch):
         "generated", "window_days", "synced_today", "last_data_date",
         "daily", "recent_activities", "planned_runs",
     }
+
+
+# ---------- recoveryTime is MINUTES (the "1164 годин" bug) ----------
+
+def test_recovery_hours_converts_minutes():
+    """Garmin's training-readiness `recoveryTime` is in minutes. Stored raw, a normal
+    19-hour recovery reached every prompt as 1164 hours — and the adaptation job rebuilt
+    the plan around a 48-day recovery no body has ever produced."""
+    assert service.recovery_hours(1164) == 19.4
+    assert service.recovery_hours(0) == 0.0
+    assert service.recovery_hours(2880) == 48.0
+
+
+def test_recovery_hours_drops_what_cannot_be_a_recovery_time():
+    """Past Garmin's own ~4-day ceiling it isn't a long recovery, it's a DTO we no longer
+    understand — dropped (the field is simply absent), never passed on as fact."""
+    assert service.recovery_hours(None) is None
+    assert service.recovery_hours("19h") is None
+    assert service.recovery_hours(-5) is None
+    assert service.recovery_hours(True) is None          # bool is not a measurement
+    assert service.recovery_hours(60 * 500) is None      # 500h — impossible

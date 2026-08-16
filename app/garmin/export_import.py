@@ -13,6 +13,8 @@ import logging
 import os
 from typing import Optional
 
+from app.garmin.service import recovery_hours
+
 logger = logging.getLogger("garmin")
 
 # DailyMetric column fields (minus date/extra) we map from the export
@@ -144,7 +146,8 @@ def _build_day(date, sleep, uds, readiness, vo2, race, endurance, health) -> dic
         "race_marathon_s": race.get("raceTimeMarathon"),
         "endurance_score": endurance.get("overallScore"),
         "endurance_class": endurance.get("classification"),
-        "recovery_time_h": readiness.get("recoveryTime"),
+        # Minutes in the export too — same conversion as the live fetch (app.garmin.service).
+        "recovery_time_h": recovery_hours(readiness.get("recoveryTime")),
         "acwr_pct": readiness.get("acwrFactorPercent"),
         "acwr_feedback": readiness.get("acwrFactorFeedback"),
         "readiness_feedback": readiness.get("feedbackShort"),
