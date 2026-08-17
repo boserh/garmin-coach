@@ -17,6 +17,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
+from app import away as away_mod
 from app import deploy as deploy_ops
 from app import onboarding, records, subjective, weather
 from app import returntorun as returntorun_mod
@@ -32,6 +33,7 @@ from app.analysis.service import (
 from app.core import tglink
 from app.core.config import settings
 from app.core.tz import user_today
+from app.db import away as away_db
 from app.db import users
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -128,6 +130,8 @@ HELP_TEXT = (
     "/plan <текст> — змінити програму, напр. /plan додай біг сьогодні\n"
     "   ↳ поки пропозиція не підтверджена — просто напиши питання чи корекцію\n"
     "/sick [днів] — захворів/у подорожі: перебудувати найближчий блок плану\n"
+    "/away [дати] [що робитиму] — відпустка/поїздка: напр. /away 16.08-24.08 кайт "
+    "(тренер не рахуватиме ці дні за зрив плану)\n"
     "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n"
     "/race — race pack: пейсинг/харчування/чекліст до цільового старту (Opus)\n\n"
     "/start — підключити цей чат до акаунта (або перевірити, що ще не налаштовано)\n"
@@ -978,6 +982,72 @@ async def forget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, us
     await update.message.reply_text("✅ Прибрав і більше не згадуватиму цього.")
 
 
+# ---------- AWAY PERIODS (NF-34) ----------
+
+AWAY_HELP = (
+    "🏖 Відсутність — щоб тренер знав, що ти не зник, а у відпустці/поїздці, і що саме "
+    "там робитимеш.\n\n"
+    "Приклади:\n"
+    "/away 16.08-24.08 кайт тиждень в Дахабі\n"
+    "/away 20.12 на 10 днів гори, ходитиму по 15 км\n"
+    "/away стоп — прибрати найближчу/поточну\n\n"
+    "Пропущені тренування в ці дні не рахуються як зрив плану, а тижневий підсумок "
+    "пояснить обсяг саме цим."
+)
+
+
+@bot_command
+async def away_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/away — show declared absences; ``/away <дати> <що робитиму>`` records one;
+    ``/away стоп`` removes the current/next one.
+
+    Zero Claude calls: the dates and the kind are parsed in ``app.away`` (pure), and the
+    free text is stored verbatim as the note. The same fact can also arrive through a
+    ``/plan`` edit ("зсунь тренування, я у відпустці") — both land in the same table."""
+    arg = " ".join(ctx.args or []).strip()
+    today = user_today(user)
+    logger.info(f"CMD /away {arg[:60]}")
+    rows = await away_db.list_periods(session, user.id, since=today)
+
+    if arg.lower() in {"стоп", "стop", "-", "скасувати", "clear", "stop"}:
+        if not rows:
+            await update.message.reply_text("Немає запланованої відсутності.")
+            return
+        target = rows[0]
+        await away_db.delete(session, user.id, target["id"])
+        await session.commit()
+        await update.message.reply_text(f"✅ Прибрав: {away_mod.describe(target)}")
+        return
+
+    if not arg:
+        if not rows:
+            await update.message.reply_text(AWAY_HELP)
+            return
+        lines = [f"• {away_mod.describe(r)}" for r in rows]
+        await update.message.reply_text(
+            "🏖 Оголошена відсутність:\n\n" + "\n".join(lines) +
+            "\n\nДодати ще: /away 16.08-24.08 кайт. Прибрати найближчу: /away стоп"
+        )
+        return
+
+    start, end = away_mod.parse_dates(arg, today)
+    note = away_mod.strip_meta(arg)
+    try:
+        data = away_mod.normalize(start, end, away_mod.parse_kind(arg), note, today=today)
+    except away_mod.AwayError as e:
+        await update.message.reply_text(str(e))
+        return
+    await away_db.save(session, user.id, data)
+    await session.commit()
+    logger.info(f"AWAY stored user={user.id} {data['start_date']}..{data['end_date']} "
+                f"kind={data['kind']} (from /away)")
+    await update.message.reply_text(
+        f"✅ Записав: {away_mod.describe(data)}\n\n"
+        "Тренер це врахує — і в ранкових звітах, і в тижневому підсумку. "
+        "Якщо треба ще й посунути тренування — напиши /plan з проханням."
+    )
+
+
 # ---------- LIFESTYLE LOG (NF-28) ----------
 
 LIFESTYLE_PROMPT = (
@@ -1288,9 +1358,14 @@ async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def _proposal_view(summary: Optional[str], alt_summary: Optional[str],
-                   risky: bool, ops: list, alt: list) -> tuple:
+                   risky: bool, ops: list, alt: list,
+                   away: Optional[dict] = None) -> tuple:
     """Render a proposal as (text, keyboard) — shared by the first proposal and every
-    ST-23 refinement of it, so a re-proposal looks exactly like the original."""
+    ST-23 refinement of it, so a re-proposal looks exactly like the original.
+
+    ``away`` (NF-34) is shown as its own line: the period is written on the same ✅ as the
+    plan changes, so the user has to be able to SEE what will be recorded about their trip
+    (and correct it — "не кайт, просто відпочинок" — before confirming)."""
     if risky and alt:
         # risky request → keep what the user asked AND offer the coach's safer version,
         # so the user explicitly chooses (apply-as-asked / take-suggestion / cancel).
@@ -1309,6 +1384,8 @@ def _proposal_view(summary: Optional[str], alt_summary: Optional[str],
             InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
         ]])
         text = "Пропоную:\n\n" + (summary or "")
+    if away:
+        text += f"\n\n📌 Запишу відсутність: {away_mod.describe(away)}"
     return text + PROPOSAL_HINT, kb
 
 
@@ -1358,6 +1435,13 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
                 await update.message.reply_text(str(e))
                 return
 
+    # NF-34: an away period the model recognised in the request ("зсунь усе, я у відпустці
+    # 16-24.08 — кайт"). Stored WITH the proposal and written only on ✅, so declining the
+    # plan change declines the whole decision.
+    # A refinement ("краще 8 км") returns a full new operation set and usually says nothing
+    # about the trip again, so the pending period carries forward rather than evaporating
+    # on the second turn.
+    away = away_mod.from_op(edit.away) or (pending or {}).get("away")
     if edit.operations:
         ops = [op.model_dump() for op in edit.operations]
         alt = [op.model_dump() for op in (edit.alt_operations or [])]
@@ -1368,11 +1452,16 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         ops, alt = pending.get("ops") or [], pending.get("alt") or []
         summary, alt_summary = pending.get("summary"), pending.get("alt_summary")
         risky = bool(pending.get("risky"))
+    elif away:
+        # No plan operations, but the trip itself is worth recording — "я у відпустці
+        # 16-24.08, кайт" with nothing to move is a perfectly normal thing to say.
+        ops, alt = [], []
+        summary, alt_summary, risky = edit.summary, None, False
     else:
         await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
         return
 
-    text, kb = _proposal_view(summary, alt_summary, risky, ops, alt)
+    text, kb = _proposal_view(summary, alt_summary, risky, ops, alt, away)
     if edit.answer:
         text = edit.answer + "\n\n" + text
     # The new message carries the only live buttons; the previous one loses its keyboard.
@@ -1387,6 +1476,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
             thread=repository.append_thread(pending, instruction,
                                             edit.answer or edit.summary) if pending else [],
             message=_message_ref(sent),
+            away=away,
         )
 
 
@@ -1514,10 +1604,17 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if q.data == "plan_cancel":
             await q.edit_message_text("Скасовано. План без змін.")
             return
+        # NF-34: the away period declared alongside the edit is part of THIS confirmation —
+        # recorded even when the proposal carried no plan operations (a trip with nothing
+        # to move is still a trip the coach must know about).
+        away_saved = await away_db.apply_pending(session, user.id, pending)
         # plan_apply → the literal request; plan_apply_alt → the safer counter-proposal.
         ops_data = (pending or {}).get("alt" if q.data == "plan_apply_alt" else "ops")
         if not ops_data:
-            await q.edit_message_text("Немає змін для застосування.")
+            await q.edit_message_text(
+                f"✅ Записав відсутність: {away_mod.describe(away_saved)}."
+                if away_saved else "Немає змін для застосування."
+            )
             return
         plan_obj = await repository.get_active_plan(session, user.id)
         if plan_obj is None:
@@ -1534,7 +1631,9 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await plan_sync.resync_workouts(session, user.id, affected)
             except Exception:
                 logger.exception(f"PLAN edit sync failed user={user.id}")
-    await q.edit_message_text(f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.")
+    tail = (f"\n📌 Відсутність: {away_mod.describe(away_saved)}" if away_saved else "")
+    await q.edit_message_text(
+        f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.{tail}")
 
 
 async def adapt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

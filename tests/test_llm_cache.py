@@ -78,7 +78,7 @@ def fake_analyze(monkeypatch):
              api_key=None, weather=None, plan_today=None, fitness=None, records=None,
              norm=None, subjective=None, health_alerts=None, fueling=None,
              today=None, intensity_ctx=None,
-             athlete_profile=None):
+             athlete_profile=None, away_ctx=None):
         calls.append(question)
         return "свіжий звіт", service.CallStats(kind=kind or "report", model="m",
                                                 input_tokens=10, output_tokens=5)

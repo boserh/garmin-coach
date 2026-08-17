@@ -362,6 +362,42 @@ class LifestyleLog(Base):
     )
 
 
+class AwayPeriod(Base):
+    """NF-34: a stretch of days the athlete told us they are away from normal training —
+    with WHAT they'll be doing instead.
+
+    In the data a planned week off and a collapsed week look identical: zero runs, zero
+    compliance. Only the athlete knows which one it was, and before this row existed the
+    Sunday digest had no way to be told — it scored a deliberate vacation as "ні, відстаєш".
+    The morning report seemed to know only by accident (it reads yesterday's report and the
+    coach memory, so a mention leaked forward one day at a time).
+
+    ``kind`` + ``note`` are the half that makes it more than a mute switch: lying on a beach,
+    a week of trekking and a kite week are three different loads, and the coach reads the
+    week completely differently depending on which it was. ``note`` is the athlete's own
+    words ("кайт тиждень в Дахабі", "Карпати, ~15 км/день пішки").
+
+    Deliberately NOT modelled as a plan edit: the plan may well be reshaped around the trip
+    (that's ``/plan`` + ``apply_plan_ops``), but the *fact of being away* has to outlive any
+    one plan and be readable by surfaces that never touch one."""
+
+    __tablename__ = "away_periods"
+    __table_args__ = (
+        Index("ix_away_user_start", "user_id", "start_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    start_date: Mapped[str] = mapped_column(String(10))
+    end_date: Mapped[str] = mapped_column(String(10))
+    kind: Mapped[str] = mapped_column(String(16), default="rest")
+    note: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class AthleteProfile(Base):
     """EP-18 · the coach's long-term memory of one athlete — the durable qualitative model
     that survives individual reports.

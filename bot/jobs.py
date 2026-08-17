@@ -44,6 +44,7 @@ from app.analysis.service import (
 )
 from app.core.config import settings
 from app.core.tz import user_tz as core_user_tz
+from app.db import away as away_db
 from app.db import job_runs
 from app.db.base import async_session_maker
 from app.db.models import User
@@ -634,6 +635,12 @@ async def _sickness_check_for_user(ctx, session, user: User, creds, today: str,
     try:
         today_d = dt.date.fromisoformat(today)
     except ValueError:
+        return False
+    # NF-34: a declared absence explains the missed streak completely. Asking "схоже, ти
+    # захворів — перебудувати блок?" on day three of a kite week is the exact nag this
+    # feature exists to stop, and it costs nothing to check before the detector runs.
+    if await away_db.get_current(session, user.id, today_d):
+        logger.debug(f"SICKNESS skip user={user.id}: declared away")
         return False
     try:
         ws = await repository.recent_plan_workouts(

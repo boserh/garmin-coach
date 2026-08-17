@@ -33,12 +33,14 @@ from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import away as away_mod
 from app.analysis.client import AnalystError
 from app.analysis.plans import run_plan_edit
 from app.analysis.reports import run_ask
 from app.core.auth import current_user
 from app.core.demo import DEMO_DISABLED_MSG
 from app.core.tz import user_tz as core_user_tz
+from app.db import away as away_db
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import plan_sync, repository
@@ -149,7 +151,10 @@ async def chat_send(
                 session, user_id=user.id, instruction=text, api_key=creds.anthropic_key,
                 pending=pending,
             )
-            if edit.operations:
+            # NF-34: a trip mentioned in passing rides with the proposal and is written on
+            # the same confirmation (or dropped with it on cancel).
+            away = away_mod.from_op(edit.away) or (pending or {}).get("away")
+            if edit.operations or away:
                 ops = [op.model_dump() for op in edit.operations]
                 alt = [op.model_dump() for op in (edit.alt_operations or [])]
                 await repository.set_pending_plan_edit(
@@ -158,6 +163,7 @@ async def chat_send(
                     instruction=(pending or {}).get("instruction") or text,
                     thread=repository.append_thread(pending, text, edit.answer) if pending
                     else [],
+                    away=away,
                 )
             elif pending:
                 # a question about the proposal — it stays exactly as it was, only the
@@ -170,6 +176,7 @@ async def chat_send(
                     thread=repository.append_thread(pending, text,
                                                     edit.answer or edit.summary),
                     message=pending.get("message"),
+                    away=pending.get("away"),
                 )
         else:
             await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key)
@@ -191,6 +198,10 @@ async def chat_confirm(
     almost exactly — same pending-state helper, same apply + best-effort Garmin resync."""
     pending = await repository.pop_pending_plan_edit(session, user.id)
     if action != "cancel" and pending:
+        # NF-34: a trip declared inside the edit is written on the same confirmation as the
+        # plan changes — through the same helper the bot's confirm uses, so the two paths
+        # cannot disagree about whether it was recorded.
+        await away_db.apply_pending(session, user.id, pending)
         ops_data = pending.get("alt" if action == "apply_alt" else "ops")
         if ops_data:
             plan_obj = await repository.get_active_plan(session, user.id)

@@ -77,6 +77,7 @@ from app.analysis.prompts import (
     SYSTEM_WRAPPED,
 )
 from app.core.config import settings
+from app.db import away as away_db
 from app.db import profile as profile_db
 from app.db.models import HealthCheckup
 from app.garmin.schemas import Payload, SupplementAdvice
@@ -202,6 +203,7 @@ def analyze_with_stats(
     today: Optional[str] = None,
     intensity_ctx: Optional[dict] = None,
     athlete_profile: Optional[dict] = None,
+    away_ctx: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -260,6 +262,10 @@ def analyze_with_stats(
     # user, so their prompts stay byte-for-byte what they were before coach memory existed.
     if athlete_profile:
         user_content["athlete_profile"] = athlete_profile
+    # NF-34: a declared vacation/trip. The daily report used to learn about one only by
+    # accident — through yesterday's report text — so it knew on Monday and forgot by Friday.
+    if away_ctx:
+        user_content["away"] = away_ctx
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -360,6 +366,7 @@ async def run_analysis(
     fueling = None
     intensity_ctx = None
     athlete_profile = None
+    away_ctx = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -426,13 +433,17 @@ async def run_analysis(
             # EP-18: the durable athlete model, injected through the one shared helper every
             # LLM path uses so "what the coach knows" can't drift between surfaces.
             athlete_profile = await profile_db.build_context(session, user_id)
+            # NF-34: declared away periods, through the same single helper every other
+            # surface reads — so "he's away until the 24th" can't be true for the morning
+            # report and unknown to the Sunday digest.
+            away_ctx = await away_db.build_context(session, user_id, today_d)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
     cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
                            previous_report, weather, plan_today, fitness, records, norm,
                            subjective, health_alerts, fueling, today_iso, intensity_ctx,
-                           athlete_profile)
+                           athlete_profile, away_ctx)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -442,7 +453,7 @@ async def run_analysis(
         return analyze_with_stats(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
-            today_iso, intensity_ctx, athlete_profile,
+            today_iso, intensity_ctx, athlete_profile, away_ctx,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
@@ -648,6 +659,11 @@ async def run_ask_agent(
     profile_ctx = await profile_db.build_context(session, user_id)
     if profile_ctx:
         user_content["athlete_profile"] = profile_ctx
+    # NF-34: "чому я так мало бігав цього місяця?" has a very different honest answer when
+    # two of those weeks were declared away.
+    away_ctx = await away_db.build_context(session, user_id)
+    if away_ctx:
+        user_content["away"] = away_ctx
     messages = [{"role": "user", "content": json.dumps(user_content, ensure_ascii=False)}]
 
     total = CallStats(kind="ask", model=model)
@@ -705,8 +721,9 @@ async def run_ask(
     last_data_date = await repository.latest_daily_date(session, user_id)
 
     profile_ctx = await profile_db.build_context(session, user_id)
+    away_ctx = await away_db.build_context(session, user_id)
     key = _ask_cache_key(reports, question, MODEL_ASK, recent_asks, last_data_date,
-                         profile_ctx)
+                         profile_ctx, away_ctx)
     cached = await llm_cache.get(session, key)
     if cached is not None:
         logger.info(f"CLAUDE CACHE HIT  {MODEL_ASK} (ask)")
@@ -990,6 +1007,10 @@ async def run_digest(
     today = dt.date.today()
     this_week = today.strftime("%G-W%V")
     prev_week = (today - dt.timedelta(days=7)).strftime("%G-W%V")
+    # The ISO week this digest is judging (Mon..Sun), so an away period can be measured
+    # against it in Python rather than left to the model's date arithmetic.
+    week_start = today - dt.timedelta(days=today.weekday())
+    week_end = week_start + dt.timedelta(days=6)
 
     from app import records as records_mod
 
@@ -1068,6 +1089,12 @@ async def run_digest(
         # NF-27: tonnage / e1RM trend / stalls — the strength half of the week, which the
         # digest previously couldn't mention at all because nothing computed it.
         "strength": await build_strength_context(session, user_id=user_id) or None,
+        # NF-34: the week's declared absences, with how many of THIS week's days they cover
+        # (`days_in_week`). Without it the digest read a deliberate week off as a failure —
+        # "compliance 0%, ні, відстаєш" — because a planned break and a collapse are the
+        # same zero in the data.
+        "away": await away_db.build_context(
+            session, user_id, today, week_start=week_start, week_end=week_end),
         "has_plan": plan is not None,
     }
 

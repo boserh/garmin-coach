@@ -70,6 +70,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("goal", "Кількісний прогрес до цілі (прогноз Garmin + тренд)"),
         BotCommand("race", "Race pack: пейсинг/харчування/чекліст до цільового старту"),
         BotCommand("log", "Відмітити побутове: /log вчора пиво"),
+        BotCommand("away", "Відпустка/поїздка: /away 16.08-24.08 кайт"),
         BotCommand("forget", "Що коуч про мене памʼятає; /forget <id> прибрати"),
     ])
 
@@ -107,6 +108,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("sick", handlers.sick))
     app.add_handler(CommandHandler("pain", handlers.pain_cmd))
     app.add_handler(CommandHandler("log", handlers.log_cmd))
+    app.add_handler(CommandHandler("away", handlers.away_cmd))
     app.add_handler(CommandHandler("forget", handlers.forget_cmd))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))

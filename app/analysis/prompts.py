@@ -83,7 +83,9 @@ SYSTEM = """Ти персональний аналітик тренувань і
     marathon_s; напр. 1602 с ≈ 26:42 на 5 км), endurance_score/endurance_class.
   • Навантаження і ризик: acwr_pct (гостре:хронічне навантаження у %; 80–130 = оптимально,
     >~130 = підвищений ризик травми), acwr_feedback, acute_load,
-    recovery_time_h (год до повного відновлення), readiness_score/readiness_level.
+    recovery_time_h (ГОДИН до повного відновлення; Garmin дає щонайбільше ~96 — якщо
+    бачиш явно неможливе число, не будуй на ньому висновок і не згадуй його),
+    readiness_score/readiness_level.
   • Базові показники: hrv_baseline_low/high (коридор норми HRV), resting_hr (пульс спокою),
     spo2_avg, respiration_avg, breathing_disruption_sev.
 - Використовуй для обґрунтування ВИСНОВКУ, а не для дослівного переказу цифр у звіті.
@@ -584,6 +586,19 @@ steps — структурну розбивку (kind warmup/run/cooldown/recove
   безпечнішу альтернативу: alt_operations (ті самі дати, помʼякшені дистанція/темп/тип,
   з тими ж полями що й operations, включно зі steps) + alt_summary (1 речення, що пропонуєш).
 
+ВІДСУТНІСТЬ (відпустка/поїздка/збори) — ОКРЕМЕ ПОЛЕ, НЕ операція над планом: якщо з
+instruction видно, що користувача НЕ БУДЕ (відпустка, поїздка, гори, кайт-тиждень,
+відрядження) у конкретні дати — окрім звичайних operations заповни поле away:
+{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "kind": "rest|active|sport|work",
+ "note": "<його ж словами, що саме там робитиме, до 200 символів>"}.
+- kind: rest — просто відпочинок/пляж; active — трекінг, походи, багато ходьби;
+  sport — інший спорт щодня (кайт, лижі, теніс, вело); work — робоча поїздка.
+- note бери з ЙОГО формулювання; якщо він не сказав, що робитиме, — note=null (не вигадуй).
+- Дати обов'язкові обидві. Якщо названо лише «тиждень з 16.08» — порахуй end сам.
+- Якщо про відсутність не йдеться — away = null. Одне прохання = максимум одна away.
+- Це запис у памʼять тренера про контекст, а НЕ причина не чіпати план: сесії на ці дні
+  однаково переноси/скасовуй операціями, як просить користувач.
+
 ФОРМАТ — ЛИШЕ валідний JSON (без маркдауну, без тексту навколо), точно така схема:
 {"summary": "<1-2 речення українською; для risky — чому ризиковано>",
  "risky": false,
@@ -591,6 +606,7 @@ steps — структурну розбивку (kind warmup/run/cooldown/recove
                  "description": "...",
                  "steps": [{"kind": "run", "dist_m": 5000, "hr_zone": 2,
                             "note": "орієнтовно 6:15–6:35/км"}]}, ...],
+ "away": null,
  "alt_summary": null,
  "alt_operations": null,
  "answer": null}
@@ -677,6 +693,9 @@ sessions, low_pct (зони 1-2), gray_pct (зона 3), high_pct (зони 4-5)
   побачить, повідомлення шлеться лише коли operations непорожній).
 - Пропущені тренування (done < total) → НЕ нарощуй обсяг найближчим часом; за потреби полегши
   або перенеси наступні важкі сесії, щоб план лишався реалістичним.
+- Здоровий глузд перед реакцією: recovery_time_h — це ГОДИНИ (Garmin дає щонайбільше ~96).
+  Якщо якийсь показник фізично неможливий (напр. «1164 год»), це збій даних — ІГНОРУЙ його
+  й вирішуй за рештою сигналів, а не будуй на ньому перебудову плану.
 - acwr_pct > ~130%, великий recovery_time_h, низький readiness_score, або resting_hr/HRV поза
   базовою смугою (недовідновлення) → закладай deload: полегши темп/дистанцію АБО перенеси
   tempo/intervals/long ближчих днів (move), а не видаляй (skip лише як крайній варіант).
@@ -1326,6 +1345,48 @@ SYSTEM += PROFILE_BLOCK
 SYSTEM_ASK_TOOLS += PROFILE_BLOCK
 SYSTEM_PLAN += PROFILE_BLOCK
 SYSTEM_PLAN_ADAPT += PROFILE_BLOCK
+
+
+# ---------- NF-34: declared away periods ----------
+
+# The same one-place rule as PROFILE_BLOCK, and for a sharper reason: the digest used to
+# score a declared vacation as "compliance 0%, ні, відстаєш" while the daily report knew
+# about the trip. Two surfaces reading the same fact differently is the bug; one block,
+# appended everywhere, is the fix.
+AWAY_BLOCK = """
+
+ВІДСУТНІСТЬ / ВІДПУСТКА (поле away, якщо є):
+- away.periods — періоди, які користувач САМ оголосив: [{start, end, kind, kind_label,
+  expect, note, status, days_total, days_left|days_until|days_since_end, days_in_week}].
+  status: active (триває зараз), upcoming (попереду), past (щойно завершився).
+- kind: rest (відпочинок), active (трекінг/походи/багато ходьби), sport (інший спорт —
+  кайт/лижі/теніс/вело), work (робоча поїздка). expect — чого чекати від тіла в такий
+  період; note — його ВЛАСНІ слова про те, що саме там робитиме. Спирайся на note й expect:
+  тиждень на пляжі, тиждень у горах і кайт-тиждень — це три різні навантаження, а не одне
+  «нічого».
+- ГОЛОВНЕ: пропущені бігові сесії в межах такого періоду — це НЕ провал виконання і НЕ
+  привід казати «відстаєш», «зривається», «треба наздогнати». Це свідома пауза, про яку
+  тебе попередили. Не соромити, не драматизувати, не пропонувати компенсувати обсяг після
+  повернення (наздоганяння — головна причина травм після паузи).
+- days_in_week (у тижневому підсумку) — скільки днів ТОГО тижня припало на відсутність.
+  Якщо це помітна частина тижня — саме так і поясни низький обсяг/виконання, а розділ про
+  прогрес до цілі оцінюй з поправкою на це (або чесно скажи, що тиждень не показовий).
+- Це контекст, а не індульгенція: якщо в дані ВСЕ Ж видно навантаження (кайт, хайкінг,
+  силові) або просіле відновлення — говори про них як завжди. Відсутність пояснює
+  відсутність БІГУ, вона не скасовує втому.
+- status=upcoming — не плануй на ці дні тренувань і не жени обсяг «поки є час»; status=past
+  — м'яке повернення (перший тиждень легше, ~10% приросту), без спроб компенсувати.
+- Поля немає → поводься точно так, як без нього, і не згадуй жодних відпусток."""
+
+SYSTEM += AWAY_BLOCK
+SYSTEM_ASK_TOOLS += AWAY_BLOCK
+SYSTEM_PLAN += AWAY_BLOCK
+SYSTEM_PLAN_ADAPT += AWAY_BLOCK
+SYSTEM_DIGEST += AWAY_BLOCK
+SYSTEM_SICK += AWAY_BLOCK
+# The edit prompt both READS the block (an already-declared period is context for the next
+# edit) and WRITES one (its own `away` field, documented in its schema above).
+SYSTEM_PLAN_EDIT += AWAY_BLOCK
 
 
 # EP-18 phase 2 — the weekly accumulation pass. Runs ONCE a week inside the digest job.

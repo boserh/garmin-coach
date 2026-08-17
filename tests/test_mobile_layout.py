@@ -86,6 +86,9 @@ def test_pages_do_not_scroll_horizontally_on_a_phone(client, tmp_path):
              "activities": "/me/activities", "reports": "/me/report_logs",
              "plan": "/plan", "chat": "/chat", "settings": "/settings",
              "insights": "/insights", "strength": "/strength",
+             # NF-34 put a multi-field form (two dates, a select, a free-text box) on the
+             # profile page — the shape that overflows a 320px phone first.
+             "profile": "/me/profile",
              "offline": "/offline", "info": "/info", "onboarding": "/onboarding",
              # The signed-out pages were never measured at all. Their own defect was a
              # centring one (see the test below), but they belong in the overflow sweep

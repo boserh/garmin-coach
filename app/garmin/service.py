@@ -170,6 +170,31 @@ def _local_hhmm(ms) -> Optional[str]:
         return None
 
 
+def recovery_hours(raw) -> Optional[float]:
+    """Garmin's training-readiness ``recoveryTime`` → HOURS.
+
+    The field is in **minutes**, and it was being stored straight into
+    ``extra["recovery_time_h"]`` — so a perfectly ordinary 19-hour recovery reached every
+    prompt as "1164 годин" (48 days). The adaptation job then dutifully rebuilt the plan
+    around a number no human body has ever produced, which is exactly how a wrong unit stops
+    being cosmetic: it is read by the model as evidence, not as a display string.
+
+    Garmin caps recovery time at ~4 days, so anything past :data:`RECOVERY_MAX_H` after the
+    conversion is not a long recovery — it's a DTO shape we no longer understand. It is
+    dropped (and logged) rather than passed on as fact."""
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw < 0:
+        return None
+    hours = round(raw / 60, 1)
+    if hours > RECOVERY_MAX_H:
+        logger.warning(f"GARMIN recoveryTime out of range: {raw} min → {hours}h, dropped")
+        return None
+    return hours
+
+
+# Garmin's own ceiling is 4 days; the slack is for a future firmware that raises it.
+RECOVERY_MAX_H = 168.0
+
+
 def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
     """Everything useful we fetch but don't put in the typed columns — kept as a
     compact scalar dict on ``DailyMetric.extra`` (no per-minute arrays). RHR, SpO2 and
@@ -210,7 +235,8 @@ def _daily_extra(sleep: dict, hrv: dict, dto: dict, readiness: dict) -> dict:
         "readiness_score": _g(readiness, "score"),
         "readiness_level": _g(readiness, "level"),
         "readiness_feedback": _g(readiness, "feedbackShort"),
-        "recovery_time_h": _g(readiness, "recoveryTime"),
+        # Garmin sends MINUTES here; the column name says hours (see recovery_hours).
+        "recovery_time_h": recovery_hours(_g(readiness, "recoveryTime")),
         "acute_load": _g(readiness, "acuteLoad"),
         "acwr_pct": _g(readiness, "acwrFactorPercent"),
         "acwr_feedback": _g(readiness, "acwrFactorFeedback"),
@@ -527,7 +553,10 @@ async def _incomplete_days_to_refetch(
     if not windowed:
         return set()
     from app.garmin import repository
-    history = await repository.read_history(session, user_id, days=30)
+    # Anchored to the SAME today the window above uses: a history read anchored to the
+    # process date instead would judge "which fields does this user produce" from a
+    # different set of days than the ones being scanned.
+    history = await repository.read_history(session, user_id, days=30, today=today)
     expected = completeness.expected_fields(history)
     if not expected:
         return set()

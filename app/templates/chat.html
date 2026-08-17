@@ -49,6 +49,11 @@
         {% else %}
           <div style="margin-top:.5rem">{{ pending.summary or "Є незастосовані зміни." }}</div>
         {% endif %}
+        {# NF-34: what will be recorded about the trip, visible BEFORE the ✅ — the same
+           line the bot shows, so a wrong kind/date can be corrected in the refine box. #}
+        {% if pending.away %}
+          <div style="margin-top:.5rem">📌 Запишу відсутність: {{ pending.away | away_line }}</div>
+        {% endif %}
         <form method="post" action="/chat/confirm" class="actions">
           <button class="btn" type="submit" name="action" value="apply">
             ✅ {% if pending.risky and pending.alt %}Як просив{% else %}Застосувати{% endif %}

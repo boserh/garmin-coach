@@ -270,7 +270,7 @@ async def test_state_is_per_user(session):
 # display-only extras (EP-11) + the ST-23 dialogue extras, all defaulted when a caller
 # stores just the ops
 _NO_EXTRAS = {"summary": None, "alt_summary": None, "risky": False,
-              "instruction": None, "thread": [], "message": None}
+              "instruction": None, "thread": [], "message": None, "away": None}
 
 
 async def test_pending_plan_edit_round_trips_and_is_single_use(session):

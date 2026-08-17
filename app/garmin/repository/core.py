@@ -542,9 +542,15 @@ async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) 
     return merged
 
 
-async def read_history(session: AsyncSession, user_id: int, days: int = 30) -> List[dict]:
-    """Recovery trends over the last ``days`` days for this user, oldest first."""
-    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+async def read_history(session: AsyncSession, user_id: int, days: int = 30,
+                       today: Optional[dt.date] = None) -> List[dict]:
+    """Recovery trends over the last ``days`` days for this user, oldest first.
+
+    ``today`` anchors the window. It defaults to the process date (every existing caller),
+    but a caller already reasoning about a specific day — ST-18's incomplete-day scan works
+    off the user's own date (ST-14) — must be able to read the history that day sees, or the
+    two disagree about which days exist."""
+    cutoff = ((today or dt.date.today()) - dt.timedelta(days=days - 1)).isoformat()
     rows = (
         await session.execute(
             select(DailyMetric)
