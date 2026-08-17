@@ -94,7 +94,11 @@ async def test_incomplete_days_to_refetch(session):
     yesterday = (today - dt.timedelta(days=1)).isoformat()
     old = (today - dt.timedelta(days=5)).isoformat()
 
-    # 30-day history: a full day establishes all fields as "expected"
+    # 30-day history: a full day establishes all fields as "expected". That history read is
+    # anchored to the `today` passed below, NOT to the process date — otherwise this test
+    # would quietly start failing once the real calendar moved 30 days past the fixed dates
+    # (it did), and the scan would judge "which fields does this user produce" from a
+    # different set of days than the ones it is scanning.
     await repository.upsert_daily(session, 3, DailySummary(**_full(old)))
     # yesterday stored incomplete (sleep only)
     await repository.upsert_daily(session, 3, DailySummary(**_sleep_only(yesterday)))
@@ -114,3 +118,15 @@ async def test_incomplete_days_complete_day_not_refetched(session):
     await session.commit()
     cached = await repository.read_daily_metrics(session, 4, [yesterday])
     assert await service._incomplete_days_to_refetch(session, 4, cached, today) == set()
+
+
+async def test_read_history_window_is_anchored_to_the_given_day(session):
+    """`today` moves the window; the default stays the process date for every other caller."""
+    anchor = dt.date(2026, 7, 22)
+    await repository.upsert_daily(
+        session, 7, DailySummary(**_full((anchor - dt.timedelta(days=3)).isoformat())))
+    await session.commit()
+
+    assert await repository.read_history(session, 7, days=30, today=anchor)
+    assert await repository.read_history(
+        session, 7, days=30, today=anchor + dt.timedelta(days=90)) == []

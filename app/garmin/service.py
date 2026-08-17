@@ -553,7 +553,10 @@ async def _incomplete_days_to_refetch(
     if not windowed:
         return set()
     from app.garmin import repository
-    history = await repository.read_history(session, user_id, days=30)
+    # Anchored to the SAME today the window above uses: a history read anchored to the
+    # process date instead would judge "which fields does this user produce" from a
+    # different set of days than the ones being scanned.
+    history = await repository.read_history(session, user_id, days=30, today=today)
     expected = completeness.expected_fields(history)
     if not expected:
         return set()
