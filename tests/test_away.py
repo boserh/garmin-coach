@@ -327,13 +327,73 @@ async def test_declaring_a_period_busts_the_report_dedup_cache(session):
 
 def test_the_away_block_reaches_every_advising_prompt():
     """One wording, appended in one place — the digest divergence started as two prompts
-    knowing different things."""
+    knowing different things, and the injury/health advisories repeated it: a real signal
+    delivered as "прибери tempo/intervals/long, можу перебудувати план" to someone with
+    nothing scheduled that week."""
     from app.analysis import prompts
 
     for p in (prompts.SYSTEM, prompts.SYSTEM_DIGEST, prompts.SYSTEM_PLAN,
               prompts.SYSTEM_PLAN_ADAPT, prompts.SYSTEM_PLAN_EDIT, prompts.SYSTEM_SICK,
-              prompts.SYSTEM_ASK_TOOLS):
+              prompts.SYSTEM_ASK_TOOLS, prompts.SYSTEM_INJURY, prompts.SYSTEM_HEALTH,
+              prompts.SYSTEM_WEATHER_PLAN):
         assert prompts.AWAY_BLOCK in p
+
+
+def test_the_away_block_forbids_advice_the_athlete_cannot_act_on():
+    """The warning may be right and its action still useless — the block has to say that
+    removing sessions and rebuilding the plan are not the advice for someone mid-trip."""
+    from app.analysis import prompts
+
+    assert "перебудувати план" in prompts.AWAY_BLOCK
+    assert "tempo/intervals/long" in prompts.AWAY_BLOCK
+
+
+async def test_injury_advisory_context_carries_the_period(session):
+    """The exact bug the user hit: HRV below baseline during a declared kite week, advised
+    as if there were tempo sessions to cancel."""
+    from app import injury
+    from app.analysis import reports as reports_mod
+
+    today = dt.date.today()
+    await away_db.save(session, U1, away.normalize(
+        today - dt.timedelta(days=1), today + dt.timedelta(days=5), "sport",
+        "кайт щодня", today=today))
+    await session.commit()
+
+    daily = [{"date": (today - dt.timedelta(days=13 - i)).isoformat(),
+              "hrv_avg": 30, "acwr_pct": 150, "sleep_score": 60, "resting_hr": 55}
+             for i in range(14)]
+    assessment = injury.assess(daily, [], history_days=60)
+    stats = CallStats(kind="injury", model=service.MODEL_INJURY)
+    with patch.object(reports_mod, "injury_with_stats",
+                      return_value=("бережи себе", stats)) as m:
+        await reports_mod.run_injury_check(
+            session, user_id=U1, assessment=assessment, api_key="k")
+
+    ctx = m.call_args.args[0]
+    assert ctx["away"]["periods"][0]["note"] == "кайт щодня"
+
+
+async def test_health_alert_context_carries_the_period(session):
+    from app import health
+    from app.analysis import reports as reports_mod
+
+    today = dt.date.today()
+    await away_db.save(session, U1, away.normalize(
+        today, today + dt.timedelta(days=3), "rest", "лежатиму", today=today))
+    await session.commit()
+
+    history = [{"date": (today - dt.timedelta(days=29 - i)).isoformat(),
+                "hrv_avg": 60 if i < 25 else 30, "sleep_score": 80, "resting_hr": 50}
+               for i in range(30)]
+    report = health.detect(history, min_history_days=7)
+    assert report.actionable          # the signal is real; only the ADVICE needs context
+    stats = CallStats(kind="health", model=service.MODEL_HEALTH)
+    with patch.object(reports_mod, "health_with_stats",
+                      return_value=("спокійніше", stats)) as m:
+        await reports_mod.run_health_alert(session, user_id=U1, report=report, api_key="k")
+
+    assert m.call_args.args[0]["away"]["periods"][0]["note"] == "лежатиму"
 
 
 def test_the_away_block_forbids_the_catch_up_advice():

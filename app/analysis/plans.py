@@ -1000,6 +1000,9 @@ async def run_weather_plan_check(
                       "description": w.description} for w in ws],
         "forecast": forecast,
         "conflicts": conflicts,
+        # NF-34: moving a session out of the rain is pointless when the athlete is away
+        # those days — and proposing it is a DM that costs attention for nothing.
+        "away": await away_db.build_context(session, user_id, today),
     }
     try:
         edit, stats = await _run_claude(

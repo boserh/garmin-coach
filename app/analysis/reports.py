@@ -1637,6 +1637,12 @@ async def run_injury_check(
     from app.garmin import repository
 
     context = injury.to_context(assessment)
+    # NF-34: the signal can be real while the standard advice is not — "прибери
+    # tempo/intervals/long, можу перебудувати план" says nothing to someone whose plan has
+    # no sessions this week because they told us they're away.
+    away_ctx = await away_db.build_context(session, user_id)
+    if away_ctx:
+        context["away"] = away_ctx
     try:
         text, stats = await _run_claude(
             injury_with_stats, context, api_key, session=session, user_id=user_id)
@@ -1693,6 +1699,9 @@ async def run_health_alert(
     from app.garmin import repository
 
     context = health.to_context(report)
+    away_ctx = await away_db.build_context(session, user_id)   # NF-34, same as the radar
+    if away_ctx:
+        context["away"] = away_ctx
     try:
         text, stats = await _run_claude(
             health_with_stats, context, api_key, session=session, user_id=user_id)
