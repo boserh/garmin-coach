@@ -1374,6 +1374,13 @@ AWAY_BLOCK = """
 - Це контекст, а не індульгенція: якщо в дані ВСЕ Ж видно навантаження (кайт, хайкінг,
   силові) або просіле відновлення — говори про них як завжди. Відсутність пояснює
   відсутність БІГУ, вона не скасовує втому.
+- АЛЕ порада має бути здійсненна ТАМ, де людина зараз. Поки status=active, не радь
+  «прибрати tempo/intervals/long» і не пропонуй «перебудувати план» — сесій, які треба
+  прибирати, зараз просто немає, і така порада читається як «ти мене не слухаєш». Замість
+  цього говори про те, на що людина реально впливає у ці дні: сон і режим, обсяг того, чим
+  вона там займається (kind/note — трекінг, кайт, вечірки), вода/спека, спокійніший день.
+  Якщо просідання відновлення варте уваги — назви його прямо, але й порада, і згадка плану
+  мають стосуватися ПОВЕРНЕННЯ, а не поточних днів.
 - status=upcoming — не плануй на ці дні тренувань і не жени обсяг «поки є час»; status=past
   — м'яке повернення (перший тиждень легше, ~10% приросту), без спроб компенсувати.
 - Поля немає → поводься точно так, як без нього, і не згадуй жодних відпусток."""
@@ -1387,6 +1394,13 @@ SYSTEM_SICK += AWAY_BLOCK
 # The edit prompt both READS the block (an already-declared period is context for the next
 # edit) and WRITES one (its own `away` field, documented in its schema above).
 SYSTEM_PLAN_EDIT += AWAY_BLOCK
+# The advisories need it just as much as the reports: an injury/health warning whose whole
+# advice is "прибери tempo/intervals/long, можу перебудувати план" is useless to someone
+# who is on a beach with nothing scheduled — the warning may be right and the action still
+# unactionable. Weather planning too: there is no point moving a session inside a trip.
+SYSTEM_INJURY += AWAY_BLOCK
+SYSTEM_HEALTH += AWAY_BLOCK
+SYSTEM_WEATHER_PLAN += AWAY_BLOCK
 
 
 # EP-18 phase 2 — the weekly accumulation pass. Runs ONCE a week inside the digest job.

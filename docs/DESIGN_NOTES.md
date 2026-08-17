@@ -172,8 +172,15 @@ detrains, a trekking week is quiet volume on tired legs, a kite week is daily fa
 zero running. The athlete's own words live in `note`.
 
 - **One context helper, like the profile.** `away_db.build_context` is called by the daily
-  report, the digest, `/ask`, plan generation, adaptation and `/sick`; `AWAY_BLOCK` is
-  appended to all of those prompts in one place (`prompts.py`). Two surfaces knowing
+  report, the digest, `/ask`, plan generation, adaptation, `/sick`, the injury radar, the
+  health alert and weather planning; `AWAY_BLOCK` is appended to all of those prompts in one
+  place (`prompts.py`). The advisories were the second half of the same bug: the injury
+  radar fired a perfectly correct "HRV below baseline three days" during a declared kite
+  week and then advised *«прибери tempo/intervals/long, можу перебудувати план»* — a real
+  signal with an action the athlete cannot take, since nothing is scheduled. Hence the
+  block's rule that while a period is `active` the advice must be about what the athlete can
+  actually change there (sleep, the load of what they're doing, an easier day) and any
+  mention of the plan belongs to the RETURN. Two surfaces knowing
   different things about the same week is the defect, so there is exactly one wording and
   one reader. `None` (not an empty dict) for someone who never declared a period — their
   prompts stay byte-for-byte pre-NF-34.
