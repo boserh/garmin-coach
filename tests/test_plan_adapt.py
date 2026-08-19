@@ -13,11 +13,24 @@ from app.garmin.schemas import PlanEdit, PlanOp
 U1 = 1
 
 
+# The default seed target is RELATIVE to today and far outside ADAPT_TAPER_DAYS: with a
+# hardcoded date the whole file quietly changed behaviour once the wall clock came within
+# two weeks of it (the taper's 15%-cut ceiling started dropping ops the conservative
+# tests expect to survive). Tests that want the taper set their own near target.
+_FAR_TARGET_DAYS = 60
+
+
+def _far_target() -> str:
+    return (dt.date.today() + dt.timedelta(days=_FAR_TARGET_DAYS)).isoformat()
+
+
 async def _seed_plan(session, *, workouts, status="active", intake=None,
-                     target_date="2026-09-01"):
+                     target_date=_far_target):
     plan = TrainingPlan(
         user_id=U1, goal="g", status=status,
-        start_date="2026-06-01", target_date=target_date, intake=intake,
+        start_date="2026-06-01",
+        target_date=target_date() if callable(target_date) else target_date,
+        intake=intake,
     )
     session.add(plan)
     await session.flush()
@@ -108,13 +121,15 @@ async def test_adjust_level_off_skips_the_claude_call(session):
 
 async def test_default_level_conservative_with_target_date(session):
     fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
-    await _seed_plan(session, workouts=[dict(date=fut, type="easy", status="planned")])
+    target = _far_target()
+    await _seed_plan(session, target_date=target,
+                     workouts=[dict(date=fut, type="easy", status="planned")])
     seen: dict = {}
     with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
         await run_plan_adaptation(session, user_id=U1)
     assert seen["adjust_level"] == "conservative"
-    assert seen["target_date"] == "2026-09-01"
-    assert seen["days_to_target"] == (dt.date(2026, 9, 1) - dt.date.today()).days
+    assert seen["target_date"] == target
+    assert seen["days_to_target"] == _FAR_TARGET_DAYS
 
 
 async def test_default_level_flexible_without_target_date(session):
@@ -248,7 +263,7 @@ async def test_taper_allows_only_minimal_easing(session):
 
 async def test_alt_operations_also_level_filtered(session):
     today = dt.date.today().isoformat()
-    await _seed_plan(   # target_date default set → conservative
+    await _seed_plan(   # target_date set, far from the taper → conservative
         session, workouts=[dict(date=today, type="long", dist_km=10.0, status="planned")])
     ops = [PlanOp(action="modify", date=today, dist_km=8.0)]
     alt = [PlanOp(action="skip", date=today)]                 # in-window but over the level
