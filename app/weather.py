@@ -14,9 +14,13 @@ failure so the report still goes out without weather):
 - :func:`find_weather_conflicts` — a pure, network-free filter that flags key sessions
   (tempo/intervals/long) landing on an extreme-weather day, so we only call the LLM when
   there's an actual conflict.
+
+All three network helpers share :func:`_get_json`, which retries the transient side of
+Open-Meteo (timeouts, 429, 5xx) with exponential backoff before giving up.
 """
 import datetime as dt
 import logging
+import time
 from typing import Iterable, Optional, Sequence, Tuple
 
 import requests
@@ -27,6 +31,45 @@ logger = logging.getLogger("weather")
 _GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _TIMEOUT = 8  # seconds — never hold up the morning job on a slow weather API
+
+# Open-Meteo is a free public service and answers 429/5xx (503 in particular) for short
+# stretches; a single blip used to lose a whole day of weather (the morning report drops
+# the block, EP-13's planning check goes silent). Retry only the failures a retry can fix
+# — never a 4xx that says our request is wrong, and never a parse error.
+_RETRIES = 2                       # extra attempts after the first
+_BACKOFF_S = 1.0                   # doubled per retry: 1s, 2s
+_TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for a failure worth retrying: a timeout / dropped connection, or an HTTP
+    status Open-Meteo hands out while it is overloaded."""
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status in _TRANSIENT_STATUS
+
+
+def _get_json(url: str, params: dict, what: str) -> Optional[dict]:
+    """GET ``url`` and return the decoded JSON object, or ``None`` on any failure —
+    every caller degrades to "no weather" rather than propagating. Transient errors are
+    retried ``_RETRIES`` times with exponential backoff; anything else fails at once."""
+    for attempt in range(_RETRIES + 1):
+        try:
+            r = requests.get(url, params=params, timeout=_TIMEOUT)
+            r.raise_for_status()
+            return r.json() or {}
+        except Exception as e:
+            if attempt < _RETRIES and _is_transient(e):
+                backoff = _BACKOFF_S * (2 ** attempt)
+                logger.warning(f"{what} transient error ({e}) — retry "
+                               f"{attempt + 1}/{_RETRIES} in {backoff:.0f}s")
+                time.sleep(backoff)
+                continue
+            logger.warning(f"{what} failed: {e}")
+            return None
+    return None   # unreachable — every path inside the loop returns or continues
+
 
 # WMO weather codes → short Ukrainian condition (the codes Open-Meteo returns).
 _WMO = {
@@ -62,17 +105,14 @@ def geocode(name: str) -> Optional[tuple]:
     name = (name or "").strip()
     if not name:
         return None
-    try:
-        r = requests.get(
-            _GEO_URL,
-            params={"name": name, "count": 1, "language": "uk", "format": "json"},
-            timeout=_TIMEOUT,
-        )
-        r.raise_for_status()
-        results = (r.json() or {}).get("results") or []
-    except Exception as e:
-        logger.warning(f"GEOCODE failed for {name!r}: {e}")
+    data = _get_json(
+        _GEO_URL,
+        {"name": name, "count": 1, "language": "uk", "format": "json"},
+        f"GEOCODE {name!r}",
+    )
+    if data is None:
         return None
+    results = data.get("results") or []
     if not results:
         return None
     g = results[0]
@@ -102,21 +142,17 @@ def _slot(hourly: dict, hour: int) -> dict:
 def fetch_forecast(lat: float, lon: float) -> Optional[dict]:
     """Today's compact forecast for ``lat``/``lon`` (local timezone), or ``None`` on
     error. Daily aggregates + a few daytime hourly slots; temps °C, wind km/h."""
-    try:
-        r = requests.get(
-            _FORECAST_URL,
-            params={
-                "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1,
-                "daily": _DAILY_PARAMS,
-                "hourly": ("temperature_2m,apparent_temperature,"
-                           "precipitation_probability,wind_speed_10m"),
-            },
-            timeout=_TIMEOUT,
-        )
-        r.raise_for_status()
-        data = r.json() or {}
-    except Exception as e:
-        logger.warning(f"FORECAST failed for {lat},{lon}: {e}")
+    data = _get_json(
+        _FORECAST_URL,
+        {
+            "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1,
+            "daily": _DAILY_PARAMS,
+            "hourly": ("temperature_2m,apparent_temperature,"
+                       "precipitation_probability,wind_speed_10m"),
+        },
+        f"FORECAST today {lat},{lon}",
+    )
+    if data is None:
         return None
 
     daily = data.get("daily") or {}
@@ -181,19 +217,15 @@ def fetch_forecast_week(lat: float, lon: float, days: int = 7) -> Optional[list]
     """The next ``days`` days' compact daily forecast for ``lat``/``lon`` (local
     timezone), or ``None`` on error. One dict per day (see :func:`_day_row`); no hourly
     slots — used by the weather-aware weekly planning check (EP-13)."""
-    try:
-        r = requests.get(
-            _FORECAST_URL,
-            params={
-                "latitude": lat, "longitude": lon, "timezone": "auto",
-                "forecast_days": days, "daily": _DAILY_PARAMS,
-            },
-            timeout=_TIMEOUT,
-        )
-        r.raise_for_status()
-        data = r.json() or {}
-    except Exception as e:
-        logger.warning(f"FORECAST week failed for {lat},{lon}: {e}")
+    data = _get_json(
+        _FORECAST_URL,
+        {
+            "latitude": lat, "longitude": lon, "timezone": "auto",
+            "forecast_days": days, "daily": _DAILY_PARAMS,
+        },
+        f"FORECAST week {lat},{lon}",
+    )
+    if data is None:
         return None
 
     daily = data.get("daily") or {}

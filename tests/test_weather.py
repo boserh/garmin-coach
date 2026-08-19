@@ -1,6 +1,8 @@
 """Weather helpers — parsing + error tolerance, with requests mocked (no network)."""
 from datetime import date
 
+import requests
+
 from app import weather
 
 
@@ -100,6 +102,70 @@ def test_fetch_forecast_week_builds_daily_rows(monkeypatch):
 def test_fetch_forecast_week_swallows_errors(monkeypatch):
     _patch_get(monkeypatch, exc=RuntimeError("api down"))
     assert weather.fetch_forecast_week(51.1, 17.03) is None
+
+
+# ---------- transient-failure retries ----------
+
+def _http_error(status: int) -> requests.HTTPError:
+    resp = requests.Response()
+    resp.status_code = status
+    return requests.HTTPError(f"{status} Server Error", response=resp)
+
+
+def _patch_get_sequence(monkeypatch, outcomes):
+    """Serve one entry of ``outcomes`` per call: an exception is raised, anything else is
+    returned as the JSON payload. Records how many calls happened."""
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        item = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return _Resp(item)
+
+    monkeypatch.setattr(weather.requests, "get", fake_get)
+    monkeypatch.setattr(weather.time, "sleep", lambda s: None)
+    return calls
+
+
+_WEEK_PAYLOAD = {"daily": {
+    "time": ["2026-07-09"], "temperature_2m_min": [18.2], "temperature_2m_max": [28.4],
+    "apparent_temperature_max": [30.0], "precipitation_sum": [0.0],
+    "precipitation_probability_max": [10], "wind_speed_10m_max": [12.0],
+    "weather_code": [1],
+}}
+
+
+def test_fetch_forecast_week_retries_transient_503(monkeypatch):
+    """A 503 blip (Open-Meteo is free and does this) is retried, not lost for the day."""
+    calls = _patch_get_sequence(monkeypatch, [_http_error(503), _WEEK_PAYLOAD])
+    week = weather.fetch_forecast_week(51.1, 17.03)
+    assert len(calls) == 2
+    assert [d["date"] for d in week] == ["2026-07-09"]
+
+
+def test_fetch_forecast_retries_timeouts_then_gives_up(monkeypatch):
+    calls = _patch_get_sequence(monkeypatch, [requests.Timeout("slow")])
+    assert weather.fetch_forecast(51.1, 17.03) is None
+    assert len(calls) == weather._RETRIES + 1     # first attempt + every retry
+
+
+def test_fetch_forecast_does_not_retry_client_errors(monkeypatch):
+    """A 400 means our request is wrong — retrying it just burns the morning job's time."""
+    calls = _patch_get_sequence(monkeypatch, [_http_error(400)])
+    assert weather.fetch_forecast(51.1, 17.03) is None
+    assert len(calls) == 1
+
+
+def test_geocode_retries_transient_errors(monkeypatch):
+    calls = _patch_get_sequence(monkeypatch, [
+        _http_error(429),
+        {"results": [{"name": "Gdańsk", "country": "Польща",
+                      "latitude": 54.35, "longitude": 18.65}]},
+    ])
+    assert weather.geocode("gdansk") == (54.35, 18.65, "Gdańsk, Польща")
+    assert len(calls) == 2
 
 
 _HEAVY = {"tempo", "intervals", "long"}

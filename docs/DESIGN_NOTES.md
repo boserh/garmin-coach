@@ -103,6 +103,13 @@ when a run is today/tomorrow. `fetch_forecast_week` (7 daily rows) + pure
 `find_weather_conflicts` (heat/rain/wind/icy thresholds) power EP-13 and ST-13.
 `weather` rides in the dedup-cache key.
 
+All three network helpers go through `_get_json`, which retries the *transient* side of
+Open-Meteo (timeouts, dropped connections, 408/425/429/5xx) `_RETRIES` times with
+exponential backoff — the free service answers 503 for short stretches, and one blip used
+to cost a whole day of weather (morning block dropped, EP-13's check silently skipped).
+A 4xx that says our request is wrong is never retried; on final failure the helper still
+returns `None` and every caller degrades to "no weather", unchanged.
+
 ## Weekly digest (EP-07)
 
 Sunday-evening retrospective (`weekly_digest_job`, `DIGEST_HOUR` Europe/Warsaw).
