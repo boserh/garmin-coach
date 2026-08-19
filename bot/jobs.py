@@ -296,6 +296,15 @@ async def for_each_user(worker, *, with_chat: bool, label: str,
                     status, detail, notable = "error", _traceback_tail(), True
                 finally:
                     budget.reset_background(bg_token)
+                if status != "error" and (session.dirty or session.new):
+                    # A worker that finished cleanly but left writes uncommitted is a bug:
+                    # closing the session below discards them (that is how a paid activity
+                    # analysis went missing), and until then they hold SQLite's write lock.
+                    # Say so instead of losing the data quietly.
+                    left = sorted({type(o).__name__
+                                   for o in list(session.dirty) + list(session.new)})
+                    logger.warning(f"{label} user={user_id} left uncommitted writes: "
+                                   f"{', '.join(left)} — discarded on close")
             # Session closed → its transaction (committed work aside) is released, so the
             # recorder's own connection can write.
         except Exception:
@@ -441,6 +450,13 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
             text = await run_activity_analysis(
                 session, act, user_id=user.id, api_key=creds.anthropic_key
             )
+            # Both writes above are "caller commits" (act.step_match, act.analysis) and the
+            # tick has no commit of its own after this point — so without this line the paid
+            # analysis was rolled back when the session closed (never reaching the activity
+            # page), and the dirty UPDATE sat on SQLite's write lock until then, which is what
+            # made the job-run recorder's own connection fail with "database is locked".
+            # Persist before sending, same rule as _records_check_for_user.
+            await session.commit()
             badge = stepmatch.badge(getattr(act, "step_match", None))
             head = f"{_activity_head(act)}\n{badge}" if badge else _activity_head(act)
             # Attach the EP-12 post-run check-in (RPE + pain) — one tap, silence is fine.

@@ -171,7 +171,7 @@ _USER = SimpleNamespace(id=1, telegram_chat_id=555)
 _CREDS = SimpleNamespace(anthropic_key="k")
 
 
-async def test_activity_watch_analyzes_fresh_run(monkeypatch):
+async def test_activity_watch_analyzes_fresh_run(session, monkeypatch):
     act = _act(1, dt.date.today().isoformat())
 
     async def fake_analyze(session, activity, *, user_id, api_key):
@@ -180,7 +180,7 @@ async def test_activity_watch_analyzes_fresh_run(monkeypatch):
     monkeypatch.setattr(jobs_module, "run_activity_analysis", fake_analyze)
     ctx = _FakeCtx()
 
-    await _activity_watch_for_user(ctx, None, _USER, _CREDS, [act])
+    await _activity_watch_for_user(ctx, session, _USER, _CREDS, [act])
 
     assert len(ctx.bot.sent) == 1
     chat_id, text = ctx.bot.sent[0]
@@ -225,7 +225,7 @@ async def test_activity_watch_skips_non_run_type(monkeypatch):
     assert ctx.bot.sent == []
 
 
-async def test_activity_watch_continues_after_one_failure(monkeypatch):
+async def test_activity_watch_continues_after_one_failure(session, monkeypatch):
     today = dt.date.today().isoformat()
     act1, act2 = _act(4, today), _act(5, today)
     calls = []
@@ -239,7 +239,7 @@ async def test_activity_watch_continues_after_one_failure(monkeypatch):
     monkeypatch.setattr(jobs_module, "run_activity_analysis", fake_analyze)
     ctx = _FakeCtx()
 
-    await _activity_watch_for_user(ctx, None, _USER, _CREDS, [act1, act2])
+    await _activity_watch_for_user(ctx, session, _USER, _CREDS, [act1, act2])
 
     assert calls == [4, 5]
     assert len(ctx.bot.sent) == 1  # only act2 (id=5) produced a message
