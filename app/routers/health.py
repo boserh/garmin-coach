@@ -109,11 +109,15 @@ async def status(
     # OPS-08: DB backup freshness — admin-only (a per-install fact, not per-user).
     backup_age_hours = None
     backup_rsync_ok = None
+    backup_rsync_error = None
     if user.is_admin:
         from app import backup_status
         b = backup_status.read_status(Path(settings.BACKUP_DIR))
         backup_age_hours = b["age_hours"]
         backup_rsync_ok = b["rsync_ok"]
+        # The reason the off-SD copy failed — this page is where a "rsync не вдалось"
+        # banner sends the admin, so it has to answer "why" and not just repeat "no".
+        backup_rsync_error = b["rsync_error"]
 
     return {
         "status": "ok",
@@ -132,4 +136,5 @@ async def status(
         "last_morning_job": last_morning_status,
         "backup_age_hours": backup_age_hours,
         "backup_rsync_ok": backup_rsync_ok,
+        "backup_rsync_error": backup_rsync_error,
     }

@@ -120,6 +120,68 @@ async def test_backup_freshness_silent_when_fresh(session, tmp_path, monkeypatch
     assert ctx.bot.sent == []
 
 
+async def test_backup_rsync_failure_dms_even_when_the_local_backup_is_fresh(
+        session, tmp_path, monkeypatch):
+    """OPS-08 gap: a fresh local backup silenced the staleness DM, so a broken off-SD
+    rsync — the copy that survives the SD card dying — could fail for months in silence.
+    The DM names the reason and repeats every BACKUP_WARN_DAYS, not daily."""
+    import json
+    import time as _t
+
+    from app.backup_status import MARKER_NAME
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(settings, "BACKUP_WARN_DAYS", 3, raising=False)
+    (tmp_path / MARKER_NAME).write_text(json.dumps({
+        "ts": _t.time(), "path": "x", "size": 1, "rsync_ok": False,
+        "rsync_error": "rsync exit 23: Read-only file system (30)",
+    }))
+
+    admin = SimpleNamespace(id=904, telegram_chat_id=558, is_admin=True)
+    non_admin = SimpleNamespace(id=905, telegram_chat_id=559, is_admin=False)
+    ctx = _FakeCtx()
+
+    await jobs_module._backup_freshness_check(ctx, session, non_admin, "2026-07-31")
+    assert ctx.bot.sent == []
+
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-07-31")
+    assert len(ctx.bot.sent) == 1
+    text = ctx.bot.sent[0][1]
+    assert "rsync" in text and "Read-only file system" in text
+
+    # next day → still too soon (this is a degraded copy, not a missing backup)
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-08-01")
+    assert len(ctx.bot.sent) == 1
+    # BACKUP_WARN_DAYS later → remind again
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-08-03")
+    assert len(ctx.bot.sent) == 2
+
+
+async def test_stale_backup_dm_covers_rsync_without_double_sending(
+        session, tmp_path, monkeypatch):
+    """When the backup is stale AND the rsync failed, one DM says both."""
+    import json
+    import time as _t
+
+    from app.backup_status import MARKER_NAME
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(settings, "BACKUP_WARN_DAYS", 3, raising=False)
+    (tmp_path / MARKER_NAME).write_text(json.dumps({
+        "ts": _t.time() - 10 * 24 * 3600, "path": "x", "size": 1, "rsync_ok": False,
+        "rsync_error": "rsync exit 13: No such file or directory",
+    }))
+
+    admin = SimpleNamespace(id=906, telegram_chat_id=560, is_admin=True)
+    ctx = _FakeCtx()
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-07-31")
+    assert len(ctx.bot.sent) == 1
+    assert "rsync" in ctx.bot.sent[0][1]
+    assert "No such file or directory" in ctx.bot.sent[0][1]
+
+
 def test_recovery_synced_requires_hrv_sleep_and_body_battery():
     full = _payload(DailySummary(date=TODAY, hrv_avg=60, sleep_score=80, bb_charged=50,
                                   has_data=True))

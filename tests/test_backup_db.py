@@ -4,6 +4,7 @@ The restore check (open the backup, read the rows back) is the AC's "backup is
 actually readable" test — the one without which everything else is theatre.
 """
 import sqlite3
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -117,6 +118,7 @@ def test_run_marks_rsync_failure_without_losing_local_success(tmp_path, monkeypa
 
     marker = json.loads((out / MARKER_NAME).read_text())
     assert marker["rsync_ok"] is False
+    assert "rsync unreachable" in marker["rsync_error"]  # the reason, not just the fact
     assert (out / "garmin-2026-07-11.db").exists()  # the local backup is still there
 
 
@@ -143,3 +145,122 @@ def test_rotation_keeps_dailies_and_weeklies(tmp_path):
     # (4 weekly slots keep the most-recent file of each of the last 4 ISO weeks)
     assert len(kept) <= 7 + 4
     assert len(kept) < len(made)  # something got pruned
+
+
+# --- the off-SD copy: why it failed, and which failures are worth a retry -------------
+# `rsync_ok: false` with no reason is what sent an admin ssh-ing into the Pi to find out
+# whether the stick was unplugged, full, or read-only.
+
+
+def _cpe(code: int, stderr: str = "") -> subprocess.CalledProcessError:
+    return subprocess.CalledProcessError(code, ["rsync"], output="", stderr=stderr)
+
+
+def test_rsync_reason_reads_the_stderr_cause():
+    exc = _cpe(23, 'rsync: [Receiver] mkdir "/mnt/backup/garmin" failed: '
+                   "Read-only file system (30)\nrsync error: some files could not be "
+                   "transferred (code 23) at main.c(1338)\n")
+    reason = backup_db._rsync_reason(exc)
+    assert "exit 23" in reason
+    assert "Read-only file system" in reason
+
+
+def test_rsync_reason_survives_a_silent_failure():
+    assert backup_db._rsync_reason(_cpe(13)) == "rsync exit 13"
+
+
+def test_rsync_reason_names_a_timeout_and_a_missing_binary():
+    assert "timed out" in backup_db._rsync_reason(
+        subprocess.TimeoutExpired(["rsync"], backup_db._RSYNC_TIMEOUT_S))
+    assert "not installed" in backup_db._rsync_reason(FileNotFoundError(2, "no rsync"))
+
+
+def test_rsync_retries_a_transient_failure_then_succeeds(tmp_path, monkeypatch):
+    """A busy stick / dropped ssh loses the whole night's off-SD copy if one attempt is
+    all we get — the timer only comes back tomorrow."""
+    calls = []
+
+    def _flaky(backup_dir, dest):
+        calls.append(dest)
+        if len(calls) == 1:
+            raise _cpe(30, "rsync: connection unexpectedly closed")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _flaky)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    backup_db._rsync(tmp_path, "user@host:/backups/")
+    assert len(calls) == 2
+
+
+def test_rsync_does_not_retry_a_permanent_failure(tmp_path, monkeypatch):
+    """A missing destination repeats identically; retrying only delays the report."""
+    calls = []
+
+    def _boom(backup_dir, dest):
+        calls.append(dest)
+        raise _cpe(13, "rsync: change_dir /mnt/backup failed: No such file or directory")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _boom)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    with pytest.raises(backup_db.RsyncFailed) as ei:
+        backup_db._rsync(tmp_path, "/mnt/backup/garmin/")
+    assert len(calls) == 1
+    assert "No such file or directory" in str(ei.value)
+
+
+def test_rsync_gives_up_after_the_retries(tmp_path, monkeypatch):
+    calls = []
+
+    def _boom(backup_dir, dest):
+        calls.append(dest)
+        raise _cpe(30, "timeout in data send/receive")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _boom)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    with pytest.raises(backup_db.RsyncFailed):
+        backup_db._rsync(tmp_path, "user@host:/backups/")
+    assert len(calls) == backup_db._RSYNC_RETRIES + 1
+
+
+def test_run_records_the_real_rsync_reason_in_the_marker(tmp_path, monkeypatch):
+    """End to end: the marker /status and the morning DM read carries the cause."""
+    import json
+
+    from app.backup_status import MARKER_NAME
+
+    src = tmp_path / "garmin.db"
+    _make_db(src, 1)
+    monkeypatch.setattr(
+        backup_db.settings, "DATABASE_URL", f"sqlite:///{src}", raising=False
+    )
+
+    def _boom(backup_dir, dest):
+        raise _cpe(23, "rsync: [sender] failed: Read-only file system (30)")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _boom)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    out = tmp_path / "backups"
+    with pytest.raises(backup_db.RsyncFailed):
+        backup_db.run(out, rsync_dest="/mnt/backup/garmin/", on_date=date(2026, 7, 11))
+
+    marker = json.loads((out / MARKER_NAME).read_text())
+    assert marker["rsync_ok"] is False
+    assert "Read-only file system" in marker["rsync_error"]
+
+
+def test_successful_run_leaves_no_stale_reason(tmp_path, monkeypatch):
+    import json
+
+    from app.backup_status import MARKER_NAME
+
+    src = tmp_path / "garmin.db"
+    _make_db(src, 1)
+    monkeypatch.setattr(
+        backup_db.settings, "DATABASE_URL", f"sqlite:///{src}", raising=False
+    )
+    monkeypatch.setattr(backup_db, "_rsync_once", lambda backup_dir, dest: None)
+    out = tmp_path / "backups"
+    backup_db.run(out, rsync_dest="/mnt/backup/garmin/", on_date=date(2026, 7, 11))
+
+    marker = json.loads((out / MARKER_NAME).read_text())
+    assert marker["rsync_ok"] is True
+    assert marker["rsync_error"] is None

@@ -444,12 +444,22 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   DB copy is safe anywhere — but `APP_SECRET_KEY`/`.env` must be backed up **separately**
   (out of band) for a restore to decrypt creds.
 - **Backup freshness monitoring (OPS-08)**: a successful backup run writes
-  `backups/last_ok.json` (ts/path/size/`rsync_ok`; a failed rsync sets `rsync_ok: false`
-  but still writes the marker — the local backup is real, only the off-SD copy failed).
-  `app.backup_status` (pure, zero network/DB) → `age_hours`/`rsync_ok`, surfaced on
-  `GET /status` (admin-only), a `/dashboard` banner, and a morning-tick DM
-  (`BACKUP_WARN_DAYS`=3). Known-stale nags once/day; a missing marker (never configured)
-  only re-nags every `BACKUP_WARN_DAYS` — a fresh install mid-setup isn't paged daily.
+  `backups/last_ok.json` (ts/path/size/`rsync_ok`/`rsync_error`; a failed rsync sets
+  `rsync_ok: false` but still writes the marker — the local backup is real, only the
+  off-SD copy failed). `app.backup_status` (pure, zero network/DB) →
+  `age_hours`/`rsync_ok`/`rsync_error`, surfaced on `GET /status` (admin-only), a
+  `/dashboard` banner, and a morning-tick DM (`BACKUP_WARN_DAYS`=3). Known-stale nags
+  once/day; a missing marker (never configured) only re-nags every `BACKUP_WARN_DAYS` —
+  a fresh install mid-setup isn't paged daily.
+  **The off-SD half warns on its own** (`should_warn_rsync`, guard `backup_rsync_warn_last`,
+  every `BACKUP_WARN_DAYS`): a fresh local backup keeps the staleness DM silent, so a
+  broken rsync used to be visible only to an admin who happened to open `/dashboard` —
+  i.e. a full backup set sitting on the SD card that is about to die. `rsync_ok: None`
+  (no `--rsync-dest` configured) is a deployment choice and never warns. The marker also
+  carries **why** (`rsync exit 23: … Read-only file system`) — `scripts/backup_db.py`
+  captures rsync's stderr, retries only the transient exit codes (10/11/12/23/24/30/35,
+  two extra attempts) and caps the run at 15 min, since `Type=oneshot` has no start
+  timeout and a hung rsync would park the unit while the next night's timer no-ops.
 - **Index audit (PERF-03 slice)**: composite indexes on `activities(user_id, date)`,
   `report_logs(user_id, created_at)`, `planned_workouts(plan_id, date)`.
 
