@@ -23,7 +23,11 @@ Notes / pitfalls (see docs/backlog/archive/OPS-02-sqlite-backups.md):
 - **Off-SD copy matters**: a backup sitting on the same SD card dies with it. Pass
   ``--rsync-dest`` (or copy ``backups/`` off-box by other means) so the rotated set
   lives elsewhere. The rsync mirrors the whole rotated dir with ``--delete``, so the
-  off-SD copy stays bounded (7 daily + 4 weekly) instead of growing forever.
+  off-SD copy stays bounded (7 daily + 4 weekly) instead of growing forever. A local
+  destination is verified to be on a **different filesystem** afterwards
+  (``_check_off_sd``): an unmounted mount point is just a writable directory on the card,
+  and rsync into it succeeds while quietly making the copy worthless. ``--allow-same-fs``
+  opts out.
 - The Fernet-encrypted credentials in the DB are useless without ``APP_SECRET_KEY``,
   so the DB copy is safe to store alongside untrusted hosts — but that also means a
   restored backup can't decrypt creds unless ``.env``/``APP_SECRET_KEY`` is backed up
@@ -192,6 +196,52 @@ def _rsync_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"[:300]
 
 
+def _is_local_dest(dest: str) -> bool:
+    """True for a plain filesystem path — not ``user@host:/path``, ``host:/path`` or
+    ``rsync://host/module``. Only a local destination can be checked for being on the
+    same disk as the thing it is supposed to be protecting."""
+    if "://" in dest:
+        return False
+    head = dest.split("/", 1)[0]
+    return ":" not in head
+
+
+def _device_of(path: Path) -> int | None:
+    """``st_dev`` of ``path``, or ``None`` if it cannot be stat'ed.
+
+    Deliberately no walk up to an existing ancestor: this runs *after* a successful
+    rsync, so the destination exists — and judging a missing path by its parent's device
+    would fail a perfectly good remote-ish setup on a guess."""
+    try:
+        return path.stat().st_dev
+    except OSError:
+        return None
+
+
+def _check_off_sd(backup_dir: Path, dest: str) -> None:
+    """The failure this whole feature exists to survive is the SD card dying — so a copy
+    that lands on that same card is not a backup, it is a false green.
+
+    A mount point is an ordinary directory when nothing is mounted on it: if the USB
+    stick is absent (or silently dropped after a reset) and that directory happens to be
+    writable, rsync succeeds, the marker says ``rsync_ok: true``, ``/status`` is green,
+    and the entire "off-SD" set sits on the card it was meant to outlive. Compare
+    ``st_dev`` instead of trusting the path — that is exactly what "a different disk"
+    means, and it costs two stat calls. Remote destinations are trivially off-SD and are
+    not checked."""
+    if not _is_local_dest(dest):
+        return
+    dest_dev, src_dev = _device_of(Path(dest)), _device_of(backup_dir)
+    if dest_dev is None or src_dev is None or dest_dev != src_dev:
+        return
+    # Verdict and action first, path last: the reason is capped (300 in the marker, 200
+    # on the way out) and a long destination path would otherwise eat the fix.
+    raise RsyncFailed(
+        f"not an off-SD copy — nothing mounted at the destination, it is the same "
+        f"filesystem as the backups; check findmnt / mount -a: {dest}"
+    )
+
+
 def _rsync_once(backup_dir: Path, dest: str) -> None:
     # Mirror the whole *rotated* backup dir (trailing slash → sync contents) with
     # --delete, so the off-SD copy self-prunes in lockstep with rotation instead of
@@ -202,15 +252,20 @@ def _rsync_once(backup_dir: Path, dest: str) -> None:
     )
 
 
-def _rsync(backup_dir: Path, dest: str) -> None:
-    """Copy the rotated set off the SD card, retrying only what a retry can fix.
+def _rsync(backup_dir: Path, dest: str, *, check_off_sd: bool = True) -> None:
+    """Copy the rotated set off the SD card, retrying only what a retry can fix, then
+    verify the copy actually left the card.
 
     Raises :class:`RsyncFailed` with a human-readable reason — the caller records it in
     the marker and re-raises, so cron/systemd still see a nonzero exit."""
     for attempt in range(_RSYNC_RETRIES + 1):
         try:
             _rsync_once(backup_dir, dest)
+            if check_off_sd:
+                _check_off_sd(backup_dir, dest)
             return
+        except RsyncFailed:
+            raise                      # the same-filesystem verdict: no retry can fix it
         except Exception as exc:  # noqa: BLE001 — every failure becomes RsyncFailed below
             code = getattr(exc, "returncode", None)
             transient = (
@@ -257,6 +312,7 @@ def run(
     weekly: int = 4,
     rsync_dest: str | None = None,
     on_date: date | None = None,
+    check_off_sd: bool = True,
 ) -> Path:
     src = sqlite_path_from_url(settings.DATABASE_URL)
     if not src.exists():
@@ -274,7 +330,8 @@ def run(
     rsync_error: Exception | None = None
     if rsync_dest:
         try:
-            _rsync(backup_dir, rsync_dest)  # mirror the rotated set, not just today's file
+            # mirror the rotated set, not just today's file — then check it left the card
+            _rsync(backup_dir, rsync_dest, check_off_sd=check_off_sd)
             rsync_ok = True
         except Exception as exc:  # noqa: BLE001 — captured in the marker, re-raised below
             rsync_ok = False
@@ -293,10 +350,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--daily", type=int, default=7, help="daily copies to keep")
     ap.add_argument("--weekly", type=int, default=4, help="weekly copies to keep")
     ap.add_argument("--rsync-dest", help="rsync the fresh backup here (off-SD copy)")
+    ap.add_argument(
+        "--allow-same-fs", action="store_true",
+        help="accept an --rsync-dest on the same filesystem as --dir (default: refuse — "
+             "an unmounted mount point makes the off-SD copy land back on the SD card)",
+    )
     args = ap.parse_args(argv)
     try:
         dest = run(
-            Path(args.dir), daily=args.daily, weekly=args.weekly, rsync_dest=args.rsync_dest
+            Path(args.dir), daily=args.daily, weekly=args.weekly,
+            rsync_dest=args.rsync_dest, check_off_sd=not args.allow_same_fs,
         )
     except Exception as exc:  # noqa: BLE001 — a cron line wants a clear message + nonzero exit
         print(f"backup failed: {exc}", file=sys.stderr)

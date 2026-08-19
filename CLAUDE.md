@@ -441,7 +441,11 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 - **Backups (OPS-02)**: `scripts/backup_db.py` — online-consistent copy (`VACUUM INTO`,
   not `cp`) to `backups/garmin-YYYY-MM-DD.db`, rotating 7 daily + 4 weekly.
   `deploy/systemd/garmin-backup.{service,timer}` runs it nightly; `--rsync-dest` copies
-  off the SD card. Fernet-encrypted creds are worthless without `APP_SECRET_KEY`, so the
+  off the SD card — and a **local** destination is verified to sit on a different
+  filesystem afterwards (`_check_off_sd`, `--allow-same-fs` opts out): an unmounted mount
+  point is an ordinary writable directory on the card, so rsync into it succeeds and the
+  "off-SD" set quietly lives on the disk it exists to outlive. Fernet-encrypted creds are
+  worthless without `APP_SECRET_KEY`, so the
   DB copy is safe anywhere — but `APP_SECRET_KEY`/`.env` must be backed up **separately**
   (out of band) for a restore to decrypt creds.
 - **Backup freshness monitoring (OPS-08)**: a successful backup run writes
