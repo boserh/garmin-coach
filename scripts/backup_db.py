@@ -142,6 +142,19 @@ class RsyncFailed(RuntimeError):
 # rotation has already finished and nothing else touches backups/) — repeats identically,
 # and retrying only delays the honest failure by 15s.
 _TRANSIENT_RSYNC_CODES = frozenset({10, 11, 12, 24, 30, 35})
+# ...but the code alone is not enough: an unwritable destination and a flaky USB both
+# exit 11 ("error in file IO"), and the first one repeats forever. rsync names the cause
+# on stderr, so read it — a mount that isn't there or isn't writable is a state only a
+# human can change, and burning 15s of the nightly window on it teaches nothing.
+_PERMANENT_RSYNC_CAUSES = (
+    "permission denied",            # incl. ssh "Permission denied (publickey)"
+    "read-only file system",
+    "no space left",
+    "disk quota exceeded",
+    "no such file or directory",
+    "operation not permitted",
+    "host key verification failed",
+)
 _RSYNC_RETRIES = 2          # extra attempts after the first
 _RSYNC_BACKOFF_S = 5.0      # doubled per retry: 5s, 10s
 # A hung rsync (unplugged USB still mounted, dead ssh) must not park the oneshot unit
@@ -149,6 +162,16 @@ _RSYNC_BACKOFF_S = 5.0      # doubled per retry: 5s, 10s
 # "starting" the next night's timer fires into a no-op — backups stop with no marker
 # and no error at all.
 _RSYNC_TIMEOUT_S = 900
+
+
+def _stderr_of(exc: Exception) -> str:
+    return " ".join(str(getattr(exc, s, "") or "") for s in ("stderr", "stdout"))
+
+
+def _is_permanent(exc: Exception) -> bool:
+    """True when rsync's own message names a cause no retry can change."""
+    err = _stderr_of(exc).lower()
+    return any(cause in err for cause in _PERMANENT_RSYNC_CAUSES)
 
 
 def _rsync_reason(exc: Exception) -> str:
@@ -190,7 +213,11 @@ def _rsync(backup_dir: Path, dest: str) -> None:
             return
         except Exception as exc:  # noqa: BLE001 — every failure becomes RsyncFailed below
             code = getattr(exc, "returncode", None)
-            transient = isinstance(exc, subprocess.TimeoutExpired) or code in _TRANSIENT_RSYNC_CODES
+            transient = (
+                (isinstance(exc, subprocess.TimeoutExpired)
+                 or code in _TRANSIENT_RSYNC_CODES)
+                and not _is_permanent(exc)
+            )
             reason = _rsync_reason(exc)
             if attempt < _RSYNC_RETRIES and transient:
                 backoff = _RSYNC_BACKOFF_S * (2 ** attempt)

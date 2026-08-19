@@ -207,6 +207,42 @@ def test_rsync_does_not_retry_a_permanent_failure(tmp_path, monkeypatch):
     assert "No such file or directory" in str(ei.value)
 
 
+def test_rsync_does_not_retry_an_unwritable_destination(tmp_path, monkeypatch):
+    """The exit code alone lies: an unwritable mount and a flaky USB both exit 11, and
+    the first one repeats forever. This is the real Pi failure — /mnt/backup not writable
+    by the service user — retried twice for nothing before the cause was read."""
+    calls = []
+
+    def _boom(backup_dir, dest):
+        calls.append(dest)
+        raise _cpe(11, 'rsync: [Receiver] mkdir "/mnt/backup/garmin" failed: '
+                       "Permission denied (13)\nrsync error: error in file IO (code 11) "
+                       "at main.c(800) [Receiver=3.4.1]\n")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _boom)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    with pytest.raises(backup_db.RsyncFailed) as ei:
+        backup_db._rsync(tmp_path, "/mnt/backup/garmin/")
+    assert len(calls) == 1
+    assert "Permission denied" in str(ei.value)
+
+
+def test_rsync_still_retries_a_genuine_io_blip(tmp_path, monkeypatch):
+    """Same exit code, no permanent cause named → still worth a retry."""
+    calls = []
+
+    def _flaky(backup_dir, dest):
+        calls.append(dest)
+        if len(calls) == 1:
+            raise _cpe(11, "rsync: write failed on \"/mnt/backup/garmin/x.db\": "
+                           "Input/output error (5)")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _flaky)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    backup_db._rsync(tmp_path, "/mnt/backup/garmin/")
+    assert len(calls) == 2
+
+
 def test_rsync_gives_up_after_the_retries(tmp_path, monkeypatch):
     calls = []
 
