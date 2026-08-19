@@ -344,6 +344,7 @@ bot/
   handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /forget (EP-18),
                       /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job
+  opsalert.py               send_ops_alert(): infrastructure alerts go out over the ADMIN bot token, never the coaching one (falls back to ctx.bot)
 alembic/           migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/              pytest
 ```
@@ -440,7 +441,11 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 - **Backups (OPS-02)**: `scripts/backup_db.py` — online-consistent copy (`VACUUM INTO`,
   not `cp`) to `backups/garmin-YYYY-MM-DD.db`, rotating 7 daily + 4 weekly.
   `deploy/systemd/garmin-backup.{service,timer}` runs it nightly; `--rsync-dest` copies
-  off the SD card. Fernet-encrypted creds are worthless without `APP_SECRET_KEY`, so the
+  off the SD card — and a **local** destination is verified to sit on a different
+  filesystem afterwards (`_check_off_sd`, `--allow-same-fs` opts out): an unmounted mount
+  point is an ordinary writable directory on the card, so rsync into it succeeds and the
+  "off-SD" set quietly lives on the disk it exists to outlive. Fernet-encrypted creds are
+  worthless without `APP_SECRET_KEY`, so the
   DB copy is safe anywhere — but `APP_SECRET_KEY`/`.env` must be backed up **separately**
   (out of band) for a restore to decrypt creds.
 - **Backup freshness monitoring (OPS-08)**: a successful backup run writes
@@ -448,7 +453,12 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   `rsync_ok: false` but still writes the marker — the local backup is real, only the
   off-SD copy failed). `app.backup_status` (pure, zero network/DB) →
   `age_hours`/`rsync_ok`/`rsync_error`, surfaced on `GET /status` (admin-only), a
-  `/dashboard` banner, and a morning-tick DM (`BACKUP_WARN_DAYS`=3). Known-stale nags
+  `/dashboard` banner, and a morning-tick alert (`BACKUP_WARN_DAYS`=3) sent through the
+  **admin bot** (`bot.opsalert.send_ops_alert`) — the tick runs in the product-bot
+  process, so `ctx.bot` would otherwise put "check the USB stick" in the athlete's
+  coaching thread. Mirror image of `jobs._main_bot_ctx`. No `TELEGRAM_ADMIN_BOT_TOKEN`,
+  or a chat the admin bot may not write to (nobody pressed Start on it) → falls back to
+  the product bot with a WARNING, because a misrouted alert still beats a lost one. Known-stale nags
   once/day; a missing marker (never configured) only re-nags every `BACKUP_WARN_DAYS` —
   a fresh install mid-setup isn't paged daily.
   **The off-SD half warns on its own** (`should_warn_rsync`, guard `backup_rsync_warn_last`,
@@ -457,9 +467,12 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   i.e. a full backup set sitting on the SD card that is about to die. `rsync_ok: None`
   (no `--rsync-dest` configured) is a deployment choice and never warns. The marker also
   carries **why** (`rsync exit 23: … Read-only file system`) — `scripts/backup_db.py`
-  captures rsync's stderr, retries only the transient exit codes (10/11/12/23/24/30/35,
-  two extra attempts) and caps the run at 15 min, since `Type=oneshot` has no start
-  timeout and a hung rsync would park the unit while the next night's timer no-ops.
+  captures rsync's stderr, retries only the transient exit codes (10/11/12/24/30/35, two
+  extra attempts) **and only while the stderr names no permanent cause** (permission
+  denied, read-only fs, no space, a missing path — an unwritable mount and a flaky USB
+  both exit 11, and the first repeats forever), and caps the run at 15 min, since
+  `Type=oneshot` has no start timeout and a hung rsync would park the unit while the next
+  night's timer no-ops.
 - **Index audit (PERF-03 slice)**: composite indexes on `activities(user_id, date)`,
   `report_logs(user_id, created_at)`, `planned_workouts(plan_id, date)`.
 

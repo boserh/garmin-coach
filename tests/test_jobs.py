@@ -158,6 +158,35 @@ async def test_backup_rsync_failure_dms_even_when_the_local_backup_is_fresh(
     assert len(ctx.bot.sent) == 2
 
 
+async def test_backup_alerts_leave_the_coaching_bot_alone(session, tmp_path, monkeypatch):
+    """OPS-08 alerts are about the installation, not the athlete: when an admin bot is
+    configured they go out under THAT identity, next to /deploy — not into the coaching
+    thread between a sleep score and tomorrow's intervals."""
+    import json
+    import time as _t
+
+    from app.backup_status import MARKER_NAME
+    from app.core.config import settings
+    from bot import opsalert
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(settings, "BACKUP_WARN_DAYS", 3, raising=False)
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_BOT_TOKEN", "1:admin", raising=False)
+    monkeypatch.setattr(opsalert, "_admin_bot", None)
+    admin_bot = _FakeBot()
+    monkeypatch.setattr(opsalert, "Bot", lambda token: admin_bot)
+    (tmp_path / MARKER_NAME).write_text(json.dumps({
+        "ts": _t.time(), "path": "x", "size": 1, "rsync_ok": False,
+        "rsync_error": "rsync exit 11: Permission denied (13)",
+    }))
+
+    admin = SimpleNamespace(id=907, telegram_chat_id=561, is_admin=True)
+    ctx = _FakeCtx()
+    await jobs_module._backup_freshness_check(ctx, session, admin, "2026-07-31")
+    assert len(admin_bot.sent) == 1 and "rsync" in admin_bot.sent[0][1]
+    assert ctx.bot.sent == []
+
+
 async def test_stale_backup_dm_covers_rsync_without_double_sending(
         session, tmp_path, monkeypatch):
     """When the backup is stale AND the rsync failed, one DM says both."""

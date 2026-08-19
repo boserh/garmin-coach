@@ -3,6 +3,7 @@
 The restore check (open the backup, read the rows back) is the AC's "backup is
 actually readable" test — the one without which everything else is theatre.
 """
+import json
 import sqlite3
 import subprocess
 from datetime import date
@@ -108,7 +109,7 @@ def test_run_marks_rsync_failure_without_losing_local_success(tmp_path, monkeypa
         backup_db.settings, "DATABASE_URL", f"sqlite:///{src}", raising=False
     )
 
-    def _boom(backup_dir, dest):
+    def _boom(backup_dir, dest, **kwargs):
         raise RuntimeError("rsync unreachable")
 
     monkeypatch.setattr(backup_db, "_rsync", _boom)
@@ -207,6 +208,42 @@ def test_rsync_does_not_retry_a_permanent_failure(tmp_path, monkeypatch):
     assert "No such file or directory" in str(ei.value)
 
 
+def test_rsync_does_not_retry_an_unwritable_destination(tmp_path, monkeypatch):
+    """The exit code alone lies: an unwritable mount and a flaky USB both exit 11, and
+    the first one repeats forever. This is the real Pi failure — /mnt/backup not writable
+    by the service user — retried twice for nothing before the cause was read."""
+    calls = []
+
+    def _boom(backup_dir, dest):
+        calls.append(dest)
+        raise _cpe(11, 'rsync: [Receiver] mkdir "/mnt/backup/garmin" failed: '
+                       "Permission denied (13)\nrsync error: error in file IO (code 11) "
+                       "at main.c(800) [Receiver=3.4.1]\n")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _boom)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    with pytest.raises(backup_db.RsyncFailed) as ei:
+        backup_db._rsync(tmp_path, "/mnt/backup/garmin/")
+    assert len(calls) == 1
+    assert "Permission denied" in str(ei.value)
+
+
+def test_rsync_still_retries_a_genuine_io_blip(tmp_path, monkeypatch):
+    """Same exit code, no permanent cause named → still worth a retry."""
+    calls = []
+
+    def _flaky(backup_dir, dest):
+        calls.append(dest)
+        if len(calls) == 1:
+            raise _cpe(11, "rsync: write failed on \"/mnt/backup/garmin/x.db\": "
+                           "Input/output error (5)")
+
+    monkeypatch.setattr(backup_db, "_rsync_once", _flaky)
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    backup_db._rsync(tmp_path, "user@host:/backups/")
+    assert len(calls) == 2
+
+
 def test_rsync_gives_up_after_the_retries(tmp_path, monkeypatch):
     calls = []
 
@@ -259,8 +296,89 @@ def test_successful_run_leaves_no_stale_reason(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(backup_db, "_rsync_once", lambda backup_dir, dest: None)
     out = tmp_path / "backups"
-    backup_db.run(out, rsync_dest="/mnt/backup/garmin/", on_date=date(2026, 7, 11))
+    backup_db.run(out, rsync_dest="user@host:/backups/", on_date=date(2026, 7, 11))
 
     marker = json.loads((out / MARKER_NAME).read_text())
     assert marker["rsync_ok"] is True
     assert marker["rsync_error"] is None
+
+
+# --- the false green: an unmounted mount point ---------------------------------------
+# `findmnt /mnt/backup` on the Pi printed nothing while /mnt/backup existed as a plain
+# root-owned directory on the SD card. Had it been writable, every "off-SD" backup would
+# have been copied onto the very card the backups exist to survive — and /status would
+# have been green throughout.
+
+
+def test_local_dest_on_the_same_filesystem_is_not_an_off_sd_copy(tmp_path, monkeypatch):
+    src = tmp_path / "garmin.db"
+    _make_db(src, 1)
+    monkeypatch.setattr(
+        backup_db.settings, "DATABASE_URL", f"sqlite:///{src}", raising=False
+    )
+    monkeypatch.setattr(backup_db, "_rsync_once", lambda backup_dir, dest: None)
+    dest = tmp_path / "fake-mountpoint"          # same tmpfs/disk as the backups
+    dest.mkdir()
+
+    out = tmp_path / "backups"
+    with pytest.raises(backup_db.RsyncFailed) as ei:
+        backup_db.run(out, rsync_dest=str(dest), on_date=date(2026, 7, 11))
+    assert "not an off-SD copy" in str(ei.value)
+
+    marker = json.loads((out / backup_db.MARKER_NAME).read_text())
+    assert marker["rsync_ok"] is False
+    # the verdict and the command to run survive the marker's length cap
+    assert marker["rsync_error"].startswith("not an off-SD copy")
+    assert "findmnt" in marker["rsync_error"]
+
+
+def test_same_filesystem_check_is_not_retried(tmp_path, monkeypatch):
+    """No amount of waiting mounts a USB stick."""
+    calls = []
+    monkeypatch.setattr(backup_db, "_rsync_once",
+                        lambda backup_dir, dest: calls.append(dest))
+    monkeypatch.setattr(backup_db.time, "sleep", lambda s: None)
+    dest = tmp_path / "mnt"
+    dest.mkdir()
+    with pytest.raises(backup_db.RsyncFailed):
+        backup_db._rsync(tmp_path, str(dest))
+    assert len(calls) == 1
+
+
+def test_a_genuinely_separate_disk_passes(tmp_path, monkeypatch):
+    devices = {}
+
+    def _dev(path):
+        return devices.get(Path(path).name, 1)
+
+    devices["mnt"] = 2                              # the USB is mounted → its own st_dev
+    monkeypatch.setattr(backup_db, "_device_of", _dev)
+    monkeypatch.setattr(backup_db, "_rsync_once", lambda backup_dir, dest: None)
+    backup_db._rsync(tmp_path, str(tmp_path / "mnt"))   # no raise
+
+
+def test_remote_destinations_skip_the_check(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup_db, "_rsync_once", lambda backup_dir, dest: None)
+    for dest in ("user@host:/backups/", "host:/backups/", "rsync://host/backups"):
+        assert backup_db._is_local_dest(dest) is False
+        backup_db._rsync(tmp_path, dest)            # no raise, no stat games
+
+
+def test_allow_same_fs_opts_out(tmp_path, monkeypatch):
+    """An escape hatch, so a deliberate same-disk copy isn't an unfixable wall."""
+    monkeypatch.setattr(backup_db, "_rsync_once", lambda backup_dir, dest: None)
+    dest = tmp_path / "mnt"
+    dest.mkdir()
+    backup_db._rsync(tmp_path, str(dest), check_off_sd=False)   # no raise
+
+
+@pytest.mark.parametrize("dest,local", [
+    ("/mnt/backup/garmin/", True),
+    ("backups-copy/", True),
+    ("./x", True),
+    ("user@host:/backups/", False),
+    ("host:/backups/", False),
+    ("rsync://host/mod", False),
+])
+def test_local_dest_detection(dest, local):
+    assert backup_db._is_local_dest(dest) is local
