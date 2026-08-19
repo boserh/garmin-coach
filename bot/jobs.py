@@ -112,6 +112,10 @@ GARMIN_ERR_BURST_PREFIX = "garmin_err_burst:"
 # OPS-08: the date (ISO) a stale-backup DM was last sent to this admin, so
 # backup_status.should_warn can apply the once/day-vs-once/BACKUP_WARN_DAYS cadence.
 BACKUP_WARN_KEY = "backup_warn_last"
+# OPS-08: the same, for the OFF-SD half of the backup. Its own key because a fresh local
+# backup silences the staleness DM while the rsync that carries it off the SD card keeps
+# failing — the one state that leaves a full backup set on the card that is about to die.
+BACKUP_RSYNC_WARN_KEY = "backup_rsync_warn_last"
 
 # OPS-11: highest budget step (80 / 100) already announced this calendar month, keyed
 # budget_warn:<YYYY-MM>. Storing the step rather than a date is what makes 80% fire once
@@ -830,8 +834,9 @@ async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
     """OPS-08: DM the admin once the DB backup marker (scripts/backup_db.py) looks
     stale — a dead systemd timer, a full disk, or a disconnected USB stick otherwise
     fail silently until the day of a restore. Pure file stat, zero network/Garmin;
-    admin-only (a per-install fact, not a per-user one). Best-effort — never a tick
-    failure."""
+    admin-only (a per-install fact, not a per-user one). Two independent signals: the
+    backup being stale, and the off-SD rsync failing while the local copy stays fresh
+    (each with its own bot_state guard). Best-effort — never a tick failure."""
     if not getattr(user, "is_admin", False) or not user.telegram_chat_id:
         return
     warn_days = settings.BACKUP_WARN_DAYS
@@ -842,19 +847,39 @@ async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
 
         from app import backup_status
         b = backup_status.read_status(Path(settings.BACKUP_DIR))
+        reason = f" Причина: {b['rsync_error']}" if b["rsync_error"] else ""
         last_warned = await repository.get_state(session, user.id, BACKUP_WARN_KEY)
-        if not backup_status.should_warn(b["age_hours"], last_warned, today, warn_days):
+        if backup_status.should_warn(b["age_hours"], last_warned, today, warn_days):
+            await repository.set_state(session, user.id, BACKUP_WARN_KEY, today)
+            if b["age_hours"] is None:
+                body = ("маркер не знайдено — схоже, бекапи ще не налаштовані "
+                        "або не запускались.")
+            else:
+                days = round(b["age_hours"] / 24, 1)
+                body = f"останній успішний бекап був {days} дн тому (поріг {warn_days} дн)."
+            note = (f" Off-SD копіювання (rsync) останнього разу не вдалось.{reason}"
+                    if b["rsync_ok"] is False else "")
+            await ctx.bot.send_message(user.telegram_chat_id,
+                                       f"⚠️ Бекапу БД немає: {body}{note}")
+            logger.warning(f"OPS-08 backup-stale DM user={user.id} age_hours={b['age_hours']}")
+            # The stale DM already carried the rsync line — hold the off-SD reminder for
+            # its own interval instead of sending the same news twice in one tick.
+            await repository.set_state(session, user.id, BACKUP_RSYNC_WARN_KEY, today)
             return
-        await repository.set_state(session, user.id, BACKUP_WARN_KEY, today)
-        if b["age_hours"] is None:
-            body = "маркер не знайдено — схоже, бекапи ще не налаштовані або не запускались."
-        else:
-            days = round(b["age_hours"] / 24, 1)
-            body = f"останній успішний бекап був {days} дн тому (поріг {warn_days} дн)."
-        note = (" Off-SD копіювання (rsync) останнього разу не вдалось."
-                 if b["rsync_ok"] is False else "")
-        await ctx.bot.send_message(user.telegram_chat_id, f"⚠️ Бекапу БД немає: {body}{note}")
-        logger.warning(f"OPS-08 backup-stale DM user={user.id} age_hours={b['age_hours']}")
+
+        # A fresh local backup that never leaves the SD card is not a healthy backup.
+        rsync_warned = await repository.get_state(session, user.id, BACKUP_RSYNC_WARN_KEY)
+        if backup_status.should_warn_rsync(b["rsync_ok"], rsync_warned, today, warn_days):
+            await repository.set_state(session, user.id, BACKUP_RSYNC_WARN_KEY, today)
+            age = (f"{b['age_hours']:.0f} год тому" if b["age_hours"] is not None
+                   else "невідомо коли")
+            await ctx.bot.send_message(
+                user.telegram_chat_id,
+                f"⚠️ Off-SD копія бекапу (rsync) не вдалась.{reason} Локальний бекап "
+                f"свіжий ({age}), але він лежить на тій самій SD-карті — перевір "
+                f"USB/маршрут призначення: systemctl status garmin-backup.service",
+            )
+            logger.warning(f"OPS-08 backup-rsync DM user={user.id} error={b['rsync_error']!r}")
     except Exception:  # noqa: BLE001 — observation only, never break the tick
         logger.exception(f"OPS-08 backup freshness check failed user={user.id}")
 

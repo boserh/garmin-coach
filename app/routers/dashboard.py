@@ -222,7 +222,11 @@ def _dashboard_banners(user, *, garmin_errors, backup, backup_warn_days, llm_bud
         else:
             text = f"Бекап БД: останній {backup['age_hours'] / 24:.1f} дн тому."
         if backup.get("rsync_ok") is False:
-            text += " Off-SD копіювання (rsync) останнього разу не вдалось."
+            text += " Off-SD копіювання (rsync) останнього разу не вдалось"
+            # The reason, when the marker carries one: "не вдалось" alone sent the admin
+            # to /status only to read the same word again.
+            reason = backup.get("rsync_error")
+            text += f": {reason}." if reason else "."
         out.append(banner("warn", text, icon="⚠️", link="/status",
                           link_text="Подивитись статус →"))
 

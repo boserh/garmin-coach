@@ -23,6 +23,11 @@ MARKER_NAME = "last_ok.json"
 class BackupStatus(TypedDict):
     age_hours: Optional[float]
     rsync_ok: Optional[bool]
+    rsync_error: Optional[str]
+
+
+# Keep a marker reason from turning a status page or a DM into a wall of rsync output.
+_ERROR_MAX = 200
 
 
 def read_status(backup_dir: Path, *, now: Optional[float] = None) -> BackupStatus:
@@ -32,13 +37,16 @@ def read_status(backup_dir: Path, *, now: Optional[float] = None) -> BackupStatu
         data = json.loads((backup_dir / MARKER_NAME).read_text())
         ts = float(data["ts"])
     except (FileNotFoundError, OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return {"age_hours": None, "rsync_ok": None}
+        return {"age_hours": None, "rsync_ok": None, "rsync_error": None}
     now = time.time() if now is None else now
     age_hours = max(0.0, (now - ts) / 3600)
     rsync_ok = data.get("rsync_ok")
     if not isinstance(rsync_ok, bool):
         rsync_ok = None
-    return {"age_hours": round(age_hours, 1), "rsync_ok": rsync_ok}
+    # Markers written before the reason existed simply have no key — absent, never "".
+    err = data.get("rsync_error")
+    rsync_error = err.strip()[:_ERROR_MAX] if isinstance(err, str) and err.strip() else None
+    return {"age_hours": round(age_hours, 1), "rsync_ok": rsync_ok, "rsync_error": rsync_error}
 
 
 def should_warn(age_hours: Optional[float], last_warned: Optional[str], today: str,
@@ -62,3 +70,30 @@ def should_warn(age_hours: Optional[float], last_warned: Optional[str], today: s
     if age_hours < warn_days * 24:
         return False
     return last_warned != today
+
+
+def should_warn_rsync(rsync_ok: Optional[bool], last_warned: Optional[str], today: str,
+                      warn_days: int) -> bool:
+    """Whether to send the "off-SD copy is broken" DM today.
+
+    A separate signal from :func:`should_warn`, and it has to be: the local backup can
+    be an hour old (so the staleness check stays silent, as it should) while the rsync
+    that carries it OFF the SD card has been failing for months. That state is exactly
+    the one this feature exists to catch — a full set of backups on the card that is
+    about to die — and until now nothing said a word about it unless the local backup
+    happened to be stale too.
+
+    Cadence is every ``warn_days`` days rather than daily: a degraded backup is real but
+    not total loss, and the fix (reseat the stick, remount, replace it) can take longer
+    than a day. ``rsync_ok is None`` — no ``--rsync-dest`` configured at all — is not a
+    failure and never warns; that is a deployment choice, not a regression.
+    """
+    if warn_days <= 0 or rsync_ok is not False:
+        return False
+    if last_warned is None:
+        return True
+    try:
+        gap_days = (date.fromisoformat(today) - date.fromisoformat(last_warned)).days
+    except ValueError:
+        return True
+    return gap_days >= warn_days

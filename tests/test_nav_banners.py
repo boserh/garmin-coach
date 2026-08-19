@@ -67,7 +67,8 @@ def test_dashboard_banners_are_built_from_data():
 
     broken = SimpleNamespace(garmin_creds_invalid=True, is_admin=False)
     out = _dashboard_banners(broken, garmin_errors={"count_24h": 4, "counts_24h": {"403": 4}},
-                             backup={"age_hours": None, "rsync_ok": None},
+                             backup={"age_hours": None, "rsync_ok": None,
+                                     "rsync_error": None},
                              backup_warn_days=3,
                              llm_budget={"warn": True, "blocked": False,
                                          "soft_blocked": True, "month_usd": 22.5,
@@ -145,3 +146,33 @@ def test_admin_only_sections_stay_admin_only(client):
     client.post("/login", data={"email": "plain-nav@example.com", "password": "pw"})
     html = client.get("/settings").text
     assert "База даних" not in html and "Кеші" not in html
+
+
+def test_backup_banner_names_the_rsync_cause():
+    """A banner that only says "rsync не вдалось" costs an ssh session to act on."""
+    from types import SimpleNamespace
+
+    from app.routers.dashboard import _dashboard_banners
+
+    out = _dashboard_banners(
+        SimpleNamespace(garmin_creds_invalid=False, is_admin=True),
+        garmin_errors=None,
+        backup={"age_hours": 3.9, "rsync_ok": False,
+                "rsync_error": "rsync exit 23: Read-only file system (30)"},
+        backup_warn_days=3, llm_budget=None, has_history=True)
+    assert len(out) == 1
+    assert "Read-only file system" in out[0]["text"]
+
+
+def test_backup_banner_without_a_reason_still_reads_as_a_sentence():
+    """Markers written before the reason existed have none — no dangling colon."""
+    from types import SimpleNamespace
+
+    from app.routers.dashboard import _dashboard_banners
+
+    out = _dashboard_banners(
+        SimpleNamespace(garmin_creds_invalid=False, is_admin=True),
+        garmin_errors=None,
+        backup={"age_hours": 3.9, "rsync_ok": False, "rsync_error": None},
+        backup_warn_days=3, llm_budget=None, has_history=True)
+    assert out[0]["text"].endswith("не вдалось.")

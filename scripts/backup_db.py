@@ -34,7 +34,9 @@ Notes / pitfalls (see docs/backlog/archive/OPS-02-sqlite-backups.md):
   morning tick, without either of them touching the SD card themselves. Only a
   successful ``make_backup`` refreshes it; a failed rsync is recorded on it
   (``rsync_ok: false``) rather than skipping the write, since the *local* backup is
-  still real and fresh even when the off-SD copy failed.
+  still real and fresh even when the off-SD copy failed. The marker also carries
+  ``rsync_error`` — the reason, one line — because ``rsync_ok: false`` on its own only
+  tells the operator that something is wrong, not what to go fix.
 """
 from __future__ import annotations
 
@@ -127,14 +129,80 @@ def rotate(backup_dir: Path, *, daily: int = 7, weekly: int = 4) -> list[Path]:
     return removed
 
 
-def _rsync(backup_dir: Path, dest: str) -> None:
+class RsyncFailed(RuntimeError):
+    """The off-SD copy failed, with a reason short enough to store in the marker and
+    show on ``/status``. ``CalledProcessError`` alone reads as "exit status 23" and
+    leaves the operator to ssh in and guess."""
+
+
+# rsync exit codes a retry can plausibly fix: socket/file I/O, a protocol hiccup over
+# ssh, a source file that vanished mid-copy, and the two timeouts. Everything else —
+# 1/2/3 (bad invocation, incompatible remote, missing source), 13 (dest missing), 23
+# (partial transfer: here almost always a read-only or unwritable destination, since
+# rotation has already finished and nothing else touches backups/) — repeats identically,
+# and retrying only delays the honest failure by 15s.
+_TRANSIENT_RSYNC_CODES = frozenset({10, 11, 12, 24, 30, 35})
+_RSYNC_RETRIES = 2          # extra attempts after the first
+_RSYNC_BACKOFF_S = 5.0      # doubled per retry: 5s, 10s
+# A hung rsync (unplugged USB still mounted, dead ssh) must not park the oneshot unit
+# forever: systemd's start timeout is infinite for Type=oneshot, and while the unit is
+# "starting" the next night's timer fires into a no-op — backups stop with no marker
+# and no error at all.
+_RSYNC_TIMEOUT_S = 900
+
+
+def _rsync_reason(exc: Exception) -> str:
+    """A one-line, marker-sized reason. rsync says WHY on stderr ("No such file or
+    directory", "Read-only file system", "Permission denied") — that line is the whole
+    difference between a fixable report and a bare boolean."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"rsync timed out after {_RSYNC_TIMEOUT_S}s"
+    if isinstance(exc, FileNotFoundError):
+        return "rsync not installed (command not found)"
+    if isinstance(exc, subprocess.CalledProcessError):
+        err = (exc.stderr or "").strip() or (exc.stdout or "").strip()
+        # rsync prints the failing path first and its own summary last; the first lines
+        # carry the cause, so keep those rather than the tail.
+        lines = [ln.strip() for ln in err.splitlines() if ln.strip()][:2]
+        detail = " | ".join(lines)
+        return f"rsync exit {exc.returncode}" + (f": {detail}" if detail else "")
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def _rsync_once(backup_dir: Path, dest: str) -> None:
     # Mirror the whole *rotated* backup dir (trailing slash → sync contents) with
     # --delete, so the off-SD copy self-prunes in lockstep with rotation instead of
     # growing forever — otherwise a nightly single-file copy fills the USB stick.
-    subprocess.run(["rsync", "-a", "--delete", f"{backup_dir}/", dest], check=True)
+    subprocess.run(
+        ["rsync", "-a", "--delete", f"{backup_dir}/", dest],
+        check=True, capture_output=True, text=True, timeout=_RSYNC_TIMEOUT_S,
+    )
 
 
-def _write_marker(backup_dir: Path, dest: Path, *, rsync_ok: bool | None) -> None:
+def _rsync(backup_dir: Path, dest: str) -> None:
+    """Copy the rotated set off the SD card, retrying only what a retry can fix.
+
+    Raises :class:`RsyncFailed` with a human-readable reason — the caller records it in
+    the marker and re-raises, so cron/systemd still see a nonzero exit."""
+    for attempt in range(_RSYNC_RETRIES + 1):
+        try:
+            _rsync_once(backup_dir, dest)
+            return
+        except Exception as exc:  # noqa: BLE001 — every failure becomes RsyncFailed below
+            code = getattr(exc, "returncode", None)
+            transient = isinstance(exc, subprocess.TimeoutExpired) or code in _TRANSIENT_RSYNC_CODES
+            reason = _rsync_reason(exc)
+            if attempt < _RSYNC_RETRIES and transient:
+                backoff = _RSYNC_BACKOFF_S * (2 ** attempt)
+                print(f"rsync transient failure ({reason}) — retry "
+                      f"{attempt + 1}/{_RSYNC_RETRIES} in {backoff:.0f}s", file=sys.stderr)
+                time.sleep(backoff)
+                continue
+            raise RsyncFailed(reason) from exc
+
+
+def _write_marker(backup_dir: Path, dest: Path, *, rsync_ok: bool | None,
+                  rsync_error: str | None = None) -> None:
     """OPS-08: record that a backup just succeeded, so a freshness check elsewhere
     (``/status``, the morning tick) can tell "keeps happening" from "happened once,
     a year ago". Written only on a successful ``make_backup`` — a failed backup must
@@ -145,6 +213,10 @@ def _write_marker(backup_dir: Path, dest: Path, *, rsync_ok: bool | None) -> Non
         "path": str(dest),
         "size": dest.stat().st_size,
         "rsync_ok": rsync_ok,
+        # Why it failed, not just that it did — the marker is the only thing /status and
+        # the morning DM read, so a reason left in the systemd journal is a reason nobody
+        # sees until they ssh in.
+        "rsync_error": rsync_error[:300] if rsync_error else None,
     }
     tmp = backup_dir / f"{MARKER_NAME}.tmp"
     tmp.write_text(json.dumps(marker))
@@ -181,7 +253,8 @@ def run(
             rsync_ok = False
             rsync_error = exc
 
-    _write_marker(backup_dir, dest, rsync_ok=rsync_ok)
+    _write_marker(backup_dir, dest, rsync_ok=rsync_ok,
+                  rsync_error=str(rsync_error) if rsync_error is not None else None)
     if rsync_error is not None:
         raise rsync_error
     return dest

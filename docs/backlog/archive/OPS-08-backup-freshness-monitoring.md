@@ -58,3 +58,22 @@ N діб» при віці > `BACKUP_WARN_DAYS`=3 (guard раз/добу чер�
 ## RICE
 
 Reach 1/міс · Impact 3 · Confidence 0.9 · Effort ~1.5 дня → **Score ≈ 1.8**
+
+## Доробка (2026-08-19) · off-SD копія моніториться окремо
+
+Прод показав дірку в AC: маркер свіжий (3.9 год), `rsync_ok: false` — і жодного DM.
+`should_warn` дивиться лише на вік, тому свіжий локальний бекап глушив нагадування,
+поки off-SD копія (та сама, що переживає смерть SD) не робилась невідомо скільки.
+Плюс `rsync_ok: false` не казав **чому** — `subprocess.run(check=True)` викидав
+`CalledProcessError` без stderr, і причину («USB не змонтований», «read-only», «немає
+місця») можна було дізнатись тільки по ssh.
+
+- `scripts/backup_db.py`: `_rsync` ловить stderr, повертає `RsyncFailed` з однорядковою
+  причиною, ретраїть лише транзієнтні коди (10/11/12/23/24/30/35) двічі з backoff і має
+  таймаут 15 хв (у `Type=oneshot` немає `TimeoutStartSec` за замовчуванням — завислий
+  rsync тримав би юніт «у старті», а нічний таймер наступного дня просто не спрацював би).
+- Маркер несе `rsync_error`; `app.backup_status.read_status` віддає його (обрізаний),
+  `should_warn_rsync` — окрема каденція раз на `BACKUP_WARN_DAYS`.
+- `GET /status` → `backup_rsync_error`, банер на `/dashboard` називає причину,
+  `bot/jobs.py::_backup_freshness_check` шле окремий DM (гард `backup_rsync_warn_last`),
+  а коли бекап ще й застарілий — одне повідомлення про обидва факти.

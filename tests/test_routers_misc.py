@@ -53,6 +53,25 @@ def test_status_shows_backup_age_for_admin(auth_client, tmp_path, monkeypatch):
     body = r.json()
     assert body["backup_age_hours"] == 2.0
     assert body["backup_rsync_ok"] is True
+    assert body["backup_rsync_error"] is None
+
+
+def test_status_explains_why_the_off_sd_copy_failed(auth_client, tmp_path, monkeypatch):
+    """The dashboard banner links here — so "rsync не вдалось" has to become a cause."""
+    import json
+    import time as _t
+
+    from app.backup_status import MARKER_NAME
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "BACKUP_DIR", str(tmp_path), raising=False)
+    (tmp_path / MARKER_NAME).write_text(json.dumps({
+        "ts": _t.time(), "path": "x", "size": 1, "rsync_ok": False,
+        "rsync_error": "rsync exit 23: Read-only file system (30)",
+    }))
+    body = auth_client.get("/status").json()
+    assert body["backup_rsync_ok"] is False
+    assert "Read-only file system" in body["backup_rsync_error"]
 
 
 def test_me_jobs_page_renders(auth_client):
