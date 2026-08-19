@@ -115,3 +115,33 @@ async def test_activity_watch_dm_includes_step_badge(session, monkeypatch):
 
     assert len(ctx.bot.sent) == 1
     assert "🎯 1/1 у цілі" in ctx.bot.sent[0][1]
+
+
+async def test_activity_watch_persists_the_analysis_and_step_match(session, monkeypatch):
+    """Both writes on this path are "caller commits" and the tick commits nothing after it,
+    so without a commit here the paid analysis is rolled back when the session closes — and
+    the dirty UPDATE holds SQLite's write lock until then, which is what broke the job-run
+    recorder's own connection ("database is locked")."""
+    import datetime as dt
+
+    act, _w = await _seed(session)
+    act.date = dt.date.today().isoformat()      # inside ACTIVITY_FRESH_DAYS
+    await session.commit()
+
+    async def fake_analyze(session_, activity, *, user_id, api_key):
+        activity.analysis = "аналіз пробіжки"   # what run_activity_analysis does
+        return "аналіз пробіжки"
+
+    monkeypatch.setattr(jobs_module, "run_activity_analysis", fake_analyze)
+    ctx = _FakeCtx()
+    user = SimpleNamespace(id=1, telegram_chat_id=555)
+    creds = SimpleNamespace(anthropic_key="k")
+
+    with patch.object(client, "fetch_activity_splits", return_value=_LAPS):
+        await jobs_module._activity_watch_for_user(ctx, session, user, creds, [act])
+
+    assert len(ctx.bot.sent) == 1
+    await session.rollback()                    # anything uncommitted is gone at this point
+    await session.refresh(act)
+    assert act.analysis == "аналіз пробіжки"
+    assert act.step_match["steps_hit"] == 1

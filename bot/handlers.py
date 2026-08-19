@@ -892,6 +892,7 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text = await run_activity_analysis(
                     session, act, user_id=user.id, api_key=creds.anthropic_key, force=force
                 )
+                await session.commit()   # run_activity_analysis stores act.analysis, caller commits
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")
                 await update.message.reply_text(str(e))

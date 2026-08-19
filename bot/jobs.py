@@ -46,6 +46,7 @@ from app.core.config import settings
 from app.core.tz import user_tz as core_user_tz
 from app.db import away as away_db
 from app.db import job_runs
+from app.db import users as users_db
 from app.db.base import async_session_maker
 from app.db.models import User
 from app.db.users import eligible_users
@@ -204,37 +205,75 @@ def _traceback_tail(limit: int = 512) -> str:
     return traceback.format_exc().strip()[-limit:]
 
 
-async def _record_job_run_safe(*, job: str, user, status: str, detail: Optional[str],
+async def _record_job_run_safe(*, job: str, user_id: int, status: str,
+                               detail: Optional[str], run_date: Optional[str],
                                started: dt.datetime, aggregate: bool) -> None:
     """Write one job-run row in its own session (so a worker's failed transaction can't taint
-    the log write), best-effort — a logging failure never breaks the job."""
+    the log write), best-effort — a logging failure never breaks the job.
+
+    Takes plain values, never the ORM ``User``: by the time this runs the caller's session
+    may have been rolled back or closed, which EXPIRES every instance loaded in it, and
+    reading ``user.id``/``user.timezone`` here would then trigger a lazy re-load — illegal
+    outside a greenlet (``MissingGreenlet``) and, since the same read is in the except
+    branch's message, an exception that escapes this "best-effort" helper entirely.
+
+    The caller must also have released its own transaction first: this session is a SECOND
+    connection, and on SQLite an interrupted (flushed, uncommitted) write on the caller's
+    connection blocks every statement here until ``busy_timeout`` gives up with "database
+    is locked" — losing exactly the error row the log exists to keep."""
     try:
         async with async_session_maker() as s:
             await job_runs.record_job_run(
-                s, job=job, user_id=user.id, status=status, detail=detail,
-                run_date=dt.datetime.now(user_tz(user)).date().isoformat(),
-                aggregate=aggregate, started_at=started,
+                s, job=job, user_id=user_id, status=status, detail=detail,
+                run_date=run_date, aggregate=aggregate, started_at=started,
             )
             await s.commit()
-    except Exception:
-        logger.exception(f"{job} job-run record failed user={user.id}")
+    except Exception as e:
+        # Name the cause in the MESSAGE, not just the traceback: the admin-bot alert
+        # (app.core.alerts) forwards record.getMessage() only, so a bare "record failed"
+        # reaches the phone with nothing to act on.
+        logger.exception(
+            f"{job} job-run record failed user={user_id}: {type(e).__name__}: {e}")
 
 
 async def for_each_user(worker, *, with_chat: bool, label: str,
                         aggregate: bool = False) -> None:
-    """Shared scaffold for the per-user scheduled jobs: open a session, select the
-    eligible (active + approved [+ chat id]) recipients, and run ``worker(session, user)``
-    for each — isolating failures per user so one user's error never aborts the rest.
+    """Shared scaffold for the per-user scheduled jobs: select the eligible (active +
+    approved [+ chat id]) recipients, then run ``worker(session, user)`` for each in its
+    own session — isolating failures per user so one user's error never aborts the rest.
     The three jobs reduce to a single call; PERF-01 will parallelize only this loop.
 
     OPS-04: every per-user branch leaves exactly one job-run row (ok/skip/error + reason).
     ``aggregate=True`` (the 15-min morning tick) folds routine ok/skip runs into one row per
     user/day so it doesn't flood the log — notable outcomes and errors still get their own
-    rows. A worker may return a :class:`JobOutcome`; ``None`` means plain ok."""
+    rows. A worker may return a :class:`JobOutcome`; ``None`` means plain ok.
+
+    Each user gets their OWN session, and the job-run row is written after that session is
+    closed. Both halves are load-bearing on SQLite: a worker that dies mid-transaction (or,
+    like ``_tick_for_user``, swallows its own exception and returns an error outcome) leaves
+    an interrupted write holding the write lock, and the recorder's separate connection would
+    sit on it until ``busy_timeout`` fails with "database is locked" — the error row lost
+    precisely when it matters. A shared session was also fragile the other way: rolling one
+    back expires EVERY user instance loaded in it, so the next iteration's ``user.timezone``
+    became a lazy load (``MissingGreenlet``) that killed the whole remaining loop."""
     try:
         async with async_session_maker() as session:
-            for user in await eligible_users(session, with_chat=with_chat):
-                started = dt.datetime.now(dt.timezone.utc)
+            user_ids = [u.id for u in await eligible_users(session, with_chat=with_chat)]
+    except Exception:
+        logger.exception(f"{label} job failed")
+        return
+
+    for user_id in user_ids:
+        started = dt.datetime.now(dt.timezone.utc)
+        status, detail, notable = "error", None, True
+        run_date: Optional[str] = None
+        try:
+            async with async_session_maker() as session:
+                user = await users_db.get_by_id(session, user_id)
+                if user is None:
+                    continue          # deleted between the two queries — nothing to log
+                # Captured BEFORE the worker runs: a rollback below expires the instance.
+                run_date = dt.datetime.now(user_tz(user)).date().isoformat()
                 # OPS-11: everything a scheduled job does is *background* LLM work, which
                 # the budget breaker switches off before it touches interactive commands.
                 # Set once here rather than threaded through every run_* signature — the
@@ -250,20 +289,30 @@ async def for_each_user(worker, *, with_chat: bool, label: str,
                     # Not an error: the breaker deliberately paused background work. Its own
                     # job-run row (skip/budget) is why OPS-04 can answer "where is my morning
                     # report" without anyone reading the logs.
-                    logger.warning(f"{label} budget-skipped user={user.id}: {e}")
-                    await session.rollback()
+                    logger.warning(f"{label} budget-skipped user={user_id}: {e}")
                     status, detail, notable = "skip", f"budget: {e}", True
                 except Exception:
-                    logger.exception(f"{label} failed user={user.id}")
-                    await session.rollback()   # don't taint the next user's shared session
+                    logger.exception(f"{label} failed user={user_id}")
                     status, detail, notable = "error", _traceback_tail(), True
                 finally:
                     budget.reset_background(bg_token)
-                agg = aggregate and status != "error" and not notable
-                await _record_job_run_safe(job=label, user=user, status=status,
-                                           detail=detail, started=started, aggregate=agg)
-    except Exception:
-        logger.exception(f"{label} job failed")
+                if status != "error" and (session.dirty or session.new):
+                    # A worker that finished cleanly but left writes uncommitted is a bug:
+                    # closing the session below discards them (that is how a paid activity
+                    # analysis went missing), and until then they hold SQLite's write lock.
+                    # Say so instead of losing the data quietly.
+                    left = sorted({type(o).__name__
+                                   for o in list(session.dirty) + list(session.new)})
+                    logger.warning(f"{label} user={user_id} left uncommitted writes: "
+                                   f"{', '.join(left)} — discarded on close")
+            # Session closed → its transaction (committed work aside) is released, so the
+            # recorder's own connection can write.
+        except Exception:
+            logger.exception(f"{label} session failed user={user_id}")
+            status, detail, notable = "error", _traceback_tail(), True
+        agg = aggregate and status != "error" and not notable
+        await _record_job_run_safe(job=label, user_id=user_id, status=status, detail=detail,
+                                   run_date=run_date, started=started, aggregate=agg)
 
 
 @asynccontextmanager
@@ -401,6 +450,13 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
             text = await run_activity_analysis(
                 session, act, user_id=user.id, api_key=creds.anthropic_key
             )
+            # Both writes above are "caller commits" (act.step_match, act.analysis) and the
+            # tick has no commit of its own after this point — so without this line the paid
+            # analysis was rolled back when the session closed (never reaching the activity
+            # page), and the dirty UPDATE sat on SQLite's write lock until then, which is what
+            # made the job-run recorder's own connection fail with "database is locked".
+            # Persist before sending, same rule as _records_check_for_user.
+            await session.commit()
             badge = stepmatch.badge(getattr(act, "step_match", None))
             head = f"{_activity_head(act)}\n{badge}" if badge else _activity_head(act)
             # Attach the EP-12 post-run check-in (RPE + pain) — one tap, silence is fine.
