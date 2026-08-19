@@ -457,9 +457,12 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   i.e. a full backup set sitting on the SD card that is about to die. `rsync_ok: None`
   (no `--rsync-dest` configured) is a deployment choice and never warns. The marker also
   carries **why** (`rsync exit 23: … Read-only file system`) — `scripts/backup_db.py`
-  captures rsync's stderr, retries only the transient exit codes (10/11/12/23/24/30/35,
-  two extra attempts) and caps the run at 15 min, since `Type=oneshot` has no start
-  timeout and a hung rsync would park the unit while the next night's timer no-ops.
+  captures rsync's stderr, retries only the transient exit codes (10/11/12/24/30/35, two
+  extra attempts) **and only while the stderr names no permanent cause** (permission
+  denied, read-only fs, no space, a missing path — an unwritable mount and a flaky USB
+  both exit 11, and the first repeats forever), and caps the run at 15 min, since
+  `Type=oneshot` has no start timeout and a hung rsync would park the unit while the next
+  night's timer no-ops.
 - **Index audit (PERF-03 slice)**: composite indexes on `activities(user_id, date)`,
   `report_logs(user_id, created_at)`, `planned_workouts(plan_id, date)`.
 

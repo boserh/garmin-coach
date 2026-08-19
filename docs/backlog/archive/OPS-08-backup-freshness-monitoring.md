@@ -69,8 +69,11 @@ Reach 1/міс · Impact 3 · Confidence 0.9 · Effort ~1.5 дня → **Score �
 місця») можна було дізнатись тільки по ssh.
 
 - `scripts/backup_db.py`: `_rsync` ловить stderr, повертає `RsyncFailed` з однорядковою
-  причиною, ретраїть лише транзієнтні коди (10/11/12/23/24/30/35) двічі з backoff і має
-  таймаут 15 хв (у `Type=oneshot` немає `TimeoutStartSec` за замовчуванням — завислий
+  причиною, ретраїть лише транзієнтні коди (10/11/12/24/30/35) двічі з backoff — і лише
+  доки stderr не називає постійну причину: перший же прогін на Pi дав
+  `exit 11: mkdir "/mnt/backup/garmin" failed: Permission denied`, тобто «error in file
+  IO» — той самий код, що й у справжнього збою USB, але недоступний маунт повторює його
+  вічно. Плюс таймаут 15 хв (у `Type=oneshot` немає `TimeoutStartSec` за замовчуванням — завислий
   rsync тримав би юніт «у старті», а нічний таймер наступного дня просто не спрацював би).
 - Маркер несе `rsync_error`; `app.backup_status.read_status` віддає його (обрізаний),
   `should_warn_rsync` — окрема каденція раз на `BACKUP_WARN_DAYS`.
