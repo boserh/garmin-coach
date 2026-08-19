@@ -540,6 +540,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
   stored activities; idempotent, paced, 0 LLM cost), `backfill-routes` (NF-33 route
   clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent),
+  `backfill-activity-analysis [--apply]` (re-attach activity analyses that were
+  generated but never stored on the row — reads the text back out of `report_logs`,
+  never overwrites an existing one; 0 Garmin, 0 LLM, dry run by default),
   `fix-plan-steps [--apply]` (re-cut planned sessions whose `steps` disagree with their
   `dist_km` — repairs rows written before the write path reconciled them; dry run by
   default, 0 Garmin, 0 LLM, and it names the sessions already pushed to the calendar that
