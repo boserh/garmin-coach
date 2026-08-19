@@ -523,6 +523,67 @@ async def _fix_plan_steps(email: str, apply: bool) -> int:
     return 0
 
 
+async def _backfill_activity_analysis(email: str, apply: bool) -> int:
+    """Re-attach activity analyses that were generated but never stored on the row.
+
+    Until the ``_activity_watch_for_user`` fix, the morning tick set ``activity.analysis``
+    and committed nothing after it, so the text was rolled back when the session closed —
+    the DM went out, the activity page stayed empty. Nothing was actually lost: every call
+    is logged with its text in ``report_logs`` (``kind="activity"``, ``question`` carrying
+    the row id), and that write commits. This copies the newest logged text back onto any
+    activity still missing one.
+
+    Pure DB: 0 Claude calls, 0 Garmin requests. Read-only unless ``--apply``. Never
+    overwrites an analysis that is already there."""
+    import re
+
+    from sqlalchemy import select
+
+    from app.db.models import ActivityRecord, ReportLog
+
+    async with cli_user(email) as (session, user):
+        logged: dict[int, str] = {}
+        rows = await session.execute(
+            select(ReportLog.question, ReportLog.report_text)
+            .where(ReportLog.user_id == user.id, ReportLog.kind == "activity",
+                   ReportLog.ok.is_(True), ReportLog.report_text.is_not(None))
+            .order_by(ReportLog.created_at)          # newest wins
+        )
+        for question, text_ in rows:
+            m = re.match(r"activity #(\d+)", question or "")
+            if m:
+                logged[int(m.group(1))] = text_
+
+        if not logged:
+            print("No activity analyses logged for this user — nothing to restore.")
+            return 0
+
+        acts = (await session.execute(
+            select(ActivityRecord).where(
+                ActivityRecord.user_id == user.id,
+                ActivityRecord.id.in_(logged),
+                ActivityRecord.analysis.is_(None),
+            ).order_by(ActivityRecord.date)
+        )).scalars().all()
+
+        for act in acts:
+            print(f"  #{act.id}  {act.date}  {act.type or '':<12} "
+                  f"{len(logged[act.id])} chars")
+            if apply:
+                act.analysis = logged[act.id]
+        if apply:
+            await session.commit()
+
+        if not acts:
+            print(f"All {len(logged)} logged analyses are already on their activities.")
+            return 0
+        print(f"{'Restored' if apply else 'Would restore'} {len(acts)} of "
+              f"{len(logged)} logged analyses.")
+        if not apply:
+            print("Re-run with --apply to write them.")
+    return 0
+
+
 async def _trigger_plan_adapt(email: str) -> int:
     """Manually run the weekly plan-adaptation review (EP-02) for one user, outside
     Sunday's schedule — same call plan_adapt_job makes. Pure-DB + one Claude call, no
@@ -778,6 +839,13 @@ def main(argv=None) -> int:
     brt.add_argument("--email", required=True)
     brt.add_argument("--since", help="only activities from this ISO date onward")
 
+    baa = sub.add_parser(
+        "backfill-activity-analysis",
+        help="Restore activity analyses that were generated but never stored on the row, "
+             "from report_logs — no Garmin calls, no LLM cost, read-only without --apply")
+    baa.add_argument("--email", required=True)
+    baa.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
+
     bz = sub.add_parser(
         "backfill-zones", help="Fetch HR time-in-zone for stored activities missing it (NF-24)")
     bz.add_argument("--email", required=True)
@@ -819,6 +887,8 @@ def main(argv=None) -> int:
         return _run(_unpush_plan(args.email, args.date))
     if args.cmd == "fix-plan-steps":
         return _run(_fix_plan_steps(args.email, args.apply))
+    if args.cmd == "backfill-activity-analysis":
+        return _run(_backfill_activity_analysis(args.email, args.apply))
     if args.cmd == "trigger-plan-adapt":
         return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":
