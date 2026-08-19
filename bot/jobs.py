@@ -69,6 +69,7 @@ from bot.handlers import (
     checkin_keyboard,
 )
 from bot.handlers import lifestyle_keyboard as handlers_lifestyle_keyboard
+from bot.opsalert import send_ops_alert
 
 logger = logging.getLogger("bot")
 
@@ -887,12 +888,14 @@ async def _garmin_error_burst_check(ctx, session, user: User, today: str) -> Non
 
 
 async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
-    """OPS-08: DM the admin once the DB backup marker (scripts/backup_db.py) looks
+    """OPS-08: alert the admin once the DB backup marker (scripts/backup_db.py) looks
     stale — a dead systemd timer, a full disk, or a disconnected USB stick otherwise
     fail silently until the day of a restore. Pure file stat, zero network/Garmin;
     admin-only (a per-install fact, not a per-user one). Two independent signals: the
     backup being stale, and the off-SD rsync failing while the local copy stays fresh
-    (each with its own bot_state guard). Best-effort — never a tick failure."""
+    (each with its own bot_state guard). Goes out over the ADMIN bot (see
+    bot.opsalert) — this is a fact about the installation, not a word from the coach.
+    Best-effort — never a tick failure."""
     if not getattr(user, "is_admin", False) or not user.telegram_chat_id:
         return
     warn_days = settings.BACKUP_WARN_DAYS
@@ -915,8 +918,8 @@ async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
                 body = f"останній успішний бекап був {days} дн тому (поріг {warn_days} дн)."
             note = (f" Off-SD копіювання (rsync) останнього разу не вдалось.{reason}"
                     if b["rsync_ok"] is False else "")
-            await ctx.bot.send_message(user.telegram_chat_id,
-                                       f"⚠️ Бекапу БД немає: {body}{note}")
+            await send_ops_alert(ctx, user.telegram_chat_id,
+                                 f"⚠️ Бекапу БД немає: {body}{note}")
             logger.warning(f"OPS-08 backup-stale DM user={user.id} age_hours={b['age_hours']}")
             # The stale DM already carried the rsync line — hold the off-SD reminder for
             # its own interval instead of sending the same news twice in one tick.
@@ -929,8 +932,8 @@ async def _backup_freshness_check(ctx, session, user: User, today: str) -> None:
             await repository.set_state(session, user.id, BACKUP_RSYNC_WARN_KEY, today)
             age = (f"{b['age_hours']:.0f} год тому" if b["age_hours"] is not None
                    else "невідомо коли")
-            await ctx.bot.send_message(
-                user.telegram_chat_id,
+            await send_ops_alert(
+                ctx, user.telegram_chat_id,
                 f"⚠️ Off-SD копія бекапу (rsync) не вдалась.{reason} Локальний бекап "
                 f"свіжий ({age}), але він лежить на тій самій SD-карті — перевір "
                 f"USB/маршрут призначення: systemctl status garmin-backup.service",
