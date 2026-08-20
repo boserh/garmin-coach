@@ -180,7 +180,8 @@ def main() -> None:
     # the morning report window.
     app.job_queue.run_daily(
         weather_plan_job,
-        time=time(hour=settings.WEATHER_PLAN_HOUR, tzinfo=handlers.TZ),
+        time=time(hour=settings.WEATHER_PLAN_HOUR,
+                  minute=settings.WEATHER_PLAN_MINUTE, tzinfo=handlers.TZ),
     )
     # NF-16 evening sleep-debt nudge: heads-up before a heavy session on a poor-sleep night.
     app.job_queue.run_daily(

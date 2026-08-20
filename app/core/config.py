@@ -172,6 +172,10 @@ class Settings(BaseSettings):
     # extreme-weather day. Gated on a stored location + active plan + plan_adapt_enabled;
     # silent (zero Claude calls) when no key session hits an extreme day.
     WEATHER_PLAN_HOUR: int = 6
+    # Deliberately NOT :00. Open-Meteo is free, and everyone's cron fires on the hour —
+    # 06:00:01 answered 503 for three attempts running while the same request by hand at
+    # 06:22 answered 200. A few minutes past the hour steps out of that stampede.
+    WEATHER_PLAN_MINUTE: int = 7
     WEATHER_DECISION_DAYS: int = 3       # only propose for sessions within N days ahead
     WEATHER_HEAT_FEELS_C: float = 30     # feels-like max °C at/above → heat conflict
     WEATHER_RAIN_PROB_PCT: float = 70    # precip probability % at/above → rain conflict

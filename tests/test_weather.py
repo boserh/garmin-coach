@@ -18,7 +18,7 @@ class _Resp:
 
 
 def _patch_get(monkeypatch, payload=None, exc=None):
-    def fake_get(url, params=None, timeout=None):
+    def fake_get(url, params=None, timeout=None, headers=None):
         if exc is not None:
             raise exc
         return _Resp(payload)
@@ -114,11 +114,11 @@ def _http_error(status: int) -> requests.HTTPError:
 
 def _patch_get_sequence(monkeypatch, outcomes):
     """Serve one entry of ``outcomes`` per call: an exception is raised, anything else is
-    returned as the JSON payload. Records how many calls happened."""
+    returned as the JSON payload. Records the kwargs of every call."""
     calls = []
 
-    def fake_get(url, params=None, timeout=None):
-        calls.append(url)
+    def fake_get(url, params=None, timeout=None, headers=None):
+        calls.append({"url": url, "params": params, "headers": headers})
         item = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
         if isinstance(item, Exception):
             raise item
@@ -156,6 +156,39 @@ def test_fetch_forecast_does_not_retry_client_errors(monkeypatch):
     calls = _patch_get_sequence(monkeypatch, [_http_error(400)])
     assert weather.fetch_forecast(51.1, 17.03) is None
     assert len(calls) == 1
+
+
+def test_requests_identify_the_app_not_the_library(monkeypatch):
+    """`python-requests/x.y` is the first UA an overloaded or abuse-filtering front end
+    sheds — the shape of "curl from this box gets 200, the service gets 503"."""
+    calls = _patch_get_sequence(monkeypatch, [_WEEK_PAYLOAD])
+    weather.fetch_forecast_week(51.1, 17.03)
+    assert "bihun-coach" in calls[0]["headers"]["User-Agent"]
+
+
+def test_a_retry_that_succeeds_does_not_warn(monkeypatch, caplog):
+    """WARNING+ is mirrored to the admin Telegram chat, so a blip the retry absorbed
+    must not page anyone — only a call that gives up for good does."""
+    calls = _patch_get_sequence(monkeypatch, [_http_error(503), _WEEK_PAYLOAD])
+    with caplog.at_level("INFO", logger="weather"):
+        assert weather.fetch_forecast_week(51.1, 17.03)
+    assert len(calls) == 2
+    assert [r.levelname for r in caplog.records] == ["INFO"]
+
+
+def test_failure_log_carries_what_the_server_said(monkeypatch, caplog):
+    """A bare "503 Server Error" cannot tell an Open-Meteo throttle apart from a box in
+    the middle answering for it — so the final warning quotes the response itself."""
+    err = _http_error(503)
+    err.response._content = b'{"error":true,"reason":"Minutely API request limit exceeded"}'
+    err.response.headers["retry-after"] = "60"
+    _patch_get_sequence(monkeypatch, [err])
+    with caplog.at_level("WARNING", logger="weather"):
+        assert weather.fetch_forecast_week(51.1, 17.03) is None
+    final = caplog.messages[-1]
+    assert "gave up after 3 attempt(s)" in final   # never mistakable for one blip
+    assert "Minutely API request limit exceeded" in final
+    assert "retry-after=60" in final
 
 
 def test_geocode_retries_transient_errors(monkeypatch):
