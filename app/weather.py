@@ -93,8 +93,12 @@ def _get_json(url: str, params: dict, what: str) -> Optional[dict]:
                 # hour, the same instant as everyone else's cron. A fixed backoff walks
                 # a whole fleet of clients into the overloaded window together.
                 backoff = _BACKOFF_S * (2 ** attempt) * random.uniform(0.75, 1.25)
-                logger.warning(f"{what} transient error ({e}) — retry "
-                               f"{attempt + 1}/{_RETRIES} in {backoff:.0f}s")
+                # INFO, not WARNING: a retry that then succeeds is the system working.
+                # WARNING+ is mirrored to the admin chat (app.core.alerts), so logging
+                # each attempt there paged the owner about a blip the retry had already
+                # absorbed — the failure below is the only line worth waking up for.
+                logger.info(f"{what} transient error ({e}) — retry "
+                            f"{attempt + 1}/{_RETRIES} in {backoff:.1f}s")
                 time.sleep(backoff)
                 continue
             logger.warning(f"{what} failed: {e}{_error_detail(e)}")

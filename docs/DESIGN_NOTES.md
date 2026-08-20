@@ -119,10 +119,15 @@ exactly like a ban until you split them), once per candidate User-Agent, and pri
 proxy variables `requests` silently honours; zero cost.
 
 Requests carry an explicit `User-Agent` (`_HEADERS`) rather than urllib3's
-`python-requests/x.y`, and the backoff is jittered: when `curl` from the same Pi answers
-200 while the service gets 503, the caller is the variable, not the network — and our
-weather calls fire from jobs pinned to the top of the hour, together with everyone
-else's cron.
+`python-requests/x.y`, and the backoff is jittered.
+
+**The 503s were the top of the hour, not us.** `weather_plan_job` fired at 06:00:00 and
+Open-Meteo answered 503 for three attempts running; the identical request by hand at
+06:22 — same Pi, same IP, even with `python-requests` as the UA — answered 200. Hence
+`WEATHER_PLAN_MINUTE` (default `:07`): a free public API takes everyone's on-the-hour
+cron at once, and stepping a few minutes off it beats any retry ladder. Retry lines log
+at **INFO**, not WARNING: `app.core.alerts` mirrors WARNING+ to the admin chat, so
+warning on each attempt paged the owner about a blip the retry had already absorbed.
 
 ## Weekly digest (EP-07)
 

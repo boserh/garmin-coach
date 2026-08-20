@@ -166,6 +166,16 @@ def test_requests_identify_the_app_not_the_library(monkeypatch):
     assert "bihun-coach" in calls[0]["headers"]["User-Agent"]
 
 
+def test_a_retry_that_succeeds_does_not_warn(monkeypatch, caplog):
+    """WARNING+ is mirrored to the admin Telegram chat, so a blip the retry absorbed
+    must not page anyone — only a call that gives up for good does."""
+    calls = _patch_get_sequence(monkeypatch, [_http_error(503), _WEEK_PAYLOAD])
+    with caplog.at_level("INFO", logger="weather"):
+        assert weather.fetch_forecast_week(51.1, 17.03)
+    assert len(calls) == 2
+    assert [r.levelname for r in caplog.records] == ["INFO"]
+
+
 def test_failure_log_carries_what_the_server_said(monkeypatch, caplog):
     """A bare "503 Server Error" cannot tell an Open-Meteo throttle apart from a box in
     the middle answering for it — so the final warning quotes the response itself."""
