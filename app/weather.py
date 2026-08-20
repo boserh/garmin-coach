@@ -97,11 +97,15 @@ def _get_json(url: str, params: dict, what: str) -> Optional[dict]:
                 # WARNING+ is mirrored to the admin chat (app.core.alerts), so logging
                 # each attempt there paged the owner about a blip the retry had already
                 # absorbed — the failure below is the only line worth waking up for.
-                logger.info(f"{what} transient error ({e}) — retry "
-                            f"{attempt + 1}/{_RETRIES} in {backoff:.1f}s")
+                # Word it so the line cannot be read as the final verdict: "retry 2/2"
+                # looks like the last attempt failed, when it is logged BEFORE that
+                # attempt is even made. Say which attempt died and that another follows.
+                logger.info(f"{what}: attempt {attempt + 1}/{_RETRIES + 1} failed "
+                            f"({e}) — retrying in {backoff:.1f}s")
                 time.sleep(backoff)
                 continue
-            logger.warning(f"{what} failed: {e}{_error_detail(e)}")
+            logger.warning(f"{what}: gave up after {attempt + 1} attempt(s) — "
+                           f"{e}{_error_detail(e)}")
             return None
     return None   # unreachable — every path inside the loop returns or continues
 

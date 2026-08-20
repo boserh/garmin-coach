@@ -186,6 +186,7 @@ def test_failure_log_carries_what_the_server_said(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="weather"):
         assert weather.fetch_forecast_week(51.1, 17.03) is None
     final = caplog.messages[-1]
+    assert "gave up after 3 attempt(s)" in final   # never mistakable for one blip
     assert "Minutely API request limit exceeded" in final
     assert "retry-after=60" in final
 
