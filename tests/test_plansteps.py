@@ -28,6 +28,15 @@ INTERVALS = [
                                             {"kind": "recovery", "dist_m": 200}]},
     {"kind": "cooldown", "dist_m": 1000},
 ]
+# The shape that exposed the bug below: the work is prescribed in TIME, so only the
+# warmup/cooldown carry metres — 3000 m of steps under a wholly correct 6.0 km headline.
+TIMED_INTERVALS = [
+    {"kind": "warmup", "dist_m": 1500},
+    {"kind": "repeat", "reps": 5, "steps": [{"kind": "run", "dur_s": 120,
+                                             "pace_min_km": [5.92, 6.25]},
+                                            {"kind": "recovery", "dur_s": 120}]},
+    {"kind": "cooldown", "dist_m": 1500},
+]
 
 
 # ---------- pure maths ----------
@@ -38,6 +47,28 @@ def test_total_counts_repeats_and_reports_none_for_timed_steps():
     # a purely time-based session has no distance to reconcile — None, not 0
     assert plansteps.total_dist_m([{"kind": "run", "dur_s": 1800, "hr_zone": 2}]) is None
     assert plansteps.total_dist_m([]) is None
+
+
+def test_timed_work_means_the_steps_do_not_describe_the_distance():
+    """A session mixing metres and minutes is only PARTLY described in metres."""
+    assert plansteps.describes_distance(EASY) and plansteps.describes_distance(INTERVALS)
+    assert plansteps.total_dist_m(TIMED_INTERVALS) == 3000      # the sum is still a sum...
+    assert not plansteps.describes_distance(TIMED_INTERVALS)    # ...but not the session
+    assert not plansteps.describes_distance([{"kind": "run", "dur_s": 1800}])
+
+
+def test_a_correct_headline_over_timed_work_is_neither_flagged_nor_overwritten():
+    """The reported false alarm: 'розминка 1.5 км + 5×2 хв + заминка 1.5 км' really is
+    ~6 km, and the 3000 m of distance steps is no evidence against it."""
+    assert plansteps.mismatch(6.0, TIMED_INTERVALS) is None
+    assert plansteps.reconcile(6.0, TIMED_INTERVALS, steps_given=True) == (6.0, TIMED_INTERVALS)
+    assert plansteps.reconcile(6.0, TIMED_INTERVALS, steps_given=False) == (6.0, TIMED_INTERVALS)
+
+
+def test_timed_work_is_never_rescaled():
+    # scaling to 5 km would shrink the warmup/cooldown and leave the intervals — the very
+    # opposite of "a coach who cuts volume cuts the work"
+    assert plansteps.scale_steps(TIMED_INTERVALS, 5.0) is None
 
 
 def test_scale_puts_the_change_on_the_work_and_keeps_warmup():
@@ -142,6 +173,22 @@ async def test_add_with_disagreeing_numbers_is_stored_consistent(session):
         steps=[PlanStep(kind="run", dist_m=6000, hr_zone=2)])])
     ws = {w.date: w for w in await repository.list_workouts(session, plan.id)}
     assert ws["2026-08-10"].dist_km == 6.0
+
+
+async def test_add_with_timed_work_keeps_the_models_headline(session):
+    """The extension job logged 'dist_km=6.0 steps=3000m (50%) — steps win' and stored 3.0.
+    Nothing was wrong with the 6.0: three of its kilometres are simply prescribed in minutes."""
+    plan = await _seed(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-09-29", type="intervals", dist_km=6.0,
+        description="Розминка 1.5 км. Потім 5×2 хв у зусиллі. Заминка 1.5 км.",
+        steps=[PlanStep(kind="warmup", dist_m=1500),
+               PlanStep(kind="repeat", reps=5,
+                        steps=[PlanStep(kind="run", dur_s=120),
+                               PlanStep(kind="recovery", dur_s=120)]),
+               PlanStep(kind="cooldown", dist_m=1500)])])
+    ws = {w.date: w for w in await repository.list_workouts(session, plan.id)}
+    assert ws["2026-09-29"].dist_km == 6.0
 
 
 async def test_timed_session_keeps_its_distance_untouched(session):

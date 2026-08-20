@@ -168,6 +168,15 @@ proportional scaling only when the fixed parts alone already exceed the target. 
 blocks keep their `reps`; only distances move. A session whose steps are purely time-based
 has nothing to reconcile (`total_dist_m` → `None`, never 0).
 
+**Only a session described entirely in metres is reconciled at all** (`describes_distance`).
+A step prescribed in TIME covers real ground this module cannot know, so "розминка 1.5 км +
+5×2 хв + заминка 1.5 км" carries 3000 m of distance steps under a perfectly correct 6.0 km
+headline. Treating that sum as the session made things worse than the bug above: the extension
+job overwrote the right 6.0 with 3.0 and filed a prompt-regression warning against a prompt
+that had done nothing wrong — and `scale_steps` would have absorbed a volume cut entirely into
+the warmup/cooldown, since the work steps hold no metres to cut. A partly-timed session is
+therefore left exactly as written: headline untouched, steps untouched, no warning.
+
 Every mismatch logs a WARNING (`PLAN dist/steps mismatch`): the prompts demand agreement at
 the source, so one appearing here means a prompt regressed, not merely a row to patch. Rows
 written before this existed are repaired by `python -m app.cli fix-plan-steps --email … [--apply]`
