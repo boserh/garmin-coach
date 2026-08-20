@@ -110,6 +110,13 @@ to cost a whole day of weather (morning block dropped, EP-13's check silently sk
 A 4xx that says our request is wrong is never retried; on final failure the helper still
 returns `None` and every caller degrades to "no weather", unchanged.
 
+The final warning quotes what the far end actually said (`_error_detail`: `retry-after`/
+`server`/`cf-ray` + a body snippet) — Open-Meteo's own `{"error": true, "reason": ...}`
+means it is throttling this IP, while an HTML page or a foreign `server:` header means
+something in between answered instead. `scripts/weather_probe.py` asks the same two hosts
+from the failing box over IPv4 and IPv6 separately (a broken AAAA route on the Pi looks
+exactly like a ban until you split them) and prints status/headers/body; zero cost.
+
 ## Weekly digest (EP-07)
 
 Sunday-evening retrospective (`weekly_digest_job`, `DIGEST_HOUR` Europe/Warsaw).

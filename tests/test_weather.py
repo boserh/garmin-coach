@@ -158,6 +158,20 @@ def test_fetch_forecast_does_not_retry_client_errors(monkeypatch):
     assert len(calls) == 1
 
 
+def test_failure_log_carries_what_the_server_said(monkeypatch, caplog):
+    """A bare "503 Server Error" cannot tell an Open-Meteo throttle apart from a box in
+    the middle answering for it — so the final warning quotes the response itself."""
+    err = _http_error(503)
+    err.response._content = b'{"error":true,"reason":"Minutely API request limit exceeded"}'
+    err.response.headers["retry-after"] = "60"
+    _patch_get_sequence(monkeypatch, [err])
+    with caplog.at_level("WARNING", logger="weather"):
+        assert weather.fetch_forecast_week(51.1, 17.03) is None
+    final = caplog.messages[-1]
+    assert "Minutely API request limit exceeded" in final
+    assert "retry-after=60" in final
+
+
 def test_geocode_retries_transient_errors(monkeypatch):
     calls = _patch_get_sequence(monkeypatch, [
         _http_error(429),

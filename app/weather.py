@@ -50,6 +50,26 @@ def _is_transient(exc: Exception) -> bool:
     return status in _TRANSIENT_STATUS
 
 
+def _error_detail(exc: Exception) -> str:
+    """Whatever the far end actually said, when it said anything — the difference
+    between "Open-Meteo is throttling this IP" (its own JSON ``{"error": true,
+    "reason": ...}``) and "something between us and it answered instead" (an HTML error
+    page, a foreign ``server:`` header). ``requests``' own message stops at the status
+    line, which is why a 503 on the Pi told us nothing about whose 503 it was."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    bits = [f"{h}={resp.headers[h]}" for h in ("retry-after", "server", "cf-ray")
+            if h in resp.headers]
+    try:
+        body = " ".join((resp.text or "").split())[:200]
+    except Exception:       # pragma: no cover — a body we can't even decode
+        body = ""
+    if body:
+        bits.append(f"body={body!r}")
+    return (" — " + "; ".join(bits)) if bits else ""
+
+
 def _get_json(url: str, params: dict, what: str) -> Optional[dict]:
     """GET ``url`` and return the decoded JSON object, or ``None`` on any failure —
     every caller degrades to "no weather" rather than propagating. Transient errors are
@@ -66,7 +86,7 @@ def _get_json(url: str, params: dict, what: str) -> Optional[dict]:
                                f"{attempt + 1}/{_RETRIES} in {backoff:.0f}s")
                 time.sleep(backoff)
                 continue
-            logger.warning(f"{what} failed: {e}")
+            logger.warning(f"{what} failed: {e}{_error_detail(e)}")
             return None
     return None   # unreachable — every path inside the loop returns or continues
 
