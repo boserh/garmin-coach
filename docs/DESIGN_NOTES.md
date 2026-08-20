@@ -115,7 +115,14 @@ The final warning quotes what the far end actually said (`_error_detail`: `retry
 means it is throttling this IP, while an HTML page or a foreign `server:` header means
 something in between answered instead. `scripts/weather_probe.py` asks the same two hosts
 from the failing box over IPv4 and IPv6 separately (a broken AAAA route on the Pi looks
-exactly like a ban until you split them) and prints status/headers/body; zero cost.
+exactly like a ban until you split them), once per candidate User-Agent, and prints the
+proxy variables `requests` silently honours; zero cost.
+
+Requests carry an explicit `User-Agent` (`_HEADERS`) rather than urllib3's
+`python-requests/x.y`, and the backoff is jittered: when `curl` from the same Pi answers
+200 while the service gets 503, the caller is the variable, not the network — and our
+weather calls fire from jobs pinned to the top of the hour, together with everyone
+else's cron.
 
 ## Weekly digest (EP-07)
 

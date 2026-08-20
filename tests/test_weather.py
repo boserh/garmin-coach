@@ -18,7 +18,7 @@ class _Resp:
 
 
 def _patch_get(monkeypatch, payload=None, exc=None):
-    def fake_get(url, params=None, timeout=None):
+    def fake_get(url, params=None, timeout=None, headers=None):
         if exc is not None:
             raise exc
         return _Resp(payload)
@@ -114,11 +114,11 @@ def _http_error(status: int) -> requests.HTTPError:
 
 def _patch_get_sequence(monkeypatch, outcomes):
     """Serve one entry of ``outcomes`` per call: an exception is raised, anything else is
-    returned as the JSON payload. Records how many calls happened."""
+    returned as the JSON payload. Records the kwargs of every call."""
     calls = []
 
-    def fake_get(url, params=None, timeout=None):
-        calls.append(url)
+    def fake_get(url, params=None, timeout=None, headers=None):
+        calls.append({"url": url, "params": params, "headers": headers})
         item = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
         if isinstance(item, Exception):
             raise item
@@ -156,6 +156,14 @@ def test_fetch_forecast_does_not_retry_client_errors(monkeypatch):
     calls = _patch_get_sequence(monkeypatch, [_http_error(400)])
     assert weather.fetch_forecast(51.1, 17.03) is None
     assert len(calls) == 1
+
+
+def test_requests_identify_the_app_not_the_library(monkeypatch):
+    """`python-requests/x.y` is the first UA an overloaded or abuse-filtering front end
+    sheds — the shape of "curl from this box gets 200, the service gets 503"."""
+    calls = _patch_get_sequence(monkeypatch, [_WEEK_PAYLOAD])
+    weather.fetch_forecast_week(51.1, 17.03)
+    assert "bihun-coach" in calls[0]["headers"]["User-Agent"]
 
 
 def test_failure_log_carries_what_the_server_said(monkeypatch, caplog):

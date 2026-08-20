@@ -11,7 +11,19 @@ Usage (on the Pi, no venv needed beyond ``requests``)::
     ./venv/bin/python -m scripts.weather_probe --repeat 10     # is it constant or flaky?
     ./venv/bin/python -m scripts.weather_probe --lat 54.35 --lon 18.65
 
+Run it **as the service user, with the service's environment**, when curl from the same
+box succeeds — that gap is the whole question::
+
+    sudo systemctl show garmin-bot.service -p Environment
+    sudo tr '\0' '\n' < /proc/$(pgrep -f 'bot.main')/environ | grep -i proxy
+
 Zero cost: no Claude, no Garmin, no database. Reading the output:
+
+- **curl 200 but this script 503** — the network is fine and the caller is the variable.
+  Compare the two UA rows: if only `python-requests/...` fails, a front end is shedding
+  the library UA (hence the explicit UA in ``app/weather.py``). If both fail while curl
+  works, look at the proxy variables printed below — a proxy in the service environment
+  that an interactive shell doesn't have answers 503 all by itself.
 
 - **Same failure on IPv4 and IPv6** — the address isn't the variable. If the body is
   Open-Meteo's own JSON (``{"error": true, "reason": "... limit exceeded"}``) it is
@@ -26,6 +38,7 @@ Zero cost: no Claude, no Garmin, no database. Reading the output:
   an IP-level block would hit both.
 """
 import argparse
+import os
 import socket
 import time
 
@@ -38,6 +51,14 @@ _HOSTS = {
     "geocoding": ("https://geocoding-api.open-meteo.com/v1/search", {
         "name": "Gdansk", "count": 1, "format": "json",
     }),
+}
+
+# The app's UA (what weather.py now sends), the library default it used to send, and a
+# curl-shaped one — the failing case is usually one row of these three, not all of them.
+_AGENTS = {
+    "app  ": "bihun-coach/1.0 (+https://github.com/boserh/garmin-coach)",
+    "lib  ": f"python-requests/{requests.__version__}",
+    "curl ": "curl/8.5.0",
 }
 
 _orig_getaddrinfo = socket.getaddrinfo
@@ -60,21 +81,22 @@ def _resolve(host: str) -> None:
             print(f"  {label} — {e}")
 
 
-def _probe(name: str, url: str, params: dict, family, family_label: str) -> None:
+def _probe(url: str, params: dict, family, label: str, agent: str) -> None:
     _force_family(family)
     t0 = time.monotonic()
     try:
-        r = requests.get(url, params=params, timeout=8)
+        r = requests.get(url, params=params, timeout=8,
+                         headers={"User-Agent": agent})
         ms = (time.monotonic() - t0) * 1000
         head = "; ".join(f"{h}={r.headers[h]}" for h in
                          ("server", "retry-after", "cf-ray", "x-cache")
                          if h in r.headers)
-        print(f"  {family_label} {r.status_code} in {ms:.0f}ms  {head}")
+        print(f"  {label} {r.status_code} in {ms:.0f}ms  {head}")
         if r.status_code >= 400:
             print(f"       body: {' '.join(r.text.split())[:300]}")
     except Exception as e:
         ms = (time.monotonic() - t0) * 1000
-        print(f"  {family_label} FAILED in {ms:.0f}ms — {type(e).__name__}: {e}")
+        print(f"  {label} FAILED in {ms:.0f}ms — {type(e).__name__}: {e}")
     finally:
         _force_family(socket.AF_UNSPEC)
 
@@ -87,6 +109,15 @@ def main() -> None:
     ap.add_argument("--delay", type=float, default=1.0, help="seconds between attempts")
     args = ap.parse_args()
 
+    # requests honours these silently; a systemd unit can carry one an interactive shell
+    # never sees, and then "same box, same URL" is not the same request at all.
+    # Only the four requests actually honours — a box can carry a dozen tool-specific
+    # PROXY variables that have nothing to do with this call.
+    seen = {k: v[:60] for k, v in os.environ.items()
+            if k.lower() in ("http_proxy", "https_proxy", "no_proxy", "all_proxy")}
+    print("proxy env: " + ("; ".join(f"{k}={v}" for k, v in sorted(seen.items()))
+                           if seen else "none"))
+
     for name, (url, params) in _HOSTS.items():
         host = url.split("/")[2]
         print(f"\n{name} — {host}")
@@ -94,12 +125,13 @@ def main() -> None:
         call = dict(params)
         if name == "forecast":
             call |= {"latitude": args.lat, "longitude": args.lon}
-        for family, label in ((socket.AF_UNSPEC, "auto"),
-                              (socket.AF_INET, "v4  "),
-                              (socket.AF_INET6, "v6  ")):
-            for _ in range(max(1, args.repeat)):
-                _probe(name, url, call, family, label)
-                time.sleep(args.delay)
+        for family, fam_label in ((socket.AF_UNSPEC, "auto"),
+                                  (socket.AF_INET, "v4  "),
+                                  (socket.AF_INET6, "v6  ")):
+            for ua_label, agent in _AGENTS.items():
+                for _ in range(max(1, args.repeat)):
+                    _probe(url, call, family, f"{fam_label} ua={ua_label}", agent)
+                    time.sleep(args.delay)
 
 
 if __name__ == "__main__":

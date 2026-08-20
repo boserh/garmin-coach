@@ -20,6 +20,7 @@ Open-Meteo (timeouts, 429, 5xx) with exponential backoff before giving up.
 """
 import datetime as dt
 import logging
+import random
 import time
 from typing import Iterable, Optional, Sequence, Tuple
 
@@ -37,8 +38,15 @@ _TIMEOUT = 8  # seconds — never hold up the morning job on a slow weather API
 # the block, EP-13's planning check goes silent). Retry only the failures a retry can fix
 # — never a 4xx that says our request is wrong, and never a parse error.
 _RETRIES = 2                       # extra attempts after the first
-_BACKOFF_S = 1.0                   # doubled per retry: 1s, 2s
+_BACKOFF_S = 2.0                   # doubled per retry, jittered: ~2s, ~4s
 _TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# Identify ourselves instead of shipping urllib3's default `python-requests/x.y`. Two
+# reasons, both real: a public API is entitled to know who is calling it (and to reach
+# the project if we misbehave), and a generic library UA is the first thing an
+# overloaded or abuse-filtering front end sheds — which is exactly the shape of "curl
+# from this same Pi answers 200 while the service gets 503".
+_HEADERS = {"User-Agent": "bihun-coach/1.0 (+https://github.com/boserh/garmin-coach)"}
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -76,12 +84,15 @@ def _get_json(url: str, params: dict, what: str) -> Optional[dict]:
     retried ``_RETRIES`` times with exponential backoff; anything else fails at once."""
     for attempt in range(_RETRIES + 1):
         try:
-            r = requests.get(url, params=params, timeout=_TIMEOUT)
+            r = requests.get(url, params=params, timeout=_TIMEOUT, headers=_HEADERS)
             r.raise_for_status()
             return r.json() or {}
         except Exception as e:
             if attempt < _RETRIES and _is_transient(e):
-                backoff = _BACKOFF_S * (2 ** attempt)
+                # Jittered: our weather calls fire from jobs pinned to the top of the
+                # hour, the same instant as everyone else's cron. A fixed backoff walks
+                # a whole fleet of clients into the overloaded window together.
+                backoff = _BACKOFF_S * (2 ** attempt) * random.uniform(0.75, 1.25)
                 logger.warning(f"{what} transient error ({e}) — retry "
                                f"{attempt + 1}/{_RETRIES} in {backoff:.0f}s")
                 time.sleep(backoff)
