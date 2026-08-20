@@ -37,7 +37,10 @@ def _consistent(dist_km, steps, *, steps_given: bool, where: str):
     which used to leave the original 6000 m step in place: the header said 5.0 km while the
     workout pushed to Garmin was still the full one. Every mismatch is logged — the numbers
     are supposed to agree at the source (the prompts demand it), so one showing up here means
-    a prompt regressed, not just a row to patch."""
+    a prompt regressed, not just a row to patch. That claim only holds because a session whose
+    steps are partly prescribed in TIME is not a mismatch at all and never reaches this
+    warning (``plansteps.describes_distance``) — its metres are unknown here, so the headline
+    stands as written."""
     gap = plansteps.mismatch(dist_km, steps)
     if gap is not None and gap > plansteps.TOLERANCE:
         logger.warning(

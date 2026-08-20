@@ -13,6 +13,13 @@ Rules here:
 * ``total_dist_m`` — a workout's distance as the steps actually describe it (``repeat``
   blocks counted ``reps`` times). ``None`` when no step carries a distance (a purely
   time-based session), which is the "nothing to reconcile" signal, not zero.
+* ``describes_distance`` — whether that sum is the WHOLE session. A step measured in time
+  ("5×2 хв") covers real ground this module cannot know, so a session mixing distance and
+  time steps is only PARTLY described in metres and nothing here may be derived from the
+  sum. Getting this wrong is not academic: "розминка 1.5 км + 5×2 хв + заминка 1.5 км"
+  totals 3000 m of *distance steps* against a perfectly correct 6.0 km headline, and the
+  reconcile below used to overwrite the headline with 3.0 — turning a right number into a
+  wrong one, and warning about a prompt regression that never happened.
 * ``scale_steps`` — re-cut the steps to a new total. Work steps (``run``) absorb the change
   and warmup/cooldown/recovery keep their prescribed length, because a coach who cuts volume
   cuts the work, not the warmup; only when the fixed parts alone already exceed the target
@@ -62,6 +69,31 @@ def total_dist_m(steps) -> Optional[float]:
             total += float(dm)
             seen = True
     return total if seen else None
+
+
+def _is_timed(s: dict) -> bool:
+    """A leaf step prescribed in TIME with no distance — it covers metres we cannot know."""
+    return not _is_num(s.get("dist_m")) and _is_num(s.get("dur_s"))
+
+
+def has_timed_steps(steps) -> bool:
+    """True when any step (at any depth) is prescribed in time rather than distance."""
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("kind") == "repeat":
+            if has_timed_steps(s.get("steps")):
+                return True
+        elif _is_timed(s):
+            return True
+    return False
+
+
+def describes_distance(steps) -> bool:
+    """True when ``total_dist_m`` is the session's WHOLE distance — i.e. some step carries
+    one and none is timed. Only then may the headline be compared to, derived from, or
+    rescaled against the steps; a mixed session's metres are simply unknown here."""
+    return total_dist_m(steps) is not None and not has_timed_steps(steps)
 
 
 def _work_dist_m(steps) -> float:
@@ -143,6 +175,11 @@ def scale_steps(steps, target_km: float) -> Optional[list]:
     """
     if not steps or not _is_num(target_km) or target_km <= 0:
         return None
+    if has_timed_steps(steps):
+        # Part of the session's distance sits in timed steps, so hitting ``target_km`` by
+        # scaling the rest would push the whole change onto the warmup/cooldown — the exact
+        # opposite of the rule above. Better to leave the session alone than to re-cut it wrong.
+        return None
     current = total_dist_m(steps)
     if current is None or current <= 0:
         return None
@@ -176,8 +213,10 @@ def mismatch(dist_km: Optional[float], steps) -> Optional[float]:
     steps say 17% more than the header), or None when there is nothing to compare."""
     if not _is_num(dist_km) or dist_km <= 0:
         return None
+    if not describes_distance(steps):
+        return None
     total = total_dist_m(steps)
-    if total is None or total <= 0:
+    if total <= 0:
         return None
     return abs(total - float(dist_km) * 1000.0) / (float(dist_km) * 1000.0)
 
@@ -193,10 +232,10 @@ def reconcile(dist_km: Optional[float], steps, *, steps_given: bool):
     * a new distance over pre-existing steps — the distance is the intent (that is what the
       coach just decided) and the stale steps are re-cut to match it.
     """
-    if not steps:
-        return dist_km, steps
+    if not describes_distance(steps):
+        return dist_km, steps          # purely or partly timed — the metres are not ours to judge
     total = total_dist_m(steps)
-    if total is None or total <= 0:
+    if total <= 0:
         return dist_km, steps
     if not _is_num(dist_km) or dist_km <= 0:
         return round(total / 1000.0, 2), steps
@@ -208,4 +247,5 @@ def reconcile(dist_km: Optional[float], steps, *, steps_given: bool):
     return dist_km, (rescaled if rescaled is not None else steps)
 
 
-__all__: List[str] = ["TOLERANCE", "total_dist_m", "scale_steps", "mismatch", "reconcile"]
+__all__: List[str] = ["TOLERANCE", "total_dist_m", "has_timed_steps",
+                      "describes_distance", "scale_steps", "mismatch", "reconcile"]
