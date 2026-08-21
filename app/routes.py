@@ -68,6 +68,13 @@ def _haversine_m(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     return 2 * _EARTH_R_M * math.asin(min(1.0, math.sqrt(h)))
 
 
+def haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Great-circle distance in km between two ``(lat, lon)`` points — the public face of
+    the metre-level helper above, for callers outside route matching (the travel-aware
+    weather location asks the same question of the same coordinates)."""
+    return _haversine_m(a, b) / 1000.0
+
+
 def _bearing_deg(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     lat1, lat2 = math.radians(a[0]), math.radians(b[0])
     dlon = math.radians(b[1] - a[1])

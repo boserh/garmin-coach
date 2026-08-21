@@ -209,6 +209,14 @@ class ActivityRecord(Base):
     # (and for everything synced before this field existed); every consumer must degrade to
     # silence rather than to zero.
     zones: Mapped[Optional[dict]] = mapped_column(JSON)
+    # Where this activity started — deliberately COARSE (three decimals ≈ 110 m, the same
+    # precision ``Route.fingerprint`` stores, see app/routes.py), never a track. Its one
+    # consumer is the travel-aware weather lookup: the profile city is a home address, and
+    # a training camp in the Alps must not get Gdańsk's forecast. Null for an indoor
+    # session, a device without GPS, and every activity synced before these columns
+    # existed — every consumer falls back to the profile location rather than to zero.
+    start_lat: Mapped[Optional[float]] = mapped_column(Float)
+    start_lon: Mapped[Optional[float]] = mapped_column(Float)
     # NF-33: which recognised route (see ``Route``) this run belongs to — self-assigned by
     # fingerprint similarity, nullable forever (treadmill runs, GPS-less sessions and every
     # activity stored before this field existed simply have none, and every consumer must

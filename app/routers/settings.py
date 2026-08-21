@@ -86,6 +86,10 @@ async def settings_form(
             "has_garth_token": bool(user.garth_token_enc),
             "telegram_chat_id": user.telegram_chat_id or "",
             "weather_location": user.weather_location or "",
+            # The thresholds the travel-aware location uses, so the field's hint states
+            # the actual rule instead of a number that can drift out of sync with config.
+            "weather_away_km": round(settings.WEATHER_AWAY_MIN_KM),
+            "weather_away_days": settings.WEATHER_AWAY_MAX_AGE_DAYS,
             "garmin_sync_enabled": user.garmin_sync_enabled,
             "plan_adapt_enabled": user.plan_adapt_enabled,
             "alerts_enabled": user.alerts_enabled,

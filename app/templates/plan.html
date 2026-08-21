@@ -109,6 +109,14 @@
       </div>
     {% endif %}
 
+    {# Travel-aware weather: when the forecast is NOT the profile city's, the page has to
+       say so — otherwise mountain temperatures next to a Gdańsk profile read as a bug. #}
+    {% if weather_place and weather_place.source == 'activity' %}
+      <div class="meta" style="margin-top:.6rem">🌍 Погода — за місцем останнього тренування
+        ({{ weather_place.since|dm }}{% if weather_place.away_km %}, ~{{ weather_place.away_km }} км від {{ weather_place.home or 'дому' }}{% endif %}),
+        не за локацією з профілю.</div>
+    {% endif %}
+
     {# ST-22: a fully-past week renders as a shut <details> so today isn't buried under
        finished rows. The rows stay in the DOM (Ctrl+F, and the tests grep them); an
        expanded week is the same markup with `open`, so there's one code path, not two. #}

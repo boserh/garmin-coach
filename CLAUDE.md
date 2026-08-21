@@ -213,6 +213,9 @@ Optional, with defaults:
 | `RETURN_GUARD_DAYS` | `14` | after offering (or a ❌), stay quiet this many days. |
 | `FUELING_MIN_DURATION_MIN` | `45` | below this session duration, fueling advisor stays silent. |
 | `FUELING_HEAT_FEELS_C` | `28` | feels-like max °C at/above → heat notes. |
+| `WEATHER_AUTO_LOCATION` | `True` | take the forecast from where the athlete last trained when that is far from the profile city (a camp/trip); `False` = profile only. |
+| `WEATHER_AWAY_MIN_KM` | `75.0` | how far the last activity's start must be from home to count as "somewhere else". |
+| `WEATHER_AWAY_MAX_AGE_DAYS` | `2` | how stale that evidence may be before the profile location wins again. |
 | `DEPLOY_ENABLED` | `False` | master on/off for the admin-only `/deploy` bot command. |
 | `SLEEP_NUDGE` | `True` | master on/off for the evening sleep-debt nudge. |
 | `SLEEP_NUDGE_HOUR` | `21` | hour (Europe/Warsaw) the evening check runs. |
@@ -278,7 +281,8 @@ app/
   templating.py         UI-02: one Jinja env for every router + `asset_v` (asset-byte digest)
   banners.py             UI-07: page notices as data — level → colour + ARIA role
   onboarding.py           pure setup checklist: which of Garmin/Claude/Telegram is still missing
-  weather.py              Open-Meteo geocode (settings) + forecast (today/week)
+  weather.py              Open-Meteo geocode (settings) + forecast (today/week) +
+                          pick_location/location_for_user (where the athlete actually is)
   charts.py                inline-SVG chart helpers (series/trend_series/run_series/
                            run_charts/bar_series/shade_zones)
   mcp_server.py            NF-08: personal read-only MCP server over the /ask tools —
@@ -432,7 +436,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   absent row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory),
   `AwayPeriod` (NF-34 — a declared vacation/trip with what the athlete will be doing).
   `ActivityRecord.zones` (NF-24) holds HR time-in-zone + training effect;
-  `ActivityRecord.route_id` → `Route` (NF-33 — a fingerprint, never a stored track).
+  `ActivityRecord.route_id` → `Route` (NF-33 — a fingerprint, never a stored track);
+  `ActivityRecord.start_lat/start_lon` a COARSE start point (≈110 m, same precision as a
+  route fingerprint) — the travel-aware weather location, never a track.
 - **DB as cache**: past days served from the DB; today always refetched.
 - **Migrations**: `./venv/bin/python -m alembic upgrade head`. Add one after model
   changes: `./venv/bin/python -m alembic revision --autogenerate -m "msg"`. **On the Pi,

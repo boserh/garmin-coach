@@ -592,19 +592,26 @@ async def _strength_details(session, user, workouts):
     return view, names
 
 
-async def _weather_chips(user: User, workouts) -> tuple:
+async def _weather_chips(session, user: User, workouts) -> tuple:
     """ST-13: compact per-date weather chips (feels-max/rain-prob/wind) for the plan's
     next ``_WEATHER_CHIP_DAYS`` days, plus which of those dates the same rule EP-13's daily
     ``weather_plan_job`` uses would flag as a conflict — so the page shows WHY a session
     might get a move proposal, without itself calling Claude or proposing anything (that
     stays the job's, single-proposal-at-a-time, territory). Best-effort: no stored location
     or an Open-Meteo failure just means an empty page section, never a broken one — same
-    live-fallback pattern as ``_strength_details``. Returns ``({date: day}, {conflict_date})``."""
-    if user.latitude is None or user.longitude is None:
-        return {}, set()
-    forecast = await _cached_forecast_week(user.latitude, user.longitude)
+    live-fallback pattern as ``_strength_details``. Returns
+    ``({date: day}, {conflict_date}, place)``.
+
+    Location comes from ``weather.location_for_user`` (not straight off the profile), so the
+    chips agree with the morning report about where the athlete currently is — and ``place``
+    goes to the template, because chips for a place the profile doesn't name read as a bug
+    unless the page says whose weather it is showing."""
+    picked = await weather.location_for_user(session, user)
+    if picked is None:
+        return {}, set(), None
+    forecast = await _cached_forecast_week(picked[0], picked[1])
     if not forecast:
-        return {}, set()
+        return {}, set(), picked[2]
     by_date = {d["date"]: d for d in forecast if d.get("date")}
     today = dt.date.today()
     window_end = (today + dt.timedelta(days=_WEATHER_CHIP_DAYS - 1)).isoformat()
@@ -617,10 +624,11 @@ async def _weather_chips(user: User, workouts) -> tuple:
         rain_prob_pct=settings.WEATHER_RAIN_PROB_PCT, wind_kmh=settings.WEATHER_WIND_KMH,
     )
     chips = {w.date: by_date[w.date] for w in workouts if w.date in by_date}
-    return chips, {c["date"] for c in conflicts}
+    return chips, {c["date"] for c in conflicts}, picked[2]
 
 
-async def fueling_today(user: User, workouts, anchor_pace: Optional[float] = None,
+async def fueling_today(session, user: User, workouts,
+                        anchor_pace: Optional[float] = None,
                         today: Optional[dt.date] = None) -> Optional[dict]:
     """UI-05: NF-11's water/carb/salt plan for TODAY's key session, or ``None``.
 
@@ -639,9 +647,12 @@ async def fueling_today(user: User, workouts, anchor_pace: Optional[float] = Non
     today_iso = today.isoformat()
     session_today = next(
         (w for w in workouts if w.date == today_iso and w.status == "planned"), None)
-    if session_today is None or user.latitude is None or user.longitude is None:
+    if session_today is None:
         return None
-    forecast = await _cached_forecast_week(user.latitude, user.longitude)
+    picked = await weather.location_for_user(session, user)
+    if picked is None:
+        return None
+    forecast = await _cached_forecast_week(picked[0], picked[1])
     day = next((d for d in (forecast or []) if d.get("date") == today_iso), None)
     if not day:
         return None
@@ -803,8 +814,9 @@ async def plan_page(
     strength_view, strength_names = await _strength_details(session, user, workouts)
     compliance = await repository.weekly_compliance(session, plan.id)
     anchor_pace = await repository.typical_run_pace(session, user.id)
-    weather_chips, weather_conflicts = await _weather_chips(user, workouts)
-    fueling = await fueling_today(user, workouts, anchor_pace)
+    weather_chips, weather_conflicts, weather_place = await _weather_chips(
+        session, user, workouts)
+    fueling = await fueling_today(session, user, workouts, anchor_pace)
     # UI-08: stepmatch.aggregate has existed since NF-14 and was shown nowhere. "78% of
     # steps in target over 4 structured sessions" is the difference between one bad day
     # and a plan that's systematically off the athlete's current pace.
@@ -831,6 +843,7 @@ async def plan_page(
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          "created": request.query_params.get("created") == "1",
          "weather_chips": weather_chips, "weather_conflicts": weather_conflicts,
+         "weather_place": weather_place,
          "fueling": fueling, "step_agg": step_agg,
          "race_pack": race_pack, "race_debrief": race_debrief,
          "load_forecast": load_forecast,
@@ -881,7 +894,8 @@ async def plan_view(
          "adjust_level": plan_adjust_level(plan), "adjust_labels": ADJUST_LABELS,
          # ST-13/EP-05: only the ACTIVE plan gets weather chips / a race-pack block — a
          # past forecast/pack means nothing on an archived plan.
-         "weather_chips": {}, "weather_conflicts": set(), "race_pack": None,
+         "weather_chips": {}, "weather_conflicts": set(), "weather_place": None,
+         "race_pack": None,
          # NF-23: the debrief IS shown on an archived plan — that's its whole point, unlike
          # the pre-race pack, which is worthless once the race is behind you.
          "race_debrief": await _race_debrief_block(session, user, plan),

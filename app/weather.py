@@ -14,6 +14,9 @@ failure so the report still goes out without weather):
 - :func:`find_weather_conflicts` — a pure, network-free filter that flags key sessions
   (tempo/intervals/long) landing on an extreme-weather day, so we only call the LLM when
   there's an actual conflict.
+- :func:`pick_location` (pure) + :func:`location_for_user` — WHERE the forecast is for.
+  The profile city is a home address; when the last activity started far enough away and
+  recently enough, that is where the athlete is now, and every weather surface follows it.
 
 All three network helpers share :func:`_get_json`, which retries the transient side of
 Open-Meteo (timeouts, 429, 5xx) with exponential backoff before giving up.
@@ -204,6 +207,12 @@ def fetch_forecast(lat: float, lon: float) -> Optional[dict]:
     code = d("weather_code")
     out = {
         "date": (daily.get("time") or [None])[0],
+        # Both come free with every forecast response and describe the POINT, not the day.
+        # They are how the report can say where it is talking about without ever carrying a
+        # coordinate (see :func:`pick_location`), and ``elev_m`` is coaching context in its
+        # own right: at 1500 m+ the same easy run costs more heart rate.
+        "tz": data.get("timezone"),
+        "elev_m": _r(data.get("elevation")),
         "t_min_c": _r(d("temperature_2m_min")),
         "t_max_c": _r(d("temperature_2m_max")),
         "feels_max_c": _r(d("apparent_temperature_max")),
@@ -216,17 +225,123 @@ def fetch_forecast(lat: float, lon: float) -> Optional[dict]:
     return out
 
 
-async def forecast_for_user(user) -> Optional[dict]:
-    """Today's forecast for a user's stored location, or ``None`` if no location is set
-    or Open-Meteo errors. Async wrapper over :func:`fetch_forecast` (offloaded to a
+def pick_location(
+    home: Optional[Tuple[float, float, Optional[str]]],
+    recent: Optional[Tuple[float, float, str]],
+    *,
+    today: dt.date,
+    max_age_days: int,
+    min_away_km: float,
+) -> Optional[Tuple[float, float, dict]]:
+    """Which coordinates today's forecast should be for — pure, no network, no DB.
+
+    The profile location is a *home* address the athlete typed once; a training camp, a
+    work trip or a week in the Alps silently keeps forecasting the wrong country's weather,
+    and the report's advice ("перенеси на ранок, вдень +31") is then not merely useless but
+    misleading. The one signal that says where the athlete actually IS, without asking them
+    anything, is where they last trained.
+
+    ``home`` is ``(lat, lon, label)`` from the profile (``None`` when unset), ``recent`` is
+    ``(lat, lon, date_iso)`` — the start of the most recent activity. Returns
+    ``(lat, lon, place)``, or ``None`` when neither is known.
+
+    Three deliberate rules:
+
+    * **Recency.** A run older than ``max_age_days`` says nothing about today — the athlete
+      has flown home since. Stale evidence loses to the profile.
+    * **Distance.** Only a gap of at least ``min_away_km`` counts as "somewhere else".
+      Below that it is the same weather, and swapping the location every day by a few
+      kilometres of GPS drift would make the report's own account of itself unstable.
+    * **No coordinates in ``place``.** It rides into the LLM context and into
+      ``report_logs``; it carries the SOURCE of the choice (and, once the forecast comes
+      back, the timezone and elevation of the point), never the point itself — the same
+      rule that keeps home addresses out of NF-33's route fingerprints.
+    """
+    if recent is not None and home is not None:
+        try:
+            age = (today - dt.date.fromisoformat(recent[2])).days
+        except (TypeError, ValueError):
+            age = None
+        away_km = _distance_km((home[0], home[1]), (recent[0], recent[1]))
+        if age is not None and 0 <= age <= max_age_days and away_km >= min_away_km:
+            return recent[0], recent[1], {
+                "source": "activity", "since": recent[2],
+                "away_km": round(away_km), "home": home[2] or None,
+            }
+    if home is not None:
+        return home[0], home[1], {"source": "profile", "name": home[2] or None}
+    if recent is not None:
+        # No profile location at all: where they trained beats no forecast whatsoever,
+        # and the recency rule still applies.
+        try:
+            age = (today - dt.date.fromisoformat(recent[2])).days
+        except (TypeError, ValueError):
+            return None
+        if 0 <= age <= max_age_days:
+            return recent[0], recent[1], {"source": "activity", "since": recent[2]}
+    return None
+
+
+async def location_for_user(session, user) -> Optional[Tuple[float, float, dict]]:
+    """:func:`pick_location` for a real user — reads the profile coordinates and the last
+    activity's start point, and returns ``(lat, lon, place)`` or ``None``.
+
+    Every weather surface (today's report, the plan's week forecast, EP-13's conflict
+    check) resolves "where am I" through here, so they cannot disagree about it.
+    ``session`` may be ``None`` for a caller that has no DB handle — that degrades to the
+    profile location, exactly as before this existed."""
+    from app.core.config import settings
+    from app.core.tz import user_today
+
+    home = None
+    if user.latitude is not None and user.longitude is not None:
+        home = (user.latitude, user.longitude, user.weather_location)
+    recent = None
+    if session is not None and settings.WEATHER_AUTO_LOCATION:
+        from app.garmin import repository
+
+        today = user_today(user)
+        since = (today - dt.timedelta(days=settings.WEATHER_AWAY_MAX_AGE_DAYS)).isoformat()
+        recent = await repository.last_activity_location(
+            session, user.id, since_date=since)
+    picked = pick_location(
+        home, recent, today=user_today(user),
+        max_age_days=settings.WEATHER_AWAY_MAX_AGE_DAYS,
+        min_away_km=settings.WEATHER_AWAY_MIN_KM,
+    )
+    if picked and picked[2].get("source") == "activity":
+        logger.info(f"WEATHER user={user.id}: using the location of the "
+                    f"{picked[2]['since']} activity (~{picked[2].get('away_km')} km from "
+                    f"{picked[2].get('home') or 'the profile location'})")
+    return picked
+
+
+async def forecast_for_user(session, user) -> Optional[dict]:
+    """Today's forecast for where the user actually is, or ``None`` if no location is
+    known or Open-Meteo errors. Async wrapper over :func:`fetch_forecast` (offloaded to a
     threadpool) shared by every daily-report channel — the morning job, bot ``/report``
-    and web ``/report.json`` (ST-03) — so the lookup lives in one place."""
-    if user.latitude is None or user.longitude is None:
+    and web ``/report.json`` (ST-03) — so the lookup lives in one place.
+
+    The returned dict carries a ``place`` block (see :func:`pick_location`) so the report
+    can say WHICH location it is talking about; without it a forecast taken 600 km from the
+    profile city reads as the app being wrong rather than as the athlete having travelled."""
+    picked = await location_for_user(session, user)
+    if picked is None:
         return None
-    wx = await run_in_threadpool(fetch_forecast, user.latitude, user.longitude)
+    lat, lon, place = picked
+    wx = await run_in_threadpool(fetch_forecast, lat, lon)
     if wx:
+        place = dict(place)
+        for key in ("tz", "elev_m"):
+            # Moved, not copied: they describe the place, and one home for a fact keeps
+            # the prompt (and the dedup-cache key) from carrying it twice.
+            value = wx.pop(key, None)
+            if value is not None:
+                place[key] = value
+        wx["place"] = place
         logger.info(f"WEATHER user={user.id}: {wx.get('summary')} "
-                    f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C")
+                    f"{wx.get('t_min_c')}–{wx.get('t_max_c')}°C "
+                    f"({place.get('source')}, {place.get('tz')})")
     return wx
 
 
@@ -322,6 +437,14 @@ def find_weather_conflicts(
         if reasons:
             out.append({"date": date_s, "type": wtype, "reasons": reasons})
     return out
+
+
+def _distance_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Great-circle distance in km. Reuses NF-33's haversine rather than a second copy —
+    the two features ask the same question about the same coordinates."""
+    from app.routes import haversine_km
+
+    return haversine_km(a, b)
 
 
 def _r(v, ndigits: int = 0):

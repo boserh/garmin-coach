@@ -6,12 +6,13 @@ and ``repository.X`` keep working unchanged. ``stats`` imports ``query_daily`` /
 ``ASK_DAILY_FIELDS`` from here."""
 import datetime as dt
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app import routes as routes_mod
 from app.db.models import (
     ActivityRecord,
     DailyMetric,
@@ -373,6 +374,57 @@ async def get_last_activity(session: AsyncSession, user_id: int):
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+def activity_start_coords(act) -> Optional[Tuple[float, float]]:
+    """Where one activity started, coarsened to ``routes.START_PRECISION``, or ``None``.
+
+    Prefers the stored ``start_lat``/``start_lon`` (every sport, filled on sync); falls
+    back to the first GPS point of the per-point series, which is what rows synced before
+    those columns existed carry — runs and rides only, and only when the watch had a fix.
+    The fallback is what makes the travel-aware weather work on the trip you are ALREADY
+    on, without a backfill run."""
+    if act is None:
+        return None
+    lat, lon = getattr(act, "start_lat", None), getattr(act, "start_lon", None)
+    if lat is None or lon is None:
+        pt = next((p for p in (act.series or [])
+                   if isinstance(p, dict)
+                   and p.get("lat") is not None and p.get("lon") is not None), None)
+        if pt is None:
+            return None
+        lat, lon = pt["lat"], pt["lon"]
+    try:
+        return (round(float(lat), routes_mod.START_PRECISION),
+                round(float(lon), routes_mod.START_PRECISION))
+    except (TypeError, ValueError):
+        return None
+
+
+async def last_activity_location(
+    session: AsyncSession, user_id: int, *, since_date: str, scan: int = 5
+) -> Optional[Tuple[float, float, str]]:
+    """``(lat, lon, date)`` of the most recent visible activity on/after ``since_date``
+    that knows where it happened, or ``None``.
+
+    Scans the newest ``scan`` activities rather than only the very last one: an evening
+    gym session or an indoor bike has no coordinates and must not hide the mountain hike
+    that came before it on the same trip."""
+    rows = list((
+        await session.execute(
+            select(ActivityRecord)
+            .where(ActivityRecord.user_id == user_id,
+                   ActivityRecord.date >= since_date,
+                   ActivityRecord.is_hidden.is_(False))   # ST-17
+            .order_by(ActivityRecord.date.desc(), ActivityRecord.id.desc())
+            .limit(scan)
+        )
+    ).scalars().all())
+    for act in rows:
+        coords = activity_start_coords(act)
+        if coords and act.date:
+            return (coords[0], coords[1], act.date)
+    return None
 
 
 async def set_subjective(
@@ -780,11 +832,19 @@ async def upsert_activity(
         "gear_id": row.get("gear_id"),
         "zones": row.get("zones"),
     }
+    # The coarse start point is FILL-ONLY, unlike everything above: the single-activity
+    # detail path and an offline import build rows that may not carry coordinates at all,
+    # and a re-sync through one of those must not erase the location an earlier full sync
+    # stored (that would silently put the weather back on the profile city).
+    coords = {k: row.get(k) for k in ("start_lat", "start_lon")
+              if row.get(k) is not None}
     if existing:
         for k, v in fields.items():
             setattr(existing, k, v)
+        for k, v in coords.items():
+            setattr(existing, k, v)
         return None
-    rec = ActivityRecord(user_id=user_id, activity_id=int(activity_id), **fields)
+    rec = ActivityRecord(user_id=user_id, activity_id=int(activity_id), **fields, **coords)
     session.add(rec)
     return rec
 

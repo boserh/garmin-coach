@@ -23,6 +23,7 @@ from weakref import WeakValueDictionary
 from fastapi.concurrency import run_in_threadpool
 
 from app import completeness, gear
+from app import routes as routes_mod
 from app.core.config import settings
 from app.garmin import client
 from app.garmin.client import _g
@@ -415,6 +416,24 @@ def _attach_detail(row: dict, activity_id, force: bool = False) -> bool:
     return False
 
 
+def _start_coords(a: dict) -> dict:
+    """The activity's start point, coarsened to ``routes.START_PRECISION`` (≈110 m), as
+    ``{"start_lat", "start_lon"}`` — or an empty dict when Garmin reports none (indoor
+    session, no GPS fix).
+
+    ``startLatitude``/``startLongitude`` already ride in the activity DTO we download
+    anyway, so this costs zero extra requests, and it covers EVERY sport — unlike the
+    per-point series, which is only fetched for runs and rides. Its consumer is the
+    travel-aware weather location (see ``app.weather.pick_location``); it is rounded here,
+    at the boundary, so nothing finer than a neighbourhood is ever stored (the NF-33 rule).
+    """
+    lat, lon = a.get("startLatitude"), a.get("startLongitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return {}
+    return {"start_lat": round(float(lat), routes_mod.START_PRECISION),
+            "start_lon": round(float(lon), routes_mod.START_PRECISION)}
+
+
 def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
     """Build clean activity rows paired with their Garmin id (for persistence).
     The row dict itself keeps the exact public shape — no id leaks into it."""
@@ -437,6 +456,7 @@ def _activity_rows(limit: int = 30) -> List[Tuple[Optional[int], dict]]:
             # downloaded and were throwing away — zero extra requests for the anaerobic-dose
             # half of the intensity budget.
             "zones": _training_effect(a),
+            **_start_coords(a),
         }
         if _attach_detail(row, a.get("activityId")):
             time.sleep(0.3)
@@ -464,6 +484,7 @@ def _row_from_detail(a: dict) -> dict:
         "max_hr": pick("maxHR"),
         "load": pick("activityTrainingLoad"),
         "zones": _training_effect(summary) or _training_effect(a),
+        **(_start_coords(summary) or _start_coords(a)),
     }
 
 
