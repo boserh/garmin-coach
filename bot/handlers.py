@@ -9,6 +9,7 @@ import datetime as dt
 import functools
 import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -2100,10 +2101,49 @@ async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ERROR HANDLER ----------
 
+# PTB's polling loop retries a dropped ``getUpdates`` forever (1s backoff, capped at 30s),
+# so ONE network error there is the system working, not news. But app.core.alerts mirrors
+# WARNING+ to the admin chat, so every hiccup on the Pi's link — a reset long-poll socket
+# arrives as a bare `httpx.ReadError` with no message at all — paged the owner about a blip
+# the retry had already absorbed. Same call as the weather retries: only a run of them that
+# keeps failing is an outage worth waking up for.
+_NET_WARN_AFTER_S = 120.0     # a streak still going this long has stopped being a blip
+_NET_STREAK_GAP_S = 300.0     # a quiet gap this long means polling recovered — count afresh
+# None, not 0.0: ``monotonic``'s epoch is arbitrary and starts near zero on a fresh
+# container, so a zero seed reads as a streak already minutes old — the first blip warns.
+_net_streak: dict[str, "float | None"] = {"first": None, "last": None}
+
+
+def _log_network_error(err: Exception, *, polling: bool) -> None:
+    """Log a Telegram network error at the level it deserves.
+
+    ``polling`` marks the ones PTB raises from its own retry loop (no update, no job): those
+    cost nothing and heal themselves. A network error while handling an update or running a
+    job is the opposite — a reply or a report that did NOT get delivered — so it always warns.
+    """
+    text = f"{type(err).__name__}: {err}"
+    if not polling:
+        logger.warning(f"TG network: {text}")
+        return
+    now = time.monotonic()
+    last = _net_streak["last"]
+    if last is None or now - last > _NET_STREAK_GAP_S:
+        _net_streak["first"] = now
+    _net_streak["last"] = now
+    if now - _net_streak["first"] >= _NET_WARN_AFTER_S:
+        # Deliberately the same text on every retry: app.core.alerts dedupes identical
+        # messages for 5 min, so an ongoing outage nags at that rate rather than once per
+        # attempt. Anything varying here (an elapsed count) would defeat the dedup.
+        logger.warning(f"TG polling down: {text}")
+    else:
+        logger.info(f"TG network: {text} — polling retry")
+
+
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     err = ctx.error
     if isinstance(err, (NetworkError, TimedOut)):
-        logger.warning(f"TG network: {type(err).__name__}: {err}")
+        _log_network_error(
+            err, polling=update is None and getattr(ctx, "job", None) is None)
     elif isinstance(err, MFARequired):
         logger.warning(f"MFA required user={err.user_id}")
         if isinstance(update, Update) and update.effective_message:

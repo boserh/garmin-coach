@@ -44,6 +44,20 @@ to the lowest `users.id`). `deploy/garmin-admin-bot.service`; `scripts/
 restart_services.sh` migrates then reloads `garmin-web` and restarts `garmin-bot` +
 `garmin-admin-bot`.
 
+**Everything logged at WARNING+ is a page.** `app.core.alerts` mirrors those records to the
+owner chat from every process, which makes the log level an operational decision, not a
+stylistic one: a line that describes a failure something else already recovered from wakes a
+human for nothing, and enough of those teach them to ignore the channel. Two have been walked
+back for exactly that — the weather retry ladder (`app/weather.py`, only the final give-up
+warns) and PTB's polling loop (`bot.handlers._log_network_error`). The latter is the sharper
+case: a dropped long-poll socket surfaces as a bare `NetworkError: httpx.ReadError:` with no
+message at all, PTB reconnects a second later (backoff 1s→30s, retries forever), and the
+owner got paged per hiccup. Now a *streak* warns — still failing `_NET_WARN_AFTER_S` into it —
+while a lone blip is INFO, and a network error carrying an update or a job still warns at
+once, because that one lost a reply or a report. The warning text is deliberately constant so
+the 5-minute dedup in `alerts` collapses an ongoing outage to one message per window; putting
+an elapsed time or a counter in it would defeat that.
+
 ## Remote deploy from Telegram (OPS-03)
 
 `app/deploy.py`: `git_pull()` (`git pull --ff-only` — a diverged history fails loudly,
