@@ -177,6 +177,19 @@ class Settings(BaseSettings):
     # 06:22 answered 200. A few minutes past the hour steps out of that stampede.
     WEATHER_PLAN_MINUTE: int = 7
     WEATHER_DECISION_DAYS: int = 3       # only propose for sessions within N days ahead
+    # Travel-aware location: which coordinates the forecast is for. The profile city is a
+    # HOME address typed once; on a training camp or a work trip every weather surface kept
+    # advising about a place the athlete left days ago. The last activity's start point is
+    # the one signal that says where they actually are, and it costs nothing to read.
+    # OFF (False) restores the pre-feature behaviour: always the profile location.
+    WEATHER_AUTO_LOCATION: bool = True
+    # How far from home counts as "somewhere else". Deliberately large: an out-of-town long
+    # run shares the city's weather, and flipping location on GPS drift would make the
+    # report contradict itself day to day.
+    WEATHER_AWAY_MIN_KM: float = 75.0
+    # How stale the evidence may be. Two days covers "yesterday I trained there"; anything
+    # older is not evidence of where today is happening (the flight home leaves no trace).
+    WEATHER_AWAY_MAX_AGE_DAYS: int = 2
     WEATHER_HEAT_FEELS_C: float = 30     # feels-like max °C at/above → heat conflict
     WEATHER_RAIN_PROB_PCT: float = 70    # precip probability % at/above → rain conflict
     WEATHER_WIND_KMH: float = 40         # max wind km/h at/above → wind conflict

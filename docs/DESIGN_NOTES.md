@@ -117,6 +117,45 @@ when a run is today/tomorrow. `fetch_forecast_week` (7 daily rows) + pure
 `find_weather_conflicts` (heat/rain/wind/icy thresholds) power EP-13 and ST-13.
 `weather` rides in the dedup-cache key.
 
+### Where the forecast is for (travel-aware location)
+
+`weather_location` is a **home** address typed once at setup, and the whole weather stack
+used to read it as "where the athlete is". On a training camp or a trip that produced a
+confident wrong answer — Gdańsk's heat and rain advised to someone in the Alps — which is
+worse than no weather at all, because it reads as the coach being broken.
+
+`pick_location` (pure) + `location_for_user` resolve it instead, and **every** weather
+surface goes through them: the morning report / `/report` / `/report.json`
+(`forecast_for_user`), EP-13's conflict job, ST-13's `/plan` chips, NF-11 fueling and the
+race stages. They cannot disagree about where "here" is.
+
+The evidence is where the athlete last trained — `activities.start_lat/start_lon`, the
+start point Garmin already ships in the activity DTO (zero extra requests, every sport,
+unlike the per-point series that only runs and rides get). Rows synced before those columns
+existed fall back to the first GPS point of `series`, so a trip already in progress works
+with no backfill. Three rules keep it honest:
+
+- **Recency** (`WEATHER_AWAY_MAX_AGE_DAYS`, 2): the flight home leaves no trace in Garmin,
+  so week-old evidence loses to the profile. Applied in SQL *and* in the pure picker.
+- **Distance** (`WEATHER_AWAY_MIN_KM`, 75): an out-of-town long run shares the city's
+  weather, and flipping location on GPS drift would make the report contradict itself day
+  to day.
+- **No coordinates leave the DB.** The `place` block that rides into the prompt and into
+  `report_logs` carries `source`/`since`/`away_km`/`home` plus the forecast point's `tz`
+  and `elev_m` — never a latitude. Stored coordinates are coarsened to
+  `routes.START_PRECISION` (≈110 m) at the sync boundary, the same rule NF-33 applies to
+  route fingerprints, and a test asserts the block against both endpoints' coordinates.
+
+`elev_m` is not decoration: `SYSTEM_*` tells the coach that at ≥1500 m the same easy run
+costs more heart rate, so a camp week doesn't read as lost fitness. The prompt also asks
+for one line naming the location when `place.source == "activity"` — the athlete has to be
+able to see *which* place the advice is about (it never guesses a city name; it has only a
+timezone and an altitude). `WEATHER_AUTO_LOCATION=False` restores profile-only behaviour.
+
+`upsert_activity` writes the coordinates **fill-only**: the single-activity detail path and
+the offline import build rows without them, and a re-sync through one of those must not
+erase the location and put the weather back on the profile city.
+
 All three network helpers go through `_get_json`, which retries the *transient* side of
 Open-Meteo (timeouts, dropped connections, 408/425/429/5xx) `_RETRIES` times with
 exponential backoff — the free service answers 503 for short stretches, and one blip used

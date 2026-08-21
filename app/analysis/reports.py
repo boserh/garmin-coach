@@ -1217,9 +1217,10 @@ async def run_race_plan(
     days_left = race_mod.days_to_target(plan.target_date)
     if days_left is not None and 0 <= days_left <= race_mod.WEATHER_WINDOW_DAYS:
         user = await session.get(User, user_id)
-        if user is not None and user.latitude is not None and user.longitude is not None:
+        picked = await weather_mod.location_for_user(session, user) if user else None
+        if picked is not None:
             week = await run_in_threadpool(
-                weather_mod.fetch_forecast_week, user.latitude, user.longitude)
+                weather_mod.fetch_forecast_week, picked[0], picked[1])
             if week:
                 forecast_day = next(
                     (d for d in week if d.get("date") == plan.target_date), None)

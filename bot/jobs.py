@@ -365,7 +365,7 @@ async def _deliver_morning(ctx, session, user: User, creds, payload, now: dt.dat
         logger.info(f"MORNING user={user.id}: today synced — sending")
         note = ""
 
-    wx = await weather.forecast_for_user(user)
+    wx = await weather.forecast_for_user(session, user)
     try:
         result = await delivery.build_report(
             session, user, payload, question=_MORNING_Q,
@@ -1308,8 +1308,12 @@ async def _weather_plan_for_user(ctx, session, user: User) -> None:
     never ping the user twice."""
     if not user.plan_adapt_enabled or not user.telegram_chat_id:
         return
-    if user.latitude is None or user.longitude is None:
+    # Travel-aware: the same "where am I actually" resolution the morning report uses, so a
+    # camp abroad gets conflicts for the mountains it is in, not for the profile city.
+    picked = await weather.location_for_user(session, user)
+    if picked is None:
         return   # no location → feature just doesn't activate (EP-13 AC)
+    lat, lon, _place = picked
     plan = await repository.get_active_plan(session, user.id)
     if plan is None:
         return
@@ -1318,9 +1322,7 @@ async def _weather_plan_for_user(ctx, session, user: User) -> None:
         return
 
     decision_days = settings.WEATHER_DECISION_DAYS
-    forecast = await run_in_threadpool(
-        weather.fetch_forecast_week, user.latitude, user.longitude
-    )
+    forecast = await run_in_threadpool(weather.fetch_forecast_week, lat, lon)
     if not forecast:
         return
     ws = await repository.upcoming_plan_workouts(session, user.id, days=decision_days + 1)
@@ -1592,12 +1594,16 @@ async def _sync_for_user(session, user: User) -> None:
 RACE_PACK_GUARD_PREFIX = race.STAGE_GUARD_PREFIX
 
 
-async def _race_forecast_for_target(user: User, plan) -> Optional[dict]:
-    """The target date's forecast row, or None (no stored location, or Open-Meteo has
-    nothing that far out yet — same "just degrade" rule as the pack's own weather block)."""
-    if user.latitude is None or user.longitude is None:
+async def _race_forecast_for_target(session, user: User, plan) -> Optional[dict]:
+    """The target date's forecast row, or None (no known location, or Open-Meteo has
+    nothing that far out yet — same "just degrade" rule as the pack's own weather block).
+
+    Uses the travel-aware location: an athlete who has already flown to the race and run a
+    shakeout there gets the race city's forecast rather than home's."""
+    picked = await weather.location_for_user(session, user)
+    if picked is None:
         return None
-    week = await run_in_threadpool(weather.fetch_forecast_week, user.latitude, user.longitude)
+    week = await run_in_threadpool(weather.fetch_forecast_week, picked[0], picked[1])
     if not week:
         return None
     return next((d for d in week if d.get("date") == plan.target_date), None)
@@ -1626,7 +1632,7 @@ async def _send_race_pack_stage(ctx, session, user: User, plan, guard_key: str) 
 
 async def _send_race_checklist_stage(ctx, session, user: User, plan, guard_key: str) -> None:
     """NF-22 T-3: deterministic prep checklist — zero Claude, zero Garmin calls."""
-    forecast_day = await _race_forecast_for_target(user, plan)
+    forecast_day = await _race_forecast_for_target(session, user, plan)
     await repository.set_state(session, user.id, guard_key, "1")
     await ctx.bot.send_message(user.telegram_chat_id, race.checklist_text(plan, forecast_day))
     logger.info(f"RACE checklist sent user={user.id} plan={plan.id}")
@@ -1637,7 +1643,7 @@ async def _send_race_brief_stage(
 ) -> None:
     """NF-22 T-1 (evening, catches up through race day): final weather + the saved pack
     quoted back + an early-bedtime nudge. Zero Claude calls — no fresh narration."""
-    forecast_day = await _race_forecast_for_target(user, plan)
+    forecast_day = await _race_forecast_for_target(session, user, plan)
     # NF-23: keep race-day weather for the debrief. After the race the forecast endpoint no
     # longer carries that date, and "it was 29°C" is half the explanation of a fade — so the
     # one moment we hold the number is here, the evening before.

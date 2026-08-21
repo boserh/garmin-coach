@@ -341,6 +341,49 @@ def test_plan_page_shows_weather_chip_and_conflict(auth_client, monkeypatch):
     assert "wx-conflict" in view   # tempo session on a 34° day → flagged, same as the job
 
 
+def test_plan_page_says_when_the_weather_is_not_the_profile_city(auth_client):
+    """The travel-aware location, from the page's side: chips for a place the profile
+    doesn't name read as a bug unless the page says whose weather it is showing."""
+    import datetime as dt
+
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+    from app.routers import plan as plan_router
+
+    uid = _user_id("t@example.com")
+    today = dt.date.today()
+    tomorrow = (today + dt.timedelta(days=1)).isoformat()
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="faster_5k", goal_label="Швидше 5 км", target_date=None,
+                start_date=today.isoformat(), days_per_week=3, intensity="moderate",
+                intake={}, summary="", workouts=[PlanWorkout(
+                    date=tomorrow, week=1, type="easy", dist_km=6.0, description="легко")])
+            u = await users.get_by_email(s, "t@example.com")
+            u.latitude, u.longitude, u.weather_location = 54.372, 18.638, "Gdańsk"
+            # Yesterday's session started in the Alps — that is where the athlete is.
+            await repository.upsert_activity(s, uid, 777, {
+                "date": (today - dt.timedelta(days=1)).isoformat(), "type": "running",
+                "start_lat": 47.259, "start_lon": 11.4})
+            await s.commit()
+
+    anyio.run(seed)
+
+    forecast = [{
+        "date": tomorrow, "t_min_c": 6, "t_max_c": 17, "feels_max_c": 15,
+        "precip_mm": 0, "precip_prob_pct": 5, "wind_max_kmh": 10, "code": 0,
+        "summary": "ясно",
+    }]
+    with patch.object(plan_router.weather, "fetch_forecast_week", return_value=forecast):
+        view = auth_client.get("/plan").text
+
+    assert "🌡️15°" in view
+    assert "за місцем останнього тренування" in view
+    assert "Gdańsk" in view          # names what it is NOT using, so the note is checkable
+
+
 def test_plan_page_shows_race_pack_block_when_close(auth_client):
     """EP-05: a target race within race.PLAN_BLOCK_DAYS + a previously logged race-pack
     report renders the standing block; a report_logs row from a DIFFERENT kind never does."""

@@ -297,7 +297,7 @@ async def dashboard(
         # UI-05: NF-11's water/carbs line for today's key session, from the same
         # memoised forecast /plan already uses (no extra Open-Meteo call on a reload).
         fueling = await fueling_today(
-            user, await repository.list_workouts(session, plan.id),
+            session, user, await repository.list_workouts(session, plan.id),
             await repository.typical_run_pace(session, user.id))
 
     activities = _activity_cards(await repository.list_activities(session, user.id, n=ACTIVITIES_N))

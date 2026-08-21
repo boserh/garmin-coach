@@ -69,8 +69,11 @@
       <label for="weather_location">Локація для погоди</label>
       <input id="weather_location" name="weather_location" type="text" autocomplete="off"
              value="{{ weather_location }}" placeholder="напр. Wrocław, Київ">
-      <div class="hint">Місто для прогнозу погоди в ранковому звіті (поради до пробіжки з
-        урахуванням спеки/дощу/вітру). Порожнє — без погоди.
+      <div class="hint">Домашнє місто для прогнозу погоди в ранковому звіті (поради до
+        пробіжки з урахуванням спеки/дощу/вітру). Порожнє — без погоди.
+        Якщо останнє тренування (за {{ weather_away_days }} дн.) стартувало далі ніж
+        {{ weather_away_km }} км звідси, погода береться звідти — на час поїздок міняти
+        це поле не треба.
         {% if geo == "fail" %}<span class="err">Не вдалось знайти це місто — перевір назву.</span>{% endif %}</div>
 
       <label for="timezone">Таймзона</label>
