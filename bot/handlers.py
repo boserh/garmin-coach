@@ -2054,7 +2054,8 @@ async def deploy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("❌ Скасувати", callback_data="deploy:no"),
     ]])
     await update.message.reply_text(
-        "🚀 Задеплоїти зараз? git pull + перезапуск garmin-bot і garmin-web.",
+        "🚀 Задеплоїти зараз? git pull + міграція БД (з бекапом) + перезапуск "
+        "garmin-bot і garmin-web.",
         reply_markup=kb,
     )
 
@@ -2087,6 +2088,15 @@ async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(_fmt_deploy_failure("git pull провалився", pull))
         return
     await q.message.reply_text(f"📥 {pull.output[-1500:] or '(без змін)'}")
+    # Between the new code and the restart: migrate, with a rollback copy taken first when
+    # anything is pending (OPS-02). Done here, not left to restart_services.sh, so a failed
+    # backup is visible to whoever pressed the button instead of only in the journal — and
+    # so a deploy that must not proceed stops here, with the old code still serving.
+    migrate = await deploy_ops.migrate()
+    if not migrate.ok:
+        await q.message.reply_text(_fmt_deploy_failure("Міграція не виконана", migrate))
+        return
+    await q.message.reply_text(f"🗃 {migrate.output[-1500:] or '(без міграцій)'}")
     await q.message.reply_text("🔄 Перезапускаю сервіси…")
     restart = await deploy_ops.restart_services()
     if not restart.ok:

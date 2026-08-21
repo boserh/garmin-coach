@@ -11,6 +11,7 @@ Usage::
     ./venv/bin/python -m scripts.backup_db                 # → backups/garmin-YYYY-MM-DD.db
     ./venv/bin/python -m scripts.backup_db --dir /mnt/usb  # backups elsewhere
     ./venv/bin/python -m scripts.backup_db --rsync-dest user@host:/backups/
+    ./venv/bin/python -m scripts.backup_db --pre-migration # rollback copy before alembic
 
 Notes / pitfalls (see docs/backlog/archive/OPS-02-sqlite-backups.md):
 
@@ -283,6 +284,40 @@ def _rsync(backup_dir: Path, dest: str, *, check_off_sd: bool = True) -> None:
             raise RsyncFailed(reason) from exc
 
 
+# A rollback copy taken immediately before `alembic upgrade head` (see scripts/migrate.py).
+# Named apart from the rotated daily set on purpose — twice:
+#   * it must not overwrite ``garmin-<today>.db``, or a deploy would replace last night's
+#     clean copy with one taken seconds before the very migration it protects against;
+#   * ``rotate()``'s regex only matches the daily name, so these would otherwise never be
+#     pruned — hence their own small retention below.
+PREMIGRATE_PREFIX = "garmin-premigrate-"
+PREMIGRATE_KEEP = 3
+
+
+def pre_migration_backup(backup_dir: Path, *, keep: int = PREMIGRATE_KEEP,
+                         now: datetime | None = None) -> Path:
+    """A rollback copy taken right before a migration, kept apart from the nightly set.
+
+    Deliberately does **not** write the OPS-08 freshness marker. That marker answers one
+    question — "is the SCHEDULED backup still happening, and is it still landing off the
+    SD card" — and an ad-hoc copy taken by a deploy must not answer it: deploys are
+    frequent enough to keep `age_hours` green for weeks after the nightly timer died, and
+    writing `rsync_ok: null` here would erase a recorded `rsync_ok: false`, silencing the
+    one warning that says the off-SD copy is broken. Doesn't rsync either, for the same
+    reason: this copy exists to survive the next 30 seconds, not the SD card.
+    """
+    src = sqlite_path_from_url(settings.DATABASE_URL)
+    if not src.exists():
+        raise FileNotFoundError(f"database file not found: {src}")
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = (now or datetime.now()).strftime("%Y-%m-%dT%H%M%S")
+    dest = backup_dir / f"{PREMIGRATE_PREFIX}{stamp}.db"
+    make_backup(src, dest)
+    for old in sorted(backup_dir.glob(f"{PREMIGRATE_PREFIX}*.db"), reverse=True)[keep:]:
+        old.unlink()
+    return dest
+
+
 def _write_marker(backup_dir: Path, dest: Path, *, rsync_ok: bool | None,
                   rsync_error: str | None = None) -> None:
     """OPS-08: record that a backup just succeeded, so a freshness check elsewhere
@@ -351,16 +386,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--weekly", type=int, default=4, help="weekly copies to keep")
     ap.add_argument("--rsync-dest", help="rsync the fresh backup here (off-SD copy)")
     ap.add_argument(
+        "--pre-migration", action="store_true",
+        help="take a rollback copy for an imminent migration (own name + retention, no "
+             "freshness marker, no rsync) instead of a rotated nightly backup",
+    )
+    ap.add_argument(
         "--allow-same-fs", action="store_true",
         help="accept an --rsync-dest on the same filesystem as --dir (default: refuse — "
              "an unmounted mount point makes the off-SD copy land back on the SD card)",
     )
     args = ap.parse_args(argv)
     try:
-        dest = run(
-            Path(args.dir), daily=args.daily, weekly=args.weekly,
-            rsync_dest=args.rsync_dest, check_off_sd=not args.allow_same_fs,
-        )
+        if args.pre_migration:
+            dest = pre_migration_backup(Path(args.dir))
+        else:
+            dest = run(
+                Path(args.dir), daily=args.daily, weekly=args.weekly,
+                rsync_dest=args.rsync_dest, check_off_sd=not args.allow_same_fs,
+            )
     except Exception as exc:  # noqa: BLE001 — a cron line wants a clear message + nonzero exit
         print(f"backup failed: {exc}", file=sys.stderr)
         return 1

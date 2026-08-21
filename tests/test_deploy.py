@@ -62,6 +62,26 @@ async def test_restart_services_uses_systemd_run_transient_unit(monkeypatch):
     )
 
 
+async def test_migrate_runs_the_safe_migration_step_in_process(monkeypatch):
+    """Not `alembic upgrade head`: scripts/migrate.py is what takes the rollback copy
+    first (OPS-02). And it runs from THIS process — the restart script's own copy of the
+    step lives in a fire-and-forget systemd unit whose output nobody sees."""
+    import sys
+
+    seen = {}
+
+    async def fake_exec(*args, **kwargs):
+        seen["args"] = args
+        seen["cwd"] = kwargs.get("cwd")
+        return _FakeProc(0, b"==> no pending migration")
+    monkeypatch.setattr(deploy.asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await deploy.migrate()
+    assert result.ok is True
+    assert seen["args"] == (sys.executable, "-m", "scripts.migrate", "--deploy")
+    assert seen["cwd"] == str(deploy.REPO_ROOT)
+
+
 # --- bot handlers: /deploy + deploy:yes/no callback ---------------------------
 
 class _FakeMessage:
@@ -182,16 +202,23 @@ async def test_deploy_callback_yes_runs_pull_then_restart(_single_session, monke
         calls.append("pull")
         return deploy.CommandResult(ok=True, output="Updating abc..def")
 
+    async def fake_migrate():
+        calls.append("migrate")
+        return deploy.CommandResult(ok=True, output="==> no pending migration")
+
     async def fake_restart():
         calls.append("restart")
         return deploy.CommandResult(ok=True, output="")
 
     monkeypatch.setattr(h.deploy_ops, "git_pull", fake_pull)
+    monkeypatch.setattr(h.deploy_ops, "migrate", fake_migrate)
     monkeypatch.setattr(h.deploy_ops, "restart_services", fake_restart)
 
     await h.deploy_callback(SimpleNamespace(callback_query=q), None)
 
-    assert calls == ["pull", "restart"]
+    # The migration goes between the new code and the restart: after the pull (it may be
+    # what the pull just brought in) and before the services come back on the new schema.
+    assert calls == ["pull", "migrate", "restart"]
     assert q.edited[0] == "⏳ git pull…"
     joined = "\n".join(r[0] for r in q.message.replies)
     assert "Updating abc..def" in joined
@@ -211,16 +238,21 @@ async def test_deploy_callback_yes_stops_on_pull_failure(_single_session, monkey
         calls.append("pull")
         return deploy.CommandResult(ok=False, output="fatal: conflict")
 
+    async def fake_migrate():
+        calls.append("migrate")
+        return deploy.CommandResult(ok=True, output="")
+
     async def fake_restart():
         calls.append("restart")
         return deploy.CommandResult(ok=True, output="")
 
     monkeypatch.setattr(h.deploy_ops, "git_pull", fake_pull)
+    monkeypatch.setattr(h.deploy_ops, "migrate", fake_migrate)
     monkeypatch.setattr(h.deploy_ops, "restart_services", fake_restart)
 
     await h.deploy_callback(SimpleNamespace(callback_query=q), None)
 
-    assert calls == ["pull"]                # restart never runs after a failed pull
+    assert calls == ["pull"]                # nothing else runs after a failed pull
     assert "провалився" in q.message.replies[-1][0]
 
 
@@ -240,10 +272,14 @@ async def test_deploy_callback_restart_failure_with_empty_output_shows_code(
     async def fake_pull():
         return deploy.CommandResult(ok=True, output="Already up to date.")
 
+    async def fake_migrate():
+        return deploy.CommandResult(ok=True, output="")
+
     async def fake_restart():
         return deploy.CommandResult(ok=False, output="", returncode=-15)
 
     monkeypatch.setattr(h.deploy_ops, "git_pull", fake_pull)
+    monkeypatch.setattr(h.deploy_ops, "migrate", fake_migrate)
     monkeypatch.setattr(h.deploy_ops, "restart_services", fake_restart)
 
     await h.deploy_callback(SimpleNamespace(callback_query=q), None)
@@ -252,3 +288,42 @@ async def test_deploy_callback_restart_failure_with_empty_output_shows_code(
     assert "не вдався" in last
     assert "код -15" in last
     assert last.strip().endswith(":") is False   # never a bare, content-less header
+
+
+async def test_deploy_callback_stops_when_the_migration_fails(_single_session, monkeypatch):
+    """A migration that could not take its rollback copy (or that failed outright) must not
+    be followed by a restart: leaving the OLD code running against the OLD schema is the
+    safe state, and the admin who pressed the button is the one who has to hear about it —
+    the restart script's own copy of this step would only reach the journal."""
+    from bot import handlers as h
+
+    user = await _mk_user(_single_session, is_admin=True)
+    q = _FakeQuery("deploy:yes", user.telegram_chat_id)
+
+    calls = []
+
+    async def fake_pull():
+        calls.append("pull")
+        return deploy.CommandResult(ok=True, output="Updating abc..def")
+
+    async def fake_migrate():
+        calls.append("migrate")
+        return deploy.CommandResult(
+            ok=False, returncode=1,
+            output="backup failed: no space left on device\n"
+                   "refusing to migrate without a rollback copy.")
+
+    async def fake_restart():
+        calls.append("restart")
+        return deploy.CommandResult(ok=True, output="")
+
+    monkeypatch.setattr(h.deploy_ops, "git_pull", fake_pull)
+    monkeypatch.setattr(h.deploy_ops, "migrate", fake_migrate)
+    monkeypatch.setattr(h.deploy_ops, "restart_services", fake_restart)
+
+    await h.deploy_callback(SimpleNamespace(callback_query=q), None)
+
+    assert calls == ["pull", "migrate"]          # the services stay on the old code
+    last = q.message.replies[-1][0]
+    assert "Міграція не виконана" in last
+    assert "no space left" in last               # the REASON reaches Telegram, not just a code

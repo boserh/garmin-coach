@@ -27,7 +27,12 @@ cd "$REPO_ROOT"
 # every /deploy on a host where the real user is something else (set -e aborts right here,
 # before the restart below ever runs — see OPS-03 postmortem).
 REPO_OWNER="$(stat -c '%U' "$REPO_ROOT")"
-sudo -u "$REPO_OWNER" "$REPO_ROOT/venv/bin/python" -m alembic upgrade head
+# Not a bare `alembic upgrade head`: scripts/migrate.py takes a rollback copy first when a
+# migration is actually pending (OPS-02's rule, which this path used to walk around), and
+# does nothing at all when it isn't — so an ordinary code-only deploy costs no SD writes.
+# Idempotent on purpose: /deploy already ran the same step with its output visible in
+# Telegram, and this is the safety net for a hand-run of this script.
+sudo -u "$REPO_OWNER" "$REPO_ROOT/venv/bin/python" -m scripts.migrate --deploy
 /bin/systemctl reload garmin-web.service
 # garmin-mcp (NF-08 http transport) is OPTIONAL: it needs the `mcp` extra and an
 # MCP_PUBLIC_URL, so most hosts don't run it. Restart it only where the unit actually

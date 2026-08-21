@@ -23,6 +23,7 @@ of special-casing signal-based return codes.
 """
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,22 @@ async def git_pull() -> CommandResult:
     # --ff-only: a diverged history fails loudly instead of silently creating a merge
     # commit the admin didn't ask for — SSH in and sort it out by hand instead.
     return await _run("git", "pull", "--ff-only", cwd=REPO_ROOT)
+
+
+async def migrate() -> CommandResult:
+    """Back up (only if a migration is actually pending) and `alembic upgrade head`.
+
+    Run from the bot process rather than left to ``restart_services.sh``, even though the
+    script runs the same step: the script executes inside a transient systemd unit that
+    ``systemd-run`` fires and forgets, so its output reaches the journal and nobody else.
+    A migration is the one part of a deploy that can lose data, and "the backup failed, so
+    I did not migrate" has to reach the admin who pressed the button — not sit in
+    ``journalctl`` behind a green "✅ Рестарт запущено".
+
+    Same interpreter as this process (``sys.executable`` → the venv), same user, so no
+    sudo and no root-owned files in the checkout.
+    """
+    return await _run(sys.executable, "-m", "scripts.migrate", "--deploy", cwd=REPO_ROOT)
 
 
 async def restart_services() -> CommandResult:

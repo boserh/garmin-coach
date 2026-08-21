@@ -442,10 +442,20 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 - **DB as cache**: past days served from the DB; today always refetched.
 - **Migrations**: `./venv/bin/python -m alembic upgrade head`. Add one after model
   changes: `./venv/bin/python -m alembic revision --autogenerate -m "msg"`. **On the Pi,
-  back up first** — `scripts/migrate.sh` (backs up, then upgrades) or run
-  `scripts/backup_db.py` by hand before a bare `alembic upgrade head`.
+  never migrate without a rollback copy** — `scripts/migrate.py` is the one implementation
+  of that rule (`scripts/migrate.sh` is its wrapper, `--deploy` its no-op-when-nothing-is-
+  pending mode); a failed backup aborts before alembic runs.
+  **`/deploy` migrates by itself** — `git pull` → `scripts.migrate --deploy` (pre-migration
+  backup + upgrade, reported in Telegram) → restart, and `restart_services.sh` runs the same
+  step again as a safety net for a hand-run (it no-ops when the bot already did it). So a
+  deploy needs NO manual migration step; run `scripts/migrate.sh` by hand only when you want
+  a rotated nightly-set backup as well, or when migrating outside a deploy.
 - **Backups (OPS-02)**: `scripts/backup_db.py` — online-consistent copy (`VACUUM INTO`,
   not `cp`) to `backups/garmin-YYYY-MM-DD.db`, rotating 7 daily + 4 weekly.
+  `--pre-migration` is the deploy-time rollback copy instead: its own name
+  (`garmin-premigrate-<ts>.db`) and retention (3), no rsync, and deliberately **no OPS-08
+  marker** — deploys are frequent enough to report a dead nightly timer as fresh, and a
+  `rsync_ok: null` write would erase a recorded off-SD failure.
   `deploy/systemd/garmin-backup.{service,timer}` runs it nightly; `--rsync-dest` copies
   off the SD card — and a **local** destination is verified to sit on a different
   filesystem afterwards (`_check_off_sd`, `--allow-same-fs` opts out): an unmounted mount
