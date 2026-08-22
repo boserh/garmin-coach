@@ -71,14 +71,41 @@ deploy-restart --collect ...` so the script runs as a PID1 child in its own cgro
 (off by default), explicit ✅/❌ confirm before anything runs; every call logged
 server-side regardless of what reaches Telegram.
 
+**The deploy used to migrate with no backup.** OPS-02's rule — never `alembic upgrade head`
+on the live DB without a fresh copy to roll back to — lived in `scripts/migrate.sh`, while
+the path anyone actually uses (`/deploy` → `restart_services.sh`) called alembic directly.
+A written-down rule that the common path walks around is not a rule. Both now go through
+`scripts/migrate.py`:
+
+- `--deploy` first asks whether anything is *pending* (reads `alembic_version` out of the
+  SQLite file read-only — no async engine, no write lock, no half-imported app). Nothing
+  pending ⇒ it copies nothing and migrates nothing, so an ordinary code-only deploy costs
+  no SD writes. Something pending ⇒ `backup_db.pre_migration_backup` first, and a failed
+  backup returns nonzero *before* alembic runs.
+- The copy is kept apart from the nightly set (`garmin-premigrate-<ts>.db`, keep 3): it
+  must not overwrite `garmin-<today>.db` (that would replace last night's clean copy with
+  one taken seconds before the migration it protects against), and `rotate()`'s regex would
+  never prune it. It also does **not** write the OPS-08 marker — that marker answers "is the
+  *scheduled* backup alive and still landing off the card", and deploy-time copies would
+  keep it green for weeks after the timer died (and `rsync_ok: null` would erase a recorded
+  `false`).
+- `deploy_callback` runs the step itself (`deploy.migrate()`, same venv interpreter, same
+  user, no sudo) between the pull and the restart, and stops the deploy if it fails —
+  old code against old schema is the safe state. `restart_services.sh` still runs the same
+  command as a safety net for a hand-run, where it no-ops. The reason it can't be left to
+  the script alone: `systemd-run` fires that unit and forgets it, so "the backup failed, so
+  I did not migrate" would reach the journal and nobody else, behind a green "✅ Рестарт
+  запущено".
+
 **Zero-downtime web reload**: `garmin-web.service` runs `gunicorn "app.main:create_app()"
 -k uvicorn.workers.UvicornWorker --workers 2` instead of bare `uvicorn` — the gunicorn
 master owns the listen socket for the unit's whole life. `restart_services.sh` sends it
 `systemctl reload` (→ `ExecReload=kill -HUP $MAINPID`), which makes gunicorn spawn fresh
 workers (re-importing `app.main`, so new code) and only THEN gracefully drain+kill the
 old ones — the socket never closes, so `/dashboard`/`/report.json`/etc. never 502 mid-
-deploy. `reload` does **not** run `ExecStartPre`, so the script runs `alembic upgrade
-head` itself (as `sudo -u pi`, since the script itself runs as root) before reloading.
+deploy. `reload` does **not** run `ExecStartPre`, so the script runs the migration step
+itself (`scripts.migrate --deploy`, as `sudo -u <repo owner>`, since the script itself runs
+as root) before reloading.
 `garmin-bot`/`garmin-admin-bot` stay plain `systemctl restart --no-block` — they're
 single-process Telegram long-pollers with no in-flight HTTP request to protect, so a
 few seconds offline is harmless (auto-reconnects). Multiple gunicorn workers meant
