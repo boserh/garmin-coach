@@ -43,12 +43,89 @@ _FITNESS_KEYS = (
     "resting_hr", "spo2_avg", "respiration_avg", "breathing_disruption_sev",
 )
 
+# The half of _FITNESS_KEYS Garmin recomputes EVERY day — its Training Readiness DTO
+# (score/level plus the load block). The rest of the snapshot is fine to coalesce over
+# three weeks (VO2max and race predictions only move after a qualifying activity, the
+# HRV baseline corridor drifts over weeks), but these describe "how ready am I right
+# now", and SYSTEM_PLAN_ADAPT turns a low readiness_score straight into a deload.
+# Coalesced without a bound, a single bad day could still be presented as today's state
+# three weeks later — so they carry a max age of their own.
+_FITNESS_VOLATILE_KEYS = frozenset({
+    "readiness_score", "readiness_level",
+    "recovery_time_h", "acute_load", "acwr_pct", "acwr_feedback",
+})
 
-def _build_fitness_snapshot(ex: dict) -> Optional[dict]:
+# How old a volatile value may be before it is dropped from the snapshot instead of
+# being passed off as current. Three days keeps a normal gap (a night without the watch)
+# usable while making "readiness from a fortnight ago" impossible.
+FITNESS_VOLATILE_MAX_AGE_DAYS = 3
+
+
+def _age_days(date_s: Optional[str], today: dt.date) -> Optional[int]:
+    try:
+        return (today - dt.date.fromisoformat(date_s)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_fitness_snapshot(ex: dict, dates: Optional[dict] = None, *,
+                            today: Optional[dt.date] = None) -> Optional[dict]:
     """Filter a get_recent_extra coalesced dict down to the fitness keys used in analysis.
-    Returns None when no relevant data is present (new user, no history)."""
+    Returns None when no relevant data is present (new user, no history).
+
+    ``dates`` — ``{key: "YYYY-MM-DD"}``, the day each coalesced value came from (from
+    ``repository.get_recent_extra_dated``). With it, the volatile keys above are dropped
+    once they are older than ``FITNESS_VOLATILE_MAX_AGE_DAYS``, and a snapshot whose
+    volatile block is not from today gains an ``asof`` date so the prompt can say how
+    fresh "readiness" actually is. Without it the snapshot is built exactly as before —
+    the callers that have no session to fetch dates with keep working unchanged.
+    """
     snap = {k: ex[k] for k in _FITNESS_KEYS if ex.get(k) is not None}
-    return snap or None
+    if not dates:
+        return snap or None
+
+    today = today or dt.date.today()
+    ages = {}
+    for key in list(snap):
+        if key not in _FITNESS_VOLATILE_KEYS:
+            continue
+        age = _age_days(dates.get(key), today)
+        if age is None or age > FITNESS_VOLATILE_MAX_AGE_DAYS:
+            del snap[key]          # stale (or undatable) — absent beats wrong
+        else:
+            # Daily rows are keyed by the PROCESS date while ``today`` may be the
+            # athlete's own (ST-14), so a value can look like it is from tomorrow.
+            # Clamp rather than stamp a snapshot as older-than-fresh in reverse.
+            ages[key] = max(age, 0)
+    if not snap:
+        return None
+    if ages and max(ages.values()) > 0:
+        # Stamp the OLDEST surviving volatile value: the snapshot is only as current as
+        # its weakest part, and no stamp at all must keep meaning "this is today".
+        oldest = max(ages, key=lambda k: ages[k])
+        snap["asof"] = dates[oldest]
+    return snap
+
+
+async def build_fitness_context(
+    session, user_id: int, *, days: int = 21, today: Optional[dt.date] = None
+) -> Optional[dict]:
+    """The Garmin fitness snapshot every LLM surface feeds Claude: coalesce the last
+    ``days`` of ``DailyMetric.extra``, then hand it to :func:`_build_fitness_snapshot`
+    WITH the per-value dates, so a stale readiness can't pose as today's.
+
+    One helper rather than a fetch+build pair at each call site — the same reason
+    ``profile_db.build_context`` exists: "what the coach knows" must not drift between
+    the morning report, the digest and the adaptation.
+    """
+    from app.garmin import repository
+
+    dated = await repository.get_recent_extra_dated(session, user_id, days, today)
+    return _build_fitness_snapshot(
+        {k: v for k, (v, _d) in dated.items()},
+        {k: d for k, (_v, d) in dated.items()},
+        today=today,
+    )
 
 
 MULTISPORT_WEEKS = 6   # how many ISO weeks of cross-sport load to feed as context (NF-05)

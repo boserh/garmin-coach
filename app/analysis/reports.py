@@ -19,7 +19,6 @@ from app.analysis.cache import (
     _activity_cache_key,
     _as_dict,
     _ask_cache_key,
-    _build_fitness_snapshot,
     _build_multisport,
     _cache_key,
     _checkup_cache_key,
@@ -30,6 +29,7 @@ from app.analysis.cache import (
     _race_debrief_cache_key,
     _supplement_cache_key,
     _wrapped_cache_key,
+    build_fitness_context,
 )
 from app.analysis.client import (
     MODEL_ACTIVITY,
@@ -388,8 +388,7 @@ async def run_analysis(
                     }.items() if v is not None}
                     for w in ws
                 ]
-            ex = await repository.get_recent_extra(session, user_id)
-            fitness = _build_fitness_snapshot(ex)
+            fitness = await build_fitness_context(session, user_id, today=today_d)
             # Fresh personal records (EP-14) — mention a just-set PB in the report.
             from app import records as records_mod
             recent_pr = await repository.recent_records(session, user_id, days=RECORDS_CONTEXT_DAYS)
@@ -1016,8 +1015,7 @@ async def run_digest(
 
     weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=DIGEST_VOLUME_WEEKS)
     recovery = await repository.read_history(session, user_id, days=DIGEST_RECOVERY_DAYS)
-    ex = await repository.get_recent_extra(session, user_id)
-    fitness = _build_fitness_snapshot(ex)
+    fitness = await build_fitness_context(session, user_id, today=today)
     multisport = await _build_multisport(session, user_id)
     month_records = records_mod.to_context(
         await repository.recent_records(session, user_id, days=DIGEST_RECORDS_DAYS)
@@ -1042,7 +1040,8 @@ async def run_digest(
     goal_projection = None
     if plan is not None:
         compliance = _recent_compliance(
-            await repository.weekly_compliance(session, plan.id), weeks=DIGEST_COMPLIANCE_WEEKS
+            await repository.weekly_compliance(session, plan.id, today),
+            weeks=DIGEST_COMPLIANCE_WEEKS, today=today,
         ) or None
         goal = {k: v for k, v in {
             "goal": plan.goal,
@@ -1211,7 +1210,7 @@ async def run_race_plan(
         {"date": w.date, "type": w.type, "dist_km": w.dist_km, "description": w.description}
         for w in workouts if w.date <= plan.target_date
     ]
-    fitness = _build_fitness_snapshot(await repository.get_recent_extra(session, user_id))
+    fitness = await build_fitness_context(session, user_id)
 
     forecast_day = None
     days_left = race_mod.days_to_target(plan.target_date)
@@ -1297,7 +1296,7 @@ async def build_profile_context(session, *, user_id: int) -> Optional[dict]:
     plan = await repository.get_active_plan(session, user_id)
     if plan is not None:
         compliance = _recent_compliance(
-            await repository.weekly_compliance(session, plan.id), weeks=1)
+            await repository.weekly_compliance(session, plan.id, today), weeks=1, today=today)
         if compliance:
             week["compliance"] = compliance
     subjective = await repository.recent_subjective_runs(

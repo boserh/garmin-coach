@@ -188,6 +188,62 @@ def test_build_fitness_snapshot_known_keys_pass_through():
     assert snap == ex
 
 
+# ---- fitness snapshot freshness (a coalesced readiness has an age) ----------
+
+_TODAY = __import__("datetime").date(2026, 8, 19)
+
+
+def _ago(days):
+    import datetime as dt
+    return (_TODAY - dt.timedelta(days=days)).isoformat()
+
+
+def test_stale_volatile_metrics_are_dropped_from_the_snapshot():
+    """Coalescing 21 days newest-first is right for VO2max and the HRV corridor; the same
+    pass also carries Garmin's DAILY readiness block, and SYSTEM_PLAN_ADAPT turns a low
+    readiness_score straight into a deload. One bad day three weeks ago must not still be
+    presented as today's state."""
+    from app.analysis.service import _build_fitness_snapshot
+    ex = {"vo2max": 46.5, "readiness_score": 21, "recovery_time_h": 72, "acwr_pct": 145}
+    dates = {"vo2max": _ago(18), "readiness_score": _ago(18),
+             "recovery_time_h": _ago(18), "acwr_pct": _ago(18)}
+    snap = _build_fitness_snapshot(ex, dates, today=_TODAY)
+    assert snap == {"vo2max": 46.5}          # the slow-moving half survives, the rest goes
+
+
+def test_fresh_volatile_metrics_are_kept_and_stamped_with_their_date():
+    from app.analysis.service import _build_fitness_snapshot
+    ex = {"readiness_score": 44, "acwr_pct": 120}
+    dates = {"readiness_score": _ago(2), "acwr_pct": _ago(1)}
+    snap = _build_fitness_snapshot(ex, dates, today=_TODAY)
+    assert snap["readiness_score"] == 44
+    assert snap["asof"] == _ago(2)           # the OLDEST surviving value dates the block
+
+
+def test_todays_snapshot_carries_no_asof_stamp():
+    """No stamp has to keep meaning "this is today" — otherwise every report pays tokens
+    to say nothing, and a real staleness note stops standing out."""
+    from app.analysis.service import _build_fitness_snapshot
+    ex = {"readiness_score": 78, "vo2max": 46.5}
+    dates = {"readiness_score": _TODAY.isoformat(), "vo2max": _ago(9)}
+    snap = _build_fitness_snapshot(ex, dates, today=_TODAY)
+    assert "asof" not in snap
+
+
+def test_snapshot_without_dates_is_unchanged():
+    """Callers with no session to fetch dates with keep the old behaviour exactly."""
+    from app.analysis.service import _build_fitness_snapshot
+    ex = {"readiness_score": 21, "vo2max": 46.5}
+    assert _build_fitness_snapshot(ex) == ex
+
+
+def test_undatable_volatile_value_is_dropped_not_trusted():
+    from app.analysis.service import _build_fitness_snapshot
+    snap = _build_fitness_snapshot(
+        {"readiness_score": 21, "vo2max": 46.5}, {"vo2max": _ago(3)}, today=_TODAY)
+    assert snap == {"vo2max": 46.5}
+
+
 def test_get_client_caches_per_key(monkeypatch):
     import anthropic
 

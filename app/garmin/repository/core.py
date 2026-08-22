@@ -566,16 +566,24 @@ async def read_fitness_history(
     return out
 
 
-async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) -> dict:
-    """Merge the last ``days`` days of ``extra`` into one dict — the most recent non-null
-    value wins per key. Garmin metrics refresh at different cadences (race predictions &
-    VO2max ~weekly, Training Readiness daily, HRV/RHR baselines slowly), so any single
-    day rarely carries them all; coalescing gives plan generation the freshest value of
-    each (race predictions, VO2max, endurance, ACWR/load, baselines, …)."""
-    cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+async def get_recent_extra_dated(
+    session: AsyncSession, user_id: int, days: int = 21,
+    today: Optional[dt.date] = None,
+) -> dict:
+    """Same coalescing as :func:`get_recent_extra`, but every value keeps the date it
+    came from: ``{key: (value, "YYYY-MM-DD")}``.
+
+    The date is what makes a coalesced snapshot honest. Merging N days newest-first is
+    right for the metrics Garmin refreshes slowly (race predictions, VO2max, HRV
+    baselines), but the same pass also carries the DAILY ones (Training Readiness and
+    its load block) — and a value that is three weeks old then reads exactly like
+    today's. Callers that turn those into a decision must be able to see the age;
+    ``app.analysis.cache._build_fitness_snapshot`` is the one that does.
+    """
+    cutoff = ((today or dt.date.today()) - dt.timedelta(days=days - 1)).isoformat()
     rows = (
         await session.execute(
-            select(DailyMetric.extra)
+            select(DailyMetric.date, DailyMetric.extra)
             .where(
                 DailyMetric.user_id == user_id,
                 DailyMetric.extra.is_not(None),
@@ -583,15 +591,29 @@ async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21) 
             )
             .order_by(DailyMetric.date.desc())  # newest first → first non-null wins
         )
-    ).scalars().all()
+    ).all()
     merged: dict = {}
-    for ex in rows:
+    for date, ex in rows:
         if not isinstance(ex, dict):
             continue
         for k, v in ex.items():
             if v is not None and k not in merged:
-                merged[k] = v
+                merged[k] = (v, date)
     return merged
+
+
+async def get_recent_extra(session: AsyncSession, user_id: int, days: int = 21,
+                           today: Optional[dt.date] = None) -> dict:
+    """Merge the last ``days`` days of ``extra`` into one dict — the most recent non-null
+    value wins per key. Garmin metrics refresh at different cadences (race predictions &
+    VO2max ~weekly, Training Readiness daily, HRV/RHR baselines slowly), so any single
+    day rarely carries them all; coalescing gives plan generation the freshest value of
+    each (race predictions, VO2max, endurance, ACWR/load, baselines, …).
+
+    Drops the per-value dates :func:`get_recent_extra_dated` keeps — use that one when
+    the age of a value changes what it means."""
+    return {k: v for k, (v, _date) in
+            (await get_recent_extra_dated(session, user_id, days, today)).items()}
 
 
 async def read_history(session: AsyncSession, user_id: int, days: int = 30,

@@ -662,6 +662,31 @@ program (distinct from Garmin-Calendar `planned_runs`, which we merely read).
   `POST /plan/adjust-level`) bounds how bold adaptation may be —
   `_filter_ops_to_level` enforces it, not just the prompt; `off` skips the Claude call
   entirely. Adapt calls are never dedup-cached.
+- **What the adaptation actually judges on.** Three things bit here at once, all in the
+  direction of easing a plan that was fine:
+  * *The current week is not a pile of misses.* Every prompt reads `done < total` as
+    "missed sessions", but `weekly_compliance` counts the whole week — so on a Wednesday
+    a 5-run week reads 2/5, i.e. three phantom misses, and the morning/deload checks run
+    **daily**. The bucket now also carries `remaining` (still `planned`, dated today or
+    later) and `_recent_compliance` re-cuts `total` down to what has actually come due,
+    passing `remaining` through separately. `/plan` keeps the raw bucket — "2/5 this
+    week" is correct as *progress*, only as *compliance* it is a lie.
+  * *A readiness score has an age.* `get_recent_extra` coalesces 21 days newest-first,
+    which is right for VO2max/race predictions/HRV baselines and wrong for Garmin's
+    daily Training Readiness block: one bad day could still present as today's state
+    three weeks later. `get_recent_extra_dated` keeps each value's day;
+    `_build_fitness_snapshot` drops the volatile keys (`readiness_*`, `recovery_time_h`,
+    `acute_load`, `acwr_*`) past `FITNESS_VOLATILE_MAX_AGE_DAYS`=3 and stamps `asof` when
+    what survives isn't from today. `build_fitness_context` is the single fetch+build
+    every LLM surface uses. The morning gate is stricter still — it fires on **today's**
+    score only (yesterday's evening score, naturally low after a hard session, used to
+    ease this morning's tempo), and a stale-score skip deliberately does *not* burn the
+    day's guard, so the 15-min tick fires as soon as the real one lands.
+  * *A low score is a verdict without a reason.* The adaptation context carries no raw
+    recovery series at all (no HRV, sleep or stress — only the baseline corridor), so
+    the prompt's "HRV outside the band" rule was unanswerable. The morning nudge now
+    passes the tick's `_RiskCache` verdict as `risk`, the same shape NF-09 sends —
+    already computed that morning, so it costs nothing.
 - **Open-ended goal** (`general`, no target race): `target_date=None`, first block
   `PLAN_BLOCK_WEEKS`=6. Extension is confirm-only — morning nudge within
   `PLAN_EXTEND_LEAD_DAYS`=10 (zero Claude cost), a ✅ tap runs `run_plan_extension`
