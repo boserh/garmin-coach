@@ -91,13 +91,16 @@ async def get_plan(session: AsyncSession, user_id: int, plan_id: int):
 
 
 async def list_workouts(
-    session: AsyncSession, plan_id: int, *, upcoming_only: bool = False
+    session: AsyncSession, plan_id: int, *, upcoming_only: bool = False,
+    today: Optional[dt.date] = None,
 ) -> List[PlannedWorkout]:
-    """Workouts of a plan, oldest first. ``upcoming_only`` keeps today+ planned ones."""
+    """Workouts of a plan, oldest first. ``upcoming_only`` keeps today+ planned ones —
+    where "today" is the athlete's own date (ST-14) when the caller passes one, and the
+    process date otherwise."""
     stmt = select(PlannedWorkout).where(PlannedWorkout.plan_id == plan_id)
     if upcoming_only:
         stmt = stmt.where(
-            PlannedWorkout.date >= dt.date.today().isoformat(),
+            PlannedWorkout.date >= (today or dt.date.today()).isoformat(),
             PlannedWorkout.status == "planned",
         )
     return (await session.execute(stmt.order_by(PlannedWorkout.date))).scalars().all()
@@ -337,13 +340,20 @@ async def load_forecast(
 
 
 async def weekly_compliance(
-    session: AsyncSession, plan_id: int
+    session: AsyncSession, plan_id: int, today: Optional[dt.date] = None,
 ) -> dict:
     """Per-week compliance summary for a plan, keyed by ISO week string ('YYYY-Www').
 
-    Each entry: ``{total, done, pace_deltas: [float, ...], overreached}``.
+    Each entry: ``{total, done, remaining, pace_deltas: [float, ...], overreached}``.
     * ``total`` — run-type workouts (not rest/cross/strength) in that week.
     * ``done`` — workouts with status done or partial.
+    * ``remaining`` — of those, the ones that have not come due yet: still ``planned``
+      and dated today or later (the matcher only calls a session ``missed`` once its
+      date has passed). Zero for every week that is over. It exists because
+      ``done``/``total`` alone cannot tell "skipped three sessions" from "it is
+      Wednesday": the ``/plan`` view wants the whole week's total, while anything
+      reasoning about compliance must not read the back half of the current week as
+      misses — see ``app.analysis.plans._recent_compliance``.
     * ``pace_deltas`` — list of (actual − plan) pace values in min/km for matched workouts
       where both sides are known (positive = slower, negative = faster).
     * ``overreached`` — count of *easy-intent* sessions (easy/recovery/base/long) done but
@@ -375,6 +385,7 @@ async def weekly_compliance(
                 rpe_by_id[aid] = subj["rpe"]
 
     _SKIP = {"rest", "cross", "strength"}
+    today_s = (today or dt.date.today()).isoformat()
     buckets: dict = {}
     for w in workouts:
         if (w.type or "").lower() in _SKIP:
@@ -384,8 +395,11 @@ async def weekly_compliance(
         except (ValueError, TypeError):
             continue
         b = buckets.setdefault(
-            week, {"total": 0, "done": 0, "pace_deltas": [], "overreached": 0})
+            week, {"total": 0, "done": 0, "remaining": 0,
+                   "pace_deltas": [], "overreached": 0})
         b["total"] += 1
+        if w.status == WorkoutStatus.PLANNED and w.date >= today_s:
+            b["remaining"] += 1
         if w.status in ("done", "partial"):
             b["done"] += 1
             if isinstance(w.match_info, dict):

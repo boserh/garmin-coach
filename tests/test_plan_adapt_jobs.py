@@ -56,6 +56,12 @@ async def _fake_runtime(session_, user_):
     yield SimpleNamespace(anthropic_key="k", has_garmin=False)
 
 
+def _readiness(score, date=None):
+    """A ``get_recent_extra_dated`` snapshot carrying one dated readiness score — the
+    morning gate reads TODAY's, so the date is half the fixture."""
+    return {"readiness_score": (score, date or dt.date.today().isoformat())}
+
+
 # ---------- morning nudge ----------
 
 async def test_morning_check_skips_without_heavy_session(session):
@@ -72,8 +78,8 @@ async def test_morning_check_skips_when_readiness_ok(session):
     user = await _make_user(session)
     today = dt.date.today().isoformat()
     await _seed_plan(session, user.id, workouts=[dict(date=today, type="tempo", status="planned")])
-    with patch.object(repository, "get_recent_extra",
-                       new=AsyncMock(return_value={"readiness_score": 80})), \
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(80))), \
          patch.object(jobs_module, "run_plan_adaptation", new=AsyncMock()) as m:
         await jobs_module._adapt_morning_check(
             _FakeCtx(), session, user, SimpleNamespace(anthropic_key="k"), today)
@@ -95,8 +101,8 @@ async def test_morning_check_fires_once_and_sends_proposal(session):
     today = dt.date.today().isoformat()
     await _seed_plan(session, user.id, workouts=[dict(date=today, type="tempo", status="planned")])
     edit = _edit([PlanOp(action="modify", date=today, dist_km=3.0)])
-    with patch.object(repository, "get_recent_extra",
-                       new=AsyncMock(return_value={"readiness_score": 30})), \
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(30))), \
          patch.object(jobs_module, "run_plan_adaptation",
                       new=AsyncMock(return_value=(SimpleNamespace(id=1), edit))) as m:
         ctx = _FakeCtx()
@@ -114,8 +120,8 @@ async def test_morning_check_silent_when_no_ops(session):
     user = await _make_user(session)
     today = dt.date.today().isoformat()
     await _seed_plan(session, user.id, workouts=[dict(date=today, type="long", status="planned")])
-    with patch.object(repository, "get_recent_extra",
-                       new=AsyncMock(return_value={"readiness_score": 20})), \
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(20))), \
          patch.object(jobs_module, "run_plan_adaptation",
                       new=AsyncMock(return_value=(SimpleNamespace(id=1), _edit([])))):
         ctx = _FakeCtx()
@@ -129,8 +135,8 @@ async def test_morning_check_silent_when_level_off(session):
     user = await _make_user(session)
     today = dt.date.today().isoformat()
     await _seed_plan(session, user.id, workouts=[dict(date=today, type="long", status="planned")])
-    with patch.object(repository, "get_recent_extra",
-                       new=AsyncMock(return_value={"readiness_score": 20})), \
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(20))), \
          patch.object(jobs_module, "run_plan_adaptation",
                       new=AsyncMock(return_value=(SimpleNamespace(id=1), None))):
         ctx = _FakeCtx()
@@ -239,3 +245,85 @@ async def test_risky_proposal_offers_three_buttons(session):
     _chat_id, _text, kb = ctx.bot.sent[0]
     assert isinstance(kb, InlineKeyboardMarkup)
     assert len(kb.inline_keyboard) == 3
+
+
+# ---------- morning gate: readiness must be TODAY's --------------------------
+
+async def test_morning_check_ignores_yesterdays_readiness(session):
+    """A 3-day coalesced snapshot let yesterday's EVENING score — naturally low right
+    after a hard session — ease this morning's tempo run. Only today's counts now."""
+    user = await _make_user(session)
+    today = dt.date.today().isoformat()
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    await _seed_plan(session, user.id, workouts=[dict(date=today, type="tempo", status="planned")])
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(25, yesterday))), \
+         patch.object(jobs_module, "run_plan_adaptation", new=AsyncMock()) as m:
+        await jobs_module._adapt_morning_check(
+            _FakeCtx(), session, user, SimpleNamespace(anthropic_key="k"), today)
+    m.assert_not_called()
+
+
+async def test_morning_check_stale_readiness_does_not_burn_the_daily_guard(session):
+    """The skip above must be retryable: the tick repeats every 15 min, so the check has
+    to fire as soon as today's real score lands — not stay quiet until tomorrow."""
+    user = await _make_user(session)
+    today = dt.date.today().isoformat()
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    await _seed_plan(session, user.id, workouts=[dict(date=today, type="tempo", status="planned")])
+    edit = _edit([PlanOp(action="modify", date=today, dist_km=3.0)])
+    creds = SimpleNamespace(anthropic_key="k")
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(25, yesterday))), \
+         patch.object(jobs_module, "run_plan_adaptation", new=AsyncMock()):
+        await jobs_module._adapt_morning_check(_FakeCtx(), session, user, creds, today)
+    assert await repository.get_state(
+        session, user.id, jobs_module.ADAPT_GUARD_PREFIX + today) is None
+
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(25))), \
+         patch.object(jobs_module, "run_plan_adaptation",
+                      new=AsyncMock(return_value=(SimpleNamespace(id=1), edit))) as m:
+        await jobs_module._adapt_morning_check(_FakeCtx(), session, user, creds, today)
+    m.assert_awaited_once()
+
+
+async def test_morning_check_passes_detector_risk_as_evidence(session):
+    """A low readiness score is a verdict without a reason. The tick's detectors have
+    already worked one out from 90 days of history the adaptation context never sees —
+    it has to ride along, or the model is left guessing why."""
+    user = await _make_user(session)
+    today = dt.date.today().isoformat()
+    await _seed_plan(session, user.id, workouts=[dict(date=today, type="tempo", status="planned")])
+    alerts = SimpleNamespace(actionable=True)
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(30))), \
+         patch.object(jobs_module, "build_health_alerts", new=AsyncMock(return_value=alerts)), \
+         patch.object(jobs_module, "build_injury_assessment",
+                      new=AsyncMock(return_value=SimpleNamespace(actionable=False))), \
+         patch("app.health.to_context",
+               return_value={"alerts": [{"kind": "hrv_low", "severity": "warn"}]}), \
+         patch.object(jobs_module, "run_plan_adaptation",
+                      new=AsyncMock(return_value=(SimpleNamespace(id=1), _edit([])))) as m:
+        await jobs_module._adapt_morning_check(
+            _FakeCtx(), session, user, SimpleNamespace(anthropic_key="k"), today)
+    assert m.await_args.kwargs["risk"] == {"health": [{"kind": "hrv_low", "severity": "warn"}]}
+
+
+async def test_morning_check_sends_no_risk_when_detectors_are_quiet(session):
+    """No signal is an argument NOT to cut the plan — it must reach the prompt as an
+    absent field, never as an empty dict that reads like "we looked and found nothing
+    to tell you"."""
+    user = await _make_user(session)
+    today = dt.date.today().isoformat()
+    await _seed_plan(session, user.id, workouts=[dict(date=today, type="tempo", status="planned")])
+    quiet = SimpleNamespace(actionable=False)
+    with patch.object(repository, "get_recent_extra_dated",
+                       new=AsyncMock(return_value=_readiness(30))), \
+         patch.object(jobs_module, "build_health_alerts", new=AsyncMock(return_value=quiet)), \
+         patch.object(jobs_module, "build_injury_assessment", new=AsyncMock(return_value=quiet)), \
+         patch.object(jobs_module, "run_plan_adaptation",
+                      new=AsyncMock(return_value=(SimpleNamespace(id=1), _edit([])))) as m:
+        await jobs_module._adapt_morning_check(
+            _FakeCtx(), session, user, SimpleNamespace(anthropic_key="k"), today)
+    assert m.await_args.kwargs["risk"] is None

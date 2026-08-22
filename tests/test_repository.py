@@ -411,6 +411,27 @@ async def test_get_recent_extra_coalesces_newest_per_key(session):
     assert "endurance_score" not in merged     # 40 days ago → outside the window
 
 
+async def test_get_recent_extra_dated_keeps_each_value_s_day(session):
+    """The dated variant is what makes a coalesced snapshot honest: the same merge, but
+    every value still says which day it came from, so a caller can tell a readiness from
+    this morning from one three weeks old."""
+    import datetime as dt
+    today = dt.date.today()
+    old = (today - dt.timedelta(days=5)).isoformat()
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=old, has_data=True, extra={"vo2max": 46, "readiness_score": 30}))
+    await repository.upsert_daily(session, U1, DailySummary(
+        date=today.isoformat(), has_data=True, extra={"readiness_score": 70}))
+    await session.commit()
+
+    dated = await repository.get_recent_extra_dated(session, U1, days=21)
+    assert dated["readiness_score"] == (70, today.isoformat())   # newest wins, with its day
+    assert dated["vo2max"] == (46, old)
+    # and the plain wrapper is still exactly the values
+    plain = await repository.get_recent_extra(session, U1, days=21)
+    assert plain["readiness_score"] == 70 and plain["vo2max"] == 46
+
+
 async def test_read_fitness_history_keeps_per_day_series(session):
     import datetime as dt
     today = dt.date.today()

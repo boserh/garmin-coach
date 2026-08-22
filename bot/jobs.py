@@ -534,6 +534,38 @@ class _RiskCache:
         return self._health
 
 
+def _as_date(today: str) -> Optional[dt.date]:
+    """The tick's per-user ISO date (ST-14) as a ``date``, or ``None`` if unparseable —
+    passed down so the plan window, the compliance cutoff and the freshness of the
+    fitness snapshot are all measured against the day the ATHLETE is living in."""
+    try:
+        return dt.date.fromisoformat(today)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _risk_context(risk: "_RiskCache") -> Optional[dict]:
+    """The already-confirmed injury/health signals shaped for the adaptation prompt, or
+    ``None`` when both detectors are quiet.
+
+    Both hooks that ask Claude to change the plan want this: NF-09 as its whole trigger,
+    and the morning nudge as the EVIDENCE behind its own (a low Garmin readiness score is
+    a verdict without a reason — "HRV third day below the corridor" is the reason, and the
+    detector has already worked it out from 90 days of history the adaptation context
+    otherwise never sees)."""
+    from app import health as health_mod
+    from app import injury as injury_mod
+
+    assessment = await risk.injury()
+    health_report = await risk.health()
+    out: dict = {}
+    if assessment.actionable:
+        out["injury"] = injury_mod.to_context(assessment)
+    if health_report.actionable:
+        out["health"] = health_mod.to_context(health_report)["alerts"]
+    return out or None
+
+
 async def _injury_check_for_user(ctx, session, user: User, creds, today: str,
                                  *, risk: "_RiskCache | None" = None) -> None:
     """Injury-risk radar (NF-04): run the pure detector; if it's an actionable warning and we
@@ -619,29 +651,21 @@ async def _deload_check_for_user(ctx, session, user: User, creds, today: str,
         return False
     if await _has_pending_proposal(session, user.id):
         return False
-    ws = await repository.upcoming_plan_workouts(session, user.id, days=DELOAD_HEAVY_WINDOW_DAYS)
+    today_d = _as_date(today)
+    ws = await repository.upcoming_plan_workouts(
+        session, user.id, days=DELOAD_HEAVY_WINDOW_DAYS, today=today_d)
     if not any((w.type or "").lower() in ADAPT_HEAVY_TYPES for w in ws):
         return False
 
-    risk = risk or _RiskCache(session, user.id)
     try:
-        assessment = await risk.injury()
-        health_report = await risk.health()
-        if not assessment.actionable and not health_report.actionable:
+        risk = await _risk_context(risk or _RiskCache(session, user.id))
+        if risk is None:
             return False
-
-        from app import health as health_mod
-        from app import injury as injury_mod
-
-        risk = {}
-        if assessment.actionable:
-            risk["injury"] = injury_mod.to_context(assessment)
-        if health_report.actionable:
-            risk["health"] = health_mod.to_context(health_report)["alerts"]
 
         plan, edit = await run_plan_adaptation(
             session, user_id=user.id, api_key=creds.anthropic_key,
             trigger="deload", window_days=ADAPT_WINDOW_DAYS_DEFAULT, risk=risk,
+            today=today_d,
         )
     except AnalystError:
         logger.exception(f"DELOAD check failed user={user.id}")
@@ -656,7 +680,8 @@ async def _deload_check_for_user(ctx, session, user: User, creds, today: str,
     # other risk hooks — and only once we know a real proposal is going out.
     await repository.set_state(session, user.id, INJURY_WARNED_KEY, today)
     await _send_adapt_proposal(ctx, session, user, plan.id, edit)
-    logger.info(f"DELOAD proposal sent user={user.id}: injury={assessment.level} "
+    logger.info(f"DELOAD proposal sent user={user.id}: "
+                f"injury={(risk.get('injury') or {}).get('level')} "
                 f"health={[a['kind'] for a in risk.get('health', [])]}")
     return True
 
@@ -1031,6 +1056,7 @@ async def _tick_for_user(ctx, session, user: User) -> None:
             await _records_check_for_user(ctx, session, user)
 
             in_morning = MORNING_START_HOUR <= now.hour <= MORNING_DEADLINE_HOUR
+            risk = None
 
             # D1: the injury/health detectors (each a set of ~90-day history reads) belong to
             # the morning report, so gate the risk block to the morning window rather than
@@ -1088,8 +1114,10 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                 outcome = JobOutcome("ok", "morning report sent", notable=True)
 
             # Independent guard from the morning report above — runs even on a later
-            # tick within the same 07-12 window after the report already went out.
-            await _adapt_morning_check(ctx, session, user, creds, today)
+            # tick within the same 07-12 window after the report already went out. It
+            # shares the tick's detector memo (D1): whatever the risk hooks above already
+            # computed becomes the evidence behind this proposal, at no extra cost.
+            await _adapt_morning_check(ctx, session, user, creds, today, risk=risk)
 
             # Open-ended plans: ask (✅/❌) whether to add the next block when the plan is
             # about to run out. Confirm-only — generation happens on the ✅ tap, not here.
@@ -1231,12 +1259,38 @@ async def _send_adapt_proposal(ctx, session, user: User, plan_id: int, edit) -> 
     logger.info(f"ADAPT proposal sent user={user.id}: {len(edit.operations)} op(s)")
 
 
-async def _adapt_morning_check(ctx, session, user: User, creds, today: str) -> None:
+def _todays_readiness(dated: dict, today: str) -> Optional[float]:
+    """Garmin's Training Readiness score for ``today`` only, from a
+    ``get_recent_extra_dated`` snapshot — ``None`` when today's isn't in yet.
+
+    Daily rows are written under the process date, so a user whose local day is ahead of
+    the server's would never see a match on their own date alone; both spellings of
+    "today" count, and nothing older does."""
+    value = dated.get("readiness_score")
+    if not isinstance(value, tuple):
+        return None
+    score, date_s = value
+    return score if date_s in (today, dt.date.today().isoformat()) else None
+
+
+async def _adapt_morning_check(ctx, session, user: User, creds, today: str,
+                               *, risk: "_RiskCache | None" = None) -> None:
     """One-off morning nudge: if today's plan session is heavy (tempo/intervals/long)
-    and readiness is low, ask Claude whether to ease/move just that session. Silent
-    when the plan is fine or there's nothing heavy today. Guarded to at most once/day
-    (the guard is set as soon as the check actually runs, not just when it proposes
-    something, so a re-tick with the same low readiness doesn't re-query Claude)."""
+    and TODAY's readiness is low, ask Claude whether to ease/move just that session.
+    Silent when the plan is fine or there's nothing heavy today. Guarded to at most
+    once/day (the guard is set as soon as the check actually runs, not just when it
+    proposes something, so a re-tick with the same low readiness doesn't re-query
+    Claude).
+
+    "Today's" is load-bearing. The gate used to read a 3-day coalesced snapshot, so a
+    score Garmin published yesterday EVENING — naturally low right after a hard session —
+    could ease this morning's tempo run on its own. A missing score is now simply a skip
+    (no guard burned), and since the tick repeats every 15 minutes the check fires the
+    moment the real one lands.
+
+    ``risk`` is the tick's shared detector memo: its verdict rides along as the evidence
+    for the proposal, so the model gets the REASON behind a low readiness score (which
+    the adaptation context otherwise never carries) instead of the bare number."""
     if not user.plan_adapt_enabled or not user.telegram_chat_id:
         return
     if await _has_pending_proposal(session, user.id):
@@ -1244,19 +1298,27 @@ async def _adapt_morning_check(ctx, session, user: User, creds, today: str) -> N
     guard_key = ADAPT_GUARD_PREFIX + today
     if await repository.get_state(session, user.id, guard_key) == "1":
         return
-    ws = await repository.upcoming_plan_workouts(session, user.id, days=1)
+    today_d = _as_date(today)
+    ws = await repository.upcoming_plan_workouts(session, user.id, days=1, today=today_d)
     if not any((w.type or "").lower() in ADAPT_HEAVY_TYPES for w in ws):
         return
-    ex = await repository.get_recent_extra(session, user.id, days=3)
-    readiness = ex.get("readiness_score")
+    readiness = _todays_readiness(
+        await repository.get_recent_extra_dated(session, user.id, days=2), today)
     if readiness is None or readiness >= settings.PLAN_ADAPT_READINESS_MIN:
         return
 
     await repository.set_state(session, user.id, guard_key, "1")
     try:
+        # Evidence, not a precondition: a detector blowing up must cost the proposal its
+        # explanation, never the proposal itself (NF-09 treats its own the same way).
+        evidence = await _risk_context(risk or _RiskCache(session, user.id))
+    except Exception:
+        logger.exception(f"ADAPT morning risk context failed user={user.id}")
+        evidence = None
+    try:
         plan, edit = await run_plan_adaptation(
             session, user_id=user.id, api_key=creds.anthropic_key,
-            trigger="morning", window_days=0,
+            trigger="morning", window_days=0, today=today_d, risk=evidence,
         )
     except AnalystError:
         logger.exception(f"ADAPT morning check failed user={user.id}")
@@ -1280,6 +1342,7 @@ async def _adapt_weekly_for_user(ctx, session, user: User) -> None:
                 return
             _plan, edit = await run_plan_adaptation(
                 session, user_id=user.id, api_key=creds.anthropic_key, trigger="weekly",
+                today=dt.datetime.now(user_tz(user)).date(),
             )
     except AnalystError:
         logger.exception(f"ADAPT weekly failed user={user.id}")
@@ -1407,7 +1470,8 @@ async def _sleep_nudge_for_user(ctx, session, user: User, today: str,
     if await repository.get_state(session, user.id, guard_key) == "1":
         return False
     tomorrow = (dt.date.fromisoformat(today) + dt.timedelta(days=1)).isoformat()
-    ws = await repository.upcoming_plan_workouts(session, user.id, days=2)
+    ws = await repository.upcoming_plan_workouts(
+        session, user.id, days=2, today=_as_date(today))
     if not sleepnudge.tomorrow_is_heavy([w.type for w in ws if w.date == tomorrow]):
         return False
     history = await repository.read_history(session, user.id, days=baselines.WINDOW_DAYS)

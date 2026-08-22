@@ -12,7 +12,7 @@ import json
 import logging
 from typing import List, Optional, Tuple
 
-from app.analysis.cache import _build_fitness_snapshot, _build_multisport
+from app.analysis.cache import _build_multisport, build_fitness_context
 from app.analysis.client import (
     MODEL_PLAN,
     MODEL_PLAN_GEN,
@@ -378,8 +378,7 @@ async def run_plan_generation(
                    if "run" in (a.get("type") or "")]
     recovery = await repository.read_history(session, user_id, days=30)
     weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
-    ex = await repository.get_recent_extra(session, user_id, days=21)
-    fitness = _build_fitness_snapshot(ex)
+    fitness = await build_fitness_context(session, user_id)
     multisport = await _build_multisport(session, user_id)
     context = {
         "today": dt.date.today().isoformat(),
@@ -471,8 +470,7 @@ async def run_plan_extension(
                    if "run" in (a.get("type") or "")]
     recovery = await repository.read_history(session, user_id, days=30)
     weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
-    ex = await repository.get_recent_extra(session, user_id, days=21)
-    fitness = _build_fitness_snapshot(ex)
+    fitness = await build_fitness_context(session, user_id)
     multisport = await _build_multisport(session, user_id)
     context = {
         "today": dt.date.today().isoformat(),
@@ -535,8 +533,7 @@ async def run_strength_preview(
     gen_model = model or MODEL_PLAN_GEN
     from app.garmin import repository
 
-    ex = await repository.get_recent_extra(session, user_id, days=21)
-    fitness = _build_fitness_snapshot(ex)
+    fitness = await build_fitness_context(session, user_id)
     context = {"description": description, "fitness": fitness or None,
                "exercise_categories": exercises.CATEGORIES}
     try:
@@ -769,9 +766,32 @@ def _filter_ops_to_level(ops: list, level: str, dist_by_date: dict, days_to_targ
     return kept
 
 
-def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS) -> dict:
+def _due_so_far(bucket: dict) -> dict:
+    """Re-cut one ``weekly_compliance`` bucket so ``total`` counts only the sessions that
+    have actually come due, with what is still ahead carried separately as ``remaining``.
+
+    The prompts read ``done < total`` as "missed sessions". For a week that is over that
+    is true; for the CURRENT week it is not — on Wednesday the back half of the week is
+    still planned, and a raw 2/5 told the coach the athlete had skipped three sessions
+    and (per SYSTEM_PLAN_ADAPT) to stop adding volume. The morning and deload checks run
+    every day, so that misread was the normal case, not an edge one.
+    """
+    remaining = bucket.get("remaining") or 0
+    out = {k: v for k, v in bucket.items() if k != "remaining"}
+    if not remaining:
+        return out
+    # max(): a future session marked done by hand (ST-21) is not counted in `remaining`,
+    # so the subtraction can never drop below what is already done — but clamp anyway
+    # rather than hand the model a 3/2 week.
+    out["total"] = max(bucket.get("total", 0) - remaining, out.get("done", 0))
+    out["remaining"] = remaining
+    return out
+
+
+def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS,
+                       today: Optional[dt.date] = None) -> dict:
     """Slice a ``weekly_compliance`` dict down to the most recent ``weeks`` ISO weeks
-    (week strings sort lexically in date order).
+    (week strings sort lexically in date order), each re-cut by :func:`_due_so_far`.
 
     ``weekly_compliance`` buckets every week the plan touches, future ones included
     (needed for the ``/plan`` week-by-week view) — so without a cutoff, "last N keys"
@@ -780,9 +800,9 @@ def _recent_compliance(compliance: dict, weeks: int = ADAPT_COMPLIANCE_WEEKS) ->
     """
     if not compliance:
         return {}
-    current_week = dt.date.today().strftime("%G-W%V")
+    current_week = (today or dt.date.today()).strftime("%G-W%V")
     past = {k: v for k, v in compliance.items() if k <= current_week}
-    return dict(sorted(past.items())[-weeks:])
+    return {k: _due_so_far(v) for k, v in sorted(past.items())[-weeks:]}
 
 
 def _in_adapt_window(date_s, today: dt.date, window_days: int) -> bool:
@@ -823,7 +843,7 @@ async def _intensity_context(session, user_id: int) -> Optional[dict]:
 async def run_plan_adaptation(
     session, *, user_id: int, api_key: Optional[str] = None,
     trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
-    risk: Optional[dict] = None,
+    risk: Optional[dict] = None, today: Optional[dt.date] = None,
 ):
     """Look at the active plan's upcoming window, compliance (EP-01) and recovery/load
     signals; propose a correction (empty ``operations`` if the plan is fine). Does NOT
@@ -843,7 +863,10 @@ async def run_plan_adaptation(
     :func:`_filter_ops_to_level`. ``risk`` (NF-09, optional) is the pre-computed
     ``{"injury": injury.to_context(...), "health": health.to_context(...)["alerts"]}``
     slice from the zero-LLM detectors — folded into the prompt as already-confirmed
-    evidence, not re-derived here.
+    evidence, not re-derived here. ``today`` (ST-14) is the athlete's OWN date; every
+    caller that knows it must pass it, or the window, the compliance cutoff and the
+    freshness of the fitness snapshot are all measured against the server's day instead
+    of the one the athlete is living in.
     """
     from app.garmin import repository
 
@@ -855,13 +878,14 @@ async def run_plan_adaptation(
         logger.debug(f"ADAPT skip user={user_id}: adjust_level=off")
         return plan, None
 
-    today = dt.date.today()
+    today = today or dt.date.today()
     window_end = (today + dt.timedelta(days=window_days)).isoformat()
-    ws = [w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
+    ws = [w for w in await repository.list_workouts(
+              session, plan.id, upcoming_only=True, today=today)
           if w.date <= window_end]
-    compliance = _recent_compliance(await repository.weekly_compliance(session, plan.id))
-    ex = await repository.get_recent_extra(session, user_id)
-    fitness = _build_fitness_snapshot(ex)
+    compliance = _recent_compliance(
+        await repository.weekly_compliance(session, plan.id, today), today=today)
+    fitness = await build_fitness_context(session, user_id, today=today)
     multisport = await _build_multisport(session, user_id)
     days_to_target = _days_to_target(plan.target_date, today)
     # Subjective check-ins (EP-12 phase 2): rising effort for the same pace / a recurring

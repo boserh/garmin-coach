@@ -36,6 +36,7 @@ from app.analysis.cache import (  # noqa: F401
     _race_cache_key,
     _supplement_cache_key,
     _wrapped_cache_key,
+    build_fitness_context,
 )
 from app.analysis.client import (  # noqa: F401
     FABLE_5,

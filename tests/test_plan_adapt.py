@@ -289,3 +289,108 @@ async def test_alt_operations_also_filtered(session):
                                      CallStats(kind="adapt", model="m"))):
         plan, edit = await run_plan_adaptation(session, user_id=U1, window_days=14)
     assert [op.date for op in edit.alt_operations] == [near]
+
+
+# ---------- the CURRENT week's sessions are not misses yet -------------------
+
+# A fixed Wednesday, so "what is still ahead this week" is the same fact on every run —
+# with a relative reference date these tests would assert different things on a Sunday.
+_WED = dt.date(2026, 8, 19)
+
+
+async def test_current_week_sessions_still_ahead_are_not_counted_as_misses(session):
+    """``done < total`` is what every prompt reads as "missed sessions". For a week that
+    is over that holds; for the week in progress it does not — the back half is still
+    planned. The morning and deload checks run daily, so a raw 2/4 handed the coach two
+    phantom misses on a Wednesday and (per SYSTEM_PLAN_ADAPT) told it to stop adding
+    volume. What is still ahead comes through as ``remaining`` instead."""
+    monday = _WED - dt.timedelta(days=_WED.weekday())
+    workouts = [
+        dict(date=monday.isoformat(), type="easy", status="done"),
+        dict(date=(monday + dt.timedelta(days=1)).isoformat(), type="easy", status="done"),
+        dict(date=_WED.isoformat(), type="tempo", status="planned"),
+        dict(date=(monday + dt.timedelta(days=5)).isoformat(), type="long", status="planned"),
+    ]
+    await _seed_plan(session, workouts=workouts)
+
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1, today=_WED)
+
+    week = seen["compliance"][_WED.strftime("%G-W%V")]
+    assert week["done"] == 2
+    assert week["total"] == 2          # only the sessions whose date has come
+    assert week["remaining"] == 2      # Wednesday's own + Saturday's, still ahead
+
+
+async def test_real_misses_in_the_current_week_still_read_as_misses(session):
+    """The fix must not hide an actual gap: a past date this week that the matcher
+    marked missed keeps counting against ``total``."""
+    monday = _WED - dt.timedelta(days=_WED.weekday())
+    await _seed_plan(session, workouts=[
+        dict(date=monday.isoformat(), type="easy", status="missed"),
+        dict(date=_WED.isoformat(), type="tempo", status="planned"),
+    ])
+
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1, today=_WED)
+
+    week = seen["compliance"][_WED.strftime("%G-W%V")]
+    assert week["done"] == 0 and week["total"] == 1 and week["remaining"] == 1
+
+
+async def test_finished_weeks_carry_no_remaining_key(session):
+    """A week that is over has nothing ahead — the field is dropped rather than sent as
+    a zero, so the prompt only ever sees it when it means something."""
+    past = _WED - dt.timedelta(days=10)
+    await _seed_plan(session, workouts=[dict(date=past.isoformat(), type="easy", status="done")])
+
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1, today=_WED)
+
+    week = seen["compliance"][past.strftime("%G-W%V")]
+    assert "remaining" not in week
+
+
+async def test_plan_view_still_sees_the_whole_week(session):
+    """``/plan`` renders "done/total" as progress through the week, so the raw bucket
+    must keep counting every session — the due-so-far re-cut belongs to the LLM path."""
+    from app.garmin import repository
+
+    monday = _WED - dt.timedelta(days=_WED.weekday())
+    plan = await _seed_plan(session, workouts=[
+        dict(date=monday.isoformat(), type="easy", status="done"),
+        dict(date=(monday + dt.timedelta(days=5)).isoformat(), type="long", status="planned"),
+    ])
+    raw = await repository.weekly_compliance(session, plan.id, _WED)
+    week = raw[_WED.strftime("%G-W%V")]
+    assert week["total"] == 2 and week["done"] == 1 and week["remaining"] == 1
+
+
+# ---------- the readiness the model sees has an age -------------------------
+
+async def test_stale_readiness_never_reaches_the_adaptation_context(session):
+    """End to end: one bad day two and a half weeks back, nothing since (the watch went
+    unworn). The coalesced snapshot used to hand the model "readiness 21, LOW, ACWR 145"
+    as the current state, and the prompt turns that into a deload."""
+    from app.db.models import DailyMetric
+
+    session.add(DailyMetric(user_id=U1, date=(_WED - dt.timedelta(days=18)).isoformat(),
+                            extra={"readiness_score": 21, "readiness_level": "LOW",
+                                   "recovery_time_h": 72, "acwr_pct": 145, "vo2max": 46.5}))
+    for back in range(0, 18):
+        session.add(DailyMetric(user_id=U1, date=(_WED - dt.timedelta(days=back)).isoformat(),
+                                extra={"resting_hr": 48}))
+    await _seed_plan(session, workouts=[dict(date=_WED.isoformat(), type="tempo",
+                                             status="planned")])
+
+    seen: dict = {}
+    with patch.object(plans, "plan_adapt_with_stats", side_effect=_capture(seen)):
+        await run_plan_adaptation(session, user_id=U1, today=_WED)
+
+    fitness = seen["fitness"]
+    assert "readiness_score" not in fitness
+    assert "acwr_pct" not in fitness
+    assert fitness["vo2max"] == 46.5      # slow-moving metrics still coalesce over weeks
