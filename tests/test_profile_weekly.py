@@ -233,3 +233,25 @@ async def test_the_pass_sees_what_is_already_known(session, secret_key):
 
     known = {f["text"] for f in fake.context["profile"]}
     assert "інтервали в спеку стабільно зриває" in known
+
+
+@pytest.mark.asyncio
+async def test_the_pass_commits_what_it_learned(session, secret_key):
+    """The regression behind the Sunday-evening ops alert ("DIGEST user=N left uncommitted
+    writes: AthleteProfile — discarded on close"): the pass ran, paid for a Sonnet call and
+    then handed the new profile to a session nobody committed. It rides at the very tail of
+    the digest job, so there is no later write to flush it — the memory was thrown away every
+    week. A rollback here stands in for the job closing its session."""
+    user = await _user(session, "commits@example.com")
+    row = await _report(session, user.id, "Знову зрив довгої після нічної зміни.")
+
+    fake = _delta_reply(
+        '{"add": [{"text": "нічні зміни зривають довгу", "kind": "context", '
+        f'"confidence": 0.6, "evidence": [{row.id}]}}]}}')
+    with patch.object(reports, "profile_update_with_stats", fake):
+        await reports.run_profile_update(session, user_id=user.id, api_key="k")
+
+    assert not session.dirty and not session.new     # nothing left for close() to discard
+    await session.rollback()
+    facts, _stop = await profile_db.get_profile(session, user.id)
+    assert [f["text"] for f in facts] == ["нічні зміни зривають довгу"]
