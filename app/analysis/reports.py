@@ -1371,6 +1371,11 @@ async def run_profile_update(
     facts, stoplist = await profile_db.get_profile(session, user_id)
     updated = profile_rules.apply_delta(facts, delta, stoplist=stoplist)
     await profile_db.save_profile(session, user_id, updated, stoplist)
+    # ``save_profile`` deliberately doesn't commit (every other caller — /me/profile,
+    # /forget — owns a request/handler transaction). This one is the tail end of the
+    # weekly digest job, and nothing commits after it: ``for_each_user`` closes the
+    # session, which discarded the whole memory update and warned about it every Sunday.
+    await session.commit()
     logger.info(
         f"PROFILE updated user={user_id}: +{len(delta.get('add') or [])} "
         f"✓{len(delta.get('confirm') or [])} ✗{len(delta.get('contradict') or [])} "
