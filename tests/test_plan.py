@@ -504,3 +504,100 @@ async def test_run_plan_edit_feeds_template_blocks_to_model(session):
     tmpl = captured["context"]["strength_templates"][0]
     assert tmpl["blocks"] == [{"reps": 3, "rest_s": 90, "exercises": [
         {"category": "SQUAT", "exercise": None, "reps": 12, "weight_kg": 20.0}]}]
+
+
+# --- "Відпочинок" that contradicts a real session on the same date -----------------
+# The generator writes a "силовий/відпочинок за планом, бігу немає" row for a Monday it
+# knows is a strength day; add_strength_workouts then puts the strength session on that
+# same date, and /plan stacks "Відпочинок" on top of "🏋️ Силова". A day with no session
+# already means rest, so the note is only ever redundant once something real lands there.
+
+async def _plan_with_rest(session, *, start="2026-07-06", end="2026-07-12"):
+    from app.db.models import TrainingPlan
+    plan = TrainingPlan(user_id=U1, goal="general", status="active",
+                        start_date=start, target_date=end)
+    session.add(plan)
+    await session.flush()
+    return plan
+
+
+async def test_strength_day_drops_the_generated_rest_note(session):
+    plan = await _plan_with_rest(session)
+    await repository.append_workouts(session, plan, [PlanWorkout(
+        date="2026-07-06", week=1, type="rest", dist_km=None,
+        description="Силовий/відпочинок за планом. Бігу немає.")])
+    await repository.add_strength_workouts(
+        session, plan, {"mon": {"id": 931013083, "name": "Day 1"}})
+    ws = await repository.list_workouts(session, plan.id)
+    assert [w.type for w in ws] == ["strength"]     # the rest note is gone, not stacked
+
+
+async def test_generated_rest_row_yields_to_a_run_on_the_same_date(session):
+    plan = await _plan_with_rest(session)
+    await repository.append_workouts(session, plan, [
+        PlanWorkout(date="2026-07-07", week=1, type="rest", dist_km=None,
+                    description="бігу немає"),
+        PlanWorkout(date="2026-07-07", week=1, type="easy", dist_km=4.0,
+                    description="легкий біг"),
+    ])
+    ws = await repository.list_workouts(session, plan.id)
+    assert [w.type for w in ws] == ["easy"]
+
+
+async def test_lone_rest_day_survives(session):
+    """A rest row alone on its date is the only thing carrying the reason — keep it."""
+    plan = await _plan_with_rest(session)
+    await repository.append_workouts(session, plan, [PlanWorkout(
+        date="2026-07-08", week=1, type="rest", dist_km=None,
+        description="повний відпочинок після хайкінгу")])
+    await repository.add_strength_workouts(
+        session, plan, {"mon": {"id": 931013083, "name": "Day 1"}})   # a different weekday
+    ws = await repository.list_workouts(session, plan.id)
+    assert {w.type for w in ws} == {"rest", "strength"}
+    assert [w.date for w in ws if w.type == "rest"] == ["2026-07-08"]
+
+
+async def test_prune_keeps_a_rest_day_already_acted_on(session):
+    """Only untouched rows go: a rest day the athlete/an adaptation already resolved is
+    history, not a placeholder."""
+    plan = await _plan_with_rest(session)
+    await repository.append_workouts(session, plan, [PlanWorkout(
+        date="2026-07-06", week=1, type="rest", dist_km=None, description="відпочинок")])
+    rest = (await repository.list_workouts(session, plan.id))[0]
+    rest.status = "skipped"
+    await session.commit()
+    await repository.add_strength_workouts(
+        session, plan, {"mon": {"id": 931013083, "name": "Day 1"}})
+    ws = await repository.list_workouts(session, plan.id)
+    assert {w.type for w in ws} == {"rest", "strength"}
+
+
+async def test_prune_redundant_rest_is_idempotent_and_reports_zero(session):
+    plan = await _plan_with_rest(session)
+    await repository.append_workouts(session, plan, [
+        PlanWorkout(date="2026-07-06", week=1, type="rest", dist_km=None, description="r"),
+        PlanWorkout(date="2026-07-06", week=1, type="easy", dist_km=4.0, description="e"),
+    ])
+    assert await repository.prune_redundant_rest(session, plan.id) == 0   # already pruned
+    assert len(await repository.list_workouts(session, plan.id)) == 1
+
+
+async def test_daily_job_heals_a_plan_written_before_the_fix(session):
+    """Plans that already carry such a row are never written to again — the once-a-day
+    plan_sync_job cleans them up (pure DB, no Garmin, no Claude)."""
+    from types import SimpleNamespace
+
+    from bot.jobs import _prune_plan_for_user
+
+    plan = await _plan_with_rest(session)
+    await repository.append_workouts(session, plan, [
+        PlanWorkout(date="2026-07-06", week=1, type="easy", dist_km=4.0, description="e")])
+    # written straight to the DB, bypassing the (now pruning) write paths
+    from app.db.models import PlannedWorkout
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-07-06",
+                               type="rest", description="бігу немає", status="planned"))
+    await session.commit()
+
+    await _prune_plan_for_user(session, SimpleNamespace(id=U1))
+    ws = await repository.list_workouts(session, plan.id)
+    assert [w.type for w in ws] == ["easy"]
