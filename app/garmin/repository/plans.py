@@ -515,6 +515,7 @@ async def create_plan(
             steps=steps, status="planned",
         ))
     await session.commit()
+    await prune_redundant_rest(session, plan.id)
     return plan
 
 
@@ -567,6 +568,7 @@ async def append_workouts(
         ))
         added += 1
     await session.commit()
+    await prune_redundant_rest(session, plan.id)
     return added
 
 
@@ -647,7 +649,48 @@ async def add_strength_workouts(session: AsyncSession, plan: TrainingPlan,
             added += 1
         d += dt.timedelta(days=1)
     await session.commit()
+    # Strength lands on fixed weekdays regardless of what the generator wrote there, so
+    # this is where a "no running today" note most often collides with a real session.
+    await prune_redundant_rest(session, plan.id)
     return added
+
+
+# A day with no session already MEANS rest — the plan page renders nothing for it. So a
+# ``rest`` row is only ever a note, and it becomes actively wrong the moment something real
+# lands on the same date: the generator writes "силовий/відпочинок, бігу немає" for a Monday
+# it knows is a strength day, then ``add_strength_workouts`` puts the strength session right
+# under it, and /plan shows "Відпочинок" and "🏋️ Силова" stacked on one date. The model can
+# be told not to do it (SYSTEM_PLAN says so) but it is prose, not a guarantee — this is the
+# guarantee. A lone rest row survives: there it is the only thing carrying the reason.
+async def prune_redundant_rest(session: AsyncSession, plan_id: int) -> int:
+    """Delete a plan's ``rest`` rows that share a date with a real session. Only untouched
+    rows go (status ``planned``, nothing matched to them) — a rest day the athlete or an
+    adaptation already acted on stays as history. Idempotent; returns the count removed."""
+    rows = (
+        await session.execute(
+            select(PlannedWorkout).where(PlannedWorkout.plan_id == plan_id)
+        )
+    ).scalars().all()
+    by_date: dict = {}
+    for w in rows:
+        by_date.setdefault(w.date, []).append(w)
+    removed = 0
+    for same_day in by_date.values():
+        if len(same_day) < 2:
+            continue
+        if not any((w.type or "").lower() != "rest" for w in same_day):
+            continue   # nothing real that day — the rest note is all there is
+        for w in same_day:
+            if (w.type or "").lower() != "rest":
+                continue
+            if w.status != "planned" or w.completed_activity_id is not None:
+                continue
+            await session.delete(w)
+            removed += 1
+    if removed:
+        await session.commit()
+        logger.info("PLAN pruned %d redundant rest row(s) plan=%s", removed, plan_id)
+    return removed
 
 
 async def workout_on_date(session: AsyncSession, plan_id: int, date: str):

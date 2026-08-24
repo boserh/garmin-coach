@@ -1880,6 +1880,19 @@ async def _checkup_reminder_for_user(ctx, session, user: User) -> None:
         logger.info(f"CHECKUP reminder sent user={user.id} checkup={row.id}")
 
 
+async def _prune_plan_for_user(session, user: User) -> None:
+    """Drop "відпочинок" rows that a real session later landed on top of. The write paths
+    (``create_plan``/``append_workouts``/``add_strength_workouts``) do this themselves now,
+    so for a plan built after that fix this is a no-op — it is here for the plans that
+    already carry such a row, which no future write would ever touch again. Pure DB,
+    zero Garmin, zero Claude, and it runs regardless of ``garmin_sync_enabled``
+    (``_sync_for_user`` returns early for those users)."""
+    plan = await repository.get_active_plan(session, user.id)
+    if plan is None:
+        return
+    await repository.prune_redundant_rest(session, plan.id)
+
+
 async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     """Once-a-day per-user Garmin calendar sync (separate from the morning report);
     scheduled by run_daily, so no further time guard is needed. Also carries the EP-05
@@ -1887,6 +1900,7 @@ async def plan_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
     — different daily concerns, but this job already runs once/day for every user, the
     cheapest place to hang more once-a-day checks."""
     async def worker(session, user):
+        await _prune_plan_for_user(session, user)
         await _sync_for_user(session, user)
         await _race_pack_for_user(ctx, session, user)
         await _gear_check_for_user(ctx, session, user)

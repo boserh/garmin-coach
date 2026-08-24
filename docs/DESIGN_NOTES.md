@@ -263,6 +263,35 @@ written before this existed are repaired by `python -m app.cli fix-plan-steps --
 (0 Garmin, 0 LLM, dry-run by default); it also names the sessions already on the calendar,
 which still carry the old workout until an `unpush-plan` + `push-plan`.
 
+## "Відпочинок" that contradicts the same day (`prune_redundant_rest`)
+
+A day with no session already means rest — `/plan` renders nothing for it. So a
+`type="rest"` row is never a prescription, only a note, and it turns into a straight
+contradiction the moment something real lands on the same date. Which it does routinely:
+the generator writes "Силовий/відпочинок за планом. Бігу немає" for a Monday it knows is a
+strength day, and `add_strength_workouts` then places that Monday's strength session —
+strength lands on fixed weekdays from the intake, independent of whatever the model put in
+`workouts`. `/plan` stacked "Відпочинок · бігу немає" directly on top of "🏋️ Силова Day 1",
+both dated the same day. The extension path is where it shows up most, because there the
+two writes are a Claude call apart.
+
+`repository.prune_redundant_rest(plan_id)` is the deterministic guard: a `rest` row sharing
+its date with any non-rest session is deleted. It runs at the end of all three write paths
+(`create_plan`, `append_workouts`, `add_strength_workouts`) — the last one matters most,
+since it is the write that creates the collision. A **lone** rest row survives: there it is
+the only thing carrying the reason ("повний відпочинок після хайкінгу"). So does a rest row
+the athlete or an adaptation already resolved (status ≠ `planned`, or matched to an
+activity) — that is history, not a placeholder.
+
+`SYSTEM_PLAN` also tells the model to leave non-run days empty rather than filling them with
+`rest`, and never to put `rest` where strength/cycling already sits. That is prose, not a
+guarantee; the prune is the guarantee.
+
+Plans that already carry such a row would never be written to again (an extension only
+appends future weeks), so `bot.jobs._prune_plan_for_user` runs the same prune once a day
+from `plan_sync_job` — pure DB, zero Garmin, zero Claude, and it runs even for users with
+`garmin_sync_enabled` off. For a plan built after the fix it is a no-op.
+
 ## Sick/travel mode (NF-03)
 
 `/sick [днів]` triggers a *block rebuild*: skip missed/near-term days, ease the return,
