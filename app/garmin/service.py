@@ -506,7 +506,13 @@ def activity_summary(limit: int = 30) -> List[dict]:
     return [row for _id, row in _activity_rows(limit)]
 
 
-def fetch_planned(days_ahead: int = 14) -> List[dict]:
+# How far ahead the Garmin calendar is read, and the same window `build_payload_cached`
+# checks our own plan against before deciding it needs reading at all — one constant so
+# the two can't drift apart.
+PLANNED_WINDOW_DAYS = 14
+
+
+def fetch_planned(days_ahead: int = PLANNED_WINDOW_DAYS) -> List[dict]:
     """Upcoming planned workouts from the Garmin calendar (Runna puts them here)."""
     today = dt.date.today()
     end = (today + dt.timedelta(days=days_ahead)).isoformat()
@@ -654,7 +660,17 @@ async def build_payload_cached(
 
         act_pairs = await run_in_threadpool(_activity_rows, activity_limit)
         activities = [Activity(**row) for _id, row in act_pairs]
-        planned_raw = await run_in_threadpool(fetch_planned, 14)
+        # ``planned_runs`` is the THIRD-PARTY plan sitting in the Garmin calendar — the
+        # Runna path this predates our own planner. The prompts treat it as the FALLBACK
+        # for an athlete we have no plan for: `plan_today`, read straight from the DB at
+        # zero network cost, always wins. So once our own plan covers the same fortnight,
+        # the calendar answers a question nobody asks — while costing two uncached round
+        # trips on every payload build (every /report, /ask, dashboard hit) to read back
+        # the very sessions `plan_sync` pushed there in the first place.
+        own_plan = await repository.upcoming_plan_workouts(
+            session, user_id, days=PLANNED_WINDOW_DAYS, today=today)
+        planned_raw = ([] if own_plan else
+                       await run_in_threadpool(fetch_planned, PLANNED_WINDOW_DAYS))
         planned = [PlannedRun(**p) for p in planned_raw]
 
         today_row = next((d for d in daily if d.date == today_iso), None)

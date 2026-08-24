@@ -211,3 +211,93 @@ def test_recovery_hours_drops_what_cannot_be_a_recovery_time():
     assert service.recovery_hours(-5) is None
     assert service.recovery_hours(True) is None          # bool is not a measurement
     assert service.recovery_hours(60 * 500) is None      # 500h — impossible
+
+
+# ---------- the Garmin calendar is the Runna FALLBACK, not a per-command fetch ----------
+
+class _CalendarCountingProvider(FakeProvider):
+    """Counts calendar reads; everything else behaves like FakeProvider."""
+
+    def __init__(self):
+        self.calendar_calls = 0
+
+    def connectapi(self, path, **kwargs):
+        if "/calendar-service/" in path:
+            self.calendar_calls += 1
+        return super().connectapi(path, **kwargs)
+
+
+async def _payload_with(session, user_id, provider, monkeypatch):
+    from app.garmin import providers
+    monkeypatch.setattr(client, "_limiter", client._RateLimiter(rps=0))
+    service._recent_payload.clear()
+    client._memo.clear()
+    token = providers.set_current_provider(provider)
+    try:
+        return await service.build_payload_cached(
+            session, user_id, days=1, activity_limit=5)
+    finally:
+        providers.reset_current_provider(token)
+
+
+async def _user(session, email):
+    from app.db.models import User
+    user = User(email=email, password_hash="h")
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def test_no_plan_of_our_own_still_reads_the_garmin_calendar(session, monkeypatch,
+                                                                  tmp_path):
+    """The Runna path this predates our planner — it has to keep working."""
+    monkeypatch.setattr(client, "GARMIN_CACHE_DIR", str(tmp_path))
+    user = await _user(session, "runna@e.com")
+    fp = _CalendarCountingProvider()
+    await _payload_with(session, user.id, fp, monkeypatch)
+    assert fp.calendar_calls > 0
+
+
+async def test_our_own_plan_covering_the_window_skips_the_calendar(session, monkeypatch,
+                                                                   tmp_path):
+    """plan_today (a free DB read) outranks planned_runs in every prompt, and plan_sync
+    pushes our sessions INTO that calendar — so reading it back is two uncached round
+    trips per /report to learn what we already wrote."""
+    monkeypatch.setattr(client, "GARMIN_CACHE_DIR", str(tmp_path))
+    from app.db.models import PlannedWorkout, TrainingPlan
+    user = await _user(session, "ours@e.com")
+    plan = TrainingPlan(user_id=user.id, goal="g", status="active", start_date="2026-01-01")
+    session.add(plan)
+    await session.flush()
+    session.add(PlannedWorkout(
+        plan_id=plan.id, user_id=user.id, date=dt.date.today().isoformat(),
+        type="easy", dist_km=5.0, status="planned"))
+    await session.commit()
+
+    fp = _CalendarCountingProvider()
+    payload = await _payload_with(session, user.id, fp, monkeypatch)
+    assert fp.calendar_calls == 0
+    assert payload[0].planned_runs == []
+
+
+async def test_a_month_calendar_is_read_once_an_hour_and_failures_are_not_cached(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "GARMIN_CACHE_DIR", str(tmp_path))
+    client._memo.clear()
+    calls = {"n": 0}
+
+    def _boom(_fn, _path, **kwargs):
+        calls["n"] += 1
+        return {"_error": "ReadTimeout"}
+
+    monkeypatch.setattr(client, "_safe", _boom)
+    assert "_error" in client.fetch_calendar(2026, 7)
+    assert "_error" in client.fetch_calendar(2026, 7)
+    assert calls["n"] == 2                      # a timeout must not be cached for an hour
+
+    monkeypatch.setattr(client, "_safe", lambda _fn, _p, **kw: {"calendarItems": [{"x": 1}]})
+    assert client.fetch_calendar(2026, 7) == {"calendarItems": [{"x": 1}]}
+    monkeypatch.setattr(client, "_safe", _boom)
+    assert client.fetch_calendar(2026, 7) == {"calendarItems": [{"x": 1}]}   # served warm
+    assert calls["n"] == 2

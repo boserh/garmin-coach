@@ -228,6 +228,26 @@ zero Claude calls. `run_weather_plan_check` returns move/modify-only ops
 EP-02's `_send_adapt_proposal`/`adapt_callback`. `_has_pending_proposal` ensures only one
 unanswered ✅/❌ proposal at a time across all automatic proposers.
 
+## The Garmin calendar is a fallback, not a data source (`planned_runs`)
+
+`payload.planned_runs` predates our own planner: it reads the Garmin calendar, where a
+third-party app (Runna) writes its sessions. Every prompt ranks it BELOW `plan_today`, which
+`analysis.reports` reads from our own tables at zero network cost — `planned_runs` is what an
+athlete we have no plan for gets instead.
+
+For anyone on our plan it had become a round trip to learn what we ourselves had written:
+`plan_sync` pushes our sessions into that same calendar. `build_payload_cached` therefore
+checks `upcoming_plan_workouts` over `PLANNED_WINDOW_DAYS` first and skips the fetch when our
+own plan covers the window. That is two Garmin requests saved on EVERY payload build — the
+calendar is read for the current month and the next, and a payload is built by `/report`,
+`/ask`, `/deep`, `/activities`, the dashboard and the morning job alike, 21 call sites in all.
+
+What remains of the fallback is cached for an hour (`client.CALENDAR_TTL_S`), the only mutable
+thing in a cache built for immutable assets. A planned fortnight changes about once a day;
+two uncached requests per bot command bought seconds of freshness nobody needs, and bought
+them at 15s of timeout risk each — `_api` retries 429s only, so a `ReadTimeout` is not
+retried, is swallowed into `{"_error": …}`, and reaches the owner as a WARNING page.
+
 ## dist_km vs steps consistency (`app/plansteps.py`)
 
 A planned session states its volume twice: the headline `PlannedWorkout.dist_km` and the
