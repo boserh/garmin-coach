@@ -292,6 +292,8 @@ app/
   deploy.py                 OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
   race.py                    EP-05: race-pack target/distance mapping + narration-context builder
   gear.py                     NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
+  longrun.py                    what earns a planned session the `long` label —
+                                relative to its own week, applied on write
   gap.py                        EP-15: grade-adjusted pace (GAP) — elevation smoothing + Minetti cost model
   daterel.py                     relative day labels (сьогодні/вчора/через N дн) for LLM context
   injury.py                       NF-04: pure injury-risk detector

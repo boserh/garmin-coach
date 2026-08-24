@@ -715,6 +715,12 @@ ADAPT_TAPER_DAYS = 14              # ≤ this many days to target_date → taper
 ADAPT_CONS_MOVE_MAX_DAYS = 2       # conservative: move at most this many days
 ADAPT_CONS_DIST_MIN_FRAC = 0.7     # conservative: a modify may cut volume ≤30%
 ADAPT_TAPER_DIST_MIN_FRAC = 0.85   # taper: only minimal easing (≤15%)
+# Adaptation corrects the plan it was given; it never invents activity. SYSTEM_PLAN_ADAPT
+# says so, but a prompt is not a guard: on a `flexible` plan the level filter below used to
+# pass every operation through untouched, so an `add` the model produced anyway reached the
+# confirm buttons — that is how a second `long` landed in a week that already had one.
+# Same white-list shape as _WEATHER_ALLOWED_ACTIONS / _SICK_ALLOWED_ACTIONS.
+_ADAPT_ALLOWED_ACTIONS = {"move", "modify", "skip"}
 
 
 def plan_adjust_level(plan) -> str:
@@ -738,10 +744,13 @@ def _filter_ops_to_level(ops: list, level: str, dist_by_date: dict, days_to_targ
     prompt (the model may overstep; ops outside the bounds must never reach the
     confirm buttons, same idea as ``_filter_ops_to_window``).
 
-    conservative: only ``modify`` (volume cut ≤30% of the planned distance) and
-    ``move`` by ≤2 days; within the taper (≤``ADAPT_TAPER_DAYS`` to target) moves are
-    dropped too and a cut may be ≤15%. flexible: anything goes (window filter only).
+    Both levels are first held to ``_ADAPT_ALLOWED_ACTIONS`` — adaptation may reshape the
+    plan, never invent a session. On top of that, conservative: only ``modify`` (volume cut
+    ≤30% of the planned distance) and ``move`` by ≤2 days; within the taper
+    (≤``ADAPT_TAPER_DAYS`` to target) moves are dropped too and a cut may be ≤15%.
+    flexible: any allowed action (window filter only).
     """
+    ops = [op for op in ops if op.action in _ADAPT_ALLOWED_ACTIONS]
     if level == "flexible":
         return ops
     if level != "conservative":       # "off" never reaches the model; fail closed
