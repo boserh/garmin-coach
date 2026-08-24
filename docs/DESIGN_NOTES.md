@@ -972,6 +972,32 @@ and returns an empty delta on anything unparseable (never half-applied). A failu
 swallowed by the job — the digest must not depend on it, and yesterday's profile is a
 perfectly good profile.
 
+## What counts as a long run
+
+Pure (`app/longrun.py`), applied on WRITE next to `plansteps._consistent` and for the same
+reason: the label is model output produced one session at a time, while what makes it true is
+a property of the whole week.
+
+`type` is a behaviour flag, not a caption. `bot.jobs` skips the entire weekly/weather review
+unless the window holds an `ADAPT_HEAVY_TYPES` session (tempo/intervals/long) and detects
+weather conflicts off the same set; `SYSTEM_PLAN_ADAPT` forbids a conservative plan from
+cancelling a `long`; `_MANUAL_MATCH_TYPES` pairs it with an actual run. So a mislabelled
+`long` makes all of them defend a routine easy run as a key session.
+
+The rule is relative, because no absolute distance works: at 6-14 km a week nothing qualifies
+by any textbook, yet one session still carries the week's endurance stimulus. A `long` must be
+the longest run of its ISO week **and** ≥`MIN_RATIO` (1.25) × the median of that week's easy
+runs — 4.5 km among 4.0s is the same session plus a lap. The baseline is easy running only, so
+a fast 8 km tempo neither raises the bar nor steals the label. A week with no easy run has no
+baseline and the label stands: this demotes only what it can disprove.
+
+Reported case: a 4.0 km "long" added on a Wednesday, one day after a 4.0 km easy, in a week
+whose real long run (6.0 km) still stood on the Sunday. It arrived as an `add` — visible
+because `week` was null, a column only plan creation and extension fill. `add` should never
+have been possible there: `SYSTEM_PLAN_ADAPT` forbids it, but `_filter_ops_to_level` returned
+a flexible plan's operations untouched, so only the prompt was holding the line. It now has an
+`_ADAPT_ALLOWED_ACTIONS` white-list, the same shape weather and sick-mode already used.
+
 ## Web UI conventions (UI batch, 2026-08)
 
 The batch answered one question — *what is already computed or stored that the user can't

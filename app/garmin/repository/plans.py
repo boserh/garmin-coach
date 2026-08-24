@@ -8,7 +8,7 @@ from typing import List, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import plansteps
+from app import longrun, plansteps
 from app.db.models import (
     ActivityRecord,
     PlannedWorkout,
@@ -49,6 +49,53 @@ def _consistent(dist_km, steps, *, steps_given: bool, where: str):
             "steps win" if steps_given else "steps rescaled",
         )
     return plansteps.reconcile(dist_km, steps, steps_given=steps_given)
+
+
+async def _relabel_long_runs(session: AsyncSession, plan_id: int,
+                             dates) -> List[PlannedWorkout]:
+    """Demote every ``type="long"`` row that does not earn the label, across each ISO week
+    the given dates touch. Returns the rows changed (so a caller re-syncs them to Garmin —
+    the type is part of the pushed workout's name).
+
+    This runs on WRITE, next to ``_consistent``, and for the same reason: the label is
+    model output produced one session at a time, while what makes it true is a property of
+    the whole week. See ``app.longrun`` for the rule.
+    """
+    weeks = {w for w in (longrun.iso_week(d) for d in dates) if w}
+    if not weeks:
+        return []
+    days = [dt.date.fromisoformat(d) for d in dates if longrun.iso_week(d)]
+    mondays = [d - dt.timedelta(days=d.weekday()) for d in days]
+    lo, hi = min(mondays), max(mondays) + dt.timedelta(days=6)
+    await session.flush()   # rows added in this transaction must be visible below
+    rows = (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id == plan_id,
+                PlannedWorkout.date >= lo.isoformat(),
+                PlannedWorkout.date <= hi.isoformat(),
+            )
+        )
+    ).scalars().all()
+
+    by_week: dict = {}
+    for r in rows:
+        by_week.setdefault(longrun.iso_week(r.date), []).append(r)
+
+    changed: List[PlannedWorkout] = []
+    for week in weeks:
+        week_rows = by_week.get(week) or []
+        unearned = longrun.unearned_long_dates(week_rows)
+        for r in week_rows:
+            if r.date in unearned and (r.type or "").lower() == longrun.LONG:
+                logger.warning(
+                    "PLAN long-run relabel (%s): %s %.1f km is not this week's long run "
+                    "\u2014 stored as %s", week, r.date, r.dist_km or 0.0,
+                    longrun.DEMOTED_TYPE,
+                )
+                r.type = longrun.DEMOTED_TYPE
+                changed.append(r)
+    return changed
 
 
 async def get_active_plan(session: AsyncSession, user_id: int):
@@ -514,6 +561,7 @@ async def create_plan(
             type=w.type, dist_km=dist_km, description=w.description,
             steps=steps, status="planned",
         ))
+    await _relabel_long_runs(session, plan.id, [w.date for w in workouts])
     await session.commit()
     await prune_redundant_rest(session, plan.id)
     return plan
@@ -567,6 +615,7 @@ async def append_workouts(
             steps=steps, status="planned",
         ))
         added += 1
+    await _relabel_long_runs(session, plan.id, [w.date for w in workouts])
     await session.commit()
     await prune_redundant_rest(session, plan.id)
     return added
@@ -803,6 +852,12 @@ async def apply_plan_ops(
                 "reps": getattr(op, "reps", None),
             }
             w.exercise_edits = list(w.exercise_edits or []) + [edit]
+            affected.append(w)
+    # An op writes one session; whether it is the week's long run is a fact about the week.
+    touched = [d for op in ops
+               for d in (op.date, getattr(op, "to_date", None)) if d]
+    for w in await _relabel_long_runs(session, plan.id, touched):
+        if w not in affected:
             affected.append(w)
     await session.commit()
     return affected
