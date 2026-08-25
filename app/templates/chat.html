@@ -2,6 +2,10 @@
 
 {% block title %}Чат{% endblock %}
 
+{# The page opens scrolled to the newest turn (app.js), so the header has to be
+   pinned — see `body.chatpage .topnav` in app.css. #}
+{% block body_attrs %} class="chatpage"{% endblock %}
+
 {% block body %}
   {% set active = 'chat' %}
   {% include "_nav.html" %}

@@ -666,6 +666,21 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
   body{padding-bottom:calc(6rem + env(safe-area-inset-bottom))}
 }
 
+/* ---- the chat's pinned header ----
+   Every other page opens at its top, so the row is simply the first thing you see.
+   /chat opens scrolled to the newest turn (app.js), so an unpinned row starts OFF the
+   screen: the page loads with no name on it and, on a desktop, no links either — the
+   one page where the header has to follow the scroll. The negative side margins take
+   the band across body's gutters so a scrolling bubble can't appear beside it; the
+   negative top one gives back exactly the padding added above the text, so at rest the
+   row sits where it always did. Below the tab bar's z-index (40) and the borrowed-
+   session bar's (50) — both stay on top of it. */
+body.chatpage .topnav{position:sticky;top:0;z-index:30;
+        margin-top:-.9rem;margin-left:-1.5rem;margin-right:-1.5rem;
+        padding:.9rem 1.5rem;
+        background:color-mix(in srgb, var(--bg) 92%, transparent);
+        backdrop-filter:blur(12px)}
+
 /* ---- banners (UI-07) ----
    Five states on /dashboard and eight on the activity page each carried their own
    inline `style="border-color:#…;background:rgba(…,.08)"` — the same warning amber
