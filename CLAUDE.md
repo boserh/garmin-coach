@@ -459,11 +459,13 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   marker** — deploys are frequent enough to report a dead nightly timer as fresh, and a
   `rsync_ok: null` write would erase a recorded off-SD failure.
   `deploy/systemd/garmin-backup.{service,timer}` runs it nightly; `--rsync-dest` copies
-  off the SD card — and a **local** destination is verified to sit on a different
-  filesystem afterwards (`_check_off_sd`, `--allow-same-fs` opts out): an unmounted mount
-  point is an ordinary writable directory on the card, so rsync into it succeeds and the
-  "off-SD" set quietly lives on the disk it exists to outlive. Fernet-encrypted creds are
-  worthless without `APP_SECRET_KEY`, so the
+  off the SD card (the USB stick is **automounted** — `x-systemd.automount` in fstab, so
+  the 03:15 run mounts it itself and a replugged stick needs no `mount -a`; the exact
+  line and why each option is there live in the unit file's header) — and a **local**
+  destination is verified to sit on a different filesystem afterwards (`_check_off_sd`,
+  `--allow-same-fs` opts out): an unmounted mount point is an ordinary writable directory
+  on the card, so rsync into it succeeds and the "off-SD" set quietly lives on the disk it
+  exists to outlive. Fernet-encrypted creds are worthless without `APP_SECRET_KEY`, so the
   DB copy is safe anywhere — but `APP_SECRET_KEY`/`.env` must be backed up **separately**
   (out of band) for a restore to decrypt creds.
 - **Backup freshness monitoring (OPS-08)**: a successful backup run writes
