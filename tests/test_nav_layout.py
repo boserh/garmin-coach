@@ -86,6 +86,54 @@ def test_the_tab_bar_does_not_cover_the_content(pages, width, name):
             "body's bottom padding has to leave room for it")
 
 
+@pytest.fixture
+def chat_pages(client, tmp_path):
+    """A chat with enough turns to scroll — the header can only be shown to hold on when
+    there is a scroll, and this page opens at the bottom of it."""
+    import anyio
+
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+
+    email = "nav-chat@example.com"
+    _seed_user(email=email, password="pw", is_admin=False)
+    client.post("/login", data={"email": email, "password": "pw"})
+    uid = _user_id(email)
+
+    async def seed():
+        async with async_session_maker() as s:
+            for i in range(25):
+                await repository.log_report(
+                    s, user_id=uid, kind="ask", model="claude-sonnet-5", ok=True,
+                    question=f"питання номер {i}",
+                    report_text=f"відповідь номер {i}, достатньо довга щоб зайняти рядок")
+
+    anyio.run(seed)
+    stage_assets(tmp_path)
+    return stage_pages(client, tmp_path, {"chat": "/chat"})
+
+
+@pytest.mark.parametrize("width", [1280, *WIDTHS])
+def test_the_chat_header_stays_pinned(chat_pages, width):
+    """/chat is the one page that opens scrolled to the bottom (the newest turn), so an
+    unpinned header starts off screen: the page loads with no name on it and, on a
+    desktop, no links either."""
+    with _page(chat_pages["chat"], width) as page:
+        m = page.evaluate("""() => {
+          window.scrollTo(0, document.body.scrollHeight);
+          const nav = document.querySelector('.topnav');
+          const r = nav.getBoundingClientRect();
+          return {scrolled: window.scrollY, top: r.top, bottom: r.bottom,
+                  bg: getComputedStyle(nav).backgroundColor};
+        }""")
+        assert m["scrolled"] > 0, "the staged chat page never scrolled — nothing to guard"
+        assert m["top"] <= 1 and m["bottom"] > 0, (
+            f"the header scrolled away (top {m['top']}px) at {width}px")
+        # Pinned over transparent chrome, the turns scrolling underneath read through it.
+        assert m["bg"] not in ("transparent", "rgba(0, 0, 0, 0)"), (
+            "the pinned header has no background of its own")
+
+
 def test_the_bar_is_gone_on_a_desktop_width(pages):
     with _page(pages["dashboard"], 1280) as page:
         assert page.evaluate(
