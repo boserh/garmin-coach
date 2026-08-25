@@ -8,7 +8,7 @@ from typing import List, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import longrun, plansteps
+from app import longrun, plankind, plansteps
 from app.db.models import (
     ActivityRecord,
     PlannedWorkout,
@@ -781,6 +781,19 @@ def _sanitize_strength(sp) -> Optional[dict]:
             "blocks": blocks_out}
 
 
+def _reconcile_kind(w, where: str) -> None:
+    """Null the columns ``w.type`` cannot own (``app.plankind``) and say so in the log.
+
+    Every write that can change a session's type runs through here: the push path branches
+    on the *columns*, so a row left carrying both a strength template and a run distance is
+    a session that reaches the watch as the wrong sport. See ``app.plankind`` for the case
+    that produced it."""
+    cleared = plankind.reconcile(w)
+    if cleared:
+        logger.warning("PLAN kind reconcile (%s): type=%s cleared %s",
+                       where, w.type, ", ".join(cleared))
+
+
 async def apply_plan_ops(
     session: AsyncSession, plan: TrainingPlan, ops: list
 ) -> List[PlannedWorkout]:
@@ -803,6 +816,7 @@ async def apply_plan_ops(
                 strength_plan=_sanitize_strength(getattr(op, "strength", None)),
                 status="planned",
             )
+            _reconcile_kind(w, f"add {op.date}")
             session.add(w)
             affected.append(w)
             continue
@@ -818,6 +832,15 @@ async def apply_plan_ops(
         elif op.action == "modify":
             if op.type is not None:
                 w.type = op.type
+            elif ((getattr(op, "strength", None) is not None
+                   or getattr(op, "garmin_template_id", None) is not None)
+                  and not plankind.is_strength(w.type)):
+                # The op turns this day into a strength session but never said so. Taking it
+                # at face value would leave a run-typed row carrying a template — the exact
+                # shape that pushes an easy run to the watch as somebody's Day 1.
+                logger.warning("PLAN modify %s: strength content on a %s session — "
+                               "treating it as a strength day", op.date, w.type)
+                w.type = "strength"
             if op.description is not None:
                 w.description = op.description
             # Distance and steps are ONE decision, not two independent columns: a modify that
@@ -838,12 +861,23 @@ async def apply_plan_ops(
                 sp = _sanitize_strength(op.strength)
                 if sp:
                     w.strength_plan = sp
+            # Last, so it judges the row as the op leaves it: a modify that flips the type
+            # drops what the day used to be (a stale strength template on a run, a stale
+            # distance on a strength session), and one that only edits a field re-checks a
+            # row an earlier edit may already have broken.
+            _reconcile_kind(w, f"modify {op.date}")
             affected.append(w)
         elif op.action == "swap_exercise":
             frm = (getattr(op, "from_category", None) or "").upper()
             to = (getattr(op, "to_category", None) or "").upper()
             # reject an unmapped/invalid target so a hallucinated code never reaches Garmin
             if not frm or not exercises.valid_category(to):
+                continue
+            if not plankind.is_strength(w.type):
+                # An exercise swap on a run is meaningless, and the edit would sit on the
+                # row as strength content that a later type flip could act on.
+                logger.warning("PLAN swap_exercise %s: %s is not a strength session — "
+                               "ignored", op.date, w.type)
                 continue
             # validate the exercise name against the *target* category (it belongs to `to`)
             edit = {

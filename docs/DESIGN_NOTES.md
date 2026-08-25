@@ -283,6 +283,42 @@ written before this existed are repaired by `python -m app.cli fix-plan-steps --
 (0 Garmin, 0 LLM, dry-run by default); it also names the sessions already on the calendar,
 which still carry the old workout until an `unpush-plan` + `push-plan`.
 
+## A session is a run OR a strength session, never both (`app/plankind.py`)
+
+`PlannedWorkout` carries two mutually exclusive sets of columns: a **strength** session is
+built from `garmin_template_id` (clone a saved Garmin workout) or `strength_plan` (build one
+from scratch), a **distance** session from `dist_km` + `steps`. `type` is the only thing that
+says which — and the push path branched on the *columns*, so a row carrying both went to the
+watch as the wrong sport entirely.
+
+`SYSTEM_PLAN_EDIT` lets a `modify` rewrite `type` (in as many words), and "поміняй місцями
+середу і четвер" between a run day and a strength day is exactly a pair of such ops. Neither
+`apply_plan_ops` nor anything above it cleared the columns the new type could no longer own,
+so **both halves of the swap broke at once**:
+
+* the run day kept its `garmin_template_id`. `push_workout`'s `if w.strength_plan: … elif
+  w.garmin_template_id: …` came *before* the run branch, so it cloned the strength template
+  and named the copy `🏋️ {w.description}` — the run's own description, cut to Garmin's 80
+  chars (which also ate the ` · W7` suffix). The athlete opened "дуже легкий відновлювальний
+  біг 3 км, темп повільніше звичного" on the watch and found hanging leg raises and a plank;
+* the strength day kept the run's `dist_km`/`steps`, so `/plan` rendered "🏋️ СИЛОВА · 4.5 км
+  · ~33 хв" for a session with no distance in it.
+
+`plankind.reconcile` is the single rule — the type is the intent, so it wins over leftovers
+from what the day used to be — called at the end of `apply_plan_ops`' add and modify branches
+(last, so it judges the row as the op leaves it). A `modify` that supplies strength content
+without saying `type="strength"` is read as a strength day rather than taken literally into
+the broken shape, and `swap_exercise` is refused on a non-strength row. `plan_sync` enforces
+the same rule on the way out: `_pushable` used to read "runnable OR has a template" (which
+made even a stale-template `rest` note pushable) and now asks the type first, and
+`push_workout` takes the strength branches only for a strength session.
+
+Rows written before this existed are repaired by `python -m app.cli fix-plan-kinds --email …
+[--apply] [--repush]` — 0 LLM, and 0 Garmin without `--repush`. The repair has to reach
+Garmin: the daily sync only removes what became stale and pushes what was never pushed, so a
+contaminated session already on the calendar stays wrong forever. `--repush` runs the
+corrected rows through `resync_workouts` (delete our copy, push it again).
+
 ## "Відпочинок" that contradicts the same day (`prune_redundant_rest`)
 
 A day with no session already means rest — `/plan` renders nothing for it. So a

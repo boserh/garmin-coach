@@ -523,6 +523,66 @@ async def _fix_plan_steps(email: str, apply: bool) -> int:
     return 0
 
 
+async def _fix_plan_kinds(email: str, apply: bool, repush: bool) -> int:
+    """Repair planned sessions that carry columns their ``type`` cannot own — a run day left
+    holding a strength template (``garmin_template_id``/``strength_plan``), or a strength day
+    left holding a run's ``dist_km``/``steps``.
+
+    That is what a plan edit that swapped a run day with a strength day used to leave behind
+    (see ``app.plankind``): on the watch the run appeared as a cloned "Day 1" under the run's
+    own description, and ``/plan`` showed the strength session with a distance. The write path
+    no longer produces it; this cleans up rows written before the fix.
+
+    Pure DB by default: 0 Claude calls, 0 Garmin requests, read-only without ``--apply``.
+    ``--apply --repush`` additionally repairs the **Garmin calendar** — the cleaned sessions
+    that were already pushed still sit there as the wrong workout, so each is deleted and
+    re-pushed from the corrected row (real Garmin calls, still no LLM cost)."""
+    from app import plankind
+    from app.garmin import plan_sync, repository
+
+    async with cli_user(email) as (session, user):
+        plan = await repository.get_active_plan(session, user.id)
+        if plan is None:
+            print("No active plan for this user.")
+            return 1
+        broken = []
+        for w in await repository.list_workouts(session, plan.id):
+            cols = plankind.foreign_columns(w)
+            if not cols:
+                continue
+            broken.append(w)
+            note = "  [pushed to Garmin]" if w.garmin_workout_id is not None else ""
+            print(f"  {w.date} {w.type or '':<10} drop {', '.join(cols)}{note}")
+        if not broken:
+            print("Nothing to fix — every session matches its type.")
+            return 0
+        if not apply:
+            print(f"Would fix {len(broken)} session(s). "
+                  f"Re-run with --apply to write the changes.")
+            return 0
+        for w in broken:
+            plankind.reconcile(w)
+        await session.commit()
+        print(f"Fixed {len(broken)} session(s).")
+
+        pushed = [w for w in broken if w.garmin_workout_id is not None]
+        if not pushed:
+            return 0
+        if not repush:
+            print(f"{len(pushed)} of them are on the Garmin calendar as the WRONG workout. "
+                  f"Re-push with --repush, or by hand:\n"
+                  f"  python -m app.cli unpush-plan --email {email}\n"
+                  f"  python -m app.cli push-plan --email {email}")
+            return 0
+        print(f"Re-pushing {len(pushed)} session(s) to the Garmin calendar...")
+        async with garmin_login(session, user):
+            # resync_workouts is the per-edit path: drop our old copy, re-push the corrected
+            # row when it is still an upcoming in-window session (a past one just goes).
+            res = await plan_sync.resync_workouts(session, user.id, pushed)
+        print(f"Garmin: -{res['removed']} removed, +{res['pushed']} re-pushed.")
+    return 0
+
+
 async def _backfill_activity_analysis(email: str, apply: bool) -> int:
     """Re-attach activity analyses that were generated but never stored on the row.
 
@@ -824,6 +884,16 @@ def main(argv=None) -> int:
     fps.add_argument("--email", required=True)
     fps.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
 
+    fpk = sub.add_parser(
+        "fix-plan-kinds",
+        help="Clear plan sessions carrying the wrong type's columns (a run holding a "
+             "strength template, a strength day holding a distance) — read-only without "
+             "--apply; --repush also repairs the Garmin calendar")
+    fpk.add_argument("--email", required=True)
+    fpk.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
+    fpk.add_argument("--repush", action="store_true",
+                     help="with --apply: re-push the corrected sessions to Garmin")
+
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
@@ -887,6 +957,8 @@ def main(argv=None) -> int:
         return _run(_unpush_plan(args.email, args.date))
     if args.cmd == "fix-plan-steps":
         return _run(_fix_plan_steps(args.email, args.apply))
+    if args.cmd == "fix-plan-kinds":
+        return _run(_fix_plan_kinds(args.email, args.apply, args.repush))
     if args.cmd == "backfill-activity-analysis":
         return _run(_backfill_activity_analysis(args.email, args.apply))
     if args.cmd == "trigger-plan-adapt":
