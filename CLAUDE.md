@@ -693,10 +693,11 @@ architecture + current operational state.
   scripts.reset_morning [--days N | --all] [--dry-run]` drops recent cache rows.
   `--email … --resend` also clears that user's send-guard (a real Claude call,
   unattended) — prefer the admin bot's `/test_morning` for just LOOKING at output.
-- **Garmin disk cache** (per-key files, `GARMIN_CACHE_DIR`): immutable ID-keyed assets
-  only — `exercise:v2` (365d), `workout:v2` (7d), `series:v3` (365d; elevation, NF-25's
+- **Garmin disk cache** (per-key files, `GARMIN_CACHE_DIR`): ID-keyed immutable assets —
+  `exercise:v2` (365d), `workout:v2` (7d), `series:v3` (365d; elevation, NF-25's
   cadence/GCT/oscillation and NF-33's coordinates — v2 entries stay readable, a missing
-  channel reads as absent, never as zero).
+  channel reads as absent, never as zero) — plus `calendar:v1` (1h), the one entry keyed on
+  a date and the one whose contents change under us. A failure is never cached.
   One JSON file per key, atomic replace, cross-process safe, in-process memo on top.
 - **DB day-level cache** (`DailyMetric`): past days served from DB; today refetched.
 

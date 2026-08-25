@@ -234,11 +234,15 @@ def _api(path: str, **kwargs):
 # and independent, and both processes read the same directory. Keys are
 # "<kind>:<id>"; file payloads are [data, expires_at]. An in-process memo fronts
 # the file reads (fine for these assets: immutable or slow-changing).
+# `calendar:v1` is the one entry keyed on a DATE rather than a Garmin id, and the one
+# whose contents can change under us — see ``fetch_calendar`` for why an hour of
+# staleness is the right trade there.
 # (The one-time garmin_cache.json → per-key-file + .migrated seed was removed once
 # every deployment had migrated — C1; git history keeps it if it's ever needed.)
 GARMIN_CACHE_DIR = settings.GARMIN_CACHE_DIR
 EXERCISE_TTL_S = 365 * 24 * 3600   # a completed activity's sets are immutable
 WORKOUT_TTL_S = 7 * 24 * 3600      # a planned workout can be edited; refresh weekly
+CALENDAR_TTL_S = 3600              # a month's calendar — the one mutable asset here, see below
 
 _memo: dict = {}
 
@@ -479,8 +483,30 @@ def fetch_activity(activity_id) -> dict:
 
 
 def fetch_calendar(year: int, month_index: int):
-    """Raw calendar for a month. Garmin's month index is 0-based."""
-    return _safe(_api, f"/calendar-service/year/{year}/month/{month_index}")
+    """Raw calendar for a month, cached for ``CALENDAR_TTL_S``. Garmin's month index is
+    0-based.
+
+    Unlike everything else in this cache the contents are mutable — but the read is a plain
+    uncached round trip on a path taken by EVERY payload build (`/report`, `/ask`, the
+    dashboard, the morning job), twice over, since ``service.fetch_planned`` covers the
+    current month and the next. A fortnight of planned sessions changes about once a day;
+    paying two network requests per bot command to notice within seconds rather than within
+    the hour is the wrong side of that trade, and the timeouts land in the admin channel.
+
+    Staleness costs nothing to the athletes this actually serves: ``build_payload_cached``
+    skips the calendar entirely for anyone whose own plan covers the window, so what is
+    cached here is a THIRD-PARTY plan (Runna) that this app never writes to. A failure is
+    never cached — the next call retries.
+    """
+    key = f"calendar:v1:{year}-{month_index:02d}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    r = _safe(_api, f"/calendar-service/year/{year}/month/{month_index}")
+    if isinstance(r, dict) and "_error" in r:
+        return r
+    _cache_put(key, r, CALENDAR_TTL_S)
+    return r
 
 
 def fetch_daily_events(date: dt.date) -> list:
