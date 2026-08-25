@@ -8,6 +8,27 @@
 #
 # Adjust WorkingDirectory / User / --rsync-dest for the Pi. The rsync destination is
 # the OFF-SD copy — without it a corrupt SD card takes the "backups" with it.
+#
+# The USB stick is mounted by /etc/fstab, and the options are load-bearing — this is
+# the line the Pi runs:
+#
+#   UUID=FA41-C949 /mnt/backup vfat noauto,nofail,x-systemd.automount,x-systemd.idle-timeout=60,uid=sergiwez,gid=sergiwez,umask=022 0 0
+#
+# (one line — fstab has no continuations.)
+#
+# - x-systemd.automount (+ noauto): mount on first ACCESS, not at boot. Plain
+#   `nofail` mounts at boot and never retries, so a stick that was absent then —
+#   or replugged later — stays unmounted until someone runs `mount -a` by hand. With
+#   automount the 03:15 run mounts it itself, which is the whole point: recovering
+#   from a pulled stick must not need hands.
+# - It also removes the false-green case scripts/backup_db.py's _check_off_sd guards:
+#   an autofs point cannot be written to while nothing is mounted, so backups can
+#   never quietly land back on the SD card.
+# - uid/gid: vfat has no ownership of its own, it is assigned at mount time — without
+#   these the mount is root-owned and rsync fails with "mkdir ... Permission denied".
+# - idle-timeout: unmount after a minute idle, so the stick spends almost all its
+#   life unmounted (a FAT filesystem that is not mounted cannot be left dirty by a
+#   power cut).
 [Unit]
 Description=Garmin bot: nightly SQLite backup
 After=network-online.target
@@ -16,7 +37,7 @@ After=network-online.target
 Type=oneshot
 User=sergiwez
 WorkingDirectory=/home/sergiwez/projects/garmin-coach
-# --dir backups: rotated copies on the SD card. --rsync-dest: the OFF-SD copy on a
-# USB stick mounted at /mnt/backup (see /etc/fstab, UUID FA41-C949) — without it a
+# --dir backups: rotated copies on the SD card. --rsync-dest: the OFF-SD copy on the
+# USB stick automounted at /mnt/backup (see the fstab line above) — without it a
 # corrupt SD card takes the "backups" with it.
 ExecStart=/home/sergiwez/projects/garmin-coach/venv/bin/python -m scripts.backup_db --dir backups --rsync-dest /mnt/backup/garmin/
