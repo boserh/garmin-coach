@@ -319,6 +319,24 @@ Garmin: the daily sync only removes what became stale and pushes what was never 
 contaminated session already on the calendar stays wrong forever. `--repush` runs the
 corrected rows through `resync_workouts` (delete our copy, push it again).
 
+## Plan-op targets are resolved before anything is applied (`apply_plan_ops`)
+
+`move`/`modify`/`skip` name their target by date, and `move` rewrites that very column — so
+resolving each op's row lazily, one at a time, means later ops query a plan the earlier ops
+have already changed. The ops describe changes to the plan the model was **shown**, so the
+whole batch is resolved against that plan up front.
+
+Swapping two days is the case that exposed it: it comes back as two `move` ops onto each
+other's dates. Lazily, the second one looked up the destination date and found the row the
+first move had just put there (`workout_on_date` returns the lowest id on a date) and moved
+it straight back. Whether that mattered depended on row-creation order, which nobody thinks
+about: with the strength row created first the swap worked, and for **two run days — where
+the earlier date holds the lower id, i.e. the ordinary case — the swap did nothing at all**,
+while the athlete was told it had been applied.
+
+A date that held no row at batch start is still looked up live, so an op can act on a session
+an earlier `add` in the same batch created.
+
 ## "Відпочинок" that contradicts the same day (`prune_redundant_rest`)
 
 A day with no session already means rest — `/plan` renders nothing for it. So a

@@ -800,6 +800,17 @@ async def apply_plan_ops(
     """Apply edit operations (``PlanOp``-like objects) to a plan's workouts. Returns the
     **touched** workouts (so the caller can re-sync just those to Garmin). ``move``/
     ``modify``/``skip`` target the workout on ``op.date``."""
+    # Resolve every target against the plan as it stood when the batch STARTED, before a
+    # single op is applied. A `move` rewrites the very column the next op's lookup reads,
+    # and the ops describe changes to the plan the model was SHOWN — so re-querying between
+    # them answers a question nobody asked. Swapping two days is two moves onto each other's
+    # dates, and resolved lazily the second one re-found the row the first had just moved
+    # (``workout_on_date`` takes the lowest id on the date) and moved it straight back: for
+    # two run days, where the earlier date holds the lower id, the swap silently did nothing
+    # at all. A date with no row here is still looked up live below — that is how an op picks
+    # up a session an earlier ``add`` in the same batch created.
+    targets = {d: await workout_on_date(session, plan.id, d)
+               for d in {op.date for op in ops if op.action != "add" and op.date}}
     affected: List[PlannedWorkout] = []
     for op in ops:
         if op.action == "add":
@@ -820,7 +831,7 @@ async def apply_plan_ops(
             session.add(w)
             affected.append(w)
             continue
-        w = await workout_on_date(session, plan.id, op.date)
+        w = targets.get(op.date) or await workout_on_date(session, plan.id, op.date)
         if w is None:
             continue
         if op.action == "skip":
