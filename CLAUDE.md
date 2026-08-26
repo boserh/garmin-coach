@@ -294,6 +294,9 @@ app/
   gear.py                     NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
   longrun.py                    what earns a planned session the `long` label —
                                 relative to its own week, applied on write
+  plankind.py                   which columns a planned session's type may own — a run
+                                (dist_km/steps) or a strength session (template/strength_plan),
+                                never both; applied on write and again before push
   gap.py                        EP-15: grade-adjusted pace (GAP) — elevation smoothing + Minetti cost model
   daterel.py                     relative day labels (сьогодні/вчора/через N дн) for LLM context
   injury.py                       NF-04: pure injury-risk detector
@@ -579,7 +582,10 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   `fix-plan-steps [--apply]` (re-cut planned sessions whose `steps` disagree with their
   `dist_km` — repairs rows written before the write path reconciled them; dry run by
   default, 0 Garmin, 0 LLM, and it names the sessions already pushed to the calendar that
-  need an `unpush-plan` + `push-plan`);
+  need an `unpush-plan` + `push-plan`),
+  `fix-plan-kinds [--apply] [--repush]` (clear sessions carrying the wrong type's columns —
+  a run left holding a strength template, a strength day left holding a distance; dry run by
+  default, 0 LLM, and `--repush` also repairs what those rows put on the Garmin calendar);
   `backfill-series --force` refetches runs that already have a series to pick up the
   `series:v3` channels.
 

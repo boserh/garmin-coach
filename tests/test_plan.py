@@ -601,3 +601,147 @@ async def test_daily_job_heals_a_plan_written_before_the_fix(session):
     await _prune_plan_for_user(session, SimpleNamespace(id=U1))
     ws = await repository.list_workouts(session, plan.id)
     assert [w.type for w in ws] == ["easy"]
+
+
+async def test_modify_swapping_a_run_and_a_strength_day_clears_the_other_kind(session):
+    """The reported break, end to end. The athlete swapped Wednesday's strength session with
+    Thursday's run; the model turned that into two ``modify`` ops, and the write path kept
+    each day's old columns. Wednesday then held a ``garmin_template_id`` while calling itself
+    an easy run — push cloned the template and named it "🏋️ <the run's description>", so the
+    watch showed hanging leg raises under "дуже легкий відновлювальний біг 3 км" — and
+    Thursday's strength day still carried the run's 4.5 km, which ``/plan`` duly rendered."""
+    plan = await _seed_plan(session)
+    await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="add", date="2026-07-08", type="strength", description="Day 1",
+               garmin_template_id=931013083),
+        PlanOp(action="add", date="2026-07-09", type="easy", dist_km=4.5, description="легкий",
+               steps=[PlanStep(kind="run", dist_m=4500, hr_zone=2)]),
+    ])
+    # the swap: Wednesday becomes the run, Thursday becomes the strength day
+    await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="modify", date="2026-07-08", type="easy", dist_km=3.0,
+               description="Дуже легкий відновлювальний біг 3 км",
+               steps=[PlanStep(kind="run", dist_m=3000, hr_zone=2)]),
+        PlanOp(action="modify", date="2026-07-09", type="strength", description="Day 1",
+               garmin_template_id=931013083),
+    ])
+    by_date = {w.date: w for w in await repository.list_workouts(session, plan.id)}
+    run = by_date["2026-07-08"]
+    assert run.type == "easy" and run.dist_km == 3.0
+    assert run.garmin_template_id is None and run.strength_plan is None
+    strength = by_date["2026-07-09"]
+    assert strength.type == "strength" and strength.garmin_template_id == 931013083
+    assert strength.dist_km is None and strength.steps is None
+
+
+async def test_modify_to_a_run_drops_a_generated_strength_session(session):
+    plan = await _seed_plan(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="strength", description="Ноги",
+        strength={"name": "Ноги", "blocks": [{"reps": 3, "exercises": [
+            {"category": "squat", "reps": 12}]}]})])
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="modify", date="2026-07-02", type="easy", dist_km=5.0, description="легкий")])
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert w.type == "easy" and w.dist_km == 5.0 and w.strength_plan is None
+
+
+async def test_modify_with_strength_content_but_no_type_becomes_a_strength_day(session):
+    """A ``modify`` that hands over a strength session without saying ``type="strength"``.
+    Taken literally it produces the broken shape (a run-typed row holding a template), so the
+    content decides the type instead of quietly contradicting it."""
+    plan = await _seed_plan(session)   # 2026-07-01 is an easy run
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="modify", date="2026-07-01", description="Day 1",
+        garmin_template_id=931013083)])
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-01"]
+    assert w.type == "strength" and w.garmin_template_id == 931013083
+    assert w.dist_km is None and w.steps is None
+
+
+async def test_add_strength_op_never_keeps_a_distance(session):
+    plan = await _seed_plan(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date="2026-07-02", type="strength", description="Day 1",
+        dist_km=4.5, garmin_template_id=931013083)])   # a distance on a strength day
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-02"]
+    assert w.type == "strength" and w.dist_km is None and w.steps is None
+
+
+async def test_swap_exercise_is_ignored_on_a_run(session):
+    plan = await _seed_plan(session)   # 2026-07-01 is an easy run
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="swap_exercise", date="2026-07-01",
+        from_category="HYPEREXTENSION", to_category="DEADLIFT")])
+    w = {x.date: x for x in await repository.list_workouts(session, plan.id)}["2026-07-01"]
+    assert w.exercise_edits is None
+
+
+async def _dated_plan(session, rows):
+    """A plan whose rows are inserted in the given order — the ids follow that order, which
+    is what the swap bug turned on."""
+    from app.db.models import PlannedWorkout, TrainingPlan
+    plan = TrainingPlan(user_id=U1, goal="g", status="active")
+    session.add(plan)
+    await session.flush()
+    for r in rows:
+        session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, week=7,
+                                   status="planned", **r))
+    await session.commit()
+    return plan
+
+
+async def test_swapping_two_days_with_moves_actually_swaps_them(session):
+    """Two ``move`` ops onto each other's dates — how "поміняй місцями середу і пʼятницю"
+    comes back from the model. Resolved lazily, the second move re-found the row the first
+    had just moved (``workout_on_date`` takes the lowest id on a date) and moved it straight
+    back: for two run days, where the earlier date holds the lower id, the swap did nothing
+    whatsoever and the athlete was told it had been applied."""
+    plan = await _dated_plan(session, [
+        dict(date="2026-08-26", type="easy", dist_km=3.0, description="A"),
+        dict(date="2026-08-28", type="tempo", dist_km=8.0, description="B"),
+    ])
+    await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="move", date="2026-08-26", to_date="2026-08-28"),
+        PlanOp(action="move", date="2026-08-28", to_date="2026-08-26"),
+    ])
+    by_date = {w.date: w for w in await repository.list_workouts(session, plan.id)}
+    assert by_date["2026-08-26"].description == "B" and by_date["2026-08-26"].dist_km == 8.0
+    assert by_date["2026-08-28"].description == "A" and by_date["2026-08-28"].dist_km == 3.0
+
+
+async def test_swapping_a_run_and_a_strength_day_with_moves(session):
+    """The same swap across the two kinds, in the row order plan generation produces (runs
+    first, then ``add_strength_workouts``) and in the opposite one — it used to come out
+    right in one and be a no-op in the other."""
+    for rows in ([dict(date="2026-08-27", type="easy", dist_km=4.5, description="run"),
+                  dict(date="2026-08-26", type="strength", description="Day 1",
+                       garmin_template_id=931013083)],
+                 [dict(date="2026-08-26", type="strength", description="Day 1",
+                       garmin_template_id=931013083),
+                  dict(date="2026-08-27", type="easy", dist_km=4.5, description="run")]):
+        plan = await _dated_plan(session, rows)
+        await repository.apply_plan_ops(session, plan, [
+            PlanOp(action="move", date="2026-08-26", to_date="2026-08-27"),
+            PlanOp(action="move", date="2026-08-27", to_date="2026-08-26"),
+        ])
+        by_date = {w.date: w for w in await repository.list_workouts(session, plan.id)}
+        assert by_date["2026-08-26"].type == "easy"
+        assert by_date["2026-08-27"].type == "strength"
+        # each day keeps its own structure — that is the point of expressing a swap as moves
+        assert by_date["2026-08-26"].dist_km == 4.5
+        assert by_date["2026-08-27"].garmin_template_id == 931013083
+        assert by_date["2026-08-27"].dist_km is None
+
+
+async def test_an_op_still_finds_a_session_added_in_the_same_batch(session):
+    """Pre-resolving targets must not blind a later op to a row an earlier ``add`` created."""
+    plan = await _dated_plan(session, [
+        dict(date="2026-08-26", type="easy", dist_km=3.0, description="A"),
+    ])
+    await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="add", date="2026-08-29", type="easy", dist_km=6.0, description="new"),
+        PlanOp(action="modify", date="2026-08-29", description="edited"),
+    ])
+    by_date = {w.date: w for w in await repository.list_workouts(session, plan.id)}
+    assert by_date["2026-08-29"].description == "edited"

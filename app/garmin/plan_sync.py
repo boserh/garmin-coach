@@ -19,6 +19,7 @@ from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
 
+from app import plankind
 from app.garmin import client, repository, workout_export
 from app.garmin.providers import get_provider
 
@@ -62,9 +63,17 @@ def _calendar_stale(w, active_id, today: str) -> bool:
 
 
 def _pushable(w) -> bool:
-    """A session we send to the watch: a run, a strength session with a template to clone,
-    or a from-scratch generated strength session (``strength_plan``)."""
-    return _runnable(w) or bool(w.garmin_template_id) or bool(w.strength_plan)
+    """A session we send to the watch: a run/ride built from ``steps``, or a strength session
+    that has something to build from (a template to clone, or a generated ``strength_plan``).
+
+    The **type** decides which — never the mere presence of a strength column. This used to
+    read "runnable OR has a template", so a leftover ``garmin_template_id`` on a day the
+    athlete had turned into an easy run made that run push as a cloned strength workout (and
+    made a ``rest`` note pushable at all). ``app.plankind`` is the same rule on the write
+    side; this is it on the way out."""
+    if plankind.is_strength(w.type):
+        return bool(w.strength_plan or w.garmin_template_id)
+    return _runnable(w)
 
 
 async def select_forward(session, plan_id: int, *, days: int = 14, only_date: str = None):
@@ -93,16 +102,24 @@ async def select_pushed(session, plan_id: int, *, only_date: str = None):
 
 async def push_workout(session, w, errors: Optional[list] = None):
     """Create + schedule one workout, store its Garmin ids, commit. Returns the id (or
-    None if a strength template couldn't be cloned). A strength session carries a
-    ``garmin_template_id`` — we clone that saved workout into our own copy instead of
-    building from ``steps``; runs build from ``steps``.
+    None if a strength session had nothing to build from).
+
+    ``w.type`` picks the branch, not the columns: a ``strength`` session builds from its
+    ``strength_plan``, or clones the saved workout ``garmin_template_id`` names, into our own
+    copy; everything else builds from ``steps``. See ``app.plankind`` for why the type has to
+    be what decides.
 
     ``errors`` (OPS-09): when given, every failure appends ``{"workout_id", "step":
     "push", "msg"}`` to it and returns None instead of raising — the daily
     ``sync_plan_to_garmin`` passes a list so one session's push failure doesn't abort the
     rest of the batch. Callers that don't pass it (CLI ``push-plan``) keep the old
     behaviour: an unexpected exception still propagates."""
-    if w.strength_plan:
+    if not plankind.is_strength(w.type) and plankind.foreign_columns(w):
+        # Belt and braces behind app.plankind: the type is the athlete's intent, so a row
+        # that still carries strength content goes to the watch as the run it says it is.
+        logger.warning(f"GARMIN push: {w.date} is a {w.type} session but carries "
+                       f"{', '.join(plankind.foreign_columns(w))} — pushing it as a run")
+    if plankind.is_strength(w.type) and w.strength_plan:
         sp = w.strength_plan
         # EP-03: the week suffix must survive even when the session carries its own
         # ``name`` (a progression's every week does) — otherwise every week of a
@@ -111,7 +128,7 @@ async def push_workout(session, w, errors: Optional[list] = None):
         name = f"🏋️ {base}" + (f" · W{w.week}" if w.week else "")
         payload = workout_export.build_strength_workout(
             name, sp.get("blocks") or [], warmup_s=sp.get("warmup_s") or 0)
-    elif w.garmin_template_id:
+    elif plankind.is_strength(w.type) and w.garmin_template_id:
         raw = await run_in_threadpool(client.fetch_workout_full, w.garmin_template_id)
         if not raw:
             msg = f"template {w.garmin_template_id} unavailable"
@@ -124,6 +141,15 @@ async def push_workout(session, w, errors: Optional[list] = None):
         if w.exercise_edits:
             n = workout_export.apply_exercise_edits(payload, w.exercise_edits)
             logger.info(f"GARMIN push: applied {n} exercise edit(s) to {w.date}")
+    elif plankind.is_strength(w.type):
+        # Nothing to build it from. ``_pushable`` already filters these out; reaching here
+        # means a caller skipped that check, and the run fallback below would put a bare
+        # lap-button *run* on the watch under a strength session's name.
+        msg = "strength session with neither a template nor a strength_plan"
+        logger.warning(f"GARMIN push: {w.date} {msg} — skip")
+        if errors is not None:
+            errors.append({"workout_id": w.id, "step": "push", "msg": msg})
+        return None
     else:
         payload = workout_export.build_workout(w)
     try:

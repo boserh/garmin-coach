@@ -255,3 +255,61 @@ async def test_sync_removes_past_and_pushes_future(session):
         res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
     assert res == {"pushed": 1, "removed": 1, "errors": []}
     dele.assert_called_once_with(999)
+
+
+async def test_push_ignores_a_strength_template_left_on_a_run(session):
+    """The bug this guards: a plan edit turned a strength day into an easy run and left the
+    ``garmin_template_id`` behind, so push cloned the strength template and scheduled it under
+    the RUN's description — "дуже легкий відновлювальний біг 3 км" opened on the watch as
+    hanging leg raises. The type decides the branch now (``app.plankind``)."""
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    await _seed_plan(session, workouts=[
+        dict(date=fut, week=7, type="easy", dist_km=3.0, status="planned",
+             description="Дуже легкий відновлювальний біг 3 км",
+             steps=[{"kind": "run", "dist_m": 3000, "hr_zone": 2}],
+             garmin_template_id=931013083),          # stale: this day used to be strength
+    ])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "fetch_workout_full") as fetch, \
+         patch.object(plan_sync.client, "create_workout",
+                      return_value={"workoutId": 111}) as create, \
+         patch.object(plan_sync.client, "schedule_workout",
+                      return_value={"workoutScheduleId": 222}):
+        res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
+    assert res == {"pushed": 1, "removed": 0, "errors": []}
+    fetch.assert_not_called()                        # the template is never cloned
+    payload = create.call_args[0][0]
+    assert payload["sportType"]["sportTypeKey"] == "running"
+    assert payload["workoutName"].startswith("🌿")   # a run's name, not "🏋️ <description>"
+    assert payload["workoutSegments"][0]["workoutSteps"][0]["endConditionValue"] == 3000.0
+
+
+async def test_rest_day_with_a_stale_template_is_not_pushable(session):
+    """``_pushable`` used to be "runnable OR has a template", which made even a rest note
+    pushable once an edit left strength content on it."""
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="rest", status="planned",
+             description="відпочинок", garmin_template_id=931013083),
+    ])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "create_workout") as create:
+        res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
+    assert res == {"pushed": 0, "removed": 0, "errors": []}
+    create.assert_not_called()
+
+
+async def test_strength_day_with_nothing_to_build_from_is_skipped(session):
+    """A strength row with neither a template nor a ``strength_plan`` has nothing to send;
+    the run fallback would have put a bare lap-button *run* on the watch."""
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="strength", status="planned", description="Силова"),
+    ])
+    (w,) = await repository.list_workouts(session, plan.id)
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "create_workout") as create:
+        errors: list = []
+        assert await plan_sync.push_workout(session, w, errors=errors) is None
+    create.assert_not_called()
+    assert errors and "neither" in errors[0]["msg"]
