@@ -6,8 +6,8 @@ bound (``user_runtime``); we log in defensively (``login`` is idempotent).
 Two passes:
 
 * **forward** — create + schedule the active plan's upcoming ``planned`` runs that fall
-  in the next ``days`` and aren't pushed yet (idempotent: a stored ``garmin_workout_id``
-  means skip).
+  in the next ``days`` and aren't pushed yet (idempotent: BOTH ids stored means skip; only
+  ``garmin_workout_id`` means the push was interrupted and resumes at the schedule step).
 * **cleanup** — remove from Garmin everything we pushed that no longer belongs: a past
   date, a non-``planned`` status (skipped), or a workout whose plan is no longer the
   active one (archived, or superseded by a regenerated plan). Only ever touches workouts
@@ -76,6 +76,16 @@ def _pushable(w) -> bool:
     return _runnable(w)
 
 
+def fully_pushed(w) -> bool:
+    """Both halves of a push landed: the workout exists on Garmin AND it sits on a calendar
+    date. A row with a workout id but no schedule id is HALF pushed — ``push_workout`` was
+    interrupted between the two Garmin calls — and must be picked up again (it resumes at
+    the schedule step rather than creating a second copy). Before this, "pushed" meant
+    ``garmin_workout_id is not None``, so a half push was never finished: the session
+    silently never reached the watch."""
+    return w.garmin_workout_id is not None and w.garmin_schedule_id is not None
+
+
 async def select_forward(session, plan_id: int, *, days: int = 14, only_date: str = None):
     """The forward-pass selection: a plan's upcoming, pushable, not-yet-pushed sessions
     within the next ``days`` (or exactly ``only_date`` if given). The single source for
@@ -88,7 +98,7 @@ async def select_forward(session, plan_id: int, *, days: int = 14, only_date: st
         end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
         in_window = lambda w: w.date <= end  # noqa: E731
     return [w for w in upcoming
-            if in_window(w) and _pushable(w) and w.garmin_workout_id is None]
+            if in_window(w) and _pushable(w) and not fully_pushed(w)]
 
 
 async def select_pushed(session, plan_id: int, *, only_date: str = None):
@@ -113,19 +123,32 @@ async def push_workout(session, w, errors: Optional[list] = None):
     "push", "msg"}`` to it and returns None instead of raising — the daily
     ``sync_plan_to_garmin`` passes a list so one session's push failure doesn't abort the
     rest of the batch. Callers that don't pass it (CLI ``push-plan``) keep the old
-    behaviour: an unexpected exception still propagates."""
-    if not plankind.is_strength(w.type) and plankind.foreign_columns(w):
+    behaviour: an unexpected exception still propagates.
+
+    **Two commits, not one.** The workout id is persisted as soon as Garmin returns it,
+    BEFORE the session is scheduled. Committing only at the end left a window in which the
+    workout existed on Garmin while no row knew its id: a crash/restart/timeout there
+    orphaned it forever — the next run pushed a second copy (a duplicate on the calendar),
+    and ``unpush-plan``, which only ever touches stored ids, could never clean the first
+    one up. Seen live 2026-08-27: two identical strength sessions on one date, the older
+    one untracked. A row left half pushed (id, no schedule id) is picked up by
+    ``select_forward`` again and RESUMES at the schedule step."""
+    resume = w.garmin_workout_id is not None and w.garmin_schedule_id is None
+    payload = None
+    if not resume and not plankind.is_strength(w.type) and plankind.foreign_columns(w):
         # Belt and braces behind app.plankind: the type is the athlete's intent, so a row
         # that still carries strength content goes to the watch as the run it says it is.
         logger.warning(f"GARMIN push: {w.date} is a {w.type} session but carries "
                        f"{', '.join(plankind.foreign_columns(w))} — pushing it as a run")
-    if plankind.is_strength(w.type) and w.strength_plan:
+    if resume:
+        pass   # nothing to build: the workout is already on Garmin, only the date is missing
+    elif plankind.is_strength(w.type) and w.strength_plan:
         sp = w.strength_plan
         # EP-03: the week suffix must survive even when the session carries its own
         # ``name`` (a progression's every week does) — otherwise every week of a
         # progression pushes under the identical workout name on the watch.
         base = sp.get("name") or w.description or "Силова"
-        name = f"🏋️ {base}" + (f" · W{w.week}" if w.week else "")
+        name = f"{workout_export.STRENGTH_MARK} {base}" + (f" · W{w.week}" if w.week else "")
         payload = workout_export.build_strength_workout(
             name, sp.get("blocks") or [], warmup_s=sp.get("warmup_s") or 0)
     elif plankind.is_strength(w.type) and w.garmin_template_id:
@@ -136,7 +159,8 @@ async def push_workout(session, w, errors: Optional[list] = None):
             if errors is not None:
                 errors.append({"workout_id": w.id, "step": "push", "msg": msg})
             return None
-        name = f"🏋️ {w.description or 'Силова'}" + (f" · W{w.week}" if w.week else "")
+        name = (f"{workout_export.STRENGTH_MARK} {w.description or 'Силова'}"
+                + (f" · W{w.week}" if w.week else ""))
         payload = workout_export.clone_workout(raw, name)
         if w.exercise_edits:
             n = workout_export.apply_exercise_edits(payload, w.exercise_edits)
@@ -153,14 +177,23 @@ async def push_workout(session, w, errors: Optional[list] = None):
     else:
         payload = workout_export.build_workout(w)
     try:
-        created = await run_in_threadpool(client.create_workout, payload)
-        wid = created.get("workoutId") if isinstance(created, dict) else None
-        if not wid:
-            msg = f"create_workout returned no workoutId: {created!r}"
-            logger.error(f"GARMIN push FAILED workout={w.id} date={w.date}: {msg}")
-            if errors is not None:
-                errors.append({"workout_id": w.id, "step": "push", "msg": msg})
-            return None
+        if resume:
+            wid = w.garmin_workout_id
+            logger.info(f"GARMIN push: resuming {w.date} — workout {wid} already created, "
+                        f"scheduling only")
+        else:
+            created = await run_in_threadpool(client.create_workout, payload)
+            wid = created.get("workoutId") if isinstance(created, dict) else None
+            if not wid:
+                msg = f"create_workout returned no workoutId: {created!r}"
+                logger.error(f"GARMIN push FAILED workout={w.id} date={w.date}: {msg}")
+                if errors is not None:
+                    errors.append({"workout_id": w.id, "step": "push", "msg": msg})
+                return None
+            # Own it before scheduling — see the docstring. From here on the workout is
+            # ours to delete even if everything below fails.
+            w.garmin_workout_id = wid
+            await session.commit()
         sched = await run_in_threadpool(client.schedule_workout, wid, w.date)
     except Exception as exc:
         body = None
@@ -176,7 +209,6 @@ async def push_workout(session, w, errors: Optional[list] = None):
             errors.append({"workout_id": w.id, "step": "push", "msg": str(exc)[:300]})
             return None
         raise
-    w.garmin_workout_id = wid
     w.garmin_schedule_id = sched.get("workoutScheduleId") if isinstance(sched, dict) else None
     await session.commit()
     return wid

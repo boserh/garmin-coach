@@ -763,16 +763,21 @@ _sync_guard: dict = {}
 
 
 async def _sync_badges(session, plan_id: int, workouts) -> dict:
-    """OPS-09: per-workout push status for ``/plan`` — ``"on_watch"`` (has a stored
-    ``garmin_workout_id``), ``"pending"`` (in the push window and would be pushed on the
-    next sync but isn't yet), or missing (out of window / not pushable — no badge)."""
+    """OPS-09: per-workout push status for ``/plan`` — ``"on_watch"`` (created AND
+    scheduled on Garmin), ``"pending"`` (in the push window and would be pushed on the
+    next sync but isn't yet), or missing (out of window / not pushable — no badge).
+
+    "On the watch" needs BOTH ids: a row holding only ``garmin_workout_id`` is a push
+    interrupted between Garmin's two calls, so the session exists as a saved workout but
+    sits on no calendar date — badging that as on_watch claimed a session the athlete
+    would never see. ``plan_sync.fully_pushed`` is the shared rule."""
     pending_ids = {
         w.id for w in await plan_sync.select_forward(
             session, plan_id, days=plan_sync.PLAN_SYNC_WINDOW_DAYS)
     }
     badges = {}
     for w in workouts:
-        if w.garmin_workout_id:
+        if plan_sync.fully_pushed(w):
             badges[w.id] = "on_watch"
         elif w.id in pending_ids:
             badges[w.id] = "pending"

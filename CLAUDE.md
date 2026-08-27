@@ -273,6 +273,8 @@ app/
     exercise_names.py         Garmin exercise NAME codes → readable Ukrainian
     mfa.py                     MFA bridge (background-thread login + resumable code prompt)
     plan_sync.py                automatic rolling-window calendar keeper
+    calendar_audit.py            pure: what Garmin's calendar holds that no plan row
+                                 accounts for (orphans a lost push left behind)
     workout_export.py            our steps → Garmin workout DTOs (push)
     export_import.py              GDPR export offline backfill
     matching.py                    plan-vs-actual matching (EP-01)
@@ -572,7 +574,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   files), `push-plan [--days 14] [--dry-run]` (writes plan to Garmin calendar, idempotent
   via stored `garmin_workout_id`/`garmin_schedule_id`), `unpush-plan`, `token-expiry`
   (OPS-01, per-user auth deadline), `trigger-plan-adapt` (on-demand EP-02 review),
-  `list-workouts`, `backfill-records` (running bests **and** NF-27's strength e1RM /
+  `list-workouts`, `audit-calendar [--delete-orphans] [--clear-stale]` (compare the
+  Garmin calendar with the plan: half-pushed rows, stored ids Garmin no longer has, and
+  workouts of ours nothing references — read-only by default, 0 LLM), `backfill-records` (running bests **and** NF-27's strength e1RM /
   tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
   stored activities; idempotent, paced, 0 LLM cost), `backfill-routes` (NF-33 route
   clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent),
