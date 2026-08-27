@@ -708,6 +708,81 @@ async def _list_workouts(email: str) -> int:
     return 0
 
 
+async def _audit_calendar(email: str, delete_orphans: bool, clear_stale: bool) -> int:
+    """Compare the Garmin calendar with our plan rows and name every disagreement
+    (``app.garmin.calendar_audit``). Read-only by default; 0 LLM cost, Garmin reads only.
+
+    The gap it covers: ``plan_sync`` only touches workouts by a stored id, so one we
+    created but failed to record is invisible to ``unpush-plan`` and to every sync — it
+    just sits on the calendar as a duplicate. ``--delete-orphans`` removes those (only
+    ones whose NAME carries our push mark — Garmin exposes no author field, so this is a
+    guess, which is why it is opt-in and prints every id before deleting it).
+    ``--clear-stale`` is the mirror image on our side: rows pointing at a workout Garmin
+    no longer has get their ids cleared, so the next sync pushes them again."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import calendar_audit, client, repository
+
+    async with cli_user(email) as (session, user):
+        rows = await repository.list_pushed_workouts(session, user.id)
+        async with garmin_login(session, user):
+            saved = await run_in_threadpool(client.fetch_workouts)
+            items = []
+            for (y, m) in calendar_audit.calendar_months():
+                cal = await run_in_threadpool(client.fetch_calendar, y, m)
+                if isinstance(cal, dict):
+                    items.extend(cal.get("calendarItems") or [])
+        found = calendar_audit.audit(rows, saved, items)
+
+        print(f"Garmin: {len(saved)} saved workout(s), {len(items)} calendar item(s); "
+              f"plan rows with a Garmin id: "
+              f"{sum(1 for w in rows if w.garmin_workout_id is not None)}")
+
+        for r in found["half_pushed"]:
+            print(f"  HALF PUSHED     {r['date']} {r['type']}: workout {r['workout_id']} "
+                  f"created but never scheduled (row {r['row_id']}) — next sync resumes it")
+        for r in found["missing_on_garmin"]:
+            print(f"  GONE ON GARMIN  {r['date']} {r['type']}: workout {r['workout_id']} "
+                  f"no longer exists (row {r['row_id']})")
+        for r in found["untracked_scheduled"]:
+            state = "workout exists" if r["exists"] else "workout already deleted"
+            print(f"  UNTRACKED SCHED {r['date']}: workout {r['workout_id']} "
+                  f"{r['title']!r} — {state}")
+        for r in found["untracked_workouts"]:
+            print(f"  ORPHAN WORKOUT  {r['workout_id']}  {r['name']!r} — looks like ours, "
+                  f"no plan row references it")
+
+        if not any(found.values()):
+            print("Nothing to report — the calendar and the plan agree.")
+            return 0
+
+        if clear_stale and found["missing_on_garmin"]:
+            by_id = {w.id: w for w in rows}
+            for r in found["missing_on_garmin"]:
+                w = by_id[r["row_id"]]
+                w.garmin_workout_id = None
+                w.garmin_schedule_id = None
+            await session.commit()
+            print(f"Cleared stale ids on {len(found['missing_on_garmin'])} row(s) — "
+                  f"the next sync will push them again.")
+
+        if delete_orphans and found["untracked_workouts"]:
+            async with garmin_login(session, user):
+                for r in found["untracked_workouts"]:
+                    try:
+                        await run_in_threadpool(client.delete_workout, r["workout_id"])
+                        print(f"  deleted orphan workout {r['workout_id']}")
+                    except Exception as e:      # already gone, or a schedule Garmin won't
+                        print(f"  could NOT delete {r['workout_id']}: "  # let go of
+                              f"{type(e).__name__}: {str(e)[:120]}")
+                    await asyncio.sleep(0.3)
+
+        if not (delete_orphans or clear_stale):
+            print("Read-only run. --clear-stale fixes our rows, --delete-orphans removes "
+                  "the untracked workouts from Garmin.")
+    return 0
+
+
 async def _token_expiry() -> int:
     """OPS-01: read-only decode of every user's stored Garmin session — when does each
     user's login die, i.e. when a /settings re-connect becomes mandatory. Prints the
@@ -897,6 +972,16 @@ def main(argv=None) -> int:
     lw = sub.add_parser("list-workouts", help="List the user's saved Garmin workouts (id/name)")
     lw.add_argument("--email", required=True)
 
+    ac = sub.add_parser(
+        "audit-calendar",
+        help="Compare the Garmin calendar with the plan: half-pushed rows, ids Garmin no "
+             "longer has, and workouts of ours nothing references (read-only by default)")
+    ac.add_argument("--email", required=True)
+    ac.add_argument("--delete-orphans", action="store_true",
+                    help="delete the untracked workouts that look like ours from Garmin")
+    ac.add_argument("--clear-stale", action="store_true",
+                    help="clear stored ids that point at workouts Garmin no longer has")
+
     br = sub.add_parser(
         "backfill-records",
         help="Seed personal records (running + strength e1RM/tonnage) from stored history")
@@ -965,6 +1050,8 @@ def main(argv=None) -> int:
         return _run(_trigger_plan_adapt(args.email))
     if args.cmd == "list-workouts":
         return _run(_list_workouts(args.email))
+    if args.cmd == "audit-calendar":
+        return _run(_audit_calendar(args.email, args.delete_orphans, args.clear_stale))
     if args.cmd == "backfill-routes":
         return _run(_backfill_routes(args.email, args.since))
     if args.cmd == "backfill-zones":

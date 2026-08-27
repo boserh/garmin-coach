@@ -313,3 +313,52 @@ async def test_strength_day_with_nothing_to_build_from_is_skipped(session):
         assert await plan_sync.push_workout(session, w, errors=errors) is None
     create.assert_not_called()
     assert errors and "neither" in errors[0]["msg"]
+
+
+async def test_push_stores_workout_id_before_scheduling(session):
+    """A push interrupted between Garmin's two calls must still leave the workout id on the
+    row — otherwise the workout exists on Garmin with nothing referencing it (the live
+    2026-08-27 duplicate) and no cleanup path can ever reach it."""
+    fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="easy", dist_km=5.0, status="planned"),
+    ])
+    errors: list = []
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "create_workout", return_value={"workoutId": 111}), \
+         patch.object(plan_sync.client, "schedule_workout",
+                      side_effect=RuntimeError("boom")):
+        (w,) = await plan_sync.select_forward(session, plan.id)
+        assert await plan_sync.push_workout(session, w, errors=errors) is None
+    assert len(errors) == 1
+    (row,) = await repository.list_pushed_workouts(session, U1)
+    assert row.garmin_workout_id == 111 and row.garmin_schedule_id is None
+
+
+async def test_half_pushed_row_resumes_at_schedule_without_a_second_create(session):
+    """The other half: a row holding a workout id but no schedule id is still 'pending', and
+    finishing it schedules the EXISTING workout instead of creating a duplicate."""
+    fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="easy", dist_km=5.0, status="planned",
+             garmin_workout_id=111),
+    ])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "create_workout") as create, \
+         patch.object(plan_sync.client, "schedule_workout",
+                      return_value={"workoutScheduleId": 222}) as sched:
+        res = await plan_sync.sync_plan_to_garmin(session, U1, days=14)
+    assert res == {"pushed": 1, "removed": 0, "errors": []}
+    create.assert_not_called()
+    sched.assert_called_once_with(111, fut)
+    (row,) = await repository.list_pushed_workouts(session, U1)
+    assert row.garmin_schedule_id == 222
+
+
+async def test_fully_pushed_row_is_left_alone(session):
+    fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="easy", dist_km=5.0, status="planned",
+             garmin_workout_id=111, garmin_schedule_id=222),
+    ])
+    assert await plan_sync.select_forward(session, plan.id) == []

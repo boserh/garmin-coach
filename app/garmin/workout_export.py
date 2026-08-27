@@ -147,9 +147,17 @@ _TYPE_MARK = {
 }
 
 
+# The mark a session we pushed carries in its Garmin name. Kept as named constants (and
+# collected in ``NAME_MARKS``) because they are the ONLY way to recognise our own workouts
+# on Garmin once the row that stored their id is gone — see ``app.garmin.calendar_audit``.
+DEFAULT_MARK = "🏃"
+STRENGTH_MARK = "🏋️"
+NAME_MARKS = frozenset(_TYPE_MARK.values()) | {DEFAULT_MARK, STRENGTH_MARK}
+
+
 def workout_name(w) -> str:
     """A short, emoji-marked name: ``🔥 Tempo 8km · W2`` / ``🌿 Easy 3.5km · W1``."""
-    mark = _TYPE_MARK.get((w.type or "").lower(), "🏃")
+    mark = _TYPE_MARK.get((w.type or "").lower(), DEFAULT_MARK)
     name = f"{mark} {(w.type or 'Run').capitalize()}"
     if w.dist_km:
         name += f" {w.dist_km:g}km"

@@ -248,6 +248,48 @@ two uncached requests per bot command bought seconds of freshness nobody needs, 
 them at 15s of timeout risk each — `_api` retries 429s only, so a `ReadTimeout` is not
 retried, is swallowed into `{"_error": …}`, and reaches the owner as a WARNING page.
 
+## A lost push id is an orphan Garmin will not let go of (`calendar_audit`)
+
+`push_workout` makes two Garmin calls — create the workout, then schedule it on a date — and
+used to commit both ids only after the second returned. Anything that killed the process in
+between (restart, deploy, `ReadTimeout`) left a workout on Garmin that no row referenced.
+Nothing we have could then reach it: `plan_sync` and `unpush-plan` only ever act on stored
+ids, deliberately, so they can never touch the athlete's own Runna/manual workouts. The next
+sync saw `garmin_workout_id is None`, pushed a second copy, and the calendar carried two
+identical sessions on one date.
+
+The id is now committed as soon as Garmin returns it, before scheduling. That makes the
+failure mode a row with a workout id and no schedule id, which `fully_pushed` (shared with
+`/plan`'s `on_watch` badge — a half-pushed session is on no calendar date and must not be
+badged as being on the watch) treats as unfinished: `select_forward` picks it up again and
+`push_workout` RESUMES at the schedule step instead of creating a duplicate. The window
+isn't gone — a response lost in flight still creates an untracked workout — but it is one
+call wide instead of two, and `audit-calendar` names what falls through.
+
+Found the hard way on 2026-08-27, and the cleanup is where it got interesting:
+
+* `/calendar-service` (what `service.fetch_planned` reads) showed ONE session that day;
+  `/workout-service/schedule/summaries`, which the Connect web UI reads, showed two. The
+  calendar feed hides a schedule whose workout is gone, so our own code could not see the
+  duplicate at all — hence an audit that reads the saved-workout list rather than trusting
+  the calendar.
+* Deleting the orphan by `DELETE /workout-service/workout/{id}` returned 404: the workout
+  itself had already been deleted, leaving only the schedule row.
+* Deleting THAT (`DELETE /workout-service/schedule/{scheduleId}`, what
+  `garminconnect.unschedule_workout` calls) returned `404 No workout found for workout
+  schedule = …`. Every verb on that path — GET, PUT, DELETE — loads the referenced workout
+  first, so a dangling schedule is unreachable through the API, and through the Connect UI
+  that calls it. Other paths tried (`/workout-service/schedule/workout/{id}`,
+  `/calendar-service/calendarItem/workout/{id}`) are generic Spring 404s: no such route.
+
+So a dangling schedule is not repairable from our side; the fix is to stop creating orphans,
+and to see the ones that exist. `audit-calendar` reports four disagreements — half-pushed
+rows, stored ids Garmin no longer has, untracked workouts of ours, untracked calendar
+entries — read-only by default. Ownership there is a guess by NAME (`workout_export.
+NAME_MARKS`, the emoji every pushed session carries) because Garmin exposes no author field
+to a third-party token, which is exactly why `--delete-orphans` is opt-in and prints every id
+it touches.
+
 ## The report's plan window always carries the next RUN (`PLAN_WINDOW_DAYS`)
 
 `run_analysis` gives the daily report a two-day slice of our own plan (`plan_today` =
