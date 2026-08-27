@@ -303,6 +303,32 @@ async def upcoming_plan_workouts(
     ).scalars().all()
 
 
+async def next_planned_run(
+    session: AsyncSession, user_id: int, *, after: dt.date,
+) -> Optional[PlannedWorkout]:
+    """The first still-``planned`` RUN of the active plan dated strictly after ``after``.
+
+    :func:`upcoming_plan_workouts` looks two days ahead, which is the right window for
+    "what am I doing today" — but it answers "when is my next run" only by accident. A
+    couple of strength days at the front of the window (or a run already done/skipped)
+    hid the next run entirely, and the morning report then said there wasn't one.
+    Returns ``None`` when there is no active plan or no run left in it.
+    """
+    plan = await get_active_plan(session, user_id)
+    if plan is None:
+        return None
+    return (
+        await session.execute(
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id == plan.id,
+                PlannedWorkout.date > after.isoformat(),
+                PlannedWorkout.status == "planned",
+                func.lower(PlannedWorkout.type).in_(sorted(plankind.RUN_TYPES)),
+            ).order_by(PlannedWorkout.date).limit(1)
+        )
+    ).scalars().first()
+
+
 async def recent_plan_workouts(
     session: AsyncSession, user_id: int, days: int = 7,
     today: Optional[dt.date] = None,

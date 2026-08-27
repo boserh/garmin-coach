@@ -704,6 +704,51 @@ async def test_upcoming_plan_workouts_no_plan(session):
     assert ws == []
 
 
+async def test_next_planned_run_looks_past_the_two_day_window(session):
+    """The reported bug: today and tomorrow are both strength, so the report's own-plan
+    window held no run at all and the morning report said there was none in the calendar —
+    while /plan showed Saturday's easy 4.5 km."""
+    today = dt.date.today()
+    tomorrow = today + dt.timedelta(days=1)
+    saturday = today + dt.timedelta(days=2)
+
+    plan = await _make_plan(session, 1, today.isoformat(), saturday.isoformat())
+    for d, t in [(today, "strength"), (tomorrow, "strength"), (saturday, "easy")]:
+        session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=d.isoformat(),
+                                   type=t, status="planned"))
+    await session.flush()
+
+    nxt = await repository.next_planned_run(session, user_id=1, after=tomorrow)
+    assert nxt is not None and nxt.date == saturday.isoformat() and nxt.type == "easy"
+
+
+async def test_next_planned_run_skips_non_runs_and_non_planned(session):
+    today = dt.date.today()
+    days = [today + dt.timedelta(days=i) for i in range(1, 5)]
+    plan = await _make_plan(session, 1, today.isoformat(), days[-1].isoformat())
+    for d, t, st in [(days[0], "cross", "planned"), (days[1], "rest", "planned"),
+                     (days[2], "long", "skipped"), (days[3], "tempo", "planned")]:
+        session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=d.isoformat(),
+                                   type=t, status=st))
+    await session.flush()
+
+    nxt = await repository.next_planned_run(session, user_id=1, after=today)
+    assert nxt is not None and nxt.type == "tempo"
+
+
+async def test_next_planned_run_none_when_plan_has_no_run_left(session):
+    today = dt.date.today()
+    later = today + dt.timedelta(days=1)
+    plan = await _make_plan(session, 1, today.isoformat(), later.isoformat())
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=1, date=later.isoformat(),
+                               type="strength", status="planned"))
+    await session.flush()
+
+    assert await repository.next_planned_run(session, user_id=1, after=today) is None
+    # and no active plan at all is not an error either
+    assert await repository.next_planned_run(session, user_id=99, after=today) is None
+
+
 async def test_month_cost_sums_current_month_only(session):
     assert await repository.month_cost(session, U1) == 0.0
 

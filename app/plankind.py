@@ -25,10 +25,20 @@ _STRENGTH_ONLY = ("garmin_template_id", "strength_plan", "strength_snapshot",
                   "exercise_edits")
 _DISTANCE_ONLY = ("dist_km", "steps")
 
+# Every ``type`` that puts kilometres on the legs — i.e. the sessions an athlete means by
+# "my next run". ``cross``/``strength``/``rest`` are training days, but they are not runs,
+# and something asking for the next RUN must not stop at a strength day.
+RUN_TYPES = frozenset({"easy", "recovery", "long", "tempo", "intervals", "race"})
+
 
 def is_strength(type_: Optional[str]) -> bool:
     """True for the one type whose session is built from exercises, not from distance."""
     return (type_ or "").lower() == "strength"
+
+
+def is_run(type_: Optional[str]) -> bool:
+    """True for a session that is actually a run (see :data:`RUN_TYPES`)."""
+    return (type_ or "").lower() in RUN_TYPES
 
 
 def foreign_columns(w) -> List[str]:

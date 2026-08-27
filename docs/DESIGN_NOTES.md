@@ -248,6 +248,30 @@ two uncached requests per bot command bought seconds of freshness nobody needs, 
 them at 15s of timeout risk each — `_api` retries 429s only, so a `ReadTimeout` is not
 retried, is swallowed into `{"_error": …}`, and reaches the owner as a WARNING page.
 
+## The report's plan window always carries the next RUN (`PLAN_WINDOW_DAYS`)
+
+`run_analysis` gives the daily report a two-day slice of our own plan (`plan_today` =
+today + tomorrow). That window is right for the advice it drives — pace, warm-up and
+leg-freshness notes are premature for a session three days out — but the report also owns a
+FIXED «📅 наступна пробіжка» slot, and the window answers that question only by accident.
+
+It stopped being an accident on a Thursday whose plan read strength / strength / easy 4.5 km:
+the window held two strength days, no run, and the analyst did exactly what the prompt told
+it to — fell through to `planned_runs`. Which, per the section above, is deliberately EMPTY
+for anyone on our own plan. So the report said the next run wasn't in the calendar while
+`/plan`, on the same phone, showed Saturday's 4.5 km.
+
+So when the window contains no run, `repository.next_planned_run` appends the first one that
+follows it, however far out — one indexed row, no Garmin call, no extra tokens on the days
+the window already answers. It arrives labelled («через 2 дн (сб)») like every other dated
+record, which is what keeps the advice strategic: the prompt's «today/tomorrow ⇒ detailed,
+2+ days ⇒ one line» rule reads that label, not the field it came in. `fueling` is unaffected —
+it looks up TODAY's session by date (the ST-03 proximity rule), so an appended Saturday long
+run never earns Thursday a gel plan.
+
+The same report shipped `(planned_runs порожній)` to the athlete verbatim, so the format
+rules now forbid naming internal fields in the answer at all.
+
 ## dist_km vs steps consistency (`app/plansteps.py`)
 
 A planned session states its volume twice: the headline `PlannedWorkout.dist_km` and the
