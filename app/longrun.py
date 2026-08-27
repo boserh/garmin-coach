@@ -31,6 +31,8 @@ import datetime as dt
 from statistics import median
 from typing import Iterable, List, Optional, Set
 
+from app import plankind
+
 # How much longer than the week's typical easy run a session must be to count as the long
 # one. 1.25 keeps 6.0 km against 4.0s (a real step up) and rejects 4.5 against 4.0s.
 MIN_RATIO = 1.25
@@ -46,8 +48,9 @@ DEMOTED_TYPE = "easy"
 _EASY_TYPES = frozenset({"easy", "recovery"})
 
 # Everything that puts kilometres on the legs, for "is this the week's longest run".
-# Strength/rest/cross/cycling carry no comparable distance.
-_RUN_TYPES = frozenset({"easy", "recovery", "long", "tempo", "intervals", "race"})
+# Strength/rest/cross/cycling carry no comparable distance. One definition, shared with
+# everything else that asks "is this session a run" (``app.plankind``).
+_RUN_TYPES = plankind.RUN_TYPES
 
 # Distances are one-decimal floats; compare with a slack far below that so 5.0 against a
 # 5.0 threshold reads as "meets it", not "just under".

@@ -13,7 +13,7 @@ import json
 import logging
 from typing import List, Optional, Tuple, Union
 
-from app import daterel, gap
+from app import daterel, gap, plankind
 from app.analysis.cache import (
     CACHE_TTL_S,
     _activity_cache_key,
@@ -135,6 +135,11 @@ async def _run_cached_narration(
 ASK_DEFAULT_N = 3   # how many recent daily reports to feed as /ask context
 ASK_CONTEXT_MIN = 30  # include /ask exchanges from the last N minutes as a conversation thread
 RECORDS_CONTEXT_DAYS = 3  # mention a personal record set within the last N days (EP-14)
+
+# How far the daily report's own-plan window reaches: today + tomorrow. Sessions past it
+# are too far off for pace/warm-up advice — the ONE exception is the next run, which the
+# report has to name even when it falls outside (see ``run_analysis``).
+PLAN_WINDOW_DAYS = 2
 
 _DEFAULT_DAILY_Q = (
     "Дай щоденний статус відновлення. "
@@ -374,8 +379,18 @@ async def run_analysis(
             previous_report = {"date": date_prev, "text": text_prev}
 
         if user_id is not None:
-            ws = await repository.upcoming_plan_workouts(
-                session, user_id, days=2, today=today_d)
+            ws = list(await repository.upcoming_plan_workouts(
+                session, user_id, days=PLAN_WINDOW_DAYS, today=today_d))
+            # "📅 наступна пробіжка" is a fixed section of the report, but the window above
+            # is two days wide — a Thursday/Friday pair of strength days pushed Saturday's
+            # run out of sight and the report answered "немає в календарі". So when the
+            # window holds no RUN, carry the first one that follows it; its ``day`` label
+            # ("через 2 дн (сб)") is what tells the analyst to keep the advice strategic.
+            if not any(plankind.is_run(w.type) for w in ws):
+                nxt = await repository.next_planned_run(
+                    session, user_id, after=today_d + dt.timedelta(days=PLAN_WINDOW_DAYS - 1))
+                if nxt is not None:
+                    ws.append(nxt)
             if ws:
                 plan_today = [
                     {k: v for k, v in {
