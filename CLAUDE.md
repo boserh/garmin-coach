@@ -214,7 +214,7 @@ Optional, with defaults:
 | `FUELING_MIN_DURATION_MIN` | `45` | below this session duration, fueling advisor stays silent. |
 | `FUELING_HEAT_FEELS_C` | `28` | feels-like max °C at/above → heat notes. |
 | `WEATHER_AUTO_LOCATION` | `True` | take the forecast from where the athlete last trained when that is far from the profile city (a camp/trip); `False` = profile only. |
-| `WEATHER_AWAY_MIN_KM` | `75.0` | how far the last activity's start must be from home to count as "somewhere else". |
+| `WEATHER_AWAY_MIN_KM` | `500.0` | how far the last activity's start must be from home to count as "somewhere else". |
 | `WEATHER_AWAY_MAX_AGE_DAYS` | `2` | how stale that evidence may be before the profile location wins again. |
 | `DEPLOY_ENABLED` | `False` | master on/off for the admin-only `/deploy` bot command. |
 | `SLEEP_NUDGE` | `True` | master on/off for the evening sleep-debt nudge. |

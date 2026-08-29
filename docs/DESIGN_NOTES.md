@@ -164,9 +164,10 @@ with no backfill. Three rules keep it honest:
 
 - **Recency** (`WEATHER_AWAY_MAX_AGE_DAYS`, 2): the flight home leaves no trace in Garmin,
   so week-old evidence loses to the profile. Applied in SQL *and* in the pure picker.
-- **Distance** (`WEATHER_AWAY_MIN_KM`, 75): an out-of-town long run shares the city's
-  weather, and flipping location on GPS drift would make the report contradict itself day
-  to day.
+- **Distance** (`WEATHER_AWAY_MIN_KM`, 500): an out-of-town long run — and a weekend a
+  few hundred km away — shares the city's weather, and flipping location on GPS drift would
+  make the report contradict itself day to day. Only a journey far enough to mean a
+  different climate overrides the profile.
 - **No coordinates leave the DB.** The `place` block that rides into the prompt and into
   `report_logs` carries `source`/`since`/`away_km`/`home` plus the forecast point's `tz`
   and `elev_m` — never a latitude. Stored coordinates are coarsened to

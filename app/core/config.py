@@ -183,10 +183,11 @@ class Settings(BaseSettings):
     # the one signal that says where they actually are, and it costs nothing to read.
     # OFF (False) restores the pre-feature behaviour: always the profile location.
     WEATHER_AUTO_LOCATION: bool = True
-    # How far from home counts as "somewhere else". Deliberately large: an out-of-town long
-    # run shares the city's weather, and flipping location on GPS drift would make the
-    # report contradict itself day to day.
-    WEATHER_AWAY_MIN_KM: float = 75.0
+    # How far from home counts as "somewhere else". Deliberately very large: anything
+    # closer is the same weather system, and a trip that short is not worth overriding the
+    # profile for. Flipping location on GPS drift would also make the report contradict
+    # itself day to day. Only a real journey — another country, another climate — counts.
+    WEATHER_AWAY_MIN_KM: float = 500.0
     # How stale the evidence may be. Two days covers "yesterday I trained there"; anything
     # older is not evidence of where today is happening (the flight home leaves no trace).
     WEATHER_AWAY_MAX_AGE_DAYS: int = 2
