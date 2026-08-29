@@ -41,6 +41,13 @@ _LEGACY_TOKEN_DIR = os.path.expanduser("~/.garth")
 _GCONN_TOKEN_DIR = os.path.expanduser("~/.garminconnect")
 
 
+class GarminUnavailable(RuntimeError):
+    """Raised on any Garmin call made from a context that deliberately has no usable
+    Garmin access — an unbound legacy provider without ``.env`` credentials, or a bound
+    ``_UnavailableProvider``. Callers whose Garmin use is best-effort already swallow it;
+    what it must never do is reach Garmin under someone else's credentials."""
+
+
 class GarminAuthFailed(Exception):
     """Raised when a fresh login fails because the stored email/password is wrong —
     not an MFA gate, not a transient network/rate-limit blip. The caller should mark
@@ -69,6 +76,23 @@ def _is_auth_failure(exc: Exception) -> bool:
     return "401" in text or "unauthorized" in text or "authentication" in text
 
 
+def _legacy_credentials() -> tuple:
+    """``.env`` credentials for the legacy single-user providers.
+
+    Missing ones used to surface as ``KeyError: 'GARMIN_EMAIL'`` from the raw
+    ``os.environ[...]`` lookup — an error that says nothing about the actual mistake,
+    which is almost always a per-user path that forgot to bind its runtime and fell
+    through to this global fallback (see ``get_provider``)."""
+    email = settings.GARMIN_EMAIL or os.environ.get("GARMIN_EMAIL")
+    password = settings.GARMIN_PASSWORD or os.environ.get("GARMIN_PASSWORD")
+    if not email or not password:
+        raise GarminUnavailable(
+            "No Garmin credentials for the legacy single-user provider (GARMIN_EMAIL / "
+            "GARMIN_PASSWORD). A per-user flow must run inside `user_runtime`."
+        )
+    return email, password
+
+
 class _GarthProvider:
     """Legacy single-user garth provider — **rollback only** since OPS-10 (reachable
     with ``GARMIN_PROVIDER=garth`` once ``pip install -e ".[garth]"`` puts garth back).
@@ -91,8 +115,7 @@ class _GarthProvider:
             # _UserGarthProvider.login (avoids a transient blip escalating to a full
             # sso.garmin.com re-login → Cloudflare 1015 ban).
             pass
-        email = settings.GARMIN_EMAIL or os.environ["GARMIN_EMAIL"]
-        password = settings.GARMIN_PASSWORD or os.environ["GARMIN_PASSWORD"]
+        email, password = _legacy_credentials()
         garth.login(email, password, prompt_mfa=lambda: input("MFA код: "))
         garth.save(self._token_dir)
 
@@ -218,8 +241,7 @@ class _GConnProvider(_GConnBase):
             # Only a missing/corrupt token file lands here — see the note in
             # _UserGConnProvider.login on why a resume is never network-validated.
             pass
-        email = settings.GARMIN_EMAIL or os.environ["GARMIN_EMAIL"]
-        password = settings.GARMIN_PASSWORD or os.environ["GARMIN_PASSWORD"]
+        email, password = _legacy_credentials()
         self._client.login(email, password, prompt_mfa=lambda: input("MFA код: "))
         self._logged_in = True
         with contextlib.suppress(Exception):
@@ -394,6 +416,38 @@ class _UserGConnProvider(_GConnBase):
         if not is_gconn_token(blob) or blob == self._loaded_token:
             return None
         return blob
+
+
+class _UnavailableProvider:
+    """A bound placeholder for a context that must not touch Garmin at all.
+
+    Binding this is NOT the same as binding nothing: an unbound context falls through to
+    the legacy ``.env`` provider (``get_provider``), which in a multi-user deployment
+    would answer one user's request with the seed account's Garmin data. Every call here
+    raises ``GarminUnavailable`` instead, with the reason the caller gave."""
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+        self.new_token = None
+
+    def login(self) -> None:
+        raise GarminUnavailable(self._reason)
+
+    def connectapi(self, path: str, **kwargs):
+        raise GarminUnavailable(self._reason)
+
+    @property
+    def username(self) -> str:
+        raise GarminUnavailable(self._reason)
+
+    @property
+    def display_name(self) -> str:
+        raise GarminUnavailable(self._reason)
+
+
+def build_unavailable_provider(reason: str) -> _UnavailableProvider:
+    """A provider that refuses every call — see ``_UnavailableProvider``."""
+    return _UnavailableProvider(reason)
 
 
 def build_user_provider(creds):

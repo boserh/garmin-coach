@@ -667,6 +667,12 @@ made non-negotiable:
   hardcode no threshold — a number in the markup is a second source of truth that goes
   stale silently. Both are also **0 LLM / 0 Garmin**, enforced by tests that replace the
   Anthropic client and the Garmin provider with functions that raise.
+- **A multi-button form's answer is the pressed button's `name`/`value`** — and a
+  *disabled* control is not submitted. The global double-submit guard in `app.js` disables
+  the buttons on submit, which silently dropped that entry from the POST: `/chat/confirm`
+  answered ✅ with a raw 422 (`action` "Field required"), and the MCP consent screen could
+  not tell «Відхилити» from «Дозволити». The guard now copies the submitter into a hidden
+  input first (`preserveSubmitter`); both servers also fail closed on a missing value.
 - **It has to work without JavaScript.** Pills are `<button>`s in `<form>`s, the "Ще"
   menu is a `<details>`, charts are server-rendered SVG. JS only removes reloads.
 - **Class names are global.** `.step` was already the plan's structured-step line when
