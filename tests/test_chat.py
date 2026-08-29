@@ -367,3 +367,96 @@ def test_chat_confirm_with_no_pending_is_a_noop(auth_client):
     _seed_plan_with_workout(uid)
     r = client.post("/chat/confirm", data={"action": "apply"}, follow_redirects=False)
     assert r.status_code == 303
+
+
+def test_chat_confirm_without_an_action_keeps_the_proposal_and_explains(auth_client):
+    """The confirm buttons carry the choice as the submitter's name/value, so a client
+    that drops it (a stale cached app.js) posts an empty body. That must never be read as
+    "apply", and must never be answered with FastAPI's raw 422 JSON in place of the chat."""
+    client, uid = auth_client
+    _seed_plan_with_workout(uid)
+    _stage_pending(uid)
+
+    r = client.post("/chat/confirm", data={}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/chat?err=")
+
+    pending = _read_pending(uid)
+    assert pending is not None and pending["ops"][0]["to_date"] == "2026-07-04"
+
+    async def read_dates():
+        async with async_session_maker() as s:
+            plan = await repository.get_active_plan(s, uid)
+            return {w.date for w in await repository.list_workouts(s, plan.id)}
+
+    assert "2026-07-01" in anyio.run(read_dates)          # nothing applied
+    assert chat_router.CONFIRM_NO_ACTION_MSG in client.get(r.headers["location"]).text
+
+
+def test_chat_confirm_with_an_unknown_action_is_refused(auth_client):
+    client, uid = auth_client
+    _seed_plan_with_workout(uid)
+    _stage_pending(uid)
+    r = client.post("/chat/confirm", data={"action": "nonsense"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/chat?err=")
+    assert _read_pending(uid) is not None
+
+
+# ---------- the plan edit runs with THIS user's Garmin provider bound ----------
+
+def test_chat_plan_edit_binds_the_users_garmin_provider(auth_client):
+    """run_plan_edit reads the plan's strength templates off Garmin. Unbound, that fell
+    through to the legacy .env single-user provider — `KeyError: 'GARMIN_EMAIL'` on this
+    machine, and the *seed account's* workouts on a machine where .env still has them."""
+    from app.garmin import providers
+
+    client, uid = auth_client
+    seen = {}
+
+    async def fake_edit(session, **kw):
+        seen["provider"] = providers.get_provider()
+        return object(), PlanEdit(summary="Переніс.", operations=[
+            PlanOp(action="move", date="2026-07-01", to_date="2026-07-04")])
+
+    with patch.object(chat_router, "run_plan_edit", fake_edit):
+        r = client.post("/chat", data={"message": "перенеси довгу на суботу"},
+                        follow_redirects=False)
+    assert r.status_code == 303
+    assert seen["provider"] is not None
+    # the per-user provider, carrying this account's credentials — not the global one
+    assert getattr(seen["provider"], "_creds", None) is not None
+    assert seen["provider"]._creds.user_id == uid
+    assert seen["provider"] is not providers._default_provider()
+
+
+def test_chat_plan_edit_survives_invalid_garmin_credentials(auth_client):
+    """A Garmin link that is known-broken must cost the edit its exercise detail, not the
+    whole proposal — and must not silently borrow the .env account instead."""
+    from app.garmin import providers
+
+    client, uid = auth_client
+
+    async def mark_invalid():
+        async with async_session_maker() as s:
+            u = await users.get_by_id(s, uid)
+            u.garmin_creds_invalid = True
+            await s.commit()
+
+    anyio.run(mark_invalid)
+    seen = {}
+
+    async def fake_edit(session, **kw):
+        provider = providers.get_provider()
+        seen["provider"] = provider
+        with pytest.raises(providers.GarminUnavailable):
+            provider.connectapi("/workout-service/workout/1")
+        return object(), PlanEdit(summary="Переніс.", operations=[
+            PlanOp(action="move", date="2026-07-01", to_date="2026-07-04")])
+
+    with patch.object(chat_router, "run_plan_edit", fake_edit):
+        r = client.post("/chat", data={"message": "перенеси довгу на суботу"},
+                        follow_redirects=False)
+    assert r.status_code == 303                      # not the 409 creds-invalid page
+    assert seen["provider"] is not providers._default_provider()
+    assert _read_pending(uid)["summary"] == "Переніс."

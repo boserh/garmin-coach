@@ -193,6 +193,24 @@ def test_denying_consent_redirects_with_access_denied(mcp_app):
     assert "error=access_denied" in r.headers["location"]
 
 
+def test_consent_without_an_explicit_allow_denies(mcp_app):
+    """The choice rides on the pressed button's name/value; a body that lost it must fall
+    to "deny", never to the branch that mints a code — even with a valid email+password."""
+    _seed_user(email="lost-button@example.com", password="pw", is_admin=False)
+    reg = _register_client(mcp_app)
+    _, challenge = _pkce()
+    req = _authorize(mcp_app, reg, challenge)
+
+    r = mcp_app.post(
+        "/oauth/consent",
+        data={"req": req, "email": "lost-button@example.com", "password": "pw"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "error=access_denied" in r.headers["location"]
+    assert "code=" not in r.headers["location"]
+
+
 def test_authorization_code_cannot_be_replayed(mcp_app):
     _seed_user(email="replay@example.com", password="pw", is_admin=False)
     reg = _register_client(mcp_app)

@@ -9,9 +9,35 @@
     return el.getAttribute('data-busy-text') || 'Зачекайте…';
   }
 
-  function lockForm(form) {
+  // WHICH button was pressed is part of the submission: a multi-button form (the chat
+  // proposal's ✅/🛡/❌, the OAuth consent's Дозволити/Відхилити) carries the choice as the
+  // submitter's own name/value. Disabling it below would drop that entry from the POST —
+  // a disabled control is not submitted — so `action` never arrived and FastAPI answered
+  // the click with a raw 422 "Field required". Copy it into a hidden input first; the copy
+  // is removed again by unlockForm so a second submit can't send two.
+  function preserveSubmitter(form, submitter) {
+    if (!submitter || !submitter.name || submitter.form !== form) return;
+    var hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = submitter.name;
+    hidden.value = submitter.value;
+    hidden.setAttribute('data-submitter-copy', '1');
+    form.appendChild(hidden);
+  }
+
+  function submitterOf(e) {
+    // e.submitter everywhere current; the focused control is the fallback for browsers
+    // that predate it (the click leaves the button focused).
+    if (e.submitter) return e.submitter;
+    var el = document.activeElement;
+    if (el && el.form === e.target && (el.type === 'submit' || el.type === 'image')) return el;
+    return null;
+  }
+
+  function lockForm(form, submitter) {
     if (form.dataset.submitting === '1') return false;
     form.dataset.submitting = '1';
+    preserveSubmitter(form, submitter);
     var controls = form.querySelectorAll('button:not(:disabled), input[type="submit"]:not(:disabled)');
     controls.forEach(function (el) {
       el.dataset.wasEnabled = '1';
@@ -26,6 +52,9 @@
 
   function unlockForm(form) {
     form.dataset.submitting = '';
+    form.querySelectorAll('input[data-submitter-copy="1"]').forEach(function (el) {
+      el.remove();
+    });
     form.querySelectorAll('[data-was-enabled="1"]').forEach(function (el) {
       el.disabled = false;
       if (el.dataset.origText !== undefined) {
@@ -41,7 +70,7 @@
     if (!(form instanceof HTMLFormElement)) return;
     if (form.dataset.submitting === '1') { e.preventDefault(); return; }
     if (form.dataset.noBusy === '1') return;
-    lockForm(form);
+    lockForm(form, submitterOf(e));
   }, true);
 
   // Safety net: a bfcache restore (browser back button) must not leave

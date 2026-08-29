@@ -310,7 +310,11 @@ async def consent_post(request: Request) -> Response:
         return _expired_page(request)
 
     # "Відхилити" — hand the client the protocol's own answer rather than a dead end.
-    if form.get("action") == "deny":
+    # Fail CLOSED: only an explicit "allow" grants. The choice rides on the pressed
+    # button's name/value, and a client that drops it (app.js's double-submit guard used
+    # to, by disabling the button before the browser read it) must land here, not on the
+    # branch that mints a code.
+    if form.get("action") != "allow":
         async with async_session_maker() as session:
             await oauth.consume_grant(session, "pending", req)
         return RedirectResponse(

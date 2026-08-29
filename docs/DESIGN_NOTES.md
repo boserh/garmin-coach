@@ -693,6 +693,22 @@ mirrors `plan_callback`. Deliberate v1 scope: **no token streaming** (would need
 `AsyncAnthropic`, out of scope for this router); `/sick`'s medical-safe framing stays
 bot-only.
 
+**The edit runs inside a bound per-user runtime** (`_plan_edit_runtime`). `run_plan_edit`
+reads the plan's strength templates off Garmin (`fetch_workout_full`), and the router used
+to call it with nothing bound — so `get_provider()` fell through to the legacy `.env`
+single-user provider and every template fetch died on `KeyError: 'GARMIN_EMAIL'` (a
+`GARMIN ERR /workout-service/workout/<id>` line; swallowed by `run_plan_edit`, so the model
+proposed edits with no exercises in front of it). On a deployment where `.env` still holds
+the seed credentials the same fall-through is worse than an error: it answers one user's
+request with the seed account's workouts. The wrapper keeps the edit working when Garmin
+can't be reached (MFA pending, credentials marked invalid) by binding
+`providers.build_unavailable_provider()` — a provider that raises `GarminUnavailable` on
+every call — instead of leaving the context unbound.
+
+**`action` on `POST /chat/confirm` is validated, not `Form(...)`-required**: a body without
+it gets the chat back with a notice, never FastAPI's raw 422 JSON, and never the apply
+branch (see the submitter note under the frontend conventions in `CLAUDE.md`).
+
 ## Dialogue about an unconfirmed proposal (ST-23)
 
 While a `/plan <text>`/`/sick` proposal is pending, free text is now a follow-up, not a

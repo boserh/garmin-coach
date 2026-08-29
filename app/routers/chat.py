@@ -26,6 +26,7 @@ from yet).
 """
 import datetime as dt
 import logging
+from contextlib import asynccontextmanager
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -43,8 +44,10 @@ from app.core.tz import user_tz as core_user_tz
 from app.db import away as away_db
 from app.db.models import User
 from app.dependencies import get_session
-from app.garmin import plan_sync, repository
+from app.garmin import plan_sync, providers, repository
 from app.garmin.credentials import load_credentials
+from app.garmin.mfa import MFARequired
+from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from app.garmin.schemas import PlanOp
 from app.templating import create_templates
@@ -57,6 +60,10 @@ router = APIRouter(tags=["chat"])
 
 CHAT_HISTORY_N = 30       # how many exchanges to show initially / add per "load more"
 CHAT_HISTORY_MAX = 500    # hard cap so a crafted ?limit= can't pull the whole history
+
+CONFIRM_NO_ACTION_MSG = (
+    "Не зрозумів, що робити з пропозицією — онови сторінку і натисни кнопку ще раз."
+)
 
 
 def _user_tz(user: User) -> ZoneInfo:
@@ -95,6 +102,37 @@ _PLAN_EDIT_VERBS = (
 def _looks_like_plan_edit(text: str) -> bool:
     t = text.lower()
     return any(v in t for v in _PLAN_EDIT_VERBS)
+
+
+@asynccontextmanager
+async def _plan_edit_runtime(session, user: User):
+    """Bind this user's Garmin provider for a plan edit — but never let Garmin block one.
+
+    The only Garmin call under ``run_plan_edit`` is the best-effort strength-template read
+    (``fetch_workout_full``), so a broken link must degrade to "no exercise detail", not to
+    a 409 page in place of the proposal. A gate raised *before* we enter (MFA pending,
+    credentials marked invalid) therefore falls back to a context bound to a provider that
+    refuses; anything raised *inside* the block is the edit's own failure and propagates
+    untouched."""
+    entered = False
+    try:
+        async with user_runtime(session, user) as creds:
+            entered = True
+            yield creds
+    except (GarminAuthFailed, MFARequired) as exc:
+        if entered:
+            raise
+        logger.info(f"CHAT plan edit without Garmin for user={user.id}: {exc!r}")
+        # Bind a provider that refuses rather than leaving the context unbound: an unbound
+        # one falls through to the legacy .env single-user provider, which on a seeded
+        # deployment would answer THIS user's request with the seed account's Garmin data.
+        token = providers.set_current_provider(
+            providers.build_unavailable_provider(f"Garmin unavailable for user {user.id}")
+        )
+        try:
+            yield load_credentials(user)
+        finally:
+            providers.reset_current_provider(token)
 
 
 @router.get("/chat", response_class=HTMLResponse)
@@ -147,10 +185,16 @@ async def chat_send(
     creds = load_credentials(user)
     try:
         if pending or _looks_like_plan_edit(text):
-            _plan, edit = await run_plan_edit(
-                session, user_id=user.id, instruction=text, api_key=creds.anthropic_key,
-                pending=pending,
-            )
+            # run_plan_edit reads the plan's strength templates off Garmin, so it needs a
+            # bound per-user provider — exactly like the bot's /plan <text>. Without it
+            # get_provider() fell through to the legacy .env single-user provider and every
+            # template fetch died with `KeyError: 'GARMIN_EMAIL'` (visible as a GARMIN ERR
+            # line), leaving the model to propose edits with no exercises in front of it.
+            async with _plan_edit_runtime(session, user) as edit_creds:
+                _plan, edit = await run_plan_edit(
+                    session, user_id=user.id, instruction=text,
+                    api_key=edit_creds.anthropic_key, pending=pending,
+                )
             # NF-34: a trip mentioned in passing rides with the proposal and is written on
             # the same confirmation (or dropped with it on cancel).
             away = away_mod.from_op(edit.away) or (pending or {}).get("away")
@@ -190,12 +234,23 @@ async def chat_send(
 
 @router.post("/chat/confirm", response_class=HTMLResponse)
 async def chat_confirm(
-    action: str = Form(...),
+    action: str = Form(""),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Confirm/reject a pending free-text plan edit. Mirrors ``bot.handlers.plan_callback``
-    almost exactly — same pending-state helper, same apply + best-effort Garmin resync."""
+    almost exactly — same pending-state helper, same apply + best-effort Garmin resync.
+
+    ``action`` is deliberately optional-with-validation rather than ``Form(...)``: a body
+    that arrives without it (a stale cached app.js, a client that drops the submitter)
+    must not be answered with FastAPI's raw 422 JSON in place of the chat — and must not
+    fall into the apply branch either, which is what a plain default would do. An
+    unrecognised action leaves the proposal exactly where it is and says so."""
+    if action not in ("apply", "apply_alt", "cancel"):
+        logger.warning(f"CHAT confirm without a valid action user={user.id} ({action!r})")
+        return RedirectResponse(
+            f"/chat?err={quote(CONFIRM_NO_ACTION_MSG)}", status_code=303,
+        )
     pending = await repository.pop_pending_plan_edit(session, user.id)
     if action != "cancel" and pending:
         # NF-34: a trip declared inside the edit is written on the same confirmation as the
