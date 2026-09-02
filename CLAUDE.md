@@ -381,7 +381,12 @@ Telegram command (chat_id→user) / HTTP request (session→user)
 ```
 
 The aggregation in `app/garmin/service.py` is the cost-control layer — raw Garmin
-responses are collapsed to ~12 fields/day and never sent to the LLM.
+responses are collapsed to ~12 fields/day and never sent to the LLM. A second, separate
+narrowing happens in `app.analysis.cache._as_dict`: what we STORE is not what the analyst
+READS. Fields the system prompt documents no meaning for (an activity's `zones`, its start
+coordinates, half of `daily[].extra`) and values already carried by `fitness` are dropped,
+and `recent_activities` is bounded by a date window, not only by `activity_limit`'s count.
+That is an attention budget, not a cost one — see DESIGN_NOTES.
 
 ## Web endpoints
 

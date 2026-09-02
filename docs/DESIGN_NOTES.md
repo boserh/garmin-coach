@@ -1350,3 +1350,46 @@ Loose ends handled: `login_session` clears the impersonation keys, so signing in
 after closing the tab mid-session gives a clean session rather than a borrowed one with
 a new id pasted over it; and if the admin is demoted, deactivated or deleted while
 looking, stopping signs out entirely instead of handing back rights that no longer exist.
+
+## What the analyst reads is not what we store
+
+A morning report narrated the day wrongly: a 2-hour kite session went unmentioned, while
+two auto-detected evening walks were reported as "two short bike rides". The dump of the
+actual request (`scripts/dump_prompt.py`) settled where each half came from.
+
+**The word "bike" came from yesterday's report.** `daily[01.09].extra.auto_activities` read
+`"20:24 walking 24хв; 21:01 walking 30хв"`, and `previous_report` read *"Вчора зафіксовано
+лише два коротких вело-виїзди (по 12-13 хв)"* — which had been correct the day before, when
+the auto-detections really were cycling. The model kept the sentence and swapped in the new
+durations. The prompt's carry-over rule only covered relative DATE words, so it did not
+apply; it now covers content — types, durations, phrasing — explicitly.
+
+**The kite was in the payload and was ignored.** `recent_activities[0]` carried it with
+`day: "вчора (вт)"`. The prompt described `auto_activities` as the day's real cardio load
+without ever saying what wins when the same day also has a real activity, so a day with
+both could be told entirely through the auto-detections. It now says: a `recent_activities`
+entry for that date IS the day; auto-detections are an addition, never the whole story.
+
+The third factor is structural. `activity_limit` is a **count**, so a 3-day morning report
+was handed 20 activities spanning 24 days — nine Alpine hikes and two set-by-set strength
+dumps around the one session that mattered — plus, on every row, `zones`/coordinates/gear
+the prompt documents nothing about, and per-day duplicates of `race_*`/`endurance_*` that
+`fitness` already carries properly. ~12.3 KB of `data`, of which roughly half was noise.
+
+So `_as_dict` (`app/analysis/cache.py`) became the one place where the analyst's view is
+narrowed: drop-lists for `daily[].extra` and activity rows, and an activity window derived
+from the payload's own `window_days` (floor `ACTIVITY_CONTEXT_MIN_DAYS` = 10, so morning and
+`/report` both get 10 days and `/deep` keeps its 14), with `ACTIVITY_CONTEXT_MIN_KEEP` = 3
+newest rows kept whatever their date so an idle athlete still sees what they last did.
+
+Two things this must not break, both pinned by tests:
+
+* **Prompt and cache key must be trimmed identically.** `run_analysis` keys the dedup cache
+  off `_as_dict(payload)` too. Trim only one side and an invisible field — a jittering
+  `spo2_low` — buys a fresh paid call every morning.
+* **Nothing computes from the trimmed fields.** `baselines`, `intensity`, `records`,
+  `health`, the weather location and the gear mileage all read them from the DB, never from
+  the payload, so this changes what the model reads and nothing else.
+
+Deploy note: the cache key changes, so the first report per user after the change is a real
+(paid) call rather than a hit. That is one Sonnet call each, not a re-run of anything.
