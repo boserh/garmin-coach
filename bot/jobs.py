@@ -94,6 +94,11 @@ def _main_bot_ctx(ctx: ContextTypes.DEFAULT_TYPE):
 
 MORNING_START_HOUR = 7
 MORNING_DEADLINE_HOUR = 12
+# The payload window the morning report is built on. Named because more than one caller
+# has to agree on it exactly — the tick, /test_morning, and scripts.dump_prompt, which
+# reproduces the request offline and is worthless if it quietly uses a different window.
+MORNING_PAYLOAD_DAYS = 3
+MORNING_ACTIVITY_LIMIT = 20
 # Activity watch runs across a wider daily window than the morning report itself, so
 # an evening run still gets an automatic recap the same day.
 ACTIVITY_WATCH_END_HOUR = 23
@@ -402,7 +407,8 @@ async def force_morning_for_user(ctx, session, user: User) -> None:
             await ctx.bot.send_message(user.telegram_chat_id, "🧪 Немає Garmin-кредів.")
             return
         payload, _ = await service.build_payload_cached(
-            session, user.id, days=3, activity_limit=20
+            session, user.id, days=MORNING_PAYLOAD_DAYS,
+            activity_limit=MORNING_ACTIVITY_LIMIT,
         )
         await _deliver_morning(ctx, session, user, creds, payload, now, today, force=True)
 
@@ -1029,7 +1035,8 @@ async def _tick_for_user(ctx, session, user: User) -> None:
                 return JobOutcome("skip", "no Garmin credentials")
 
             payload, new_activities = await service.build_payload_cached(
-                session, user.id, days=3, activity_limit=20
+                session, user.id, days=MORNING_PAYLOAD_DAYS,
+                activity_limit=MORNING_ACTIVITY_LIMIT
             )
 
             # OPS-01/ST-11: warn well ahead of the ~1y garth token death date — pure decode,

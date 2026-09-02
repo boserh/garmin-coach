@@ -43,10 +43,6 @@ import json
 import sys
 from typing import Any, Optional
 
-# The morning report's question, verbatim from bot.jobs._MORNING_Q — the daily /report
-# uses reports._DEFAULT_DAILY_Q instead, which run_analysis fills in for an empty string.
-MORNING_Q = "Короткий ранковий звіт: відновлення, готовність на сьогодні, найближча пробіжка."
-
 
 class _Captured(Exception):
     """Carries the kwargs ``messages.create`` was called with. Deliberately NOT an
@@ -99,12 +95,14 @@ async def _run(args: argparse.Namespace) -> int:
     _install_stubs()
 
     from app import weather as weather_mod
-    from app.analysis.reports import run_analysis
-    from app.core.tz import user_today
+    from app.analysis import delivery
     from app.db import users as users_db
     from app.db.base import async_session_maker, init_db
     from app.garmin import service
     from app.garmin.runtime import user_runtime
+
+    # Imported, never retyped: the question and the payload window ARE the morning job's.
+    from bot.jobs import _MORNING_Q, MORNING_ACTIVITY_LIMIT, MORNING_PAYLOAD_DAYS
 
     await init_db()
     async with async_session_maker() as session:
@@ -117,19 +115,24 @@ async def _run(args: argparse.Namespace) -> int:
             if not creds.has_garmin:
                 print("Немає Garmin-кредів — payload не зібрати.", file=sys.stderr)
                 return 1
-            # Exactly bot.jobs._tick_for_user / force_morning_for_user.
+            # bot.jobs._tick_for_user, with its own constants.
             payload, _ = await service.build_payload_cached(
-                session, user.id, days=args.days, activity_limit=args.activity_limit)
+                session, user.id,
+                days=args.days if args.days is not None else MORNING_PAYLOAD_DAYS,
+                activity_limit=(args.activity_limit if args.activity_limit is not None
+                                else MORNING_ACTIVITY_LIMIT),
+            )
+            # bot.jobs._deliver_morning: same forecast helper, same call.
             wx = await weather_mod.forecast_for_user(session, user)
 
             captured: Optional[_Captured] = None
             try:
-                # Exactly delivery.build_report(kind="morning").
-                await run_analysis(
-                    session, payload, user_id=user.id,
-                    question=MORNING_Q if args.kind == "morning" else "",
+                # The morning job's own delivery call — not a re-implementation of it.
+                # (build_report resolves "today" in the user's timezone itself.)
+                await delivery.build_report(
+                    session, user, payload,
+                    question=_MORNING_Q if args.kind == "morning" else "",
                     kind=args.kind, api_key=creds.anthropic_key, weather=wx,
-                    today=user_today(user),
                 )
             except _Captured as e:
                 captured = e
@@ -176,10 +179,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--email", required=True)
     p.add_argument("--kind", default="morning", choices=("morning", "report"),
                    help="morning = питання ранкового звіту; report = дефолтне денне")
-    p.add_argument("--days", type=int, default=3,
-                   help="вікно daily[], як у ранковому тіку (типово 3)")
-    p.add_argument("--activity-limit", type=int, default=20,
-                   help="скільки активностей тягнути, як у тіку (типово 20)")
+    p.add_argument("--days", type=int, default=None,
+                   help="перевизначити вікно daily[] (типово — bot.jobs.MORNING_PAYLOAD_DAYS)")
+    p.add_argument("--activity-limit", type=int, default=None,
+                   help="перевизначити ліміт активностей "
+                        "(типово — bot.jobs.MORNING_ACTIVITY_LIMIT)")
     p.add_argument("--system", action="store_true", help="показати і системний промпт")
     p.add_argument("--out", help="записати весь запит у JSON-файл")
     return asyncio.run(_run(p.parse_args(argv)))

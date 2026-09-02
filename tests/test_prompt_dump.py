@@ -14,7 +14,10 @@ import pathlib
 from app.analysis import dump
 from app.core.config import settings
 
-ANALYSIS_DIR = pathlib.Path(__file__).resolve().parent.parent / "app" / "analysis"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+ANALYSIS_DIR = ROOT / "app" / "analysis"
+DUMP_SCRIPT = ROOT / "scripts" / "dump_prompt.py"
+JOBS = ROOT / "bot" / "jobs.py"
 
 
 def _dump(**kw):
@@ -87,3 +90,28 @@ def test_every_claude_call_site_dumps_first():
             if not any(c.endswith("dump_request") for c in calls):
                 missing.append(f"{path.name}:{fn.name}")
     assert not missing, f"messages.create without a dump_request: {missing}"
+
+
+def test_dump_script_reuses_the_morning_path_rather_than_re_implementing_it():
+    """scripts/dump_prompt.py is only worth anything if it assembles the request the way
+    the morning job does. So it must not retype the question or the payload window, and
+    must go through the job's own delivery call — not a hand-rolled run_analysis."""
+    src = DUMP_SCRIPT.read_text(encoding="utf-8")
+    imported = set()
+    for node in ast.walk(ast.parse(src, str(DUMP_SCRIPT))):
+        if isinstance(node, ast.ImportFrom) and node.module == "bot.jobs":
+            imported |= {a.name for a in node.names}
+    assert {"_MORNING_Q", "MORNING_PAYLOAD_DAYS", "MORNING_ACTIVITY_LIMIT"} <= imported
+    assert "delivery.build_report(" in src
+    # A retyped question would drift the moment bot.jobs._MORNING_Q is reworded.
+    assert "Короткий ранковий звіт" not in src
+
+
+def test_morning_payload_window_is_named_not_repeated():
+    """Both morning callers (the tick and /test_morning) must read the same constants —
+    a literal in either is how the two silently stop agreeing."""
+    src = JOBS.read_text(encoding="utf-8")
+    assert "MORNING_PAYLOAD_DAYS = 3" in src
+    assert "MORNING_ACTIVITY_LIMIT = 20" in src
+    assert "days=3, activity_limit=20" not in src
+    assert src.count("days=MORNING_PAYLOAD_DAYS") == 2
