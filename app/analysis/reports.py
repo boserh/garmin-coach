@@ -58,6 +58,7 @@ from app.analysis.client import (
     _run_claude,
     _status_error,
 )
+from app.analysis.dump import dump_request
 from app.analysis.plans import _days_to_target, _recent_compliance
 from app.analysis.prompts import (
     SYSTEM,
@@ -271,6 +272,8 @@ def analyze_with_stats(
     # accident — through yesterday's report text — so it knew on Monday and forgot by Friday.
     if away_ctx:
         user_content["away"] = away_ctx
+    dump_request(kind=kind, model=model, system=SYSTEM,
+                 user_content=user_content, max_tokens=2000)
     try:
         from anthropic import APIConnectionError, APIStatusError
 
@@ -912,6 +915,8 @@ def analyze_activity_with_stats(
     day = daterel.label(activity_data.get("date"), today_iso)
     if day:
         user_content["activity_day"] = day
+    dump_request(kind="activity", model=model, system=SYSTEM_ACTIVITY,
+                 user_content=user_content, max_tokens=1500)
     try:
         from anthropic import APIConnectionError, APIStatusError
 
