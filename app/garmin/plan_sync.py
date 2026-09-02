@@ -215,10 +215,31 @@ async def push_workout(session, w, errors: Optional[list] = None):
 
 
 async def remove_workout(session, w) -> bool:
-    """Delete one pushed workout from Garmin (also clears its schedule) and null the
-    stored ids. Tolerates an already-deleted workout. Returns True if Garmin confirmed
-    the delete, False if it was already gone."""
+    """Take one pushed workout off Garmin — **both halves**: the calendar schedule first,
+    then the saved workout — and null the stored ids. Tolerates either being already
+    gone. Returns True if Garmin confirmed the workout delete, False if it wasn't there.
+
+    Why the schedule is deleted explicitly. Deleting the workout is meant to remove its
+    schedule with it, and mostly does; when it doesn't, the calendar keeps an entry
+    pointing at a workout that no longer exists. The athlete sees the session on the day
+    and it opens nothing — and since every replacement (a ``move``, a ``modify``, the
+    long-run relabel) is a remove followed by a fresh push, the day ends up holding that
+    dead entry NEXT TO the correct new one. Seen live on 2026-09-02, when a 4 km session
+    demoted from ``long`` to ``easy`` was re-pushed under its new name. Our own audit is
+    blind to it too: ``/calendar-service`` omits a schedule whose workout is deleted
+    (``calendar_audit``), so nothing downstream would ever have reported it.
+
+    Order matters. Schedule first means a failure in between leaves an unscheduled saved
+    workout — invisible on the calendar and catchable by ``audit-calendar
+    --delete-orphans``. The other order leaves exactly the dead calendar entry this
+    exists to prevent."""
     wid = w.garmin_workout_id
+    sched = w.garmin_schedule_id
+    if sched is not None:
+        try:
+            await run_in_threadpool(client.delete_schedule, sched)
+        except Exception as e:
+            logger.info(f"GARMIN unpush: schedule {sched} already gone ({type(e).__name__})")
     deleted = True
     try:
         await run_in_threadpool(client.delete_workout, wid)

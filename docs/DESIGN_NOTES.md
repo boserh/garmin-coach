@@ -1155,6 +1155,21 @@ have been possible there: `SYSTEM_PLAN_ADAPT` forbids it, but `_filter_ops_to_le
 a flexible plan's operations untouched, so only the prompt was holding the line. It now has an
 `_ADAPT_ALLOWED_ACTIONS` white-list, the same shape weather and sick-mode already used.
 
+**The relabel is a re-push, and that is where it broke the calendar (2026-09-02).** `type`
+is part of the pushed workout's NAME (`workout_export.workout_name`), so demoting a session
+that already sits on Garmin means replacing it: `apply_plan_ops` returns the relabelled rows
+among `affected` and `plan_sync.resync_workouts` drops the old copy and pushes a new one.
+The content is untouched — same distance, same steps, only the label — so what reaches the
+watch is the same run. What broke is the *drop*: `remove_workout` deleted the saved workout
+and trusted Garmin to take the calendar entry with it. It doesn't always, and the leftover
+schedule points at a workout that no longer exists — the athlete sees the session on the day
+and it opens nothing, right next to the correct new one. `/calendar-service` omits such an
+entry (see `calendar_audit`), so no audit would have reported it either. The teardown now
+deletes both halves explicitly, schedule first (`client.delete_schedule`): a failure in
+between then leaves an unscheduled saved workout, which `audit-calendar --delete-orphans`
+can find, instead of a dead calendar entry nothing can see. Entries orphaned before this fix
+keep no stored id and have to be deleted by hand in Connect.
+
 ## Web UI conventions (UI batch, 2026-08)
 
 The batch answered one question — *what is already computed or stored that the user can't
