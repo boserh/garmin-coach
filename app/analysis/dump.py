@@ -20,6 +20,7 @@ import json
 import logging
 import os
 from typing import Optional
+from uuid import uuid4
 
 from app.core.config import settings
 
@@ -52,8 +53,13 @@ def dump_request(*, kind: str, model: str, system: str, user_content: dict,
         return None
     try:
         os.makedirs(directory, exist_ok=True)
+        # The millisecond stamp alone is NOT unique: /ask dumps one file per agent round
+        # in a tight loop, and the bot and web processes write into the same directory —
+        # two dumps in the same millisecond silently overwrote each other. The random
+        # suffix is what makes the filename a key rather than a timestamp.
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
-        path = os.path.join(directory, f"{stamp}-{kind}-u{user_id or 0}.json")
+        path = os.path.join(
+            directory, f"{stamp}-{kind}-u{user_id or 0}-{uuid4().hex[:6]}.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({
                 "written_at": dt.datetime.now().isoformat(timespec="seconds"),

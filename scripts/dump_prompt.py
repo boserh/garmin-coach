@@ -98,13 +98,13 @@ def _sizes(user_content: dict) -> list[tuple[str, int, str]]:
 async def _run(args: argparse.Namespace) -> int:
     _install_stubs()
 
+    from app import weather as weather_mod
     from app.analysis.reports import run_analysis
     from app.core.tz import user_today
     from app.db import users as users_db
     from app.db.base import async_session_maker, init_db
     from app.garmin import service
     from app.garmin.runtime import user_runtime
-    from app import weather as weather_mod
 
     await init_db()
     async with async_session_maker() as session:
