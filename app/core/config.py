@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     # Bot's public @username (without @) — used to render a t.me/ link in the web
     # onboarding so users know which bot to message. Override via env if it changes.
     TELEGRAM_BOT_USERNAME: Optional[str] = "garmim_coach_bot"
+    # Third, separate bot identity: the MONITORING channel (app.mcp_notify). It carries
+    # no coaching and no infrastructure traffic — only what an outside MCP client pushes
+    # into it (the morning war-threshold brief). Its own token so a compromised or noisy
+    # monitoring client can never speak as the coach, and so muting one mutes only one.
+    # Unset → the notify tool refuses to send rather than falling back to another bot.
+    TELEGRAM_MONITOR_BOT_TOKEN: Optional[str] = None
+    # Where that bot writes. Deployment-global on purpose: the monitoring channel belongs
+    # to the install, not to an athlete's account, so it is NOT read off User.
+    # telegram_chat_id. A private chat id (press Start on the bot first — Telegram forbids
+    # a bot from opening a conversation), or a group/channel id the bot was added to.
+    # Unset → the notify tool refuses to send.
+    TELEGRAM_MONITOR_CHAT_ID: Optional[int] = None
 
     # --- Auth / secrets ---
     # Master key for Fernet credential encryption AND cookie-session signing.
@@ -117,6 +129,18 @@ class Settings(BaseSettings):
     # one it is an open row factory). Reached → registration is refused until an admin
     # clears the table.
     MCP_OAUTH_MAX_CLIENTS: int = 20
+
+    # --- Monitoring notify MCP server (app.mcp_notify) ---
+    # Its own public HTTPS origin, because it is its own process on its own port: the
+    # coach endpoint stays read-only (NF-08's whole point) and the write tool lives
+    # behind a different URL, a different OAuth issuer and a different scope. Unset →
+    # `python -m app.mcp_notify` refuses to start; the coach server is unaffected.
+    MCP_NOTIFY_PUBLIC_URL: Optional[str] = None
+    # Sliding-window cap on messages one account may push through the notify tool. This
+    # is a morning brief, not a firehose: a client stuck in a loop would otherwise turn
+    # the channel (and Telegram's own flood limits) into the failure. 0 disables it.
+    MCP_NOTIFY_RATE_LIMIT: int = 20
+    MCP_NOTIFY_RATE_WINDOW_S: int = 3600
 
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by

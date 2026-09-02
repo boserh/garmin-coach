@@ -14,9 +14,11 @@
   </div>
   {% else %}
   <form class="authcard" method="post" action="/oauth/consent">
-    <h1 class="brand">Доступ до даних</h1>
-    <div class="sub"><b>{{ client_name }}</b> просить доступ до твоїх даних у цьому
-      застосунку. Увійди, щоб підтвердити — це той самий email і пароль, що на сайті.</div>
+    <h1 class="brand">{% if notify %}Доступ до сповіщень{% else %}Доступ до даних{% endif %}</h1>
+    <div class="sub"><b>{{ client_name }}</b> просить
+      {% if notify %}право надсилати повідомлення в канал моніторингу{% else %}доступ до
+      твоїх даних{% endif %} у цьому застосунку. Увійди, щоб підтвердити — це той самий
+      email і пароль, що на сайті.</div>
 
     <input type="hidden" name="req" value="{{ req }}">
     <label for="email">Email</label>
@@ -30,9 +32,20 @@
   </form>
 
   {# Saying what the token can and cannot do, before it is granted rather than in a
-     changelog afterwards. Every tool behind this scope is read-only. #}
+     changelog afterwards. The two scopes are disjoint (see app.mcp_oauth): a token from
+     the coach endpoint reads and cannot send, one from the notify endpoint sends and
+     cannot read — so the page states whichever is actually being signed. #}
   <div class="authcard">
     <div class="sub" style="margin:0 0 .6rem"><b>Що отримає застосунок</b></div>
+    {% if notify %}
+    <ol class="obhow" style="margin:0">
+      <li><b>Тільки надсилання</b> — текст у канал моніторингу в Telegram. Ані тренувань,
+          ані метрик, ані плану він не бачить.</li>
+      <li><b>Нічого не читає і не змінює</b> — жодного доступу до історії, Garmin чи
+          твого ключа Claude.</li>
+      <li>Доступ можна будь-коли відкликати в налаштуваннях.</li>
+    </ol>
+    {% else %}
     <ol class="obhow" style="margin:0">
       <li><b>Тільки читання</b> — тренування, щоденні метрики, план. Нічого змінити
           чи видалити він не може.</li>
@@ -40,6 +53,7 @@
           звернень до Garmin і жодних витрат на твій ключ Claude.</li>
       <li>Доступ можна будь-коли відкликати в налаштуваннях.</li>
     </ol>
+    {% endif %}
   </div>
   {% endif %}
   </div>

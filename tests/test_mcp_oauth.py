@@ -39,12 +39,13 @@ def mcp_app(monkeypatch):
 
     anyio.run(init_db)
 
-    from app.mcp_server import _http_app, build_server
+    from app.mcp_http import http_app
+    from app.mcp_server import build_server
 
     # base_url matches the issuer: the SDK enables DNS-rebinding protection, so a
     # mismatched Host is refused before any handler runs (as it should be).
     with TestClient(
-        _http_app(build_server(public_url=PUBLIC_URL), PUBLIC_URL), base_url=PUBLIC_URL
+        http_app(build_server(public_url=PUBLIC_URL), PUBLIC_URL), base_url=PUBLIC_URL
     ) as c:
         yield c
 

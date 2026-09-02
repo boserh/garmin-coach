@@ -21,7 +21,9 @@ Two transports, and the difference between them is *who the request speaks for*:
 Every tool is read-only in both modes and funnels through the single dispatch point in
 ``_run_ask_tool`` — the same validation/caps as ``/ask`` (row caps, whitelisted daily
 fields). Adding a write tool here would defeat NF-08's whole point (its own ticket names
-scope creep as the main risk) — keep it read-only.
+scope creep as the main risk) — keep it read-only. When something genuinely has to write,
+it gets its own service on its own origin with its own OAuth scope, the way the
+monitoring channel did: see :mod:`app.mcp_notify`.
 
 Run (opt-in dependency — ``./venv/bin/python -m pip install -e ".[mcp]"``)::
 
@@ -38,11 +40,6 @@ import logging
 from typing import List, Optional
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.settings import (
-    AuthSettings,
-    ClientRegistrationOptions,
-    RevocationOptions,
-)
 from mcp.server.mcpserver import MCPServer
 
 from app.core.config import settings
@@ -156,72 +153,16 @@ def build_server(*, public_url: Optional[str] = None) -> MCPServer:
     Auth is configured per transport rather than always-on: over stdio there is no HTTP
     request to carry a token, and the SDK refuses auth settings without one.
     """
-    kwargs = {}
-    if public_url:
-        from app.mcp_oauth import SCOPE, DbOAuthProvider
+    from app.mcp_http import auth_kwargs, register_consent
+    from app.mcp_oauth import SCOPE
 
-        base = public_url.rstrip("/")
-        kwargs = {
-            "auth": AuthSettings(
-                issuer_url=base,
-                # RFC 8707: the token is bound to THIS resource, so one leaked to another
-                # MCP server can't be replayed against us (and vice versa).
-                resource_server_url=f"{base}/mcp",
-                required_scopes=[SCOPE],
-                client_registration_options=ClientRegistrationOptions(
-                    enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]
-                ),
-                revocation_options=RevocationOptions(enabled=True),
-            ),
-            "auth_server_provider": DbOAuthProvider(base),
-        }
-
+    kwargs = auth_kwargs(public_url, SCOPE) if public_url else {}
     server = MCPServer("bihun", **kwargs)
     for fn in _TOOLS:
         server.tool()(fn)
-
     if public_url:
-        from app.mcp_oauth import consent_get, consent_post
-
-        server.custom_route("/oauth/consent", methods=["GET"])(consent_get)
-        server.custom_route("/oauth/consent", methods=["POST"])(consent_post)
-
+        register_consent(server)
     return server
-
-
-def _http_app(server: MCPServer, public_url: str):
-    """The ASGI app for http transport: the SDK's Starlette app (MCP endpoint, OAuth
-    endpoints, both metadata documents, session-manager lifespan) plus our static files,
-    which the consent page's stylesheet comes from.
-
-    The transport-security settings are passed explicitly and not left to the SDK's
-    default. That default keys off the *bind* address: binding to 127.0.0.1 — which is
-    exactly right behind a tunnel — auto-enables DNS-rebinding protection with an
-    allow-list of ``localhost``/``127.0.0.1``, and every real request then arrives with
-    ``Host: <public hostname>`` and is refused. So the allow-list has to name the public
-    origin instead, which keeps the protection AND lets the proxy through.
-    """
-    from urllib.parse import urlparse
-
-    from mcp.server.transport_security import TransportSecuritySettings
-    from starlette.routing import Mount
-    from starlette.staticfiles import StaticFiles
-
-    from app.templating import STATIC_DIR
-
-    base = public_url.rstrip("/")
-    app = server.streamable_http_app(
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=[urlparse(base).netloc],
-            allowed_origins=[base],
-        )
-    )
-    # Appended last, so it can never shadow an MCP or OAuth route.
-    app.routes.append(
-        Mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    )
-    return app
 
 
 async def _resolve_user_id(email: str) -> int:
@@ -263,12 +204,9 @@ def main(argv=None) -> None:
         return
 
     # http: identity per request, so no --email binding — and no way to fall back to one.
-    if not settings.MCP_PUBLIC_URL:
-        raise SystemExit(
-            "MCP_PUBLIC_URL must be set for --transport http (the OAuth issuer — it has "
-            "to match the public HTTPS origin clients connect to, e.g. "
-            "https://mcp.example.com)."
-        )
+    from app.mcp_http import http_app, require_public_url
+
+    require_public_url(settings.MCP_PUBLIC_URL, var="MCP_PUBLIC_URL")
     if args.email:
         # Silently ignoring it would leave the operator believing the endpoint is
         # restricted to that one account, which is the opposite of how http mode works.
@@ -279,7 +217,7 @@ def main(argv=None) -> None:
     asyncio.run(init_db())
     logger.info(f"MCP server (http) on {args.host}:{args.port}, issuer {settings.MCP_PUBLIC_URL}")
     public = settings.MCP_PUBLIC_URL
-    uvicorn.run(_http_app(build_server(public_url=public), public),
+    uvicorn.run(http_app(build_server(public_url=public), public),
                 host=args.host, port=args.port)
 
 
