@@ -231,7 +231,7 @@ def analyze_with_stats(
     model = MODEL_DEEP if deep else MODEL_DAILY
     kind = kind or ("deep" if deep else "report")
     today_iso = today or dt.date.today().isoformat()
-    data = _labelled_data(_as_dict(payload), today_iso)
+    data = _labelled_data(_as_dict(payload, today=today_iso), today_iso)
     effective_q = question or _DEFAULT_DAILY_Q
 
     user_content = {
@@ -457,10 +457,11 @@ async def run_analysis(
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
-    cache_key = _cache_key(_as_dict(payload), question or _DEFAULT_DAILY_Q, model,
-                           previous_report, weather, plan_today, fitness, records, norm,
-                           subjective, health_alerts, fueling, today_iso, intensity_ctx,
-                           athlete_profile, away_ctx)
+    cache_key = _cache_key(
+        _as_dict(payload, today=today_iso), question or _DEFAULT_DAILY_Q, model,
+        previous_report, weather, plan_today, fitness, records, norm,
+        subjective, health_alerts, fueling, today_iso, intensity_ctx,
+        athlete_profile, away_ctx)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's

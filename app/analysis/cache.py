@@ -21,15 +21,88 @@ from app.garmin.schemas import Payload
 CACHE_TTL_S = 7 * 24 * 3600  # one week
 
 
-def _as_dict(payload: Union[Payload, dict]) -> dict:
+# Fields we fetch and store but never put in front of the analyst. Three reasons, and
+# every entry is one of them: (a) the system prompt documents no meaning for it, so the
+# model is left to invent one; (b) it duplicates a value that reaches the analyst through
+# `fitness`, which is the field the prompt actually describes; (c) it duplicates a modelled
+# column of the same day (overnight_hrv == hrv_avg, bb_change == bb_charged).
+#
+# This is about ATTENTION, not tokens. A morning report is a needle-in-haystack task — one
+# day's session among twenty activities — and every undocumented number is another straw.
+# Nothing here is lost: the pure modules (baselines, intensity, records, health) read these
+# straight from the DB, never from the prompt, so trimming the payload changes what the
+# model reads and nothing else.
+_DROP_DAILY_EXTRA = frozenset({
+    # (c) duplicates of a modelled column on the same row
+    "overnight_hrv", "bb_change", "awake_count",
+    # (a) undocumented, and not recovery signal a daily report acts on
+    "avg_hr_sleep", "avg_sleep_stress", "restless_moments", "hrv_5min_high",
+    "hrv_weekly_avg", "spo2_low", "min_hr", "bb_high", "bb_low",
+    "floors_up", "distance_m", "active_kcal", "moderate_min", "vigorous_min",
+    # (b) near-constant day to day, and carried properly by `fitness`
+    "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
+    "endurance_score", "endurance_class", "vo2max",
+})
+
+# Same rule for an activity row. `series` is the big one (5-6 KB per run) and was always
+# stripped here; `zones` is the surprising one — NF-24's time-in-zone is real data, but the
+# analyst is told nothing about it (the intensity findings reach it as `intensity`, computed
+# in Python), so it arrives as five unexplained integers per activity. Coordinates and gear
+# are read from the DB by the weather and gear code, never from the prompt.
+_DROP_ACTIVITY = frozenset({"series", "zones", "start_lat", "start_lon", "gear_id"})
+
+# How far back the analyst sees activities. `activity_limit` is a COUNT, so a 3-day morning
+# report was being handed 20 activities spanning 24 days — a fortnight of holiday hiking
+# around the one session that mattered. The window follows the payload's own `window_days`
+# (morning 3, /report 7, /deep 14) with a floor, so a deep dive still gets its history.
+ACTIVITY_CONTEXT_MIN_DAYS = 10
+# ...but never leave the analyst blind: an athlete who hasn't trained in a fortnight still
+# needs "the last thing you did was X", so keep this many newest rows whatever their date.
+ACTIVITY_CONTEXT_MIN_KEEP = 3
+
+
+def _trim_activity(a: dict) -> dict:
+    return {k: v for k, v in a.items() if k not in _DROP_ACTIVITY}
+
+
+def _trim_day(d: dict) -> dict:
+    extra = d.get("extra")
+    if not isinstance(extra, dict):
+        return d
+    return {**d, "extra": {k: v for k, v in extra.items() if k not in _DROP_DAILY_EXTRA}}
+
+
+def _recent_enough(acts: list, today: Optional[str], window_days) -> list:
+    """Activities within the context window, newest first, never fewer than
+    ``ACTIVITY_CONTEXT_MIN_KEEP``. ``today`` unset → no date trim (the caller has no clock)."""
+    day = dt.date.fromisoformat(today[:10]) if today else None
+    if day is None:
+        return acts
+    try:
+        window = max(int(window_days or 0), ACTIVITY_CONTEXT_MIN_DAYS)
+    except (TypeError, ValueError):
+        window = ACTIVITY_CONTEXT_MIN_DAYS
+    cutoff = (day - dt.timedelta(days=window)).isoformat()
+    kept = [a for a in acts if (a.get("date") or "") >= cutoff]
+    return kept if len(kept) >= ACTIVITY_CONTEXT_MIN_KEEP else acts[:ACTIVITY_CONTEXT_MIN_KEEP]
+
+
+def _as_dict(payload: Union[Payload, dict], *, today: Optional[str] = None) -> dict:
+    """The payload as the analyst sees it — and, identically, as the dedup cache keys it.
+
+    Both callers in ``reports`` go through here for exactly that reason: the README pitfall
+    is that every piece of Claude context must be part of the key, and the mirror of it is
+    that anything trimmed out of the prompt must be trimmed out of the key too, or an
+    invisible field starts busting the cache.
+    """
     d = payload.model_dump() if isinstance(payload, Payload) else payload
-    # Strip per-point pace/HR series from activities — it's used only for single-activity
-    # analysis (activity_payload/_segments), not for daily reports, and adds 5-6 KB per run.
+    daily = d.get("daily")
+    if daily:
+        d = {**d, "daily": [_trim_day(x) if isinstance(x, dict) else x for x in daily]}
     acts = d.get("recent_activities")
     if acts:
-        d = {**d, "recent_activities": [
-            {k: v for k, v in a.items() if k != "series"} for a in acts
-        ]}
+        kept = _recent_enough(acts, today, d.get("window_days"))
+        d = {**d, "recent_activities": [_trim_activity(a) for a in kept]}
     return d
 
 
