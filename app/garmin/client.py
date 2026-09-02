@@ -913,8 +913,22 @@ def schedule_workout(workout_id, date_iso: str) -> dict:
     )
 
 
+def delete_schedule(schedule_id) -> None:
+    """Remove one workout from a calendar DATE (the schedule entry only — the saved
+    workout itself survives).
+
+    Deleting the workout is *supposed* to take its schedule with it, and usually does.
+    When it doesn't, the calendar keeps an entry pointing at a workout that no longer
+    exists: the athlete sees the session on the day and tapping it opens nothing — and
+    ``/calendar-service`` hides that entry, so our own audit can't see it either (the
+    live 2026-08-27 case in ``app.garmin.calendar_audit``). So the teardown deletes both
+    halves explicitly, schedule first; see ``plan_sync.remove_workout``."""
+    _api(f"/workout-service/schedule/{schedule_id}", method="DELETE")
+
+
 def delete_workout(workout_id) -> None:
-    """Delete a saved workout (also removes any calendar schedule for it)."""
+    """Delete a saved workout. This usually clears its calendar schedule too, but not
+    reliably — ``delete_schedule`` is why."""
     _api(f"/workout-service/workout/{workout_id}", method="DELETE")
 
 
