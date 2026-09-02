@@ -55,9 +55,18 @@ logger = logging.getLogger("mcp.oauth")
 
 templates = create_templates()
 
-# The single scope this server understands. It is read-only because every tool behind it
-# is read-only (see app.mcp_server) — a write scope would need a tool to grant it to.
+# The scopes this authorization server can mint. One per MCP service, and a service
+# declares exactly one of them: the SDK's RequireAuthMiddleware rejects a token that
+# lacks the scope the endpoint requires, so a coach token presented to the notify
+# endpoint (or the reverse) is refused even though both read the same grants table.
+#
+# SCOPE is read-only because every tool behind it is read-only (see app.mcp_server);
+# NOTIFY_SCOPE is write-only in the opposite sense — it grants no read of anything, only
+# the ability to push a message into the deployment's monitoring channel
+# (app.mcp_notify). Keeping them apart is what lets the read-only promise on the coach
+# consent screen stay true.
 SCOPE = "garmin:read"
+NOTIFY_SCOPE = "notify:write"
 
 # A parked authorization request: how long the user has to finish logging in.
 PENDING_TTL_S = 600
@@ -93,8 +102,12 @@ class DbOAuthProvider(
     which have no request-scoped session of ours to borrow.
     """
 
-    def __init__(self, public_url: str):
+    def __init__(self, public_url: str, *, scope: str = SCOPE):
         self.public_url = public_url.rstrip("/")
+        # Which scope a request that names none defaults to — i.e. the one this
+        # server's own tools need. Never a union: a client asking for nothing must not
+        # come away holding both.
+        self.scope = scope
 
     # --- client registration (RFC 7591) ---
 
@@ -138,7 +151,7 @@ class DbOAuthProvider(
                 secret=req,
                 client_id=client.client_id,
                 ttl_s=PENDING_TTL_S,
-                scopes=params.scopes or [SCOPE],
+                scopes=params.scopes or [self.scope],
                 data={
                     "state": params.state,
                     "code_challenge": params.code_challenge,
@@ -270,13 +283,23 @@ class DbOAuthProvider(
 # --- the consent screen -------------------------------------------------------------
 
 
-def _consent_page(request: Request, *, pending: dict, req: str, error=None, status_code=200):
+def _consent_page(
+    request: Request, *, pending: dict, req: str, scopes=None, error=None, status_code=200
+):
+    """Render the approval screen.
+
+    ``scopes`` decides which promise the page makes. The read-only wording used to be
+    hardcoded, which was fine while every tool behind every token was read-only — the
+    moment a second server started minting NOTIFY_SCOPE, a hardcoded "нічого змінити він
+    не може" would have been the page lying about the grant the user is signing.
+    """
     return templates.TemplateResponse(
         request,
         "mcp_consent.html",
         {
             "req": req,
             "client_name": pending.get("client_name", "MCP-клієнт"),
+            "notify": NOTIFY_SCOPE in (scopes or []),
             "error": error,
         },
         status_code=status_code,
@@ -287,7 +310,8 @@ def _expired_page(request: Request) -> Response:
     return templates.TemplateResponse(
         request,
         "mcp_consent.html",
-        {"req": None, "client_name": None, "error": None, "expired": True},
+        {"req": None, "client_name": None, "notify": False, "error": None,
+         "expired": True},
         status_code=400,
     )
 
@@ -298,7 +322,7 @@ async def consent_get(request: Request) -> Response:
         grant = await oauth.load_grant(session, "pending", req) if req else None
     if grant is None:
         return _expired_page(request)
-    return _consent_page(request, pending=grant.data, req=req)
+    return _consent_page(request, pending=grant.data, req=req, scopes=grant.scopes)
 
 
 async def consent_post(request: Request) -> Response:
@@ -329,7 +353,8 @@ async def consent_post(request: Request) -> Response:
 
     if not _consent_limiter.allow(f"ip:{_client_ip(request)}"):
         return _consent_page(
-            request, pending=grant.data, req=req, error=_RATE_LIMIT_MSG, status_code=429
+            request, pending=grant.data, req=req, scopes=grant.scopes,
+            error=_RATE_LIMIT_MSG, status_code=429,
         )
 
     email = str(form.get("email") or "").strip().lower()
@@ -348,7 +373,7 @@ async def consent_post(request: Request) -> Response:
     if not ok:
         logger.warning(f"MCP OAuth: consent rejected for {email!r} from {_client_ip(request)}")
         return _consent_page(
-            request, pending=grant.data, req=req,
+            request, pending=grant.data, req=req, scopes=grant.scopes,
             error="Невірний email або пароль, або акаунт не підтверджено.",
             status_code=401,
         )

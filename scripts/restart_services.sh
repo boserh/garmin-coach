@@ -42,4 +42,9 @@ sudo -u "$REPO_OWNER" "$REPO_ROOT/venv/bin/python" -m scripts.migrate --deploy
 if /bin/systemctl cat garmin-mcp.service >/dev/null 2>&1; then
   /bin/systemctl restart --no-block garmin-mcp.service
 fi
+# garmin-mcp-notify (the monitoring write-only channel) is optional for the same reasons
+# and guarded the same way — it additionally needs the monitoring bot token/chat id.
+if /bin/systemctl cat garmin-mcp-notify.service >/dev/null 2>&1; then
+  /bin/systemctl restart --no-block garmin-mcp-notify.service
+fi
 exec /bin/systemctl restart --no-block garmin-bot.service garmin-admin-bot.service

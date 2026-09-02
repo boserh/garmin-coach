@@ -31,6 +31,12 @@ os.environ["ANTHROPIC_API_KEY"] = "test-dummy-key-not-real"
 # Same reasoning: a real TELEGRAM_ADMIN_BOT_TOKEN in .env must never make tests fire
 # real Telegram alerts (app.core.alerts.TelegramAlertHandler forwards WARNING+ logs).
 os.environ["TELEGRAM_ADMIN_BOT_TOKEN"] = ""
+# And the monitoring channel (app.notify): a real token/chat id in .env must never let a
+# test push a message into the owner's Telegram. The notify tests build their own fakes.
+os.environ["TELEGRAM_MONITOR_BOT_TOKEN"] = ""
+# Popped, not blanked: it is an Optional[int], and "" fails pydantic's int parsing
+# outright (the whole Settings load would raise, taking every test with it).
+os.environ.pop("TELEGRAM_MONITOR_CHAT_ID", None)
 
 # Start from a clean schema each run — init_db() only create_all's, it won't ALTER a
 # stale file left over from an older schema.

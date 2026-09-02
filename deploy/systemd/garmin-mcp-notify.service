@@ -1,0 +1,35 @@
+[Unit]
+Description=Garmin Bot — monitoring notify MCP server (write-only Telegram channel)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/garmin_bot
+EnvironmentFile=/home/pi/garmin_bot/.env
+# Needs the opt-in extra: pip install -e ".[mcp]"
+#
+# Deliberately a SECOND service next to garmin-mcp.service rather than another tool
+# inside it: that one is read-only (NF-08) and this one only writes. Two processes on
+# two origins with two OAuth scopes means a token for one cannot be replayed at the
+# other — see app/mcp_notify.py's module docstring.
+#
+# Requires in .env:
+#   MCP_NOTIFY_PUBLIC_URL      the public HTTPS origin THIS service is reached at
+#                              (its own hostname/tunnel — not MCP_PUBLIC_URL's)
+#   TELEGRAM_MONITOR_BOT_TOKEN the monitoring bot identity
+#   TELEGRAM_MONITOR_CHAT_ID   where it writes
+# The process refuses to start without them rather than accepting connections it can
+# only fail to deliver on.
+#
+# --host 127.0.0.1 is deliberate and should stay: this speaks plain HTTP and carries
+# bearer tokens, so it must never be reachable except through the tunnel/proxy that
+# terminates TLS in front of it. The DNS-rebinding allow-list is derived from
+# MCP_NOTIFY_PUBLIC_URL, so the loopback bind does not break the proxied Host header.
+ExecStart=/home/pi/garmin_bot/venv/bin/python -m app.mcp_notify \
+    --transport http --host 127.0.0.1 --port 8789
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
