@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     LOG_FILE: str = "bot.log"
     LOG_LEVEL: str = "INFO"
 
+    # Opt-in forensic copy of every Claude request, written as it goes out (app.analysis
+    # .dump). The request body is otherwise unrecoverable: report_logs keeps the question,
+    # the token counts and the answer, but never the user_content that was posted — so
+    # "what did the analyst actually see?" cannot be answered after the fact. Empty (the
+    # default) = off. NB the dumps contain the athlete's own data in the clear, so point
+    # this somewhere as private as the DB, and leave it off unless you are debugging.
+    PROMPT_DUMP_DIR: str = ""
+    PROMPT_DUMP_KEEP: int = 200   # newest N files kept; older ones pruned on write
+
     # --- Disk cache (immutable Garmin assets; day-level cache lives in the DB,
     # the Claude dedup cache in the llm_cache table) ---
     # Per-key files under this directory (PERF-02 — cross-process safe).

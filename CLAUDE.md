@@ -197,6 +197,8 @@ Optional, with defaults:
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; Postgres via env alone (`postgresql+asyncpg://...`). |
 | `LOG_FILE` | `bot.log` | log file path. |
 | `LOG_LEVEL` | `INFO` | root level (`DEBUG` shows skip-reason logs). |
+| `PROMPT_DUMP_DIR` | `` (unset) | opt-in: write EVERY outgoing Claude request (model, system, full `user_content`) as a JSON file here, as it goes out. `report_logs` keeps the question, the tokens and the answer but never the request body, so without this a bad report can't be traced back to what the analyst saw. Contains the athlete's data in the clear — keep it as private as the DB, and off unless debugging. |
+| `PROMPT_DUMP_KEEP` | `200` | newest N dumps kept (pruned on write); `0` = unbounded. |
 | `GARMIN_CACHE_DIR` | `garmin_cache` | per-key disk cache for immutable Garmin assets. |
 | `INJURY_RADAR` | `True` | master on/off for the injury-risk advisory. |
 | `INJURY_MIN_HISTORY_DAYS` | `14` | quiet calibration before any warning. |
@@ -740,7 +742,13 @@ architecture + current operational state.
 `MORNING skip: outside window`); noisy libraries pinned WARNING. Web requests logged by
 an app-level HTTP middleware (logger `api`, `GET /plan → 200 42ms`), not
 `uvicorn.access`. Per-call Claude cost/tokens logged (`claude`) and persisted to
-`report_logs` (browsable at `/me/report_logs`, `/ui/report_logs`).
+`report_logs` (browsable at `/me/report_logs`, `/ui/report_logs`) — the question,
+the counts and the answer, but **not** the request body. To capture that, set
+`PROMPT_DUMP_DIR` (`app.analysis.dump`): every `messages.create` in `app/analysis`
+then writes its own request to disk first, enforced by a test sweep so a new LLM
+path can't skip it. To read the request WITHOUT sending one, `python -m
+scripts.dump_prompt --email …` assembles it through the real path and prints it
+(0 Anthropic calls; it does fetch Garmin like any `/report`).
 
 ## Models & cost
 

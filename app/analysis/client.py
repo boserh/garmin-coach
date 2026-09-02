@@ -193,6 +193,12 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
     if model != FABLE_5:
         kwargs["thinking"] = {"type": "disabled"}
 
+    # Forensic copy of the outgoing request (no-op unless PROMPT_DUMP_DIR is set) — local
+    # import, same as budget above, so a debug switch can't introduce an import cycle.
+    from app.analysis import dump
+    dump.dump_request(kind=kind, model=model, system=system,
+                      user_content=user_content, max_tokens=max_tokens)
+
     try:
         msg = _get_client(api_key).messages.create(**kwargs)
         stats = CallStats(kind=kind, model=model)
@@ -247,6 +253,16 @@ def _complete_vision(
     if model != FABLE_5:
         kwargs["thinking"] = {"type": "disabled"}
 
+    # Forensic copy (no-op unless PROMPT_DUMP_DIR is set). The user turn here is raw
+    # base64 image/PDF blocks — dump their shape, never the bytes, or one checkup upload
+    # writes megabytes per call.
+    from app.analysis import dump
+    dump.dump_request(
+        kind=kind, model=model, system=system, max_tokens=max_tokens,
+        user_content={"files": [{"media_type": mt, "b64_len": len(b64)}
+                                for mt, b64 in files]},
+    )
+
     try:
         msg = _get_client(api_key).messages.create(**kwargs)
         stats = CallStats(kind=kind, model=model)
@@ -296,6 +312,17 @@ def _complete_tools(
     # thinking, so disable it explicitly (skip for Fable 5, which rejects the flag).
     if model != FABLE_5:
         kwargs["thinking"] = {"type": "disabled"}
+
+    # Forensic copy (no-op unless PROMPT_DUMP_DIR is set). /ask is a loop, so this writes
+    # one file per ROUND: the growing `messages` list is what the model actually saw that
+    # round. Tools go in by name — the schemas are static and identical every time.
+    from app.analysis import dump
+    dump.dump_request(
+        # No `kind` parameter here — the loop's stats are hardcoded "ask" below, so match it.
+        kind="ask", model=model, system=system, max_tokens=max_tokens,
+        user_content={"messages": messages,
+                      "tools": [t.get("name") for t in tools if isinstance(t, dict)]},
+    )
 
     try:
         msg = _get_client(api_key).messages.create(**kwargs)
