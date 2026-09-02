@@ -16,6 +16,7 @@ import hashlib
 import json
 from typing import Optional, Union
 
+from app import daterel
 from app.garmin.schemas import Payload
 
 CACHE_TTL_S = 7 * 24 * 3600  # one week
@@ -61,21 +62,28 @@ ACTIVITY_CONTEXT_MIN_DAYS = 10
 ACTIVITY_CONTEXT_MIN_KEEP = 3
 
 
-def _trim_activity(a: dict) -> dict:
+def _trim_activity(a):
+    if not isinstance(a, dict):
+        return a
     return {k: v for k, v in a.items() if k not in _DROP_ACTIVITY}
 
 
-def _trim_day(d: dict) -> dict:
+def _trim_day(d):
+    if not isinstance(d, dict):
+        return d
     extra = d.get("extra")
     if not isinstance(extra, dict):
         return d
     return {**d, "extra": {k: v for k, v in extra.items() if k not in _DROP_DAILY_EXTRA}}
 
 
-def _recent_enough(acts: list, today: Optional[str], window_days) -> list:
+def _recent_enough(acts: list, today, window_days) -> list:
     """Activities within the context window, newest first, never fewer than
     ``ACTIVITY_CONTEXT_MIN_KEEP``. ``today`` unset → no date trim (the caller has no clock)."""
-    day = dt.date.fromisoformat(today[:10]) if today else None
+    # Through daterel.parse, not fromisoformat: `today` reaches here as an ISO string from
+    # both report call sites, but the parser accepts a date/datetime too and answers None on
+    # anything unparseable — a bad clock must cost the trim, never the report.
+    day = daterel.parse(today)
     if day is None:
         return acts
     try:
@@ -83,7 +91,8 @@ def _recent_enough(acts: list, today: Optional[str], window_days) -> list:
     except (TypeError, ValueError):
         window = ACTIVITY_CONTEXT_MIN_DAYS
     cutoff = (day - dt.timedelta(days=window)).isoformat()
-    kept = [a for a in acts if (a.get("date") or "") >= cutoff]
+    kept = [a for a in acts
+            if isinstance(a, dict) and (a.get("date") or "") >= cutoff]
     return kept if len(kept) >= ACTIVITY_CONTEXT_MIN_KEEP else acts[:ACTIVITY_CONTEXT_MIN_KEEP]
 
 

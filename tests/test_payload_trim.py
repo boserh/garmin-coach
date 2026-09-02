@@ -147,3 +147,18 @@ def test_the_prompt_forbids_the_failure_that_started_this():
     assert "ПРІОРИТЕТ:" in src and "auto_activities" in src
     assert "ТИП БЕРИ ДОСЛІВНО" in src
     assert "УВАГА ЗІ ЗМІСТОМ" in src
+
+
+def test_the_trim_tolerates_whatever_today_arrives_as():
+    """Both report call sites pass an ISO string, but the window must never be the thing
+    that breaks a report: a date, a datetime or an unparseable value costs the trim, not
+    the run."""
+    payload = _payload(3, ["2026-09-01", "2026-07-01"])
+    for today in (TODAY, dt.date(2026, 9, 2), dt.datetime(2026, 9, 2, 7, 15), "junk", None):
+        assert len(_as_dict(payload, today=today)["recent_activities"]) == 2
+
+
+def test_a_non_dict_row_passes_through_instead_of_exploding():
+    payload = {"window_days": 3, "daily": [None], "recent_activities": ["junk"]}
+    out = _as_dict(payload, today=TODAY)
+    assert out["daily"] == [None] and out["recent_activities"] == ["junk"]
