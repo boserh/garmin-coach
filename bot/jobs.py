@@ -58,6 +58,7 @@ from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from bot.handlers import (
     CHECKIN_PROMPT,
+    DAYTIME_PROMPT,
     GARMIN_AUTH_INVALID_MSG,
     GARMIN_RATE_LIMITED_MSG,
     LIFESTYLE_PROMPT,
@@ -68,6 +69,7 @@ from bot.handlers import (
     TZ,  # noqa: F401 — the process TZ, re-exported here for the run_daily schedules/tests
     checkin_keyboard,
 )
+from bot.handlers import daytime_keyboard as handlers_daytime_keyboard
 from bot.handlers import lifestyle_keyboard as handlers_lifestyle_keyboard
 from bot.opsalert import send_ops_alert
 
@@ -1514,6 +1516,36 @@ async def sleep_nudge_job(ctx: ContextTypes.DEFAULT_TYPE):
                 user.telegram_chat_id, LIFESTYLE_PROMPT, reply_markup=kb)
 
     await for_each_user(worker, with_chat=True, label="SLEEP_NUDGE")
+
+
+# NF-35: at most one daytime mood/energy ask per local day (bot_state mood_ask:<date>).
+# Same "silence is a valid non-answer, never chased" rule as NF-28's evening prompt.
+MOOD_ASK_PREFIX = "mood_ask:"
+
+
+async def daytime_checkin_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """Midday check (NF-35): the opt-in "заряджений / ок / втомлений" + mood/irritability
+    ask, once per local day. Off for everyone by default — only users who flipped
+    ``mood_tracking_enabled`` in /settings are ever messaged; ``/mood`` still works for
+    anyone who wants to answer without waiting for this tick. Zero Claude/Garmin calls."""
+    from app.db import lifestyle as lifestyle_db
+
+    async def worker(session, user):
+        if not user.mood_tracking_enabled:
+            return
+        today = dt.datetime.now(user_tz(user)).date().isoformat()
+        guard_key = MOOD_ASK_PREFIX + today
+        if await repository.get_state(session, user.id, guard_key) == "1":
+            return
+        row = await lifestyle_db.get_day(session, user.id, today)
+        if row is not None and row.energy_level and row.mood and row.irritability:
+            return  # already fully answered today (e.g. via /mood)
+        await repository.set_state(session, user.id, guard_key, "1")
+        await ctx.bot.send_message(
+            user.telegram_chat_id, DAYTIME_PROMPT,
+            reply_markup=handlers_daytime_keyboard(today, row))
+
+    await for_each_user(worker, with_chat=True, label="MOOD_CHECKIN")
 
 
 async def _deliver_digest(ctx, session, user: User, creds, *, force: bool = False) -> bool:

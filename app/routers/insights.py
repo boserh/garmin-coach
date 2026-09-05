@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import compare as compare_mod
-from app import correlations, loadforecast, returntorun
+from app import correlations, loadforecast, moodcycle, returntorun
 from app import records as records_mod
 from app import wrapped as wrapped_mod
 from app.analysis.reports import INSIGHTS_WINDOW_DAYS, build_injury_assessment
@@ -200,6 +200,10 @@ async def insights(
     logs = await lifestyle_db.read_range(session, user.id, days=INSIGHTS_WINDOW_DAYS)
     corr = _correlations_block(
         correlations.find_correlations(history, lifestyle_logs=logs))
+    # NF-35: opt-in, so a user who never turned it on has no daytime rows and this is
+    # simply None — the toggle check is a UX guard against confusing "нема даних" copy,
+    # the module already returns None on zero answered days either way.
+    mood = moodcycle.analyze(logs) if user.mood_tracking_enabled else None
 
     period = period if period in wrapped_mod.PERIODS else wrapped_mod.DEFAULT_PERIOD
     r_start, r_end = wrapped_mod.period_window(today, period)
@@ -233,6 +237,7 @@ async def insights(
         {
             "user": user,
             "risk": risk, "ladder": ladder, "load": load, "correlations": corr,
+            "moodcycle": mood,
             "recap": recap, "comparison": comparison,
             "periods": [(k, wrapped_mod.label(k)) for k in wrapped_mod.PERIODS],
             "compare_spans": _COMPARE_SPANS,
@@ -245,7 +250,7 @@ async def insights(
                 "correlation_window": INSIGHTS_WINDOW_DAYS,
                 "history_days": len(history),
             },
-            "has_any": any((ladder, load, corr, recap, comparison))
+            "has_any": any((ladder, load, corr, mood, recap, comparison))
                        or risk["state"] not in ("calibrating",),
         },
     )

@@ -115,6 +115,36 @@
     <p class="crumb"><a href="{{ correlations.source[0] }}">звідки це: {{ correlations.source[1] }} →</a></p>
     {% endif %}
 
+    {# ---------- НАСТРІЙ І ЗАРЯД УДЕНЬ (NF-35) ---------- #}
+    {% if moodcycle %}
+    <h2 class="sec">Настрій і заряд удень</h2>
+    <div class="banner banner--info" role="status">
+      <span class="bicon" aria-hidden="true">ℹ️</span>
+      <div class="btext">За {{ moodcycle.history_days }} відповідей чек-іну. Це
+        спостереження за твоїми власними даними, не діагноз — кількох тижнів замало, щоб
+        відрізнити справжній цикл від збігу з навантаженням чи подіями.</div>
+    </div>
+    {% if moodcycle.weekly %}
+    <div class="sigs">
+      {% for key, label in [("energy", "Заряд"), ("mood", "Настрій"), ("irritability", "Роздратованість")] %}
+      {% if moodcycle.weekly[key] %}
+      <div class="sig">
+        <div class="sigtext">{{ label }} за днями тижня</div>
+        <div class="sigmeta">{% for d in moodcycle.weekly[key] %}{{ d.label }}: {{ d.avg }} (n={{ d.n }}){% if not loop.last %} · {% endif %}{% endfor %}</div>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if moodcycle.cycle %}
+    <div class="sig">
+      <div class="sigtext">Схоже, є цикл ~{{ moodcycle.cycle.lag }} днів</div>
+      <div class="sigmeta">r = {{ moodcycle.cycle.r }} · n = {{ moodcycle.cycle.n }}</div>
+    </div>
+    {% endif %}
+    <p class="crumb"><a href="/settings">звідки це: денний чек-ін (/mood) →</a></p>
+    {% endif %}
+
     {% if recap %}
     <h2 class="sec">Підсумок періоду</h2>
     <div class="segbar" role="group" aria-label="Період підсумку">

@@ -29,6 +29,31 @@ TAGS: dict = {
 
 TAG_ORDER: List[str] = list(TAGS)
 
+# NF-35: the daytime check-in (opt-in, `User.mood_tracking_enabled`). Energy is a 3-tier
+# pick — the whole ask was "заряджений / втомлений / просто ок", not a 10-point scale
+# nobody will fill in consistently. Mood/irritability get one more notch (5) since they're
+# the axes the athlete actually wants correlated against a cycle, not just a run.
+ENERGY_LABELS: dict = {
+    "charged": ("🔋", "заряджений"),
+    "ok":      ("🙂", "ок"),
+    "tired":   ("😴", "втомлений"),
+}
+ENERGY_ORDER: List[str] = list(ENERGY_LABELS)
+
+MOOD_LABELS: dict = {
+    1: "😞 поганий", 2: "🙁 так собі", 3: "😐 нормальний", 4: "🙂 добрий", 5: "😄 чудовий",
+}
+
+IRRITABILITY_LABELS: dict = {
+    1: "😌 спокійний", 2: "🙂 в нормі", 3: "😐 на межі",
+    4: "😤 дратівливий", 5: "🤬 дуже дратівливий",
+}
+
+
+def energy_label(slug: str) -> str:
+    emoji, text = ENERGY_LABELS.get(slug, ("•", slug))
+    return f"{emoji} {text}"
+
 
 def label(slug: str) -> str:
     """"🍺 алкоголь" — for buttons and finding text."""
@@ -105,16 +130,44 @@ async def toggle_tag(session: AsyncSession, user_id: int, date: str, slug: str) 
     return (await upsert(session, user_id, date, sorted(current))).tags
 
 
+async def upsert_daytime(session: AsyncSession, user_id: int, date: str, *,
+                          energy_level: Optional[str] = None,
+                          mood: Optional[int] = None,
+                          irritability: Optional[int] = None) -> LifestyleLog:
+    """Write one field of the NF-35 daytime check-in, leaving the evening tags (and the
+    other two daytime fields) untouched — the three buttons are answered independently,
+    so a tap on one must not clobber the others or reset an evening ``upsert``."""
+    row = await get_day(session, user_id, date)
+    if row is None:
+        row = LifestyleLog(user_id=user_id, date=date, tags=[])
+        session.add(row)
+    if energy_level is not None:
+        row.energy_level = energy_level
+    if mood is not None:
+        row.mood = mood
+    if irritability is not None:
+        row.irritability = irritability
+    await session.commit()
+    return row
+
+
+def _row_dict(r: LifestyleLog) -> dict:
+    return {
+        "date": r.date, "tags": list(r.tags or []), "note": r.note,
+        "energy_level": r.energy_level, "mood": r.mood, "irritability": r.irritability,
+    }
+
+
 async def read_range(session: AsyncSession, user_id: int, days: int = 90) -> List[dict]:
-    """``[{date, tags, note}, ...]`` oldest first over the last ``days`` days — the shape
-    ``app.correlations`` merges into the daily-metric history."""
+    """``[{date, tags, note, energy_level, mood, irritability}, ...]`` oldest first over the
+    last ``days`` days — the shape ``app.correlations``/``app.moodcycle`` read."""
     cutoff = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
     rows = (await session.execute(
         select(LifestyleLog).where(
             LifestyleLog.user_id == user_id, LifestyleLog.date >= cutoff
         ).order_by(LifestyleLog.date)
     )).scalars().all()
-    return [{"date": r.date, "tags": list(r.tags or []), "note": r.note} for r in rows]
+    return [_row_dict(r) for r in rows]
 
 
 async def read_all(session: AsyncSession, user_id: int) -> List[dict]:
@@ -125,7 +178,6 @@ async def read_all(session: AsyncSession, user_id: int) -> List[dict]:
         .order_by(LifestyleLog.date)
     )).scalars().all()
     return [
-        {"date": r.date, "tags": list(r.tags or []), "note": r.note,
-         "created_at": r.created_at.isoformat() if r.created_at else None}
+        {**_row_dict(r), "created_at": r.created_at.isoformat() if r.created_at else None}
         for r in rows
     ]

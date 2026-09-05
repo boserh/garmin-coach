@@ -224,6 +224,7 @@ Optional, with defaults:
 | `GEAR_WEAR_KM` | `700` | mileage threshold for the "replace your shoes" DM (once per pair); `0` disables. |
 | `GEAR_REWARN_KM` | `150` | re-warn a pair still in rotation every this many further km. |
 | `LIFESTYLE_LOG` | `True` | master on/off for NF-28's evening one-tap lifestyle prompt. |
+| `MOOD_CHECKIN_HOUR` | `14` | hour (process TZ, ST-14 v1 scope) the NF-35 daytime mood/energy ask fires; the per-user `mood_tracking_enabled` toggle (default off) is what actually gates who gets asked. |
 | `INTENSITY_DISTRIBUTION` | `True` | master on/off for NF-24's HR-zone distribution. |
 | `POLARIZATION_LOW_TARGET` | `0.8` | target share of weekly TIME in zones 1-2. |
 | `GRAY_ZONE_MAX` | `0.15` | zone-3 share above which several weeks in a row is flagged. |
@@ -330,6 +331,8 @@ app/
   returntorun.py                                       NF-30: pure walk/run return-after-pain ladder + stop rule
   dayview.py                                            pure geometry for the day page's bands (personal range,
                                                         HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
+  moodcycle.py                                            NF-35: pure weekly pattern + cycle-length hint over the
+                                                          opt-in daytime energy/mood/irritability check-in
   analysis/
     service.py           analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     budget.py             OPS-11: the spend breaker — period ceilings + a per-call ceiling
@@ -341,7 +344,7 @@ app/
     settings.py       /settings (own creds), /admin/users (admin) + impersonate start/stop
     onboarding.py       GET /onboarding — setup checklist, 0 LLM, 0 Garmin
     dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
-    insights.py           GET /insights — UI-05: risk/load/correlations/recap, 0 LLM, 0 Garmin
+    insights.py           GET /insights — UI-05: risk/load/correlations/mood-cycle/recap, 0 LLM, 0 Garmin
     strength.py            GET /strength — UI-06: e1RM per lift, weekly tonnage, stalls
     health.py               GET /health + GET /offline (public), GET /status (login, per-user)
     reports.py               GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
@@ -354,9 +357,9 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /forget (EP-18),
+  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /mood (NF-35), /forget (EP-18),
                       /deploy (admin), /test_*
-  jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job
+  jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job/daytime_checkin_job (NF-35)
   opsalert.py               send_ops_alert(): infrastructure alerts go out over the ADMIN bot token, never the coaching one (falls back to ctx.bot)
 alembic/           migrations (async env.py wired to Base.metadata + DATABASE_URL)
 tests/              pytest
@@ -447,7 +450,8 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   user) + `PlannedWorkout` (dated session with `steps` JSON), `PersonalRecord` (one row
   per beaten best — history, not just current), `HealthCheckup`, `Supplement`,
   `LifestyleLog` (NF-28 — one evening's self-reported tags; `tags=[]` is data, not an
-  absent row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory),
+  absent row; also carries NF-35's opt-in daytime `energy_level`/`mood`/`irritability` on
+  the same per-date row), `AthleteProfile` (EP-18 — Fernet-encrypted coach memory),
   `AwayPeriod` (NF-34 — a declared vacation/trip with what the athlete will be doing).
   `ActivityRecord.zones` (NF-24) holds HR time-in-zone + training effect;
   `ActivityRecord.route_id` → `Route` (NF-33 — a fingerprint, never a stored track);

@@ -252,6 +252,15 @@ class Settings(BaseSettings):
     # stored history stays, and /log keeps working).
     LIFESTYLE_LOG: bool = True
 
+    # --- Daytime mood/energy check-in (NF-35) ---
+    # A second, OPT-IN daily ask (User.mood_tracking_enabled, default off) for how the day
+    # itself felt — energy (заряджений/ок/втомлений) + a mood/irritability scale — separate
+    # from NF-28's evening facts. Zero LLM calls; app.moodcycle looks for a weekly pattern
+    # and a possible cycle length once there's enough history. This hour is process-level
+    # (ST-14 v1 scope, same as SLEEP_NUDGE_HOUR); the per-user toggle is what actually gates
+    # who gets asked.
+    MOOD_CHECKIN_HOUR: int = 14
+
     # --- Injury-risk radar (NF-04) ---
     # A pure-Python detector combines load-side signals (ACWR trend, repeated pain, RPE/pace
     # divergence, HRV/RHR drift) into a severity score; on a high score the morning tick sends
