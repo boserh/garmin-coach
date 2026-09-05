@@ -636,8 +636,9 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
           background:color-mix(in srgb, var(--bg) 92%, transparent);
           backdrop-filter:blur(12px);border-top:1px solid var(--line-2);
           padding-bottom:env(safe-area-inset-bottom)}
-  .tabbar a,.tabmore>summary{flex:1 1 0;min-width:0;display:flex;align-items:center;
-          justify-content:center;text-align:center;padding:.85rem .3rem;font-size:.78rem;
+  .tabbar a,.tabmore>summary{flex:1 1 0;min-width:0;min-height:3.5rem;display:flex;
+          align-items:center;justify-content:center;text-align:center;
+          padding:1.1rem .3rem;font-size:.85rem;
           color:var(--faint);text-decoration:none;letter-spacing:.01em;
           overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tabbar a.active,.tabmore>summary.active{color:var(--accent);font-weight:650}
@@ -646,7 +647,7 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
   .tabmore>summary::-webkit-details-marker{display:none}
   /* The overflow sheet sits directly on top of the bar it belongs to. `dvh`-free by
      construction — it's anchored to the bottom inset, not to a viewport height. */
-  .moresheet{position:fixed;left:0;right:0;bottom:calc(3rem + env(safe-area-inset-bottom));
+  .moresheet{position:fixed;left:0;right:0;bottom:calc(3.5rem + env(safe-area-inset-bottom));
           display:flex;flex-direction:column;gap:.1rem;padding:.5rem .3rem;
           background:var(--surface);border-top:1px solid var(--line-2);
           box-shadow:0 -14px 34px -18px rgba(0,0,0,.9);
@@ -654,16 +655,16 @@ button.logout:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
              window) can't fit them: the sheet hit the top of the viewport and flexbox
              squashed every row to half its height, clipping the labels. Scroll the list
              instead — and see the flex:none below, which is what stops the squashing. */
-          max-height:calc(100dvh - 4.5rem);overflow-y:auto;
+          max-height:calc(100dvh - 5rem);overflow-y:auto;
           overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
   .moresheet a,.moresheet button.logout{display:block;width:100%;flex:none;
-          padding:.7rem 1.1rem;
+          padding:.95rem 1.1rem;min-height:3rem;
           font-size:.9rem;color:var(--muted);text-align:left;text-decoration:none}
   .moresheet a.active{color:var(--ink);font-weight:600}
   .moresheet form{margin:0}
 
   /* Room for the bar, plus whatever the phone reserves for its home indicator. */
-  body{padding-bottom:calc(6rem + env(safe-area-inset-bottom))}
+  body{padding-bottom:calc(6.5rem + env(safe-area-inset-bottom))}
 }
 
 /* ---- the chat's pinned header ----

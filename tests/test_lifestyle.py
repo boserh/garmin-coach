@@ -76,8 +76,9 @@ async def test_empty_tags_are_stored_as_data(session):
 @pytest.mark.asyncio
 async def test_upsert_does_not_duplicate_a_day(session):
     u = await _user(session)
-    await lifestyle_db.upsert(session, u.id, "2026-08-04", ["alcohol"])
-    await lifestyle_db.upsert(session, u.id, "2026-08-04", ["stress"])
+    day = dt.date.today().isoformat()
+    await lifestyle_db.upsert(session, u.id, day, ["alcohol"])
+    await lifestyle_db.upsert(session, u.id, day, ["stress"])
     rows = await lifestyle_db.read_range(session, u.id, days=30)
     assert [r["tags"] for r in rows] == [["stress"]]
 
