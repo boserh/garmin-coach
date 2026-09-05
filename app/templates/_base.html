@@ -10,8 +10,13 @@
   <script defer src="/static/app.js?v={{ asset_v }}"></script>
   <link rel="manifest" href="/static/manifest.json">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
   <meta name="theme-color" content="#090b0f">
+  {# iOS ignores manifest.json's display/theme_color — Safari only honours the
+     Add to Home Screen standalone mode via these meta tags. #}
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bihun">
   {# UI-03: sw.js is a static file and can't be templated, so it reads the asset version
      from its own ?v=; app.js reads it from here to build that URL. #}
   <meta name="asset-v" content="{{ asset_v }}">
