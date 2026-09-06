@@ -1169,6 +1169,127 @@ async def log_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user)
     )
 
 
+# ---------- DAYTIME MOOD/ENERGY CHECK-IN (NF-35) ----------
+
+DAYTIME_PROMPT = "Як ти сьогодні вдень? (заряд, настрій, роздратованість — окремо)"
+_DT_SEP = "\n— — —\n"
+
+
+def daytime_keyboard(date: str, row=None) -> InlineKeyboardMarkup:
+    """Three independent single-pick rows (energy / mood / irritability), each re-rendered
+    with a ✓ on the current pick — same "the message shows its own state" trick as the
+    evening keyboard, just three toggle groups instead of one multi-select."""
+    from app.db import lifestyle as lifestyle_db
+
+    energy = getattr(row, "energy_level", None)
+    mood = getattr(row, "mood", None)
+    irr = getattr(row, "irritability", None)
+
+    energy_row = [
+        InlineKeyboardButton(
+            ("✓ " if slug == energy else "") + lifestyle_db.energy_label(slug),
+            callback_data=f"dt:e:{date}:{slug}",
+        )
+        for slug in lifestyle_db.ENERGY_ORDER
+    ]
+    mood_row = [
+        InlineKeyboardButton(
+            ("✓ " if n == mood else "") + str(n),
+            callback_data=f"dt:m:{date}:{n}",
+        )
+        for n in lifestyle_db.MOOD_LABELS
+    ]
+    irr_row = [
+        InlineKeyboardButton(
+            ("✓ " if n == irr else "") + str(n),
+            callback_data=f"dt:i:{date}:{n}",
+        )
+        for n in lifestyle_db.IRRITABILITY_LABELS
+    ]
+    return InlineKeyboardMarkup([
+        energy_row,
+        mood_row,
+        irr_row,
+        [InlineKeyboardButton("✔️ Готово", callback_data=f"dt:done:{date}")],
+    ])
+
+
+def _daytime_status(row) -> str:
+    from app.db import lifestyle as lifestyle_db
+
+    if row is None or not any((row.energy_level, row.mood, row.irritability)):
+        return "Ще нічого не позначено."
+    bits = []
+    if row.energy_level:
+        bits.append(lifestyle_db.energy_label(row.energy_level))
+    if row.mood:
+        bits.append(f"настрій {lifestyle_db.MOOD_LABELS[row.mood]}")
+    if row.irritability:
+        bits.append(f"роздратованість {lifestyle_db.IRRITABILITY_LABELS[row.irritability]}")
+    return "✅ Записав: " + ", ".join(bits) + "."
+
+
+def _dt_render(current_text: str, status: str) -> str:
+    return f"{current_text.split(_DT_SEP)[0].rstrip()}{_DT_SEP}{status}"
+
+
+async def daytime_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle the daytime check-in buttons (``dt:e|m|i:<date>:<value>``, ``dt:done:<date>``).
+    Zero Claude calls; a pure DB write, guarded the same way ``/mood`` is — a user who
+    disabled tracking after the prompt went out still shouldn't have taps silently no-op."""
+    q = update.callback_query
+    await q.answer()
+    from app.db import lifestyle as lifestyle_db
+
+    parts = q.data.split(":")
+    action, date = parts[1], parts[2]
+    async with async_session_maker() as session:
+        user = await users.get_by_chat_id(session, q.message.chat.id)
+        if user is None or not (user.is_active and user.is_approved):
+            await q.edit_message_text(_NOT_REGISTERED)
+            return
+        if not user.mood_tracking_enabled:
+            await q.edit_message_text(
+                "Відстеження настрою вимкнено в /settings — ця кнопка більше не працює."
+            )
+            return
+        if action == "done":
+            row = await lifestyle_db.get_day(session, user.id, date)
+        elif action == "e":
+            row = await lifestyle_db.upsert_daytime(session, user.id, date,
+                                                      energy_level=parts[3])
+        elif action == "m":
+            row = await lifestyle_db.upsert_daytime(session, user.id, date,
+                                                      mood=int(parts[3]))
+        else:  # "i"
+            row = await lifestyle_db.upsert_daytime(session, user.id, date,
+                                                      irritability=int(parts[3]))
+    await q.edit_message_text(
+        _dt_render(q.message.text, _daytime_status(row)),
+        reply_markup=None if action == "done" else daytime_keyboard(date, row),
+    )
+
+
+@bot_command
+async def mood_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/mood — open today's daytime check-in. Opt-in (NF-35): off unless the user turned
+    it on in /settings, since this is a second daily interrupt on top of the evening log."""
+    from app.core.tz import user_today
+    from app.db import lifestyle as lifestyle_db
+
+    if not user.mood_tracking_enabled:
+        await update.message.reply_text(
+            "Відстеження денного настрою вимкнено. Увімкни його в /settings, якщо хочеш "
+            "щодня відмічати заряд/настрій/роздратованість і шукати закономірності."
+        )
+        return
+    today = user_today(user).isoformat()
+    row = await lifestyle_db.get_day(session, user.id, today)
+    await update.message.reply_text(
+        DAYTIME_PROMPT, reply_markup=daytime_keyboard(today, row)
+    )
+
+
 async def checkin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle the RPE / pain buttons. Callback data carries the activity id, so no chat
     state is kept. Re-tapping overwrites the stored value (repository.set_subjective)."""

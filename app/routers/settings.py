@@ -93,6 +93,7 @@ async def settings_form(
             "garmin_sync_enabled": user.garmin_sync_enabled,
             "plan_adapt_enabled": user.plan_adapt_enabled,
             "alerts_enabled": user.alerts_enabled,
+            "mood_tracking_enabled": user.mood_tracking_enabled,
             "timezone": user.timezone,
             "saved": request.query_params.get("saved") == "1",
             "geo": request.query_params.get("geo"),
@@ -168,6 +169,7 @@ async def settings_save(
     garmin_sync: str = Form(""),   # checkbox: "on" when ticked, absent otherwise
     plan_adapt: str = Form(""),    # checkbox: "on" when ticked, absent otherwise
     alerts: str = Form(""),        # checkbox: "on" when ticked, absent otherwise (EP-08)
+    mood_tracking: str = Form(""),  # checkbox: "on" when ticked, absent otherwise (NF-35)
     timezone: str = Form("Europe/Warsaw"),   # ST-14: IANA tz, validated below
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
@@ -229,6 +231,10 @@ async def settings_save(
     # Health-alerts toggle (EP-08) — likewise no side effect; the morning health check
     # reads this flag on its next run. Off → the user gets no recovery-anomaly pushes.
     user.alerts_enabled = bool(alerts)
+
+    # Daytime mood/energy check-in toggle (NF-35) — off by default; no side effect needed,
+    # daytime_checkin_job just reads this flag on its next tick.
+    user.mood_tracking_enabled = bool(mood_tracking)
 
     await session.commit()
 

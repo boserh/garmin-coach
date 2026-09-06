@@ -115,6 +115,11 @@ class User(Base):
     # the user's personal baseline). Off → the morning tick's health check skips this user.
     alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Master switch for the daytime mood/energy check-in (NF-35). Off by default — this is
+    # a second daily ping on top of the evening lifestyle log, and only worth the interrupt
+    # for someone actually curious about their own cycles.
+    mood_tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # ST-14: this user's own IANA timezone (validated via zoneinfo.ZoneInfo on save).
     # Per-user checks in bot/jobs.py (the morning window, once-a-day/week/month bot_state
     # guard dates) read this instead of the hardcoded Europe/Warsaw — a traveling user or a
@@ -352,6 +357,12 @@ class LifestyleLog(Base):
     group, without which no association can ever be established; that's why absence of a row
     (never asked / ignored) and a row with no tags are different states and must stay so.
 
+    NF-35 rides the same row: ``energy_level``/``mood``/``irritability`` are the DAYTIME
+    self-report (opt-in, separate toggle from the evening tags) — one row per date still,
+    since a day only has one of each. All three are ``None`` until the user opts in and
+    answers; unlike ``tags``, there is no "empty means nothing happened" convention here —
+    an unanswered day is just missing data.
+
     Unique per (user, date); re-tapping upserts."""
 
     __tablename__ = "lifestyle_logs"
@@ -364,6 +375,12 @@ class LifestyleLog(Base):
     date: Mapped[str] = mapped_column(String(10), index=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     note: Mapped[Optional[str]] = mapped_column(String(200))
+    # NF-35 daytime check-in: "charged" / "ok" / "tired" (see app.db.lifestyle.ENERGY_ORDER).
+    energy_level: Mapped[Optional[str]] = mapped_column(String(16))
+    # NF-35: 1..5, low→high (see app.db.lifestyle.MOOD_LABELS).
+    mood: Mapped[Optional[int]] = mapped_column(Integer)
+    # NF-35: 1..5, low→high (see app.db.lifestyle.IRRITABILITY_LABELS).
+    irritability: Mapped[Optional[int]] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

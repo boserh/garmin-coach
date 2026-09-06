@@ -27,6 +27,7 @@ from bot import handlers
 from bot.jobs import (
     CHECK_INTERVAL_MIN,
     PLAN_SYNC_HOUR,
+    daytime_checkin_job,
     morning_job,
     plan_adapt_job,
     plan_sync_job,
@@ -108,6 +109,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("sick", handlers.sick))
     app.add_handler(CommandHandler("pain", handlers.pain_cmd))
     app.add_handler(CommandHandler("log", handlers.log_cmd))
+    app.add_handler(CommandHandler("mood", handlers.mood_cmd))
     app.add_handler(CommandHandler("away", handlers.away_cmd))
     app.add_handler(CommandHandler("forget", handlers.forget_cmd))
     app.add_handler(CallbackQueryHandler(handlers.plan_callback, pattern=r"^plan_"))
@@ -116,6 +118,8 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci:"))
     # NF-28: the evening lifestyle-tag toggles (zero Claude calls, a pure DB write).
     app.add_handler(CallbackQueryHandler(handlers.lifestyle_callback, pattern=r"^ls:"))
+    # NF-35: the opt-in daytime energy/mood/irritability check-in (zero Claude calls).
+    app.add_handler(CallbackQueryHandler(handlers.daytime_callback, pattern=r"^dt:"))
     # NF-18: the auto-sickness question's ✅/❌ (the /sick rebuild, offered without /sick).
     app.add_handler(CallbackQueryHandler(handlers.sickness_callback, pattern=r"^sick:"))
     # NF-30: the return-to-run offer's ✅/❌ and the post-session pain scale. Both are
@@ -187,6 +191,12 @@ def main() -> None:
     app.job_queue.run_daily(
         sleep_nudge_job,
         time=time(hour=settings.SLEEP_NUDGE_HOUR, tzinfo=handlers.TZ),
+    )
+    # NF-35 daytime mood/energy check-in: opt-in, so this fires for everyone but no-ops
+    # for users who haven't turned it on in /settings.
+    app.job_queue.run_daily(
+        daytime_checkin_job,
+        time=time(hour=settings.MOOD_CHECKIN_HOUR, tzinfo=handlers.TZ),
     )
     # Open-ended plans are topped up from the morning tick (_extend_nudge_for_user): a
     # confirm-only ✅/❌ prompt, so no separate scheduled job here.
