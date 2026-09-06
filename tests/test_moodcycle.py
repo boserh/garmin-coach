@@ -116,7 +116,21 @@ def test_daytime_keyboard_callback_data_carries_the_date():
 
     kb = daytime_keyboard("2026-08-05")
     data = [b.callback_data for row in kb.inline_keyboard for b in row]
-    assert all(d.startswith("dt:") and "2026-08-05" in d for d in data)
+    # Header buttons ("dt:noop") are pure captions, not picks — they carry no date.
+    picks = [d for d in data if d != "dt:noop"]
+    assert picks and all(d.startswith("dt:") and "2026-08-05" in d for d in picks)
+
+
+def test_daytime_keyboard_groups_are_labelled():
+    """The reported bug: two bare 1-5 rows back to back (mood, irritability) were
+    indistinguishable, and a tap meant for one landed as the other. Every group now has a
+    header and every button carries its own text, not a bare number."""
+    from bot.handlers import daytime_keyboard
+
+    labels = [b.text for row in daytime_keyboard("2026-08-05").inline_keyboard for b in row]
+    assert any("Настрій" in t for t in labels)
+    assert any("Роздратованість" in t for t in labels)
+    assert not any(t.strip().isdigit() for t in labels)
 
 
 class _FakeCBQ:
@@ -168,13 +182,37 @@ async def test_energy_tap_stores_and_keeps_the_keyboard_open(bot_session):
     assert markup is not None
 
 
-async def test_done_closes_the_prompt(bot_session):
+async def test_done_offers_a_way_back_in(bot_session):
+    """Closing must not be final — a wrong tap on a 5-point scale is common, and the
+    reported complaint was exactly that: no way to change an answer after the fact."""
     user = await _linked_user(bot_session, 910002)
     await _tap(bot_session, "dt:m:2026-08-05:4", 910002)
     text, markup = await _tap(bot_session, "dt:done:2026-08-05", 910002)
-    assert markup is None
     row = await lifestyle_db.get_day(bot_session, user.id, "2026-08-05")
     assert row.mood == 4
+    assert markup is not None
+    labels = [b.text for r in markup.inline_keyboard for b in r]
+    assert any("Змінити" in t for t in labels)
+
+
+async def test_edit_reopens_the_full_keyboard_and_the_change_sticks(bot_session):
+    user = await _linked_user(bot_session, 910004)
+    await _tap(bot_session, "dt:m:2026-08-05:4", 910004)
+    await _tap(bot_session, "dt:done:2026-08-05", 910004)
+    text, markup = await _tap(bot_session, "dt:edit:2026-08-05", 910004)
+    assert markup is not None and len(markup.inline_keyboard) > 1
+    await _tap(bot_session, "dt:m:2026-08-05:2", 910004)
+    row = await lifestyle_db.get_day(bot_session, user.id, "2026-08-05")
+    assert row.mood == 2
+
+
+async def test_header_tap_is_a_noop(bot_session):
+    """A row-header button is a caption, not a pick — tapping it must not write anything."""
+    await _linked_user(bot_session, 910005)
+    q = _FakeCBQ("dt:noop", 910005, "whatever")
+    import bot.handlers as handlers
+    await handlers.daytime_callback(SimpleNamespace(callback_query=q), None)
+    assert q.edits == []
 
 
 async def test_disabled_toggle_refuses_a_stale_tap(bot_session):
