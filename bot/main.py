@@ -71,6 +71,7 @@ async def _post_init(application: Application) -> None:
         BotCommand("goal", "Кількісний прогрес до цілі (прогноз Garmin + тренд)"),
         BotCommand("race", "Race pack: пейсинг/харчування/чекліст до цільового старту"),
         BotCommand("log", "Відмітити побутове: /log вчора пиво"),
+        BotCommand("mood", "Денний чек-ін заряду/настрою (треба увімкнути в /settings)"),
         BotCommand("away", "Відпустка/поїздка: /away 16.08-24.08 кайт"),
         BotCommand("forget", "Що коуч про мене памʼятає; /forget <id> прибрати"),
     ])

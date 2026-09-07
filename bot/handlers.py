@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from types import SimpleNamespace
-from typing import Optional
+from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -134,7 +134,11 @@ HELP_TEXT = (
     "/away [дати] [що робитиму] — відпустка/поїздка: напр. /away 16.08-24.08 кайт "
     "(тренер не рахуватиме ці дні за зрив плану)\n"
     "/goal — кількісний прогрес до цілі (прогноз Garmin + тренд)\n"
-    "/race — race pack: пейсинг/харчування/чекліст до цільового старту (Opus)\n\n"
+    "/race — race pack: пейсинг/харчування/чекліст до цільового старту (Opus)\n"
+    "/log [вчора|дата] <що було> — вечірні побутові факти (алкоголь/кава/стрес/...), "
+    "напр. /log вчора пиво\n"
+    "/mood — денний чек-ін заряду/настрою/роздратованості "
+    "(треба спершу увімкнути в /settings, вимкнено за замовчуванням)\n\n"
     "/start — підключити цей чат до акаунта (або перевірити, що ще не налаштовано)\n"
     "/help — цей список"
 )
@@ -1175,10 +1179,23 @@ DAYTIME_PROMPT = "Як ти сьогодні вдень? (заряд, настр
 _DT_SEP = "\n— — —\n"
 
 
+def _header(text: str) -> InlineKeyboardButton:
+    """A non-interactive row label — Telegram inline keyboards have no other way to caption
+    a group of buttons, and without one two 1-5 rows back to back (mood, irritability) are
+    impossible to tell apart at a glance (the reported bug: a tap meant for irritability
+    landed as mood, because nothing on screen said which row was which)."""
+    return InlineKeyboardButton(text, callback_data="dt:noop")
+
+
+def _chunk(buttons: list, size: int) -> List[list]:
+    return [buttons[i:i + size] for i in range(0, len(buttons), size)]
+
+
 def daytime_keyboard(date: str, row=None) -> InlineKeyboardMarkup:
-    """Three independent single-pick rows (energy / mood / irritability), each re-rendered
-    with a ✓ on the current pick — same "the message shows its own state" trick as the
-    evening keyboard, just three toggle groups instead of one multi-select."""
+    """Three independent single-pick groups (energy / mood / irritability), each with its
+    own header and full text+emoji labels — never a bare "1".."5" a reader has to guess the
+    direction of — and each re-rendered with a ✓ on the current pick, so a tap on a
+    different value in the same group changes the answer rather than adding to it."""
     from app.db import lifestyle as lifestyle_db
 
     energy = getattr(row, "energy_level", None)
@@ -1192,24 +1209,27 @@ def daytime_keyboard(date: str, row=None) -> InlineKeyboardMarkup:
         )
         for slug in lifestyle_db.ENERGY_ORDER
     ]
-    mood_row = [
+    mood_buttons = [
         InlineKeyboardButton(
-            ("✓ " if n == mood else "") + str(n),
+            ("✓ " if n == mood else "") + lifestyle_db.MOOD_LABELS[n],
             callback_data=f"dt:m:{date}:{n}",
         )
         for n in lifestyle_db.MOOD_LABELS
     ]
-    irr_row = [
+    irr_buttons = [
         InlineKeyboardButton(
-            ("✓ " if n == irr else "") + str(n),
+            ("✓ " if n == irr else "") + lifestyle_db.IRRITABILITY_LABELS[n],
             callback_data=f"dt:i:{date}:{n}",
         )
         for n in lifestyle_db.IRRITABILITY_LABELS
     ]
     return InlineKeyboardMarkup([
+        [_header("🔋 Заряд")],
         energy_row,
-        mood_row,
-        irr_row,
+        [_header("🙂 Настрій")],
+        *_chunk(mood_buttons, 3),
+        [_header("😤 Роздратованість")],
+        *_chunk(irr_buttons, 3),
         [InlineKeyboardButton("✔️ Готово", callback_data=f"dt:done:{date}")],
     ])
 
@@ -1234,15 +1254,20 @@ def _dt_render(current_text: str, status: str) -> str:
 
 
 async def daytime_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle the daytime check-in buttons (``dt:e|m|i:<date>:<value>``, ``dt:done:<date>``).
+    """Handle the daytime check-in buttons (``dt:e|m|i:<date>:<value>``, ``dt:done:<date>``,
+    ``dt:edit:<date>`` to reopen after done, ``dt:noop`` for the row-header buttons).
     Zero Claude calls; a pure DB write, guarded the same way ``/mood`` is — a user who
     disabled tracking after the prompt went out still shouldn't have taps silently no-op."""
     q = update.callback_query
+    parts = q.data.split(":")
+    action = parts[1]
+    if action == "noop":
+        await q.answer()   # a header button — pure caption, not a pick
+        return
     await q.answer()
+    date = parts[2]
     from app.db import lifestyle as lifestyle_db
 
-    parts = q.data.split(":")
-    action, date = parts[1], parts[2]
     async with async_session_maker() as session:
         user = await users.get_by_chat_id(session, q.message.chat.id)
         if user is None or not (user.is_active and user.is_approved):
@@ -1253,7 +1278,7 @@ async def daytime_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "Відстеження настрою вимкнено в /settings — ця кнопка більше не працює."
             )
             return
-        if action == "done":
+        if action in ("done", "edit"):
             row = await lifestyle_db.get_day(session, user.id, date)
         elif action == "e":
             row = await lifestyle_db.upsert_daytime(session, user.id, date,
@@ -1264,10 +1289,15 @@ async def daytime_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:  # "i"
             row = await lifestyle_db.upsert_daytime(session, user.id, date,
                                                       irritability=int(parts[3]))
+    if action == "done":
+        # Closing is not final — a wrong tap is common on a 5-point scale, so the way back
+        # in stays one tap away instead of forcing a fresh /mood.
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("✏️ Змінити", callback_data=f"dt:edit:{date}")]])
+    else:
+        markup = daytime_keyboard(date, row)
     await q.edit_message_text(
-        _dt_render(q.message.text, _daytime_status(row)),
-        reply_markup=None if action == "done" else daytime_keyboard(date, row),
-    )
+        _dt_render(q.message.text, _daytime_status(row)), reply_markup=markup)
 
 
 @bot_command
