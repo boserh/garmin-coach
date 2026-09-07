@@ -1,4 +1,5 @@
 """Training-plan generation: JSON coercion + persistence (Claude mocked)."""
+import datetime as dt
 from unittest.mock import patch
 
 from app.analysis import plans
@@ -504,6 +505,38 @@ async def test_run_plan_edit_feeds_template_blocks_to_model(session):
     tmpl = captured["context"]["strength_templates"][0]
     assert tmpl["blocks"] == [{"reps": 3, "rest_s": 90, "exercises": [
         {"category": "SQUAT", "exercise": None, "reps": 12, "weight_kg": 20.0}]}]
+
+
+async def test_run_plan_edit_recent_carries_original_steps_of_past_session(session):
+    """A "додай сьогодні той самий, що вчора пропустив" request needs the ORIGINAL
+    steps of the missed session to copy — without them the model has to invent new ones,
+    which is exactly how a duplicated session drifted from its stated distance (dist_km=4.5
+    vs steps summing to 4.1 km) and tripped the dist/steps mismatch warning. ``recent``
+    must carry the missed session's real steps so the prompt can tell the model to reuse
+    them verbatim instead of guessing."""
+    plan = await _seed_plan(session)
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="add", date=yesterday, type="easy", dist_km=4.5, description="легкий біг",
+        steps=[PlanStep(kind="run", dist_m=4500, hr_zone=2)])])
+    w = await repository.workout_on_date(session, plan.id, yesterday)
+    w.status = "missed"
+    await session.commit()
+
+    captured = {}
+
+    def fake_edit(context, api_key=None):
+        captured["context"] = context
+        return PlanEdit(summary="ok", operations=[]), CallStats(kind="plan_edit", model="m")
+
+    with patch.object(plans, "plan_edit_with_stats", side_effect=fake_edit):
+        await run_plan_edit(session, user_id=U1, instruction="той самий, що вчора",
+                            api_key=None)
+
+    recent = captured["context"]["recent"]
+    assert recent == [{"date": yesterday, "type": "easy", "status": "missed",
+                       "dist_km": 4.5, "description": "легкий біг",
+                       "steps": [{"kind": "run", "dist_m": 4500, "hr_zone": 2}]}]
 
 
 # --- "Відпочинок" that contradicts a real session on the same date -----------------

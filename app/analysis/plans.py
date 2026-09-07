@@ -38,6 +38,11 @@ from app.garmin.schemas import GeneratedPlan, PlanEdit, StrengthSession
 # The `general` goal has no target race — an open-ended, continuously-extended plan.
 OPEN_ENDED_GOAL = "general"
 
+# How far back run_plan_edit looks for "recent" sessions to feed the model (see
+# _recent_context below) — enough to cover "повтори вчорашнє" / "той самий, що пропустив
+# позавчора" without ballooning the context on every edit.
+RECENT_EDIT_WINDOW_DAYS = 5
+
 logger = logging.getLogger("claude")
 
 
@@ -653,12 +658,30 @@ async def run_plan_edit(
                     for t in strength_templates for e in t.get("exercises", [])}
     exercise_variants = {c: v for c in sorted(variant_cats)
                          if c and (v := exercises.exercises_for(c))}
+    today = dt.date.today()
+    # "upcoming" only ever holds still-planned sessions dated today or later, so a request
+    # to duplicate/repeat a PAST session (missed, done, skipped — "те саме, що вчора
+    # пропустив") gave the model nothing to copy: it had to invent steps from scratch,
+    # and its guess routinely disagreed with the distance it also stated (caught, but only
+    # after the fact, by app.plansteps' dist/steps reconciliation). Recent past sessions
+    # carry their REAL steps so such a request can be answered by copying them verbatim.
+    recent_rows = await repository.recent_plan_workouts(
+        session, user_id, days=RECENT_EDIT_WINDOW_DAYS, today=today)
+    today_s = today.isoformat()
+    recent = [
+        {"date": w.date, "type": w.type, "status": w.status, "dist_km": w.dist_km,
+         "description": w.description, "steps": w.steps}
+        for w in recent_rows if w.date < today_s
+    ]
     context = {
-        "today": dt.date.today().isoformat(),
+        "today": today_s,
         "instruction": instruction,
         "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
                       "description": w.description,
                       "garmin_template_id": w.garmin_template_id} for w in ws],
+        # Past sessions (status done/missed/skipped/partial) with their ACTUAL steps — see
+        # the comment above. Empty when the plan started less than the window ago.
+        "recent": recent,
         "strength_templates": strength_templates,
         # valid Garmin exercise category codes — the vocabulary for both swap_exercise and
         # from-scratch strength generation (always provided so "згенеруй силову" works even
