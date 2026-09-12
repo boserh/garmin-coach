@@ -553,14 +553,22 @@ def _ask_tools() -> list:
                 "One metric bucketed per ISO week (oldest first) over the last `weeks` "
                 f"weeks (default 12, max 26). Valid metrics: {weekly_metrics}."
             ),
+            # Demo of strict tool use (see prompt-engineering discussion): with strict=True
+            # Claude's arguments are validated against input_schema before _run_ask_tool
+            # ever sees them, so the "metric is required" manual check there becomes a
+            # belt-and-suspenders fallback rather than the only guard. A strict schema
+            # must list every property in `required` (optional ones as a nullable type)
+            # and set additionalProperties=False.
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "metric": {"type": "string"},
-                    "weeks": {"type": "integer"},
+                    "weeks": {"type": ["integer", "null"]},
                 },
-                "required": ["metric"],
+                "required": ["metric", "weeks"],
+                "additionalProperties": False,
             },
+            "strict": True,
         },
         {
             "name": "get_activity_detail",
