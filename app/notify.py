@@ -38,6 +38,7 @@ MAX_CHARS = 4000
 MAX_TOTAL_CHARS = 20_000
 
 _monitor_bot = None  # built lazily, cached — same shape as bot.opsalert._admin_bot
+_coach_bot = None    # same shape, for TELEGRAM_BOT_TOKEN — the product/coaching identity
 
 
 class NotifyError(RuntimeError):
@@ -150,4 +151,46 @@ async def send_monitor_message(
                 "the group) so it may write there."
             ) from exc
     logger.info("NOTIFY: sent %d part(s), %d chars to chat %s", total, len(text), chat_id)
+    return total
+
+
+def _get_coach_bot():
+    """The product/coaching bot identity (``TELEGRAM_BOT_TOKEN`` — the same one /report
+    and the morning job use), built standalone here because the web process has no
+    running ``bot.Application``/``ctx.bot`` of its own — same one-off ``Bot()`` pattern as
+    ``app.cli._trigger_plan_adapt``."""
+    global _coach_bot
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return None       # never cache a None — the token can be set and the process reloaded
+    if _coach_bot is None:
+        from telegram import Bot
+
+        _coach_bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+    return _coach_bot
+
+
+async def send_coach_message(chat_id: int, text: str, *, silent: bool = False) -> int:
+    """Deliver ``text`` to one athlete's own Telegram chat over the product bot identity —
+    for web-triggered sends, e.g. the activity page's "regenerate and send to Telegram"
+    button, where there's no bot-side handler already holding the chat open. Returns how
+    many messages were sent. Unlike :func:`send_monitor_message` the destination is the
+    CALLER's chat_id (the user's own linked chat), not a fixed deployment channel."""
+    bot = _get_coach_bot()
+    if bot is None:
+        raise NotifyError("TELEGRAM_BOT_TOKEN is not configured on the server.")
+    parts = split_message(text or "")
+    if not parts:
+        raise NotifyError("Message is empty.")
+    total = len(parts)
+    for i, part in enumerate(parts, 1):
+        body = part if total == 1 else f"{part}\n\n({i}/{total})"
+        try:
+            await bot.send_message(chat_id, body, disable_notification=silent)
+        except Exception as exc:  # noqa: BLE001 — turned into the caller's error below
+            logger.error("NOTIFY: coach send failed on part %d/%d: %s", i, total, exc)
+            raise NotifyError(
+                f"Telegram refused the message: {exc}. If this is 'chat not found' or "
+                "'bot was blocked', press Start on the bot so it may write there."
+            ) from exc
+    logger.info("NOTIFY: sent %d coach part(s), %d chars to chat %s", total, len(text), chat_id)
     return total

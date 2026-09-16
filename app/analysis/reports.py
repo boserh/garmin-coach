@@ -797,11 +797,22 @@ _SEGMENT_AVG_KEYS = {
     "p": "avg_pace", "hr": "avg_hr", "spd": "avg_speed_kmh", "pw": "avg_power_w",
 }
 
+# A fixed n=6 (or even the distance-scaled ~0.5 km/segment this replaced) still averages
+# away a transition that happens WITHIN a bucket — a 6 km run made of 12x400m at pace
+# only looks right if segments track the raw sample points closely enough that no bucket
+# spans more than one change of effort. The raw series is itself already downsampled by
+# Garmin to at most ~150 points for the whole activity (``client.fetch_activity_series``'s
+# ``max_points``), so "no further averaging, up to a token-budget ceiling" is the most
+# detail available without fetching a denser series from Garmin in the first place.
+_SEGMENT_MAX = 40
 
-def _segments(series: list, n: int = 6) -> list:
-    """Collapse an activity's per-point series into ~n segments (avg of whatever metrics
+
+def _segments(series: list, n: Optional[int] = None) -> list:
+    """Collapse an activity's per-point series into segments (avg of whatever metrics
     are present — pace/HR for a run, speed/power/HR for a ride) so the LLM sees pacing/
-    effort drift without the full point cloud.
+    effort drift without the full point cloud. ``n`` defaults to one segment per raw
+    sample point, capped at :data:`_SEGMENT_MAX` — i.e. as much detail as the already-
+    downsampled series has, not a fixed bucket count that would smear a short interval.
 
     EP-15: when the series carries elevation (``e``, running only — ``avg_pace`` present),
     each segment also gets its climb/descent (``gain_m``/``loss_m``) and grade-adjusted
@@ -810,6 +821,8 @@ def _segments(series: list, n: int = 6) -> list:
     pts = [p for p in series if any(p.get(k) is not None for k in _SEGMENT_AVG_KEYS)]
     if not pts:
         return []
+    if n is None:
+        n = min(len(pts), _SEGMENT_MAX)
     size = max(1, len(pts) // n)
     elevs = [p.get("e") for p in pts]
     has_elev = any(v is not None for v in elevs)
@@ -840,14 +853,48 @@ def _segments(series: list, n: int = 6) -> list:
     return segs
 
 
+def _fmt_pace(minutes_per_km: Optional[float]) -> Optional[str]:
+    """Decimal min/km -> "M:SS". Doing this in code once, instead of asking the LLM to run
+    the ×60 conversion itself on every pace value it's handed, is the actual fix for a bug
+    where a report full of step-by-step pace comparisons rendered an impossible split like
+    "7:65" (the model pasted the decimal digits as seconds instead of converting them)."""
+    if minutes_per_km is None:
+        return None
+    total_s = round(float(minutes_per_km) * 60)
+    m, s = divmod(total_s, 60)
+    return f"{m}:{s:02d}"
+
+
+def _step_match_payload(step_match: dict) -> dict:
+    """Copy of stepmatch.match()'s output with planned/actual pace fields pre-formatted as
+    "M:SS" (see :func:`_fmt_pace`) — this is the table the LLM has to walk one interval at
+    a time, so it's the field most exposed to a per-value conversion mistake."""
+    out = dict(step_match)
+    if out.get("misses"):
+        out["misses"] = [
+            {**miss,
+             "planned": "-".join(_fmt_pace(p) for p in miss["planned"]),
+             "actual": _fmt_pace(miss.get("actual"))}
+            for miss in out["misses"]
+        ]
+    if out.get("steps"):
+        out["steps"] = [
+            {**step,
+             "planned": "-".join(_fmt_pace(p) for p in step["planned"]),
+             "actual": _fmt_pace(step.get("actual"))}
+            for step in out["steps"]
+        ]
+    return out
+
+
 def _planned_payload(workout) -> dict:
     """Compact planned-vs-actual slice for a matched PlannedWorkout (see matching.py)."""
     info = workout.match_info or {}
     return {
         "type": workout.type, "planned_dist_km": workout.dist_km,
         "description": workout.description,
-        "plan_pace_minkm": info.get("plan_pace_minkm"),
-        "actual_pace_minkm": info.get("actual_pace_minkm"),
+        "plan_pace_minkm": _fmt_pace(info.get("plan_pace_minkm")),
+        "actual_pace_minkm": _fmt_pace(info.get("actual_pace_minkm")),
         "dist_delta_km": info.get("dist_delta_km"),
         "status": workout.status,  # done | partial
     }
@@ -901,7 +948,7 @@ def activity_payload(activity, planned=None, route=None) -> dict:
     # NF-14: step-level plan-vs-actual (app.stepmatch) — whether the runner actually hit
     # the planned pace inside each structured interval, not just "the session happened".
     if getattr(activity, "step_match", None):
-        data["step_match"] = activity.step_match
+        data["step_match"] = _step_match_payload(activity.step_match)
     if planned is not None:
         data["planned"] = _planned_payload(planned)
     if route:

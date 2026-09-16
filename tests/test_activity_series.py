@@ -236,6 +236,33 @@ def test_activity_payload_cycling_uses_speed_not_pace():
     assert all("avg_speed_kmh" in s for s in p["segments"])
 
 
+def test_segments_default_to_one_per_raw_point_capped():
+    from app.analysis.service import _segments
+
+    # fewer raw points than the cap -> essentially no averaging (1 segment/point)
+    series = [{"d": i * 0.1, "p": 7.0 - (i % 20) * 0.02, "hr": 120 + i} for i in range(56)]
+    assert len(_segments(series)) == 56
+
+    # more raw points than the cap -> capped, not one segment per point
+    dense = [{"d": i * 0.01, "p": 6.5, "hr": 130} for i in range(400)]
+    assert len(_segments(dense)) == 40
+
+
+def test_activity_payload_uses_near_raw_segments_for_a_tempo_run():
+    from types import SimpleNamespace
+
+    from app.analysis.service import activity_payload
+
+    run = SimpleNamespace(
+        type="running", date="2026-06-24", dur_min=38.0, dist_km=5.5,
+        avg_hr=140, max_hr=155, load=80.0, exercises=None,
+        series=[{"d": i * 0.1, "p": 7.0 - (i % 20) * 0.02, "hr": 120 + i}
+                for i in range(56)],
+    )
+    p = activity_payload(run)
+    assert len(p["segments"]) == 56
+
+
 def test_activity_payload_includes_step_match_when_present():
     from types import SimpleNamespace
 

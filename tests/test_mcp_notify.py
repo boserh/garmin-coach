@@ -134,6 +134,48 @@ async def test_send_refuses_an_oversized_payload(bot):
     assert bot.sent == []
 
 
+# --- send_coach_message: the product-bot identity, an explicit per-user chat_id --------
+
+
+@pytest.fixture
+def coach_bot(monkeypatch):
+    fake = _FakeBot()
+    monkeypatch.setattr(notify, "_get_coach_bot", lambda: fake)
+    return fake
+
+
+async def test_coach_send_delivers_to_the_given_chat(coach_bot):
+    assert await notify.send_coach_message(4242, "твій розбір") == 1
+    assert coach_bot.sent == [(4242, "твій розбір", None, False)]
+
+
+async def test_coach_send_numbers_the_parts_of_a_long_message(coach_bot):
+    await notify.send_coach_message(4242, "z" * 9000)
+    assert len(coach_bot.sent) == 3
+    assert coach_bot.sent[0][1].endswith("(1/3)")
+    assert coach_bot.sent[-1][1].endswith("(3/3)")
+
+
+async def test_coach_send_refuses_an_empty_message(coach_bot):
+    with pytest.raises(notify.NotifyError, match="empty"):
+        await notify.send_coach_message(4242, "   ")
+    assert coach_bot.sent == []
+
+
+async def test_coach_send_refuses_without_a_bot_token(monkeypatch):
+    monkeypatch.setattr(notify, "_get_coach_bot", lambda: None)
+    with pytest.raises(notify.NotifyError, match="TELEGRAM_BOT_TOKEN"):
+        await notify.send_coach_message(4242, "щось")
+
+
+async def test_coach_send_failure_raises_with_an_actionable_message(monkeypatch):
+    fake = _FakeBot(fail_always=True)
+    monkeypatch.setattr(notify, "_get_coach_bot", lambda: fake)
+    with pytest.raises(notify.NotifyError) as exc:
+        await notify.send_coach_message(4242, "щось")
+    assert "press Start" in str(exc.value)
+
+
 # --- the MCP tool -------------------------------------------------------------------
 
 pytest.importorskip("mcp")

@@ -1068,6 +1068,55 @@ async def me_regenerate_analysis(
     return RedirectResponse(f"/me/activities/{row_id}?regen=ok", status_code=303)
 
 
+@router.post("/me/activities/{row_id}/send-telegram")
+async def me_send_activity_telegram(
+    row_id: int,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Regenerate one activity's Claude analysis (same paid, cache-bypassing re-run as
+    ``me_regenerate_analysis`` above) and push the result to the athlete's own linked
+    Telegram chat over the product bot identity (``app.notify.send_coach_message`` — the
+    web process has no running ``bot.Application`` of its own to reuse). Shares the same
+    double-tap guard as plain regenerate, since it makes the same paid call."""
+    from app.analysis.reports import run_activity_analysis
+    from app.analysis.service import AnalystError
+    from app.garmin.credentials import load_credentials
+    from app.notify import NotifyError, send_coach_message
+
+    act = await repository.get_activity(session, user.id, row_id)
+    if act is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    if user.is_demo:
+        return RedirectResponse(f"/me/activities/{row_id}?tg=demo", status_code=303)
+    if not user.telegram_chat_id:
+        return RedirectResponse(f"/me/activities/{row_id}?tg=nochat", status_code=303)
+    creds = load_credentials(user)
+    if not creds.anthropic_key:
+        return RedirectResponse(f"/me/activities/{row_id}?tg=nokey", status_code=303)
+    now = _time.monotonic()
+    last = _regen_guard.get(row_id)
+    if last is not None and now - last < _REGEN_MIN_INTERVAL_S:
+        return RedirectResponse(f"/me/activities/{row_id}?tg=wait", status_code=303)
+    _regen_guard[row_id] = now
+    try:
+        await run_activity_analysis(
+            session, act, user_id=user.id, api_key=creds.anthropic_key, force=True
+        )
+        await session.commit()
+    except AnalystError as e:
+        logger.warning(f"SEND-TG regenerate user={user.id} id={row_id} failed: {e}")
+        return RedirectResponse(f"/me/activities/{row_id}?tg=err", status_code=303)
+    if not act.analysis:
+        return RedirectResponse(f"/me/activities/{row_id}?tg=empty", status_code=303)
+    try:
+        await send_coach_message(user.telegram_chat_id, act.analysis)
+    except NotifyError as e:
+        logger.warning(f"SEND-TG deliver user={user.id} id={row_id} failed: {e}")
+        return RedirectResponse(f"/me/activities/{row_id}?tg=senderr", status_code=303)
+    return RedirectResponse(f"/me/activities/{row_id}?tg=ok", status_code=303)
+
+
 # ---- ST-17: hide / show an activity (dup / broken track) ----
 
 @router.post("/me/activities/{row_id}/hide")
@@ -1376,6 +1425,17 @@ _REGEN_BANNERS = {
     "demo": ("danger", "🎭", "Демо-акаунт: перегенерація вимкнена."),
 }
 
+# The "перегенерувати і надіслати в Telegram" button's own outcomes — reuses _REGEN_BANNERS'
+# wording for the regenerate half (nokey/wait/demo/err there abort before any send is
+# attempted) and adds the send-specific ones.
+_TG_BANNERS = {
+    "ok": ("ok", "📤", "Розбір надіслано в Telegram."),
+    "nochat": ("danger", "🔗", "Прив'яжи Telegram у налаштуваннях, щоб надсилати туди."),
+    "empty": ("warn", "🤔", "Ще немає розбору для цієї активності — спершу перегенеруй."),
+    "senderr": ("danger", "⚠️", "Розбір є, але Telegram відмовив надіслати — спробуй ще раз."),
+    **{k: v for k, v in _REGEN_BANNERS.items() if k in ("nokey", "wait", "demo", "err")},
+}
+
 
 # UI-08: the labels the step bar reads. The kind is the plan's own vocabulary.
 _STEP_KIND_LABELS = {"run": "відрізок", "tempo": "темповий", "interval": "інтервал"}
@@ -1498,7 +1558,7 @@ _CHECKIN_BANNERS = {
 
 
 def _activity_banners(*, resynced: bool, regen: str, hidden: bool, shown: bool,
-                      is_hidden: bool, checkin: str = "") -> list:
+                      is_hidden: bool, checkin: str = "", tg: str = "") -> list:
     out = []
     if resynced:
         out.append(banner("ok", "Дані активності оновлено з Garmin.", icon="🔄"))
@@ -1508,6 +1568,11 @@ def _activity_banners(*, resynced: bool, regen: str, hidden: bool, shown: bool,
     if regen in _REGEN_BANNERS:
         level, icon, text = _REGEN_BANNERS[regen]
         link = "/settings" if regen == "nokey" else ""
+        out.append(banner(level, text, icon=icon, link=link,
+                          link_text="Налаштування →" if link else ""))
+    if tg in _TG_BANNERS:
+        level, icon, text = _TG_BANNERS[tg]
+        link = "/settings" if tg in ("nokey", "nochat") else ""
         out.append(banner(level, text, icon=icon, link=link,
                           link_text="Налаштування →" if link else ""))
     if hidden:
@@ -1533,6 +1598,8 @@ async def me_row(
     hidden: int = Query(0),             # ST-17: 1 right after hiding this activity
     shown: int = Query(0),              # ST-17: 1 right after un-hiding it
     checkin: str = Query(""),           # UI-04: ok|bad|demo after a web check-in
+    tg: str = Query(""),                # ok|nochat|empty|senderr|nokey|wait|demo|err after
+                                         # a "regenerate + send to Telegram" attempt
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1612,7 +1679,7 @@ async def me_row(
              "analysis": obj.analysis, "user": user, "base": "/me", "token": "",
              "banners": _activity_banners(
                  resynced=bool(resynced), regen=regen, hidden=bool(hidden),
-                 shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin),
+                 shown=bool(shown), is_hidden=bool(obj.is_hidden), checkin=checkin, tg=tg),
              "pain_parts": subjective.PAIN_PARTS,
              "debrief": debrief, "strength": strength, "stepbar": stepbar,
              "has_claude_key": bool(user.anthropic_key_enc)},
