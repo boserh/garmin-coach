@@ -234,6 +234,89 @@ def test_regenerate_other_users_activity_404(client):
     assert r.status_code == 404
 
 
+# ---- regenerate + send to the athlete's own Telegram chat ----
+
+def _set_telegram_chat(user_id, chat_id):
+    import anyio
+    from sqlalchemy import select
+
+    from app.db.base import async_session_maker
+    from app.db.models import User
+
+    async def set_():
+        async with async_session_maker() as s:
+            u = (await s.execute(select(User).where(User.id == user_id))).scalar_one()
+            u.telegram_chat_id = chat_id
+            await s.commit()
+
+    anyio.run(set_)
+
+
+def test_send_telegram_without_linked_chat_redirects_nochat(client):
+    """No telegram_chat_id → a friendly banner, never a paid call or a crash."""
+    aid, _ = _seed_two_users_with_data()   # seeded users have no telegram_chat_id
+    _seed_activity(aid, activity_id=19003)
+    row, _ = _row_by_aid(aid, 19003)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{row}/send-telegram", follow_redirects=False)
+    assert r.status_code == 303 and "tg=nochat" in r.headers["location"]
+
+
+def test_send_telegram_other_users_activity_404(client):
+    aid, bid = _seed_two_users_with_data()
+    _seed_activity(bid, activity_id=19004)
+    bob_row, _ = _row_by_aid(bid, 19004)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{bob_row}/send-telegram", follow_redirects=False)
+    assert r.status_code == 404
+
+
+def test_send_telegram_with_chat_but_no_claude_key_redirects_nokey(client):
+    aid, _ = _seed_two_users_with_data()
+    _set_telegram_chat(aid, 555)
+    _seed_activity(aid, activity_id=19005)
+    row, _ = _row_by_aid(aid, 19005)
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{row}/send-telegram", follow_redirects=False)
+    assert r.status_code == 303 and "tg=nokey" in r.headers["location"]
+
+
+def test_send_telegram_success_regenerates_and_delivers(client, monkeypatch):
+    """A happy run: regenerate (mocked LLM call) then push the fresh text to the
+    athlete's own chat (mocked delivery) — no real Anthropic/Telegram call in a test."""
+    from types import SimpleNamespace
+
+    import app.garmin.credentials as credentials_mod
+    import app.notify as notify_mod
+    from app.analysis import reports
+    from app.analysis.client import CallStats
+
+    aid, _ = _seed_two_users_with_data()
+    _set_telegram_chat(aid, 777)
+    _seed_activity(aid, activity_id=19006)
+    row, _ = _row_by_aid(aid, 19006)
+
+    monkeypatch.setattr(
+        credentials_mod, "load_credentials",
+        lambda user: SimpleNamespace(anthropic_key="test-key"))
+    monkeypatch.setattr(
+        reports, "analyze_activity_with_stats",
+        lambda data, api_key=None: ("свіжий розбір", CallStats(kind="activity", model="m")))
+
+    sent = []
+
+    async def fake_send(chat_id, text, *, silent=False):
+        sent.append((chat_id, text))
+        return 1
+
+    monkeypatch.setattr(notify_mod, "send_coach_message", fake_send)
+
+    client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    r = client.post(f"/me/activities/{row}/send-telegram", follow_redirects=False)
+    assert r.status_code == 303 and "tg=ok" in r.headers["location"]
+    assert sent == [(777, "свіжий розбір")]
+
+
 # ---- strength exercise rows: reps + weight display ----
 
 def test_exercise_rows_formats_reps_and_weight():
