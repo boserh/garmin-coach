@@ -236,6 +236,32 @@ def test_activity_payload_cycling_uses_speed_not_pace():
     assert all("avg_speed_kmh" in s for s in p["segments"])
 
 
+def test_segment_count_scales_with_distance_and_is_clamped():
+    from app.analysis.service import _segment_count
+
+    assert _segment_count(None) == 6
+    assert _segment_count(0) == 6
+    assert _segment_count(2.0) == 6           # short run: floor, not 4
+    assert _segment_count(5.5) == 11          # ~0.5 km/segment
+    assert _segment_count(100.0) == 16        # ultra: capped, not 200 segments
+
+
+def test_activity_payload_uses_finer_segments_for_a_tempo_run():
+    from types import SimpleNamespace
+
+    from app.analysis.service import activity_payload
+
+    # 5.5 km run -> old fixed n=6 vs new distance-scaled n=11
+    run = SimpleNamespace(
+        type="running", date="2026-06-24", dur_min=38.0, dist_km=5.5,
+        avg_hr=140, max_hr=155, load=80.0, exercises=None,
+        series=[{"d": i * 0.1, "p": 7.0 - (i % 20) * 0.02, "hr": 120 + i}
+                for i in range(56)],
+    )
+    p = activity_payload(run)
+    assert len(p["segments"]) > 6
+
+
 def test_activity_payload_includes_step_match_when_present():
     from types import SimpleNamespace
 
