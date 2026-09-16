@@ -52,7 +52,7 @@ def test_activity_payload_includes_planned_slice():
 
     assert data["planned"] == {
         "type": "easy", "planned_dist_km": 5.0, "description": "Легкий біг",
-        "plan_pace_minkm": 6.5, "actual_pace_minkm": 6.0, "dist_delta_km": 0.1,
+        "plan_pace_minkm": "6:30", "actual_pace_minkm": "6:00", "dist_delta_km": 0.1,
         "status": "done",
     }
 
