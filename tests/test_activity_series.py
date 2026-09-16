@@ -236,22 +236,23 @@ def test_activity_payload_cycling_uses_speed_not_pace():
     assert all("avg_speed_kmh" in s for s in p["segments"])
 
 
-def test_segment_count_scales_with_distance_and_is_clamped():
-    from app.analysis.service import _segment_count
+def test_segments_default_to_one_per_raw_point_capped():
+    from app.analysis.service import _segments
 
-    assert _segment_count(None) == 6
-    assert _segment_count(0) == 6
-    assert _segment_count(2.0) == 6           # short run: floor, not 4
-    assert _segment_count(5.5) == 11          # ~0.5 km/segment
-    assert _segment_count(100.0) == 16        # ultra: capped, not 200 segments
+    # fewer raw points than the cap -> essentially no averaging (1 segment/point)
+    series = [{"d": i * 0.1, "p": 7.0 - (i % 20) * 0.02, "hr": 120 + i} for i in range(56)]
+    assert len(_segments(series)) == 56
+
+    # more raw points than the cap -> capped, not one segment per point
+    dense = [{"d": i * 0.01, "p": 6.5, "hr": 130} for i in range(400)]
+    assert len(_segments(dense)) == 40
 
 
-def test_activity_payload_uses_finer_segments_for_a_tempo_run():
+def test_activity_payload_uses_near_raw_segments_for_a_tempo_run():
     from types import SimpleNamespace
 
     from app.analysis.service import activity_payload
 
-    # 5.5 km run -> old fixed n=6 vs new distance-scaled n=11
     run = SimpleNamespace(
         type="running", date="2026-06-24", dur_min=38.0, dist_km=5.5,
         avg_hr=140, max_hr=155, load=80.0, exercises=None,
@@ -259,7 +260,7 @@ def test_activity_payload_uses_finer_segments_for_a_tempo_run():
                 for i in range(56)],
     )
     p = activity_payload(run)
-    assert len(p["segments"]) > 6
+    assert len(p["segments"]) == 56
 
 
 def test_activity_payload_includes_step_match_when_present():

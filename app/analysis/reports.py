@@ -797,29 +797,22 @@ _SEGMENT_AVG_KEYS = {
     "p": "avg_pace", "hr": "avg_hr", "spd": "avg_speed_kmh", "pw": "avg_power_w",
 }
 
-# A fixed n=6 smeared a short tempo/interval block inside a longer run into one or two
-# arbitrary buckets that don't line up with where the effort actually changed. Scaling
-# segment count with distance instead keeps each one roughly _SEGMENT_TARGET_KM long —
-# short enough that a structured block still shows up as its own segment(s) — while the
-# clamp keeps a long ride/ultra from blowing up the token budget.
-_SEGMENT_TARGET_KM = 0.5
-_SEGMENT_COUNT_MIN, _SEGMENT_COUNT_MAX = 6, 16
+# A fixed n=6 (or even the distance-scaled ~0.5 km/segment this replaced) still averages
+# away a transition that happens WITHIN a bucket — a 6 km run made of 12x400m at pace
+# only looks right if segments track the raw sample points closely enough that no bucket
+# spans more than one change of effort. The raw series is itself already downsampled by
+# Garmin to at most ~150 points for the whole activity (``client.fetch_activity_series``'s
+# ``max_points``), so "no further averaging, up to a token-budget ceiling" is the most
+# detail available without fetching a denser series from Garmin in the first place.
+_SEGMENT_MAX = 40
 
 
-def _segment_count(dist_km: Optional[float]) -> int:
-    """How many segments _segments() should cut a run into, scaled by distance rather
-    than a one-size-fits-all constant. Falls back to the old default (6) when distance
-    is missing/zero."""
-    if not dist_km or dist_km <= 0:
-        return _SEGMENT_COUNT_MIN
-    return max(_SEGMENT_COUNT_MIN,
-               min(_SEGMENT_COUNT_MAX, round(dist_km / _SEGMENT_TARGET_KM)))
-
-
-def _segments(series: list, n: int = 6) -> list:
-    """Collapse an activity's per-point series into ~n segments (avg of whatever metrics
+def _segments(series: list, n: Optional[int] = None) -> list:
+    """Collapse an activity's per-point series into segments (avg of whatever metrics
     are present — pace/HR for a run, speed/power/HR for a ride) so the LLM sees pacing/
-    effort drift without the full point cloud.
+    effort drift without the full point cloud. ``n`` defaults to one segment per raw
+    sample point, capped at :data:`_SEGMENT_MAX` — i.e. as much detail as the already-
+    downsampled series has, not a fixed bucket count that would smear a short interval.
 
     EP-15: when the series carries elevation (``e``, running only — ``avg_pace`` present),
     each segment also gets its climb/descent (``gain_m``/``loss_m``) and grade-adjusted
@@ -828,6 +821,8 @@ def _segments(series: list, n: int = 6) -> list:
     pts = [p for p in series if any(p.get(k) is not None for k in _SEGMENT_AVG_KEYS)]
     if not pts:
         return []
+    if n is None:
+        n = min(len(pts), _SEGMENT_MAX)
     size = max(1, len(pts) // n)
     elevs = [p.get("e") for p in pts]
     has_elev = any(v is not None for v in elevs)
@@ -920,7 +915,7 @@ def activity_payload(activity, planned=None, route=None) -> dict:
     if activity.exercises:
         data["exercises"] = activity.exercises
     if activity.series:
-        data["segments"] = _segments(activity.series, n=_segment_count(activity.dist_km))
+        data["segments"] = _segments(activity.series)
         if activity.dist_km and activity.dur_min:
             # EP-10 phase 1: a ride reads in km/h, a run in min/km — pick by sport bucket
             # rather than sniffing the series shape, so a series-less-but-typed row still

@@ -128,7 +128,6 @@ from app.analysis.reports import (  # noqa: F401
     _coerce_one_checkup,
     _coerce_supplement_advice,
     _run_ask_tool,
-    _segment_count,
     _segments,
     _week_volume_summary,
     activity_payload,
