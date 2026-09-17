@@ -263,6 +263,70 @@ async def _backfill_zones(email: str, days: int) -> int:
     return 0
 
 
+async def _recompute_step_match(email: str, apply: bool, activity_id: "int | None") -> int:
+    """Re-score NF-14 ``step_match`` for activities already matched against a structured
+    workout, bypassing both the ingest-time "already scored" guard
+    (``bot.jobs._step_match_for_activity``) and the splits disk cache.
+
+    For the ordinary case (a run that was never scored) that guard is exactly right — it's
+    what stops a paced job from re-hitting Garmin every tick. This command is for the
+    OTHER case: a ``stepmatch``/``fetch_activity_splits`` bug produced a wrong stored
+    value (e.g. positional lap pairing comparing a step against the wrong physical lap
+    when a watch's Auto Lap split it), and nothing would otherwise ever recompute it —
+    the guard sees a non-null ``step_match`` and stays quiet forever.
+
+    Pure Garmin + DB: 0 Claude calls. Read-only unless ``--apply``; the printed line is
+    the old vs new steps_hit/steps_total badge so you can see what would change first.
+    ``--activity-id`` takes the ActivityRecord's OWN id (as shown in ``/ui/activities`` or
+    the activity page URL, not Garmin's activity_id) and limits to that one row; omit it
+    to sweep every already-scored activity for this user."""
+    from fastapi.concurrency import run_in_threadpool
+    from sqlalchemy import select
+
+    from app import stepmatch
+    from app.db.models import ActivityRecord
+    from app.garmin import client, repository
+
+    async with cli_user(email) as (session, user):
+        stmt = select(ActivityRecord).where(
+            ActivityRecord.user_id == user.id, ActivityRecord.step_match.is_not(None))
+        if activity_id is not None:
+            stmt = stmt.where(ActivityRecord.id == activity_id)
+        rows = (await session.execute(stmt)).scalars().all()
+        if not rows:
+            print("No matching already-scored activity found." if activity_id is not None
+                  else "No already-scored activities for this user.")
+            return 0
+        changed = 0
+        async with garmin_login(session, user):
+            for act in rows:
+                workout = await repository.get_workout_for_activity(session, user.id, act.id)
+                if workout is None or not workout.garmin_workout_id or not workout.steps:
+                    continue
+                laps = await run_in_threadpool(
+                    client.fetch_activity_splits, act.activity_id, force=True)
+                new = stepmatch.match(workout.steps, laps)
+                old = act.step_match
+                if new == old:
+                    continue
+                changed += 1
+                old_badge = f"{old.get('steps_hit')}/{old.get('steps_total')}" if old else "—"
+                new_badge = f"{new['steps_hit']}/{new['steps_total']}" if new else "—"
+                print(f"  {act.date} activity_id={act.activity_id} (row {act.id}): "
+                      f"{old_badge} -> {new_badge}")
+                if apply:
+                    act.step_match = new
+            if apply:
+                await session.commit()
+        if not changed:
+            print("Nothing changed — every already-scored activity still matches.")
+            return 0
+        print(f"{'Recomputed' if apply else 'Would recompute'} {changed} activity(-ies).")
+        if not apply:
+            print("Re-run with --apply to write the changes.")
+    return 0
+
+
 async def _backfill_auto_activities(email: str, since: str) -> int:
     """Re-fetch dailyEvents from Garmin for stored days that have no auto_activities
     in extra. Idempotent — skips rows that already have the key."""
@@ -1007,6 +1071,16 @@ def main(argv=None) -> int:
     bz.add_argument("--days", type=int, default=180,
                     help="How far back to backfill (default 180)")
 
+    rsm = sub.add_parser(
+        "recompute-step-match",
+        help="Re-score NF-14 step_match for already-scored activities (after a "
+             "stepmatch/splits bug fix — the ingest-time guard never redoes this itself)")
+    rsm.add_argument("--email", required=True)
+    rsm.add_argument("--activity-id", type=int, default=None,
+                     help="Limit to one ActivityRecord row id (its own id, not Garmin's); "
+                          "omit to sweep every already-scored activity")
+    rsm.add_argument("--apply", action="store_true", help="Write the changes (default: dry run)")
+
     bss = sub.add_parser(
         "backfill-strength-snapshots",
         help="Fill null strength_snapshot on the active plan's clone days (ST-09)")
@@ -1056,6 +1130,8 @@ def main(argv=None) -> int:
         return _run(_backfill_routes(args.email, args.since))
     if args.cmd == "backfill-zones":
         return _run(_backfill_zones(args.email, args.days))
+    if args.cmd == "recompute-step-match":
+        return _run(_recompute_step_match(args.email, args.apply, args.activity_id))
 
     if args.cmd == "backfill-records":
         return _run(_backfill_records(args.email))
