@@ -55,7 +55,7 @@ _REAL_LAPS = [
 ]
 
 
-async def _seed(session, *, email="fix@x.com", activity_id=555):
+async def _seed(session, *, email="fix@x.com", activity_id=555, garmin_workout_id=99):
     user = User(email=email, password_hash="h")
     session.add(user)
     await session.commit()
@@ -70,7 +70,7 @@ async def _seed(session, *, email="fix@x.com", activity_id=555):
     workout = PlannedWorkout(
         plan_id=plan.id, user_id=user.id, date="2026-09-16", type="tempo",
         dist_km=5.5, description="tempo", steps=_STEPS, status="done",
-        garmin_workout_id=99, completed_activity_id=act.id)
+        garmin_workout_id=garmin_workout_id, completed_activity_id=act.id)
     session.add(workout)
     await session.commit()
     return user, act, workout
@@ -110,6 +110,21 @@ async def test_recompute_scopes_to_one_activity_row_id(_cli_session, monkeypatch
     assert "No matching" in out
     await session.refresh(act)
     assert act.step_match == _WRONG_STEP_MATCH   # the real row was never touched
+
+
+async def test_recompute_still_fixes_a_workout_since_unpushed(_cli_session, monkeypatch):
+    """The exact real-world case this command exists for: the workout was pushed (and
+    scored) at run time, then later unpush-plan'd — clearing garmin_workout_id — leaving
+    an already-wrong step_match with nothing willing to touch it again. Recompute must
+    NOT re-require garmin_workout_id the way the ingest-time guard does."""
+    session = _cli_session
+    _user, act, _w = await _seed(session, garmin_workout_id=None)
+    monkeypatch.setattr(client, "fetch_activity_splits", lambda *a, **kw: _REAL_LAPS)
+
+    assert await cli._recompute_step_match("fix@x.com", apply=True, activity_id=None) == 0
+    await session.refresh(act)
+    assert act.step_match["steps_hit"] == 1
+    assert act.step_match["misses"] == []
 
 
 async def test_recompute_skips_activities_with_no_structured_match(_cli_session, capsys):
