@@ -309,8 +309,20 @@ def test_fetch_activity_splits_parses_lap_dtos():
     assert len(laps) == 3
     assert laps[0]["dist_m"] == 1000.0
     assert laps[0]["pace_min_km"] == round((1000.0 / 3.333333) / 60.0, 3)
+    assert laps[0]["wkt_step_index"] is None   # none of the fixture's laps carry it
     # third lap has no averageSpeed — falls back to distance/duration
     assert laps[2]["pace_min_km"] == round((60.0 / 60.0) / (200.0 / 1000.0), 3)
+
+
+def test_fetch_activity_splits_carries_wkt_step_index_through():
+    splits = {"lapDTOs": [
+        {"distance": 1000.0, "duration": 300.0, "averageSpeed": 3.333333, "wktStepIndex": 1},
+    ]}
+    with patch.object(client, "_api", return_value=splits), \
+         patch.object(client, "_cache_get", return_value=None), \
+         patch.object(client, "_cache_put"):
+        laps = client.fetch_activity_splits(999)
+    assert laps[0]["wkt_step_index"] == 1
 
 
 def test_fetch_activity_splits_empty_on_error():

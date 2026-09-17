@@ -91,6 +91,58 @@ def test_match_none_when_no_laps_at_all():
     assert stepmatch.match(steps, None) is None
 
 
+# ---------- _group_laps_by_step / real Auto Lap split ----------
+
+def _real_lap(dist_m, dur_s, wkt_step_index):
+    return {"dist_m": dist_m, "dur_s": dur_s,
+            "pace_min_km": round((dur_s / 60.0) / (dist_m / 1000.0), 3),
+            "wkt_step_index": wkt_step_index}
+
+
+def test_group_laps_by_step_merges_autolap_splits():
+    # A 1.5 km warmup that Auto Lap split into a 1000m + 500m lap (step 0), a clean
+    # 2x1km tempo block (step 1) and a 2 km cooldown split into 1000+1000 (step 2) — the
+    # exact shape a real structured run's raw lapDTOs came back as.
+    laps = [
+        _real_lap(1000.0, 446.1, 0), _real_lap(500.0, 229.5, 0),
+        _real_lap(1000.0, 368.4, 1), _real_lap(1000.0, 346.8, 1),
+        _real_lap(1000.0, 450.2, 2), _real_lap(1000.0, 438.9, 2),
+        {"dist_m": 8.7, "dur_s": 3.8, "pace_min_km": 7.28, "wkt_step_index": None},
+    ]
+    grouped = stepmatch._group_laps_by_step(laps)
+    assert [g["dist_m"] for g in grouped] == [1500.0, 2000.0, 2000.0]
+    # the true tempo pace (~5:58/km) survives grouping — not the ~7:39/km the lone 500m
+    # warmup tail gives when paired positionally against the tempo step instead.
+    assert 5.9 < grouped[1]["pace_min_km"] < 6.0
+
+
+def test_group_laps_by_step_leaves_ungrouped_laps_untouched():
+    # No lap carries wkt_step_index (an older cached splits:v1 entry, or a free run) ->
+    # the previous, purely-positional behaviour is preserved.
+    laps = [{"dist_m": 400.0, "dur_s": 100.0, "pace_min_km": 4.17}]
+    assert stepmatch._group_laps_by_step(laps) == laps
+
+
+def test_match_survives_autolap_splitting_a_step_into_several_laps():
+    """The real bug this fixes: pairing the plan's 3 steps positionally against 6
+    ungrouped physical laps compared the tempo step to the tail of the warmup lap and
+    reported an impossible ~74s/km miss on a session the athlete actually nailed."""
+    steps = [
+        {"kind": "warmup", "dist_m": 1500},
+        {"kind": "run", "dist_m": 2000, "pace_min_km": [6.17, 6.42]},
+        {"kind": "cooldown", "dist_m": 2000},
+    ]
+    laps = [
+        _real_lap(1000.0, 446.1, 0), _real_lap(500.0, 229.5, 0),
+        _real_lap(1000.0, 368.4, 1), _real_lap(1000.0, 346.8, 1),
+        _real_lap(1000.0, 450.2, 2), _real_lap(1000.0, 438.9, 2),
+    ]
+    result = stepmatch.match(steps, laps)
+    assert result["steps_total"] == 1
+    assert result["steps_hit"] == 1
+    assert result["misses"] == []
+
+
 def test_match_warmup_recovery_not_counted_as_working_misses():
     steps = [
         {"kind": "warmup", "dist_m": 1000},           # no pace target at all

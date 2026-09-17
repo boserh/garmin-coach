@@ -95,10 +95,51 @@ def _pace_delta_s(pace_actual: Optional[float], pace_range: Optional[list]) -> O
     return 0
 
 
+def _group_laps_by_step(laps: List[dict]) -> List[dict]:
+    """Re-derive one lap per plan step from the raw physical laps, using each lap's
+    ``wkt_step_index`` (Garmin's own 0-based "which pushed workout step was this" tag —
+    see :func:`app.garmin.client.fetch_activity_splits`).
+
+    Exists because a watch with Auto Lap on keeps auto-lapping at ~1 km even mid-step, so
+    a single plan step can arrive as several physical laps (a 1.5 km warmup as a 1000 m +
+    a 500 m lap) — pairing :func:`flatten_steps`' output against the raw, ungrouped lap
+    list by plain position then compares a step against whichever physical lap happens to
+    sit at that index, which is only ever correct until the first split. Grouping by
+    ``wkt_step_index`` and summing distance/duration within each group restores one
+    aggregate lap per step, in step order, regardless of how many physical laps it split
+    into. A lap with no ``wkt_step_index`` (e.g. a trailing GPS auto-stop sliver after the
+    workout ended) belongs to no step and is dropped.
+
+    Returns ``laps`` unchanged when none of them carry the field — an older disk-cached
+    ``splits:v1`` entry (pre this fix) or a free run with no pushed structure, so the
+    previous, purely-positional behaviour is preserved for data that predates it."""
+    if not any(lap.get("wkt_step_index") is not None for lap in laps):
+        return laps
+    totals: dict = {}
+    for lap in laps:
+        idx = lap.get("wkt_step_index")
+        if idx is None:
+            continue
+        g = totals.setdefault(idx, {"dist_m": 0.0, "dur_s": 0.0})
+        if isinstance(lap.get("dist_m"), (int, float)):
+            g["dist_m"] += lap["dist_m"]
+        if isinstance(lap.get("dur_s"), (int, float)):
+            g["dur_s"] += lap["dur_s"]
+    grouped = []
+    for idx in sorted(totals):
+        dist_m, dur_s = totals[idx]["dist_m"], totals[idx]["dur_s"]
+        pace = round((dur_s / 60.0) / (dist_m / 1000.0), 3) if dist_m > 0 and dur_s > 0 else None
+        grouped.append({"dist_m": round(dist_m, 1), "dur_s": round(dur_s, 1),
+                        "pace_min_km": pace})
+    return grouped
+
+
 def match(steps: Optional[list], laps: Optional[list]) -> Optional[dict]:
     """Pair the flattened plan steps with the activity's actual laps (same order — see
     :func:`flatten_steps`) and score each working (pace-targeted) step. ``laps`` is
-    ``client.fetch_activity_splits``'s shape: ``[{"pace_min_km": float|None, ...}, ...]``.
+    ``client.fetch_activity_splits``'s shape: ``[{"pace_min_km": float|None, ...}, ...]``,
+    first re-grouped by :func:`_group_laps_by_step` so a plan step that Auto Lap split
+    into several physical laps is compared as one.
 
     Returns ``{"steps_hit", "steps_total", "misses": [...], "steps": [...]}``, or ``None``
     when there's nothing structured to compare — no plan steps (a free run), no actual laps
@@ -118,6 +159,7 @@ def match(steps: Optional[list], laps: Optional[list]) -> Optional[dict]:
     flat = flatten_steps(steps)
     if not flat or not laps:
         return None
+    laps = _group_laps_by_step(laps)
 
     hit = 0
     total = 0
