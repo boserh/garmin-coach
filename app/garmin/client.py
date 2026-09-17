@@ -308,7 +308,7 @@ def cache_del(key: str) -> None:
 # NF-25/NF-33: ``series:v2`` stays listed next to ``series:v3`` — a Pi that has been
 # running for a year still has v2 files on disk, and "wipe everything about this activity"
 # must mean everything, not just what the current code writes.
-_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v3", "series:v2", "splits:v1",
+_ACTIVITY_KEY_PREFIXES = ("exercise:v3", "series:v3", "series:v2", "splits:v2", "splits:v1",
                           "gear_link:v1", "zones:v1")
 _CACHE_FILE_RE = re.compile(r"^(.+_v\d+)_.+$")
 
@@ -744,15 +744,25 @@ SPLITS_TTL_S = 365 * 24 * 3600   # a completed run's laps are immutable, like th
 
 
 def fetch_activity_splits(activity_id, force: bool = False) -> list:
-    """This run's lap/split breakdown — one row per structured-workout step actually
-    executed on the watch (warmup, each work/recovery interval, cooldown), for NF-14
-    step-level plan-vs-actual matching. Returns ``[{"dist_m", "dur_s", "pace_min_km"},
-    ...]`` in lap order (``pace_min_km`` is ``None`` when the lap has no usable speed or
-    distance/duration). Immutable once the activity is complete → disk-cached like the
-    series/exercises. ``force=True`` bypasses that cache and refetches (overwriting it) for a
-    manual resync of an edited/cropped activity (ST-16); an empty force-refetch never clobbers
-    a previously-good cached copy."""
-    key = f"splits:v1:{activity_id}"
+    """This run's lap/split breakdown, for NF-14 step-level plan-vs-actual matching.
+    Returns ``[{"dist_m", "dur_s", "pace_min_km", "wkt_step_index"}, ...]`` in lap order
+    (``pace_min_km`` is ``None`` when the lap has no usable speed or distance/duration).
+
+    A GOTCHA this shape exists to survive: ``lapDTOs`` is NOT one row per structured-
+    workout step — it's every physical GPS lap the watch recorded, and a watch with its
+    own Auto Lap setting on (a common default) keeps auto-lapping at ~1 km even mid-step,
+    so a single 1.5 km warmup can arrive as a 1000 m lap plus a 500 m lap. ``wkt_step_index``
+    (Garmin's own 0-based index of which pushed workout step a lap belongs to — ``None``
+    for a lap outside any step, e.g. a trailing auto-stop sliver after the workout ended)
+    is what :func:`app.stepmatch.match` re-groups these physical laps by before pairing
+    them against the plan's flattened steps — pairing by raw list position instead once
+    silently compared a step against the wrong physical lap whenever Auto Lap split it.
+
+    Immutable once the activity is complete → disk-cached like the series/exercises.
+    ``force=True`` bypasses that cache and refetches (overwriting it) for a manual resync
+    of an edited/cropped activity (ST-16); an empty force-refetch never clobbers a
+    previously-good cached copy."""
+    key = f"splits:v2:{activity_id}"
     cached = None if force else _cache_get(key)
     if cached is not None:
         return cached
@@ -773,6 +783,7 @@ def fetch_activity_splits(activity_id, force: bool = False) -> list:
             "dist_m": round(dist, 1) if dist is not None else None,
             "dur_s": round(dur, 1) if dur is not None else None,
             "pace_min_km": pace,
+            "wkt_step_index": lap.get("wktStepIndex"),
         })
     if force and not laps:
         old = _cache_get(key)
