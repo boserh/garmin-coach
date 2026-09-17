@@ -279,7 +279,13 @@ async def _recompute_step_match(email: str, apply: bool, activity_id: "int | Non
     the old vs new steps_hit/steps_total badge so you can see what would change first.
     ``--activity-id`` takes the ActivityRecord's OWN id (as shown in ``/ui/activities`` or
     the activity page URL, not Garmin's activity_id) and limits to that one row; omit it
-    to sweep every already-scored activity for this user."""
+    to sweep every already-scored activity for this user.
+
+    Deliberately does NOT require ``workout.garmin_workout_id`` the way the ingest-time
+    guard does — a session already has a stored ``step_match`` only because that guard
+    passed once, so re-requiring it here just means an `unpush-plan` run sometime after
+    scoring (which clears the id) silently excludes the very row this command exists to
+    fix. Only ``workout.steps`` (the pace targets to score against) is required."""
     from fastapi.concurrency import run_in_threadpool
     from sqlalchemy import select
 
@@ -301,7 +307,7 @@ async def _recompute_step_match(email: str, apply: bool, activity_id: "int | Non
         async with garmin_login(session, user):
             for act in rows:
                 workout = await repository.get_workout_for_activity(session, user.id, act.id)
-                if workout is None or not workout.garmin_workout_id or not workout.steps:
+                if workout is None or not workout.steps:
                     continue
                 laps = await run_in_threadpool(
                     client.fetch_activity_splits, act.activity_id, force=True)
