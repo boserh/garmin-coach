@@ -602,7 +602,12 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   a run left holding a strength template, a strength day left holding a distance; dry run by
   default, 0 LLM, and `--repush` also repairs what those rows put on the Garmin calendar);
   `backfill-series --force` refetches runs that already have a series to pick up the
-  `series:v3` channels.
+  `series:v3` channels;
+  `recompute-step-match [--activity-id ID] [--apply]` re-scores NF-14 `step_match` for
+  activities ALREADY scored — for after a `stepmatch`/`fetch_activity_splits` bug fix,
+  when the ingest-time idempotency guard (`bot.jobs._step_match_for_activity`) would
+  otherwise never touch a wrong stored value again; force-refetches splits, 0 LLM, dry
+  run by default.
 
 ## Remote MCP server (NF-08, http transport)
 
