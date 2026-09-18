@@ -12,6 +12,7 @@ import json
 import logging
 from typing import List, Optional, Tuple
 
+from app import daterel
 from app.analysis.cache import _build_multisport, build_fitness_context
 from app.analysis.client import (
     MODEL_PLAN,
@@ -994,6 +995,22 @@ WEATHER_CONTEXT_DAYS = 7          # how far ahead the forecast context reaches
 _WEATHER_ALLOWED_ACTIONS = {"move", "modify"}   # never skip/add for weather
 
 
+def _with_weekday(items: list, key: str = "date") -> list:
+    """Copy ``items`` with a Ukrainian nominative weekday name added (e.g. "субота") —
+    the free-text summary needs to NAME the day, not just place it relative to today,
+    so ``daterel.annotate``'s "сьогодні/через N дн" labels don't fit here. Without an
+    explicit weekday the model computes one itself from the ISO date and gets it wrong
+    often enough to mislabel both the conflict day and the day it moves the session to."""
+    out = []
+    for it in items:
+        if isinstance(it, dict) and it.get(key):
+            wd = daterel.weekday(it[key], full=True)
+            if wd:
+                it = {**it, "weekday": wd}
+        out.append(it)
+    return out
+
+
 def _filter_weather_ops(ops: list, today: dt.date, decision_days: int) -> list:
     """Keep only move/modify operations dated within the decision window — the guard
     behind the prompt (EP-02/EP-13 pitfall: the model may overstep). Weather is never a
@@ -1049,13 +1066,17 @@ async def run_weather_plan_check(
     window_end = (today + dt.timedelta(days=WEATHER_CONTEXT_DAYS)).isoformat()
     ws = [w for w in await repository.list_workouts(session, plan.id, upcoming_only=True)
           if w.date <= window_end]
+    upcoming = [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+                 "description": w.description} for w in ws]
     context = {
-        "today": today.isoformat(),
+        **daterel.today_context(today),
         "decision_days": decision_days,
-        "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
-                      "description": w.description} for w in ws],
-        "forecast": forecast,
-        "conflicts": conflicts,
+        # weekday-annotated — the model must not compute weekdays itself: it gets them
+        # wrong in the free-text summary even when the deterministic before→after line
+        # we render separately (from the same dates) is correct. See _with_weekday.
+        "upcoming": _with_weekday(upcoming),
+        "forecast": _with_weekday(forecast),
+        "conflicts": _with_weekday(conflicts),
         # NF-34: moving a session out of the rain is pointless when the athlete is away
         # those days — and proposing it is a DM that costs attention for nothing.
         "away": await away_db.build_context(session, user_id, today),

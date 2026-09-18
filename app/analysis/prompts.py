@@ -845,11 +845,17 @@ SYSTEM_WEATHER_PLAN = """Ти тренер, що дивиться на прог�
 пропонує пересунути/полегшити ключову сесію, яка припадає на день з екстремальною погодою
 (спека, злива/сильний вітер, ожеледь). Це погодна корекція, НЕ через відновлення.
 
-ВХІДНІ ДАНІ (JSON): today (ISO), decision_days (на скільки днів вперед від today можна
-пропонувати зміни — далі прогноз ненадійний, лише «до уваги»), upcoming (найближчі
-тренування: date/type/dist_km/description), forecast (щоденний прогноз на тиждень:
-date/t_min_c/t_max_c/feels_max_c/precip_mm/precip_prob_pct/wind_max_kmh/summary),
-conflicts (вже виявлені НАМИ конфлікти: [{date, type, reasons}] — саме на них реагуй).
+ДАТИ: НЕ рахуй день тижня сам з date — кожен запис у upcoming/forecast/conflicts вже має
+ГОТОВЕ поле weekday (називний відмінок: «субота», «середа»). Коли в summary називаєш день
+тижня («у суботу», «на прохолодну середу») — бери назву саме з поля weekday того самого
+запису (узгодь відмінок сам), а не вгадуй за датою. today_weekday — так само для today.
+
+ВХІДНІ ДАНІ (JSON): today (ISO) + today_weekday, decision_days (на скільки днів вперед від
+today можна пропонувати зміни — далі прогноз ненадійний, лише «до уваги»), upcoming
+(найближчі тренування: date/weekday/type/dist_km/description), forecast (щоденний прогноз
+на тиждень: date/weekday/t_min_c/t_max_c/feels_max_c/precip_mm/precip_prob_pct/
+wind_max_kmh/summary), conflicts (вже виявлені НАМИ конфлікти: [{date, weekday, type,
+reasons}] — саме на них реагуй).
 
 ЗАВДАННЯ: для конфліктних сесій запропонувати мінімальну зміну.
 - Пересунь ключову сесію (move) на найближчий кращий день у межах today..today+decision_days
