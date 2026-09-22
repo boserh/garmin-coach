@@ -47,4 +47,9 @@ fi
 if /bin/systemctl cat garmin-mcp-notify.service >/dev/null 2>&1; then
   /bin/systemctl restart --no-block garmin-mcp-notify.service
 fi
+# garmin-mcp-plan (proposes moving ONE planned session, via Telegram confirm) is
+# optional and guarded the same way — it needs MCP_PLAN_PUBLIC_URL + TELEGRAM_BOT_TOKEN.
+if /bin/systemctl cat garmin-mcp-plan.service >/dev/null 2>&1; then
+  /bin/systemctl restart --no-block garmin-mcp-plan.service
+fi
 exec /bin/systemctl restart --no-block garmin-bot.service garmin-admin-bot.service

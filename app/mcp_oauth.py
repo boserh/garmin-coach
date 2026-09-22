@@ -63,10 +63,13 @@ templates = create_templates()
 # SCOPE is read-only because every tool behind it is read-only (see app.mcp_server);
 # NOTIFY_SCOPE is write-only in the opposite sense — it grants no read of anything, only
 # the ability to push a message into the deployment's monitoring channel
-# (app.mcp_notify). Keeping them apart is what lets the read-only promise on the coach
-# consent screen stay true.
+# (app.mcp_notify). PLAN_SCOPE is a second, narrower write: propose moving ONE already
+# planned session to another date (app.mcp_plan) — it still cannot read anything, and it
+# cannot add/modify/skip a session or touch anyone else's plan. Keeping them apart is
+# what lets the read-only promise on the coach consent screen stay true.
 SCOPE = "garmin:read"
 NOTIFY_SCOPE = "notify:write"
+PLAN_SCOPE = "plan:propose"
 
 # A parked authorization request: how long the user has to finish logging in.
 PENDING_TTL_S = 600
@@ -300,6 +303,7 @@ def _consent_page(
             "req": req,
             "client_name": pending.get("client_name", "MCP-клієнт"),
             "notify": NOTIFY_SCOPE in (scopes or []),
+            "plan": PLAN_SCOPE in (scopes or []),
             "error": error,
         },
         status_code=status_code,
@@ -310,7 +314,7 @@ def _expired_page(request: Request) -> Response:
     return templates.TemplateResponse(
         request,
         "mcp_consent.html",
-        {"req": None, "client_name": None, "notify": False, "error": None,
+        {"req": None, "client_name": None, "notify": False, "plan": False, "error": None,
          "expired": True},
         status_code=400,
     )

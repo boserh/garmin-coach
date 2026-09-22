@@ -1,0 +1,38 @@
+[Unit]
+Description=Garmin Bot — plan-move MCP server (write-only, one session move at a time)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/garmin_bot
+EnvironmentFile=/home/pi/garmin_bot/.env
+# Needs the opt-in extra: pip install -e ".[mcp]"
+#
+# A THIRD service next to garmin-mcp.service (read-only) and garmin-mcp-notify.service
+# (write-only monitoring channel): this one proposes moving ONE already-planned session
+# and sends it to the athlete's own Telegram chat for a ✅/❌ tap — nothing is applied
+# without that tap, and it never calls Claude. Own process/origin/OAuth scope, same
+# reasoning as the notify split — see app/mcp_plan.py's module docstring.
+#
+# Requires in .env:
+#   MCP_PLAN_PUBLIC_URL   the public HTTPS origin THIS service is reached at
+#                         (its own hostname/tunnel — not MCP_PUBLIC_URL's or
+#                         MCP_NOTIFY_PUBLIC_URL's)
+#   TELEGRAM_BOT_TOKEN    the main product bot — proposals land in the athlete's
+#                         normal coaching chat, confirmed by the SAME adapt_callback
+#                         the weekly plan-adaptation review already uses
+# The process refuses to start without TELEGRAM_BOT_TOKEN rather than accepting
+# connections it can only fail to propose from.
+#
+# --host 127.0.0.1 is deliberate and should stay: this speaks plain HTTP and carries
+# bearer tokens, so it must never be reachable except through the tunnel/proxy that
+# terminates TLS in front of it. The DNS-rebinding allow-list is derived from
+# MCP_PLAN_PUBLIC_URL, so the loopback bind does not break the proxied Host header.
+ExecStart=/home/pi/garmin_bot/venv/bin/python -m app.mcp_plan \
+    --transport http --host 127.0.0.1 --port 8790
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

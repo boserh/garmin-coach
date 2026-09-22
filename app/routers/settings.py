@@ -61,6 +61,10 @@ async def info_page(request: Request, user: User = Depends(current_user)):
                 settings.MCP_PUBLIC_URL.rstrip("/") + "/mcp"
                 if settings.MCP_PUBLIC_URL else None
             ),
+            "mcp_plan_url": (
+                settings.MCP_PLAN_PUBLIC_URL.rstrip("/") + "/mcp"
+                if settings.MCP_PLAN_PUBLIC_URL else None
+            ),
         },
     )
 

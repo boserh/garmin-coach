@@ -142,6 +142,18 @@ class Settings(BaseSettings):
     MCP_NOTIFY_RATE_LIMIT: int = 20
     MCP_NOTIFY_RATE_WINDOW_S: int = 3600
 
+    # --- Plan-move MCP server (app.mcp_plan) ---
+    # Its own public HTTPS origin, same reasoning as MCP_NOTIFY_PUBLIC_URL: the coach
+    # endpoint stays read-only, and this narrow write tool (propose moving ONE already
+    # planned session to another date — nothing else, no LLM call) lives behind its own
+    # URL/issuer/scope so a coach-scoped token can never reach it. Unset → `python -m
+    # app.mcp_plan` refuses to start; the coach server is unaffected.
+    MCP_PLAN_PUBLIC_URL: Optional[str] = None
+    # Sliding-window cap on proposals one account may push through the tool — a client
+    # stuck in a loop would otherwise spam the athlete's own Telegram chat. 0 disables it.
+    MCP_PLAN_RATE_LIMIT: int = 10
+    MCP_PLAN_RATE_WINDOW_S: int = 3600
+
     # --- Database ---
     # Default SQLite runs zero-config on a Raspberry Pi; switch to Postgres by
     # setting DATABASE_URL=postgresql+asyncpg://... — no code changes needed.
