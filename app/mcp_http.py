@@ -1,10 +1,12 @@
-"""Shared http-transport plumbing for the MCP servers (coach + monitoring notify).
+"""Shared http-transport plumbing for the MCP servers (coach + monitoring notify + plan
+move).
 
-Two MCP processes now run from this repo — :mod:`app.mcp_server` (NF-08, read-only) and
-:mod:`app.mcp_notify` (the write-only monitoring channel) — deliberately as separate
+Three MCP processes now run from this repo — :mod:`app.mcp_server` (NF-08, read-only),
+:mod:`app.mcp_notify` (the write-only monitoring channel) and :mod:`app.mcp_plan` (the
+write-only, one-move-at-a-time plan proposal channel) — deliberately as separate
 services on separate origins. What they share is the *transport*: the same OAuth 2.1
 authorization server, the same consent screen, the same DNS-rebinding trap. That is
-plumbing, not policy, so it lives here once instead of being copied into the second
+plumbing, not policy, so it lives here once instead of being copied into each new
 server and drifting.
 
 What they do NOT share is the scope: each server declares the one scope its own tools
