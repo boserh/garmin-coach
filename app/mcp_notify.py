@@ -55,7 +55,7 @@ from app.core.logging import setup as setup_logging
 from app.core.ratelimit import RateLimiter
 from app.db import users
 from app.db.base import async_session_maker, init_db
-from app.notify import NotifyError, send_monitor_message
+from app.notify import NotifyError, monitor_chat_ids, send_monitor_message
 
 logger = logging.getLogger("mcp.notify")
 
@@ -101,8 +101,12 @@ async def send_message(
     it out for plain text. Malformed markup is retried unformatted rather than dropped.
     `silent` delivers without a notification sound.
 
-    Returns {"sent": true, "parts": N}. This tool sends only — it cannot read anything,
-    and it is the only tool on this endpoint.
+    The channel may have several subscribers; each gets the whole text. Returns
+    {"sent": true, "parts": N, "recipients": R, "failed": F}. A non-zero `failed` means
+    some subscribers could not be reached (logged on the server) — do NOT resend, the
+    others already have it. An error is raised only when nobody received it.
+    This tool sends only — it cannot read anything, and it is the only tool on this
+    endpoint.
     """
     who = await _authorize()
     if not _limiter.allow(who):
@@ -112,13 +116,15 @@ async def send_message(
             f"{settings.MCP_NOTIFY_RATE_WINDOW_S}s). Nothing was sent."
         )
     try:
-        parts = await send_monitor_message(text, parse_mode=parse_mode, silent=silent)
+        sent = await send_monitor_message(text, parse_mode=parse_mode, silent=silent)
     except NotifyError as exc:
         # The MCP client is a language model: hand it the actionable sentence, not a
         # traceback it will paste into the channel it just failed to write to.
         raise ValueError(str(exc)) from exc
-    logger.info("NOTIFY: %s sent a monitoring message (%d part(s))", who, parts)
-    return {"sent": True, "parts": parts}
+    logger.info("NOTIFY: %s sent a monitoring message (%d part(s) to %d chat(s))",
+                who, sent.parts, sent.delivered)
+    return {"sent": True, "parts": sent.parts,
+            "recipients": sent.delivered, "failed": sent.failed}
 
 
 _TOOLS = (send_message,)
@@ -163,7 +169,11 @@ def main(argv=None) -> None:
     # Refuse to start rather than accept connections that can only fail at send time —
     # a monitoring channel that answers "not configured" every morning is worse than one
     # that never came up.
-    if not settings.TELEGRAM_MONITOR_BOT_TOKEN or settings.TELEGRAM_MONITOR_CHAT_ID is None:
+    try:
+        chat_ids = monitor_chat_ids()
+    except NotifyError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not settings.TELEGRAM_MONITOR_BOT_TOKEN or not chat_ids:
         raise SystemExit(
             "TELEGRAM_MONITOR_BOT_TOKEN and TELEGRAM_MONITOR_CHAT_ID must both be set: "
             "this server has nothing to deliver to without them."

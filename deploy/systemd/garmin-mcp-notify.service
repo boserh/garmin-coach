@@ -18,7 +18,8 @@ EnvironmentFile=/home/pi/garmin_bot/.env
 #   MCP_NOTIFY_PUBLIC_URL      the public HTTPS origin THIS service is reached at
 #                              (its own hostname/tunnel — not MCP_PUBLIC_URL's)
 #   TELEGRAM_MONITOR_BOT_TOKEN the monitoring bot identity
-#   TELEGRAM_MONITOR_CHAT_ID   where it writes
+#   TELEGRAM_MONITOR_CHAT_ID   where it writes: one chat id, or several comma-separated
+#                              (each subscriber presses Start on the bot first)
 # The process refuses to start without them rather than accepting connections it can
 # only fail to deliver on.
 #

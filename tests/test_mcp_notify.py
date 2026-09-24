@@ -19,12 +19,15 @@ class _FakeBot:
     ``fail_parse_mode`` only when the send carried one, which is how a malformed-markup
     rejection actually presents."""
 
-    def __init__(self, *, fail_parse_mode=False, fail_always=False):
+    def __init__(self, *, fail_parse_mode=False, fail_always=False, fail_chats=()):
         self.sent = []
         self.fail_parse_mode = fail_parse_mode
         self.fail_always = fail_always
+        self.fail_chats = set(fail_chats)
 
     async def send_message(self, chat_id, text, parse_mode=None, disable_notification=False):
+        if chat_id in self.fail_chats:
+            raise RuntimeError("Forbidden: bot was blocked by the user")
         if self.fail_always or (self.fail_parse_mode and parse_mode):
             raise RuntimeError("Bad Request: can't parse entities")
         self.sent.append((chat_id, text, parse_mode, disable_notification))
@@ -34,7 +37,7 @@ class _FakeBot:
 def bot(monkeypatch):
     fake = _FakeBot()
     monkeypatch.setattr(notify, "_get_bot", lambda: fake)
-    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", -100500)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "-100500")
     return fake
 
 
@@ -72,7 +75,7 @@ def test_split_respects_the_limit_for_every_part():
 
 
 async def test_send_delivers_one_message(bot):
-    assert await notify.send_monitor_message("тривога") == 1
+    assert await notify.send_monitor_message("тривога") == (1, 1, 0)
     assert bot.sent == [(-100500, "тривога", None, False)]
 
 
@@ -93,15 +96,15 @@ async def test_malformed_markup_is_resent_as_plain_text(monkeypatch):
     """A brief that arrives unformatted beats one that doesn't arrive."""
     fake = _FakeBot(fail_parse_mode=True)
     monkeypatch.setattr(notify, "_get_bot", lambda: fake)
-    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", 42)
-    assert await notify.send_monitor_message("_bad", parse_mode="Markdown") == 1
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42")
+    assert (await notify.send_monitor_message("_bad", parse_mode="Markdown")).parts == 1
     assert fake.sent == [(42, "_bad", None, False)]
 
 
 async def test_send_failure_raises_with_an_actionable_message(monkeypatch):
     fake = _FakeBot(fail_always=True)
     monkeypatch.setattr(notify, "_get_bot", lambda: fake)
-    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", 42)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42")
     with pytest.raises(notify.NotifyError) as exc:
         await notify.send_monitor_message("щось")
     assert "press Start" in str(exc.value)
@@ -109,7 +112,7 @@ async def test_send_failure_raises_with_an_actionable_message(monkeypatch):
 
 async def test_send_refuses_without_a_bot_token(monkeypatch):
     monkeypatch.setattr(notify, "_get_bot", lambda: None)
-    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", 42)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42")
     with pytest.raises(notify.NotifyError, match="TELEGRAM_MONITOR_BOT_TOKEN"):
         await notify.send_monitor_message("щось")
 
@@ -119,6 +122,45 @@ async def test_send_refuses_without_a_chat_id(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", None)
     with pytest.raises(notify.NotifyError, match="TELEGRAM_MONITOR_CHAT_ID"):
         await notify.send_monitor_message("щось")
+
+
+# --- several subscribers --------------------------------------------------------------
+
+
+def test_chat_ids_parse_one_or_many():
+    assert notify.monitor_chat_ids(None) == []
+    assert notify.monitor_chat_ids("  ") == []
+    assert notify.monitor_chat_ids("42") == [42]
+    assert notify.monitor_chat_ids(" 42, -100500 ,,42") == [42, -100500]
+
+
+def test_chat_ids_refuse_a_malformed_entry():
+    # A typo'd subscriber silently never receiving anything is what nobody notices.
+    with pytest.raises(notify.NotifyError, match="'@bob'"):
+        notify.monitor_chat_ids("42,@bob")
+
+
+async def test_send_delivers_to_every_subscriber(bot, monkeypatch):
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42, 43")
+    assert await notify.send_monitor_message("z" * 9000, silent=True) == (3, 2, 0)
+    assert [c for c, *_ in bot.sent] == [42, 42, 42, 43, 43, 43]
+    assert all(silent for *_, silent in bot.sent)
+
+
+async def test_one_blocked_subscriber_does_not_cost_the_others(monkeypatch):
+    fake = _FakeBot(fail_chats={42})
+    monkeypatch.setattr(notify, "_get_bot", lambda: fake)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42,43")
+    assert await notify.send_monitor_message("звіт") == (1, 1, 1)
+    assert fake.sent == [(43, "звіт", None, False)]
+
+
+async def test_send_raises_only_when_nobody_got_it(monkeypatch):
+    fake = _FakeBot(fail_chats={42, 43})
+    monkeypatch.setattr(notify, "_get_bot", lambda: fake)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42,43")
+    with pytest.raises(notify.NotifyError, match="press Start"):
+        await notify.send_monitor_message("звіт")
 
 
 async def test_send_refuses_an_empty_message(bot):
@@ -213,7 +255,7 @@ def _fresh_limiter(monkeypatch):
 async def test_tool_sends_over_stdio_without_a_token(bot, monkeypatch):
     monkeypatch.setattr(mcp_notify, "get_access_token", lambda: None)
     got = await mcp_notify.send_message("ранковий звіт")
-    assert got == {"sent": True, "parts": 1}
+    assert got == {"sent": True, "parts": 1, "recipients": 1, "failed": 0}
     assert bot.sent[0][1] == "ранковий звіт"
 
 
@@ -223,7 +265,7 @@ async def test_tool_allows_an_admin_token(session, bot, monkeypatch):
     await session.commit()
     monkeypatch.setattr(mcp_notify, "async_session_maker", _FakeMaker(session))
     monkeypatch.setattr(mcp_notify, "get_access_token", lambda: _Token(admin.id))
-    assert await mcp_notify.send_message("ok") == {"sent": True, "parts": 1}
+    assert (await mcp_notify.send_message("ok"))["sent"] is True
 
 
 async def test_tool_refuses_a_non_admin_token(session, bot, monkeypatch):
@@ -251,7 +293,7 @@ async def test_tool_rate_limits(bot, monkeypatch):
 async def test_tool_turns_a_delivery_failure_into_a_client_error(monkeypatch):
     monkeypatch.setattr(mcp_notify, "get_access_token", lambda: None)
     monkeypatch.setattr(notify, "_get_bot", lambda: None)
-    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", 1)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "1")
     with pytest.raises(ValueError, match="TELEGRAM_MONITOR_BOT_TOKEN"):
         await mcp_notify.send_message("щось")
 
@@ -283,7 +325,14 @@ def test_notify_server_refuses_to_start_unconfigured(monkeypatch):
 
 def test_notify_http_refuses_to_start_without_a_public_url(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_MONITOR_BOT_TOKEN", "t")
-    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", 1)
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "1")
     monkeypatch.setattr(settings, "MCP_NOTIFY_PUBLIC_URL", None)
     with pytest.raises(SystemExit, match="MCP_NOTIFY_PUBLIC_URL"):
         mcp_notify.main(["--transport", "http"])
+
+
+def test_notify_server_refuses_to_start_with_a_malformed_chat_list(monkeypatch):
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_BOT_TOKEN", "t")
+    monkeypatch.setattr(settings, "TELEGRAM_MONITOR_CHAT_ID", "42,oops")
+    with pytest.raises(SystemExit, match="malformed"):
+        mcp_notify.main([])
