@@ -83,10 +83,13 @@ class Settings(BaseSettings):
     TELEGRAM_MONITOR_BOT_TOKEN: Optional[str] = None
     # Where that bot writes. Deployment-global on purpose: the monitoring channel belongs
     # to the install, not to an athlete's account, so it is NOT read off User.
-    # telegram_chat_id. A private chat id (press Start on the bot first — Telegram forbids
-    # a bot from opening a conversation), or a group/channel id the bot was added to.
+    # telegram_chat_id. One chat id or several, comma-separated (`123,456,-100789`) —
+    # every subscriber gets the same message. Each is a private chat id (that person
+    # pressed Start on the bot first — Telegram forbids a bot from opening a
+    # conversation), or a group/channel id the bot was added to. A string, not an int,
+    # so the list form parses; `app.notify.monitor_chat_ids` is the one reader.
     # Unset → the notify tool refuses to send.
-    TELEGRAM_MONITOR_CHAT_ID: Optional[int] = None
+    TELEGRAM_MONITOR_CHAT_ID: Optional[str] = None
 
     # --- Auth / secrets ---
     # Master key for Fernet credential encryption AND cookie-session signing.
