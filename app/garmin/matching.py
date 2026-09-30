@@ -167,6 +167,35 @@ async def match_activities(session: AsyncSession, user_id: int) -> dict:
     }
 
 
+def distance_verdict(plan_dist: float, actual_dist: float) -> str:
+    """``done`` or ``partial`` for a matched session, by how far the distance landed from
+    the plan (> :data:`DIST_PARTIAL_THRESH` → partial). No planned distance → done."""
+    if plan_dist and plan_dist > 0:
+        if abs((actual_dist or 0.0) - plan_dist) / plan_dist > DIST_PARTIAL_THRESH:
+            return WorkoutStatus.PARTIAL
+    return WorkoutStatus.DONE
+
+
+def rescore_distance(w, dist_km: float) -> Optional[tuple]:
+    """What an already-matched session's verdict becomes once its planned ``dist_km`` is
+    corrected to ``dist_km`` (``app.cli fix-plan-steps``) — matching only ever looks at
+    ``planned`` rows, so a verdict scored against a wrong headline would otherwise stand
+    for good. Returns ``(status, match_info)`` to store, or None when nothing changes, the
+    row isn't auto-matched, or it was corrected by hand (ST-21). Pure: mutates nothing."""
+    info = w.match_info if isinstance(w.match_info, dict) else None
+    if (info is None or _is_manual(w)
+            or w.status not in (WorkoutStatus.DONE, WorkoutStatus.PARTIAL)):
+        return None
+    actual = info.get("actual_dist_km")
+    if not isinstance(actual, (int, float)):
+        return None
+    delta = round(actual - (dist_km or 0.0), 2)
+    status = distance_verdict(dist_km or 0.0, actual)
+    if delta == info.get("dist_delta_km") and status == w.status:
+        return None
+    return status, {**info, "dist_delta_km": delta}
+
+
 async def _match_distance_based(
     session: AsyncSession, plan, user_id: int, today_s: str, *,
     plan_types: set, act_substrs: tuple, with_pace: bool,
@@ -229,10 +258,6 @@ async def _match_distance_based(
 
         plan_dist = w.dist_km or 0.0
         actual_dist = best.dist_km or 0.0
-        if plan_dist > 0:
-            delta_pct = abs(actual_dist - plan_dist) / plan_dist
-        else:
-            delta_pct = 0.0
 
         match_info = {
             "dist_delta_km": round(actual_dist - plan_dist, 2),
@@ -257,11 +282,10 @@ async def _match_distance_based(
         w.completed_activity_id = best.id
         w.match_info = match_info
 
-        if delta_pct > DIST_PARTIAL_THRESH:
-            w.status = WorkoutStatus.PARTIAL
+        w.status = distance_verdict(plan_dist, actual_dist)
+        if w.status == WorkoutStatus.PARTIAL:
             partial += 1
         else:
-            w.status = WorkoutStatus.DONE
             done += 1
 
         logger.info(

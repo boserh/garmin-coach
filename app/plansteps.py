@@ -24,6 +24,9 @@ Rules here:
   and warmup/cooldown/recovery keep their prescribed length, because a coach who cuts volume
   cuts the work, not the warmup; only when the fixed parts alone already exceed the target
   does everything scale proportionally.
+* ``undercounts`` / ``estimate_dist_m`` — the one exception to "timed metres are not ours":
+  a headline no bigger than the distance steps alone is wrong for certain (it left the
+  timed steps out), so it is replaced by an estimate at each step's target pace.
 * ``reconcile`` — the one decision table both writers use.
 """
 
@@ -94,6 +97,67 @@ def describes_distance(steps) -> bool:
     one and none is timed. Only then may the headline be compared to, derived from, or
     rescaled against the steps; a mixed session's metres are simply unknown here."""
     return total_dist_m(steps) is not None and not has_timed_steps(steps)
+
+
+# Paces used to turn a TIMED step into metres when nothing better is known. The easy
+# anchor times an untargeted step (a recovery jog); an HR-zone step is scaled off it.
+# Shared with the plan page's "~NN хв" estimate, which runs the same conversion backwards.
+DEFAULT_EASY_PACE_MIN_KM = 6.5
+ZONE_PACE_FACTOR = {1: 1.12, 2: 1.0, 3: 0.90, 4: 0.83, 5: 0.76}
+
+
+def step_pace_min_km(s: dict, anchor: float = DEFAULT_EASY_PACE_MIN_KM) -> float:
+    """Best pace (min/km) to convert a step by: the midpoint of its own range if given,
+    else its HR zone scaled off the easy anchor, else the anchor itself."""
+    p = s.get("pace_min_km")
+    if isinstance(p, (list, tuple)) and len(p) == 2 and all(_is_num(x) for x in p):
+        return (float(p[0]) + float(p[1])) / 2
+    z = s.get("hr_zone")
+    if isinstance(z, int) and z in ZONE_PACE_FACTOR:
+        return anchor * ZONE_PACE_FACTOR[z]
+    return anchor
+
+
+def estimate_dist_m(steps, anchor: float = DEFAULT_EASY_PACE_MIN_KM) -> Optional[float]:
+    """Whole-session metres INCLUDING timed steps (each converted at
+    :func:`step_pace_min_km`), or None when no step carries a distance or a duration.
+    An estimate — only for when the alternative is a headline known to be wrong."""
+    total = 0.0
+    seen = False
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("kind") == "repeat":
+            inner = estimate_dist_m(s.get("steps"), anchor)
+            if inner is not None:
+                total += inner * max(int(s.get("reps") or 1), 1)
+                seen = True
+            continue
+        dm, ds = s.get("dist_m"), s.get("dur_s")
+        if _is_num(dm):
+            total += float(dm)
+            seen = True
+        elif _is_num(ds) and ds > 0:
+            total += float(ds) / 60.0 / step_pace_min_km(s, anchor) * 1000.0
+            seen = True
+    return total if seen else None
+
+
+def undercounts(dist_km: Optional[float], steps) -> bool:
+    """True when a partly-timed session's headline can't be right: it is no more than the
+    distance steps ALONE, so the timed steps' ground is missing from it.
+
+    "Розминка 1.5 км + 5×(2 хв + 2 хв) + заминка 1.5 км" written as 3.0 km — the model
+    summed the metres it could see. That number then drives plan-vs-actual matching (a
+    correctly run 6.2 km session came back ``partial``, "+3.17 км") and the analyst's
+    "майже вдвічі більше плану". A headline ABOVE the distance steps is left alone: the
+    extra is the timed part, and how much of it is the coach's call, not ours."""
+    if not _is_num(dist_km) or dist_km <= 0 or not has_timed_steps(steps):
+        return False
+    fixed = total_dist_m(steps)
+    if fixed is None or fixed <= 0:
+        return False
+    return float(dist_km) * 1000.0 <= fixed * (1 + TOLERANCE)
 
 
 def _work_dist_m(steps) -> float:
@@ -233,6 +297,12 @@ def reconcile(dist_km: Optional[float], steps, *, steps_given: bool):
       coach just decided) and the stale steps are re-cut to match it.
     """
     if not describes_distance(steps):
+        if undercounts(dist_km, steps):
+            # A headline that leaves out the timed steps entirely is wrong for certain;
+            # an estimate of them is closer than a number known to be short.
+            est = estimate_dist_m(steps)
+            if est is not None:
+                return round(est / 1000.0, 1), steps
         return dist_km, steps          # purely or partly timed — the metres are not ours to judge
     total = total_dist_m(steps)
     if total <= 0:
@@ -248,4 +318,5 @@ def reconcile(dist_km: Optional[float], steps, *, steps_given: bool):
 
 
 __all__: List[str] = ["TOLERANCE", "total_dist_m", "has_timed_steps",
-                      "describes_distance", "scale_steps", "mismatch", "reconcile"]
+                      "describes_distance", "estimate_dist_m", "undercounts",
+                      "step_pace_min_km", "scale_steps", "mismatch", "reconcile"]

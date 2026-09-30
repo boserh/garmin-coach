@@ -550,9 +550,13 @@ async def _fix_plan_steps(email: str, apply: bool) -> int:
     Pure DB: 0 Claude calls, 0 Garmin requests. Read-only unless ``--apply``. The stored
     ``dist_km`` is the coach's intent, so the steps are re-cut to it (``app.plansteps``).
     Sessions already pushed to Garmin still carry the OLD workout — the printed list tells
-    you which; ``unpush-plan`` + ``push-plan`` re-pushes them."""
+    you which; ``unpush-plan`` + ``push-plan`` re-pushes them.
+
+    Also fixes the reverse case: a session partly prescribed in TIME whose headline counts
+    only its distance steps ("1.5 км + 5×2 хв + 1.5 км" stored as 3.0) — there the steps are
+    right and only ``dist_km`` is rewritten (``plansteps.undercounts``), no re-push needed."""
     from app import plansteps
-    from app.garmin import repository
+    from app.garmin import matching, repository
 
     async with cli_user(email) as (session, user):
         plan = await repository.get_active_plan(session, user.id)
@@ -561,6 +565,24 @@ async def _fix_plan_steps(email: str, apply: bool) -> int:
             return 1
         fixed = pushed = 0
         for w in await repository.list_workouts(session, plan.id):
+            if plansteps.undercounts(w.dist_km, w.steps):
+                # A partly-timed session whose headline left the timed steps out. Only the
+                # headline changes — the steps (what the watch runs) were right all along,
+                # so nothing needs a re-push.
+                old_km = w.dist_km
+                new_km, _ = plansteps.reconcile(old_km, w.steps, steps_given=False)
+                if new_km != old_km:
+                    fixed += 1
+                    rescored = matching.rescore_distance(w, new_km)
+                    note = (f", status {w.status} → {rescored[0]}"
+                            if rescored and rescored[0] != w.status else "")
+                    print(f"  {w.date} {w.type or '':<10} dist_km={old_km} → {new_km} "
+                          f"(timed steps were left out of the headline{note})")
+                    if apply:
+                        w.dist_km = new_km
+                        if rescored:
+                            w.status, w.match_info = rescored
+                continue
             gap = plansteps.mismatch(w.dist_km, w.steps)
             if gap is None or gap <= plansteps.TOLERANCE:
                 continue

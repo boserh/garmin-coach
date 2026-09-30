@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
 from app import goal as goal_mod
+from app import plansteps, stepmatch, weather
 from app import race as race_mod
-from app import stepmatch, weather
 from app.analysis.service import (
     ADJUST_LEVELS,
     AnalystError,
@@ -126,34 +126,10 @@ def _pace(dec: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-# Easy-pace anchor (min/km) used when a user has no run history yet to derive one from.
-_DEFAULT_PACE_MIN_KM = 6.5
-
-# HR zone → pace as a multiple of the easy (≈ zone 2) anchor pace: a distance step that
-# only prescribes an HR zone gets a *directional* pace so fast strides (zone 5) aren't
-# timed at the same speed as an easy jog. Rough on purpose — this is an approximation.
-_ZONE_PACE_FACTOR = {1: 1.12, 2: 1.0, 3: 0.90, 4: 0.83, 5: 0.76}
-
-
-def _step_mid_pace(s: dict) -> Optional[float]:
-    """Midpoint of a step's ``pace_min_km`` range, or None."""
-    p = s.get("pace_min_km")
-    if isinstance(p, (list, tuple)) and len(p) == 2 and all(
-            isinstance(x, (int, float)) for x in p):
-        return (float(p[0]) + float(p[1])) / 2
-    return None
-
-
-def _step_pace_for_est(s: dict, anchor: float) -> float:
-    """Best pace (min/km) to time a distance step by: its own range if given, else its HR
-    zone scaled off the easy anchor, else the anchor itself (an untargeted recovery jog)."""
-    mid = _step_mid_pace(s)
-    if mid is not None:
-        return mid
-    z = s.get("hr_zone")
-    if isinstance(z, int) and z in _ZONE_PACE_FACTOR:
-        return anchor * _ZONE_PACE_FACTOR[z]
-    return anchor
+# Easy-pace anchor and HR-zone factors live in app.plansteps — the same conversion
+# estimates a timed step's metres there.
+_DEFAULT_PACE_MIN_KM = plansteps.DEFAULT_EASY_PACE_MIN_KM
+_step_pace_for_est = plansteps.step_pace_min_km
 
 
 def _steps_seconds(steps, anchor: float) -> float:

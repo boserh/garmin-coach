@@ -65,6 +65,26 @@ def test_a_correct_headline_over_timed_work_is_neither_flagged_nor_overwritten()
     assert plansteps.reconcile(6.0, TIMED_INTERVALS, steps_given=False) == (6.0, TIMED_INTERVALS)
 
 
+def test_a_headline_that_leaves_out_the_timed_steps_is_estimated_instead():
+    """The 2026-09-30 row: the same session stored as 3.0 km — just the warmup + cooldown.
+    Matching then called a correctly run 6.17 km 'partial, +3.17 км'. A headline no bigger
+    than the distance steps alone is wrong for certain; the timed steps are estimated at
+    their own target pace (work) and the easy anchor (recovery)."""
+    assert plansteps.undercounts(3.0, TIMED_INTERVALS)
+    assert not plansteps.undercounts(6.0, TIMED_INTERVALS)    # the coach's call — kept
+    assert not plansteps.undercounts(3.0, INTERVALS)          # not timed: mismatch()'s job
+    km, steps = plansteps.reconcile(3.0, TIMED_INTERVALS, steps_given=True)
+    assert steps == TIMED_INTERVALS                           # what the watch runs is untouched
+    assert km == 6.2                                          # 3000 + 5×~329 + 5×~308 m
+    assert plansteps.reconcile(3.0, TIMED_INTERVALS, steps_given=False)[0] == 6.2
+
+
+def test_a_purely_timed_session_is_never_estimated():
+    timed = [{"kind": "run", "dur_s": 1800, "hr_zone": 2}]
+    assert not plansteps.undercounts(1.0, timed)
+    assert plansteps.reconcile(1.0, timed, steps_given=True) == (1.0, timed)
+
+
 def test_timed_work_is_never_rescaled():
     # scaling to 5 km would shrink the warmup/cooldown and leave the intervals — the very
     # opposite of "a coach who cuts volume cuts the work"
@@ -251,3 +271,44 @@ async def test_fix_plan_steps_applies_and_flags_the_pushed_ones(_cli_session, ca
     assert "needs a re-push" in out and "unpush-plan" in out
     w = (await repository.list_workouts(session, plan.id))[0]
     assert plansteps.total_dist_m(w.steps) == 5000
+
+
+async def _seed_timed_partial(session):
+    """The 2026-09-30 row as stored: 3.0 km headline, matched to a 6.17 km run → partial."""
+    user = User(email="fix@x.com", password_hash="h")
+    user = User(email="fix@x.com", password_hash="h")
+    session.add(user)
+    await session.commit()
+    plan = TrainingPlan(user_id=user.id, goal="g", status="active", start_date="2026-08-01")
+    session.add(plan)
+    await session.flush()
+    session.add(PlannedWorkout(
+        plan_id=plan.id, user_id=user.id, date="2026-09-30", type="intervals",
+        dist_km=3.0, description="5×2 хв", steps=TIMED_INTERVALS, status="partial",
+        match_info={"dist_delta_km": 3.17, "actual_dist_km": 6.17,
+                    "activity_date": "2026-09-30"},
+        garmin_workout_id=99))
+    await session.commit()
+    return plan
+
+
+async def test_fix_plan_steps_repairs_a_headline_missing_its_timed_steps(_cli_session, capsys):
+    session = _cli_session
+    plan = await _seed_timed_partial(session)
+    assert await cli._fix_plan_steps("fix@x.com", apply=True) == 0
+    out = capsys.readouterr().out
+    assert "dist_km=3.0 → 6.2" in out and "partial → done" in out
+    assert "needs a re-push" not in out     # the steps were right; only the headline moved
+    w = (await repository.list_workouts(session, plan.id))[0]
+    assert w.dist_km == 6.2 and w.steps == TIMED_INTERVALS
+    # the verdict scored against the wrong headline is re-derived, not left standing
+    assert w.status == "done" and w.match_info["dist_delta_km"] == -0.03
+
+
+async def test_fix_plan_steps_headline_repair_is_a_dry_run_by_default(_cli_session, capsys):
+    session = _cli_session
+    plan = await _seed_timed_partial(session)
+    assert await cli._fix_plan_steps("fix@x.com", apply=False) == 0
+    assert "Would fix 1" in capsys.readouterr().out
+    w = (await repository.list_workouts(session, plan.id))[0]
+    assert w.dist_km == 3.0 and w.status == "partial"
