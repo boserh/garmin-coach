@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     # Morning one-off nudge fires only when today's readiness score is below this AND
     # today's plan session is tempo/intervals/long.
     PLAN_ADAPT_READINESS_MIN: int = 50
+    # After a structured session whose working steps ALL missed on the same side
+    # (stepmatch.calibration), propose re-set pace targets for the upcoming structured
+    # sessions — one adaptation call, then quiet for PLAN_CALIBRATION_GUARD_DAYS.
+    PLAN_CALIBRATION: bool = True
+    PLAN_CALIBRATION_GUARD_DAYS: int = 7
 
     # --- Weekly digest (EP-07) ---
     # Sunday-evening retrospective (volume/compliance vs last week, recovery/fitness

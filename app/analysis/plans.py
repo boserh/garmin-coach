@@ -469,7 +469,12 @@ async def run_plan_extension(
     intake = plan.intake or {}
     existing = await repository.list_workouts(session, plan.id)
     # The tail of the existing plan so the model continues progression, not restarts.
-    tail = [{"date": w.date, "type": w.type, "dist_km": w.dist_km} for w in existing[-18:]]
+    # ``work_pace`` so a pace target re-set by calibration (or by hand) is where the next
+    # block starts from — without it "continue the paces" had no paces to continue.
+    from app import stepmatch
+    tail = [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
+             **({"work_pace": wp} if (wp := stepmatch.work_pace(w.steps)) else {})}
+            for w in existing[-18:]]
     week_offset = max((w.week or 0) for w in existing) if existing else 0
 
     recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
@@ -877,6 +882,7 @@ async def run_plan_adaptation(
     session, *, user_id: int, api_key: Optional[str] = None,
     trigger: str = "weekly", window_days: int = ADAPT_WINDOW_DAYS_DEFAULT,
     risk: Optional[dict] = None, today: Optional[dt.date] = None,
+    calibration: Optional[dict] = None,
 ):
     """Look at the active plan's upcoming window, compliance (EP-01) and recovery/load
     signals; propose a correction (empty ``operations`` if the plan is fine). Does NOT
@@ -899,7 +905,10 @@ async def run_plan_adaptation(
     evidence, not re-derived here. ``today`` (ST-14) is the athlete's OWN date; every
     caller that knows it must pass it, or the window, the compliance cutoff and the
     freshness of the fitness snapshot are all measured against the server's day instead
-    of the one the athlete is living in.
+    of the one the athlete is living in. ``calibration`` (with ``trigger="calibration"``)
+    is ``stepmatch.calibration``'s verdict on the session just run plus its date/type —
+    every working step missed on the same side, so the pace TARGETS of the upcoming
+    structured sessions are what gets re-set, not the volume.
     """
     from app.garmin import repository
 
@@ -942,8 +951,12 @@ async def run_plan_adaptation(
         "adjust_level": level,
         "target_date": plan.target_date,
         "days_to_target": days_to_target,
+        # A structured session carries its steps: re-setting a pace target means sending
+        # them back changed, and the model can't keep a structure it was never shown.
         "upcoming": [{"date": w.date, "type": w.type, "dist_km": w.dist_km,
-                      "description": w.description} for w in ws],
+                      "description": w.description,
+                      **({"steps": w.steps} if stepmatch.work_pace(w.steps) else {})}
+                     for w in ws],
         "compliance": compliance or None,
         "fitness": fitness or None,
         "multisport": multisport,
@@ -951,6 +964,7 @@ async def run_plan_adaptation(
         "subjective": subjective_mod.summarize(subj_runs),
         "step_match": step_match,
         "risk": risk or None,
+        "calibration": calibration or None,
         "load_forecast": load_forecast,
         # NF-24: the SHAPE of the load, not just its size. Adaptation could previously only
         # move or shrink sessions; with the distribution in hand, a drift into the grey zone

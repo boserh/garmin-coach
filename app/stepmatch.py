@@ -256,6 +256,63 @@ def match(steps: Optional[list], laps: Optional[list]) -> Optional[dict]:
     return {"steps_hit": hit, "steps_total": total, "misses": misses, "steps": scored}
 
 
+# A session says "the targets are wrong", not "one bad rep", only when enough working
+# steps were run, nearly all of them missed on the SAME side, and by a margin no lap-noise
+# tolerance explains. Tuned against 2026-09-30: 5×2' on a 5:55–6:15 target run at
+# 5:05→4:19 (every rep 50–96 s/km fast) — the analyst said "raise the targets" and nothing
+# in the plan changed.
+CALIBRATION_MIN_STEPS = 3
+CALIBRATION_SAME_SIDE_SHARE = 0.8
+CALIBRATION_MIN_DELTA_S = 15
+
+
+def calibration(step_match: Optional[dict]) -> Optional[dict]:
+    """Whether one session's per-step result is a systematic miss worth re-calibrating the
+    plan's pace targets over: ``{"direction": "fast"|"slow", "steps", "missed",
+    "median_delta_s", "planned", "actual"}`` or ``None``.
+
+    Only steps actually run count (``delta_s`` present): a step never reached is an honest
+    miss for the counter but says nothing about whether the target pace was right."""
+    if not isinstance(step_match, dict):
+        return None
+    run = [s for s in step_match.get("steps") or []
+           if isinstance(s, dict) and isinstance(s.get("delta_s"), (int, float))]
+    if len(run) < CALIBRATION_MIN_STEPS:
+        return None
+    fast = [s for s in run if s["delta_s"] < 0]
+    slow = [s for s in run if s["delta_s"] > 0]
+    side, direction = (fast, "fast") if len(fast) >= len(slow) else (slow, "slow")
+    if len(side) < CALIBRATION_SAME_SIDE_SHARE * len(run):
+        return None
+    deltas = sorted(s["delta_s"] for s in run)
+    median = deltas[len(deltas) // 2] if len(deltas) % 2 else round(
+        (deltas[len(deltas) // 2 - 1] + deltas[len(deltas) // 2]) / 2)
+    if abs(median) < CALIBRATION_MIN_DELTA_S or (median < 0) != (direction == "fast"):
+        return None
+    return {
+        "direction": direction,
+        "steps": len(run),
+        "missed": len(side),
+        "median_delta_s": median,
+        "planned": run[0].get("planned"),
+        "actual": [s.get("actual") for s in run],
+    }
+
+
+def work_pace(steps: Optional[list]) -> Optional[list]:
+    """The first pace-targeted working step's ``[fast, slow]`` range — what a session's
+    "target pace" means when talking about it in one number (a proposal line, the tail an
+    extension continues from). ``None`` without one."""
+    for s in flatten_steps(steps):
+        p = s.get("pace_min_km")
+        if s.get("kind") in _WORKING_KINDS and isinstance(p, (list, tuple)) and len(p) == 2:
+            try:
+                return [round(float(p[0]), 2), round(float(p[1]), 2)]
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def badge(step_match: Optional[dict]) -> Optional[str]:
     """A compact "🎯 7/8 у цілі" label for the DM/detail page, or None without data."""
     if not step_match or not step_match.get("steps_total"):

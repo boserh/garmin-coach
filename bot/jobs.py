@@ -141,6 +141,9 @@ PLAN_SYNC_HOUR = 5
 # most once/day per user (guarded via bot_state, key below + today's date).
 ADAPT_HEAVY_TYPES = {"tempo", "intervals", "long"}
 ADAPT_GUARD_PREFIX = "adapt_suggested:"
+# Pace-target calibration after a structured session: ISO date of the last check that
+# reached Claude (bot_state), so a streak of fast sessions asks once, not every run.
+CALIBRATION_LAST_KEY = "plan_calibration_last"
 
 # Open-ended plan extend nudge: once-a-day guard keyed by date (bot_state extend_nudge:<date>),
 # so the morning "продовжити план?" ✅/❌ prompt is sent at most once per day per user.
@@ -481,6 +484,51 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
             logger.info(f"ACTIVITY_WATCH sent user={user.id} activity={act.id}")
         except Exception:
             logger.exception(f"ACTIVITY_WATCH failed user={user.id} activity={act.id}")
+            continue
+        # After the recap, so the proposal reads as the follow-up to "підніми темп".
+        await _calibration_check(ctx, session, user, creds, act)
+
+
+async def _calibration_check(ctx, session, user: User, creds, act) -> None:
+    """Turn "every rep was 50–96 s/km faster than the target" into a concrete proposal.
+
+    The activity analysis already SAYS the targets are off; until this, nothing in the plan
+    changed, so the next interval day was pushed to the watch at the same too-easy pace.
+    The zero-LLM detector (``stepmatch.calibration``) decides whether to ask at all; one
+    adaptation call (``trigger="calibration"``) then re-sets the pace targets of the
+    upcoming structured sessions, sent through the same ✅/❌ flow as every other
+    adaptation. Best-effort: nothing here may break the activity watch."""
+    try:
+        if (not settings.PLAN_CALIBRATION or not user.plan_adapt_enabled
+                or not user.telegram_chat_id or not creds.anthropic_key):
+            return
+        verdict = stepmatch.calibration(getattr(act, "step_match", None))
+        if verdict is None:
+            return
+        today_d = dt.datetime.now(user_tz(user)).date()
+        today = today_d.isoformat()
+        if _within_guard(await repository.get_state(session, user.id, CALIBRATION_LAST_KEY),
+                         today, settings.PLAN_CALIBRATION_GUARD_DAYS):
+            return
+        if await _has_pending_proposal(session, user.id):
+            return
+        workout = await repository.get_workout_for_activity(session, user.id, act.id)
+        verdict = {**verdict, "date": act.date,
+                   "type": workout.type if workout is not None else None}
+        # Burn the guard before the call: a failure or an "all fine" answer must not turn
+        # into a paid retry on every following tick.
+        await repository.set_state(session, user.id, CALIBRATION_LAST_KEY, today)
+        await session.commit()
+        plan, edit = await run_plan_adaptation(
+            session, user_id=user.id, api_key=creds.anthropic_key, trigger="calibration",
+            today=today_d, calibration=verdict,
+        )
+        if plan is None or edit is None or not edit.operations:
+            logger.info(f"CALIBRATION user={user.id} activity={act.id}: no change proposed")
+            return
+        await _send_adapt_proposal(ctx, session, user, plan.id, edit)
+    except Exception:
+        logger.exception(f"CALIBRATION failed user={user.id} activity={act.id}")
 
 
 async def _records_check_for_user(ctx, session, user: User) -> None:
@@ -1223,6 +1271,14 @@ async def _op_change_line(session, plan_id: int, op) -> str:
         return f"• {d} → {nd}: {what}"
     if op.action == "modify":
         parts = []
+        new_pace = stepmatch.work_pace(
+            [st.model_dump() for st in op.steps] if op.steps else None)
+        old_pace = stepmatch.work_pace(old.steps) if old else None
+        if new_pace and new_pace != old_pace:
+            # A re-set target is the whole point of a calibration proposal — "деталі сесії"
+            # left the athlete unable to see what they were agreeing to.
+            was = (f"{fmt.pace(old_pace[0])}–{fmt.pace(old_pace[1])}" if old_pace else "?")
+            parts.append(f"темп {was} → {fmt.pace(new_pace[0])}–{fmt.pace(new_pace[1])}/км")
         if op.dist_km is not None:
             was = f"{old.dist_km:.0f}" if old and old.dist_km else "?"
             parts.append(f"{was} → {op.dist_km:.0f} км")
