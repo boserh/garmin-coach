@@ -104,3 +104,19 @@ def require_public_url(value: Optional[str], *, var: str, transport: str = "http
             "https://mcp.example.com)."
         )
     return value
+
+
+# How long a restart waits for open requests before closing the rest. MCP clients hold a
+# long-lived streamable-HTTP stream open between calls, so "wait until every connection
+# closes" (uvicorn's default) never finishes: a deploy's restart hung until systemd's
+# 90 s stop timeout SIGKILLed the process, and the connector answered 502 all that time.
+GRACEFUL_SHUTDOWN_S = 5
+
+
+def serve(app, host: str, port: int) -> None:
+    """Run an MCP http app — the one ``uvicorn.run`` all three servers share, so the
+    shutdown bound above can't be forgotten on one of them. A client whose stream is cut
+    simply reconnects to the new process."""
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)

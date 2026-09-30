@@ -33,6 +33,10 @@ ExecStart=/home/pi/garmin_bot/venv/bin/python -m app.mcp_plan \
     --transport http --host 127.0.0.1 --port 8790
 Restart=on-failure
 RestartSec=5
+# Backstop for app.mcp_http.serve's 5 s graceful-shutdown bound: without either, a
+# client's open stream kept the stop waiting the default 90 s before SIGKILL, and the
+# connector answered 502 through every deploy.
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

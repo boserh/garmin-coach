@@ -204,7 +204,7 @@ def main(argv=None) -> None:
         return
 
     # http: identity per request, so no --email binding — and no way to fall back to one.
-    from app.mcp_http import http_app, require_public_url
+    from app.mcp_http import http_app, require_public_url, serve
 
     require_public_url(settings.MCP_PUBLIC_URL, var="MCP_PUBLIC_URL")
     if args.email:
@@ -212,13 +212,10 @@ def main(argv=None) -> None:
         # restricted to that one account, which is the opposite of how http mode works.
         raise SystemExit("--email is meaningless with --transport http: every request "
                          "carries its own OAuth identity.")
-    import uvicorn
-
     asyncio.run(init_db())
     logger.info(f"MCP server (http) on {args.host}:{args.port}, issuer {settings.MCP_PUBLIC_URL}")
     public = settings.MCP_PUBLIC_URL
-    uvicorn.run(http_app(build_server(public_url=public), public),
-                host=args.host, port=args.port)
+    serve(http_app(build_server(public_url=public), public), args.host, args.port)
 
 
 if __name__ == "__main__":
