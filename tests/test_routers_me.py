@@ -310,11 +310,20 @@ def test_send_telegram_success_regenerates_and_delivers(client, monkeypatch):
         return 1
 
     monkeypatch.setattr(notify_mod, "send_coach_message", fake_send)
+    import bot.jobs as jobs_mod
+    calibrations = []
+
+    async def fake_calibrate(user_id, row_id):
+        calibrations.append((user_id, row_id))
+
+    monkeypatch.setattr(jobs_mod, "calibrate_after_regenerate", fake_calibrate)
 
     client.post("/login", data={"email": "alice@example.com", "password": "pw"})
     r = client.post(f"/me/activities/{row}/send-telegram", follow_redirects=False)
     assert r.status_code == 303 and "tg=ok" in r.headers["location"]
     assert sent == [(777, "свіжий розбір")]
+    # the regenerated analysis may say "raise the targets" — the pace-target check follows
+    assert calibrations == [(aid, row)]
 
 
 # ---- strength exercise rows: reps + weight display ----

@@ -209,3 +209,124 @@ async def test_the_adaptation_context_carries_the_verdict_and_the_steps(session,
     assert captured["calibration"]["direction"] == "fast"
     up = {u["date"]: u for u in captured["upcoming"]}
     assert up[nxt]["steps"] == INTERVAL_STEPS
+
+
+# ---------- after a hand-regenerated analysis (web) ----------
+
+def _route_sessions(monkeypatch, session):
+    """calibrate_after_regenerate opens its own session (it runs after the response) —
+    point it at the test's in-memory one."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def maker():
+        yield session
+
+    monkeypatch.setattr(jobs_module, "async_session_maker", maker)
+
+
+class _FakeBotCM:
+    opened = 0
+
+    def __init__(self, token):
+        pass
+
+    async def __aenter__(self):
+        type(self).opened += 1
+        return _Bot()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def test_web_regenerate_runs_the_same_check_over_its_own_bot(session, monkeypatch):
+    import telegram
+
+    from app.core.config import settings
+
+    user, plan, act, nxt = await _setup(session)
+    _route_sessions(monkeypatch, session)
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(telegram, "Bot", _FakeBotCM)
+    _FakeBotCM.opened = 0
+    seen = []
+
+    async def fake_check(ctx, s, u, creds, a):
+        seen.append((u.id, a.id))
+
+    monkeypatch.setattr(jobs_module, "_calibration_check", fake_check)
+    await jobs_module.calibrate_after_regenerate(user.id, act.id)
+    assert seen == [(user.id, act.id)] and _FakeBotCM.opened == 1
+
+
+async def test_web_regenerate_without_a_signal_never_opens_a_bot(session, monkeypatch):
+    import telegram
+
+    from app.core.config import settings
+
+    near = {"steps": [_step(i, 5.8, -6) for i in (2, 4, 6, 8)]}
+    user, plan, act, _ = await _setup(session, step_match=near)
+    _route_sessions(monkeypatch, session)
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(telegram, "Bot", _FakeBotCM)
+    _FakeBotCM.opened = 0
+    check = AsyncMock()
+    monkeypatch.setattr(jobs_module, "_calibration_check", check)
+    await jobs_module.calibrate_after_regenerate(user.id, act.id)
+    check.assert_not_called()
+    assert _FakeBotCM.opened == 0
+
+
+# ---------- after a hand-regenerated analysis (bot: /activity N force) ----------
+
+class _Msg:
+    def __init__(self):
+        self.replies = []
+
+    async def reply_text(self, text, **kw):
+        self.replies.append(text)
+
+
+async def _run_activity(session, user, args, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from bot import handlers
+
+    @asynccontextmanager
+    async def maker():
+        yield session
+
+    @asynccontextmanager
+    async def runtime(s, u):
+        yield SimpleNamespace(anthropic_key="k")
+
+    async def resolve(update, s):
+        return user
+
+    async def fake_analysis(s, act, **kw):
+        return "розбір"
+
+    monkeypatch.setattr(handlers, "async_session_maker", maker)
+    monkeypatch.setattr(handlers, "user_runtime", runtime)
+    monkeypatch.setattr(handlers, "_resolve_user", resolve)
+    monkeypatch.setattr(handlers, "run_activity_analysis", fake_analysis)
+    check = AsyncMock()
+    monkeypatch.setattr(jobs_module, "_calibration_check", check)
+    msg = _Msg()
+    await handlers.activity(SimpleNamespace(message=msg), SimpleNamespace(args=args))
+    return check, msg
+
+
+async def test_activity_force_follows_the_regenerated_analysis_with_the_check(
+        session, monkeypatch):
+    user, plan, act, _ = await _setup(session)
+    check, msg = await _run_activity(session, user, [str(act.id), "force"], monkeypatch)
+    assert any("розбір" in r for r in msg.replies)
+    check.assert_awaited_once()
+    assert check.await_args.args[4].id == act.id
+
+
+async def test_a_plain_activity_lookup_does_not_run_it(session, monkeypatch):
+    user, plan, act, _ = await _setup(session)
+    check, _ = await _run_activity(session, user, [str(act.id)], monkeypatch)
+    check.assert_not_called()
