@@ -385,3 +385,25 @@ async def test_match_info_pace_stays_raw_on_flat_route(session):
 
     await session.refresh(w)
     assert w.match_info["actual_pace_minkm"] == pytest.approx(6.0, abs=0.01)
+
+
+def test_session_target_pace_only_when_one_target_covers_the_whole_run():
+    from app.garmin.matching import session_target_pace
+
+    steady = [{"kind": "run", "dist_m": 8000, "pace_min_km": [5.9, 6.1]}]
+    assert session_target_pace(steady) == 6.0
+    # every leaf carries the same range — still one session target
+    assert session_target_pace([{"kind": "repeat", "reps": 3, "steps": steady}]) == 6.0
+    # a warmup/cooldown or untargeted jog means the target covers the work steps only
+    intervals = [{"kind": "warmup", "dist_m": 1500},
+                 {"kind": "repeat", "reps": 5, "steps": [
+                     {"kind": "run", "dur_s": 120, "pace_min_km": [5.92, 6.25]},
+                     {"kind": "recovery", "dur_s": 120}]},
+                 {"kind": "cooldown", "dist_m": 1500}]
+    assert session_target_pace(intervals) is None
+    # a progression has no single number to compare against
+    assert session_target_pace([
+        {"kind": "run", "dist_m": 3000, "pace_min_km": [6.2, 6.4]},
+        {"kind": "run", "dist_m": 3000, "pace_min_km": [5.6, 5.8]}]) is None
+    assert session_target_pace(None) is None
+    assert session_target_pace([{"kind": "run", "dist_m": 5000, "hr_zone": 2}]) is None

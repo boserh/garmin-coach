@@ -74,31 +74,39 @@ def _is_manual(w: PlannedWorkout) -> bool:
     return isinstance(w.match_info, dict) and bool(w.match_info.get("manual"))
 
 
+def session_target_pace(steps) -> Optional[float]:
+    """The midpoint target pace (min/km) of the WHOLE session, or None when no single
+    pace target covers it.
+
+    Only then is "whole-run average pace vs plan" a comparison at all. An interval day
+    ("розминка 1.5 км + 5×2 хв на 5:55–6:15 + заминка 1.5 км") has a target for its work
+    steps only; this used to return that target, the matcher paired it with the average
+    over the warmup, jogs and cooldown too (6:52 vs 6:05), and the analyst dutifully
+    reported a comparison it then had to explain was meaningless. Structured sessions are
+    judged per step by ``step_match`` (NF-14) instead."""
+    from app.stepmatch import flatten_steps
+
+    flat = flatten_steps(steps if isinstance(steps, list) else None)
+    if not flat:
+        return None
+    ranges = set()
+    for s in flat:
+        p = s.get("pace_min_km")
+        if s.get("kind") not in ("run", "tempo") or not (
+                isinstance(p, (list, tuple)) and len(p) == 2):
+            return None           # a warmup/recovery/untargeted step: the target is partial
+        try:
+            ranges.add((float(p[0]), float(p[1])))
+        except (TypeError, ValueError):
+            return None
+    if len(ranges) != 1:
+        return None               # progression / mixed targets: no one number to compare
+    fast, slow = ranges.pop()
+    return (fast + slow) / 2
+
+
 def _extract_target_pace(w: PlannedWorkout) -> Optional[float]:
-    """Return the midpoint target pace (min/km) from the workout's structured steps,
-    or None when not available. Looks for the first run/tempo step with a pace range."""
-    for s in (w.steps or []):
-        if not isinstance(s, dict):
-            continue
-        if s.get("kind") in ("run", "tempo"):
-            p = s.get("pace_min_km")
-            if isinstance(p, (list, tuple)) and len(p) == 2:
-                try:
-                    return (float(p[0]) + float(p[1])) / 2
-                except (TypeError, ValueError):
-                    pass
-        # recurse into repeat groups
-        for inner in s.get("steps") or []:
-            if not isinstance(inner, dict):
-                continue
-            if inner.get("kind") in ("run", "tempo"):
-                p = inner.get("pace_min_km")
-                if isinstance(p, (list, tuple)) and len(p) == 2:
-                    try:
-                        return (float(p[0]) + float(p[1])) / 2
-                    except (TypeError, ValueError):
-                        pass
-    return None
+    return session_target_pace(w.steps)
 
 
 async def _get_unlinked_activities(
