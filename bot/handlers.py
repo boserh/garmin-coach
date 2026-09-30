@@ -909,6 +909,17 @@ async def activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"{text}\n\n{CHECKIN_PROMPT}", reply_markup=checkin_keyboard(act.id)
         )
+    # A regenerated analysis may say "raise the targets" — follow it with the same
+    # pace-target proposal the activity watch sends after a fresh one.
+    if force:
+        from app.garmin.credentials import load_credentials
+        from bot.jobs import _calibration_check
+
+        async with async_session_maker() as session:
+            user = await _resolve_user(update, session)
+            act = await repository.get_activity(session, user.id, row_id) if user else None
+            if act is not None:
+                await _calibration_check(ctx, session, user, load_credentials(user), act)
 
 
 # ---------- POST-RUN CHECK-IN (EP-12) ----------

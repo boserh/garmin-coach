@@ -120,8 +120,23 @@
     {# ST-22: a fully-past week renders as a shut <details> so today isn't buried under
        finished rows. The rows stay in the DOM (Ctrl+F, and the tests grep them); an
        expanded week is the same markup with `open`, so there's one code path, not two. #}
+    {# The leading run of finished weeks folds into one "Минулі тижні" disclosure (only
+       when there are 2+ — a single past week doesn't need a wrapper). The weeks inside
+       keep their own <details class="wk">, so a finished week still opens on its own. #}
+    {% set past = namespace(n=0, done=0, total=0) %}
+    {% for wk in weeks %}{% if wk[4] and past.n == loop.index0 %}
+      {% set past.n = past.n + 1 %}
+      {% set pcb = (compliance or {}).get(wk[2]) %}
+      {% if pcb %}{% set past.done = past.done + pcb.done %}{% set past.total = past.total + pcb.total %}{% endif %}
+    {% endif %}{% endfor %}
     {% for week_no, week_range, iso_week, items, collapsed in weeks %}
       {% set cb = (compliance or {}).get(iso_week) %}
+      {% if loop.first and past.n >= 2 %}
+      <details class="pastwks">
+        <summary><span class="pwn">Минулі тижні</span><span>{{ past.n }}</span>
+          {% if past.total %}<span class="compliance">{{ past.done }}/{{ past.total }} виконано</span>{% endif %}
+          <span class="chev">▾</span></summary>
+      {% endif %}
       <details class="wk"{% if not collapsed %} open{% endif %}>
       <summary class="week">
         <span class="wn">Тиждень {{ week_no }}</span>
@@ -270,6 +285,7 @@
       </div>
       {% endfor %}
       </details>
+      {% if past.n >= 2 and loop.index == past.n %}</details>{% endif %}
     {% endfor %}
 
     {% if not readonly %}

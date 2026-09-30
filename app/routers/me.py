@@ -11,7 +11,7 @@ import time as _time
 import zipfile
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1030,9 +1030,20 @@ _REGEN_MIN_INTERVAL_S = 60
 _regen_guard: dict = {}
 
 
+def _schedule_calibration(background: BackgroundTasks, user: User, row_id: int) -> None:
+    """After a regenerated analysis, the same pace-target check the bot runs after a fresh
+    one (``bot.jobs._calibration_check``): the analysis may say "raise the targets", and
+    the proposal that acts on it goes to Telegram. After the response — it can take an
+    adaptation call — and only where there is a chat to send it to."""
+    if user.telegram_chat_id and user.plan_adapt_enabled:
+        from bot.jobs import calibrate_after_regenerate
+        background.add_task(calibrate_after_regenerate, user.id, row_id)
+
+
 @router.post("/me/activities/{row_id}/regenerate")
 async def me_regenerate_analysis(
     row_id: int,
+    background: BackgroundTasks,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1065,12 +1076,14 @@ async def me_regenerate_analysis(
     except AnalystError as e:
         logger.warning(f"REGEN activity user={user.id} id={row_id} failed: {e}")
         return RedirectResponse(f"/me/activities/{row_id}?regen=err", status_code=303)
+    _schedule_calibration(background, user, row_id)
     return RedirectResponse(f"/me/activities/{row_id}?regen=ok", status_code=303)
 
 
 @router.post("/me/activities/{row_id}/send-telegram")
 async def me_send_activity_telegram(
     row_id: int,
+    background: BackgroundTasks,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1114,6 +1127,7 @@ async def me_send_activity_telegram(
     except NotifyError as e:
         logger.warning(f"SEND-TG deliver user={user.id} id={row_id} failed: {e}")
         return RedirectResponse(f"/me/activities/{row_id}?tg=senderr", status_code=303)
+    _schedule_calibration(background, user, row_id)
     return RedirectResponse(f"/me/activities/{row_id}?tg=ok", status_code=303)
 
 

@@ -961,3 +961,48 @@ def test_plan_view_collapses_past_weeks(auth_client):
     assert "давній біг" in blocks[0] and not blocks[0].startswith(" open")   # collapsed
     assert blocks[1].startswith(" open") and "останній виконаний" in blocks[1]
     assert blocks[2].startswith(" open") and "майбутній довгий" in blocks[2]
+
+
+def test_plan_view_folds_the_run_of_past_weeks_into_one_disclosure(auth_client):
+    """Three months in, eleven identical collapsed week headers (2.5rem apart) pushed the
+    current week off the first screen. The leading run of finished weeks folds into one
+    "Минулі тижні" disclosure — each still its own <details class="wk"> inside, so every
+    row stays in the markup — and the current week sits outside it, open."""
+    import datetime as dt
+
+    from app.db.base import async_session_maker
+    from app.garmin import repository
+    from app.garmin.schemas import PlanWorkout
+
+    uid = _user_id("t@example.com")
+    today = dt.date.today()
+    monday = today - dt.timedelta(days=today.weekday())
+    past = [monday - dt.timedelta(days=7 * k) for k in (4, 3, 2)]   # three finished weeks
+    upcoming = monday + dt.timedelta(days=1)
+
+    async def seed():
+        async with async_session_maker() as s:
+            await repository.create_plan(
+                s, uid, goal="first_5k", goal_label="Перші 5 км", target_date=None,
+                start_date=past[0].isoformat(), days_per_week=3, intensity="easy", intake={},
+                summary="", workouts=[
+                    *[PlanWorkout(date=d.isoformat(), week=i + 1, type="easy", dist_km=4.0,
+                                  description=f"минулий {i + 1}") for i, d in enumerate(past)],
+                    PlanWorkout(date=upcoming.isoformat(), week=4, type="long",
+                                dist_km=10.0, description="поточний довгий"),
+                ])
+
+    anyio.run(seed)
+    view = auth_client.get("/plan").text
+
+    assert view.count('<details class="pastwks">') == 1
+    after = view.partition('<details class="pastwks">')[2]
+    # the fold ends right before the current week's own <details>
+    current_at = after.index("поточний довгий")
+    current_wk = after.rindex('<details class="wk"', 0, current_at)
+    folded = after[:current_wk]
+    assert "Минулі тижні" in folded
+    assert all(f"минулий {i}" in folded for i in (1, 2, 3))
+    assert folded.count('<details class="wk"') == 3
+    assert folded.rstrip().endswith("</details>")                # the fold is closed first
+    assert after[current_wk:].startswith('<details class="wk" open')
