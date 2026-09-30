@@ -43,6 +43,7 @@ async def _mk_activity(session, **kw):
 def test_activity_payload_includes_planned_slice():
     w = PlannedWorkout(
         type="easy", dist_km=5.0, description="Легкий біг", status="done",
+        steps=[{"kind": "run", "dist_m": 5000, "pace_min_km": [6.4, 6.6]}],
         match_info={"dist_delta_km": 0.1, "actual_pace_minkm": 6.0, "plan_pace_minkm": 6.5},
     )
     act = ActivityRecord(type="running", date=TODAY, dur_min=30.0, dist_km=5.0,
@@ -55,6 +56,25 @@ def test_activity_payload_includes_planned_slice():
         "plan_pace_minkm": "6:30", "actual_pace_minkm": "6:00", "dist_delta_km": 0.1,
         "status": "done",
     }
+
+
+def test_an_interval_day_sends_no_whole_run_pace_comparison():
+    """The 2026-09-30 report: the interval target (5:55–6:15) was compared with the average
+    over warmup + jogs + cooldown (6:52), and the analyst spent a paragraph explaining why
+    that comparison meant nothing. A target that covers only the work steps is no session
+    target — the pace keys are left out, even for a row matched before this rule."""
+    w = PlannedWorkout(
+        type="intervals", dist_km=6.2, description="5×2 хв", status="done",
+        steps=[{"kind": "warmup", "dist_m": 1500},
+               {"kind": "repeat", "reps": 5, "steps": [
+                   {"kind": "run", "dur_s": 120, "pace_min_km": [5.92, 6.25]},
+                   {"kind": "recovery", "dur_s": 120}]},
+               {"kind": "cooldown", "dist_m": 1500}],
+        match_info={"dist_delta_km": 0.0, "actual_pace_minkm": 6.87, "plan_pace_minkm": 6.08},
+    )
+    act = ActivityRecord(type="running", date=TODAY, dur_min=42.4, dist_km=6.17)
+    planned = reports.activity_payload(act, w)["planned"]
+    assert "plan_pace_minkm" not in planned and "actual_pace_minkm" not in planned
 
 
 def test_activity_payload_without_planned_omits_key():

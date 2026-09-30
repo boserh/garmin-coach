@@ -436,6 +436,7 @@ async def weekly_compliance(
       there are no check-ins.
     """
     from app import subjective as subjective_mod
+    from app.garmin.matching import session_target_pace as _session_target_pace
 
     workouts = (
         await session.execute(
@@ -479,7 +480,9 @@ async def weekly_compliance(
             if isinstance(w.match_info, dict):
                 ap = w.match_info.get("actual_pace_minkm")
                 pp = w.match_info.get("plan_pace_minkm")
-                if ap is not None and pp is not None:
+                # an interval day's stored target isn't a whole-run target (older rows)
+                if (ap is not None and pp is not None
+                        and _session_target_pace(w.steps) is not None):
                     b["pace_deltas"].append(round(ap - pp, 2))
             rpe = rpe_by_id.get(w.completed_activity_id)
             if (rpe is not None and rpe >= subjective_mod.HARD_RPE

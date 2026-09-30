@@ -1461,16 +1461,20 @@ def _stepbar_block(step_match) -> dict | None:
     rows = []
     for i, s in enumerate(steps, start=1):
         delta = s.get("delta_s")
+        planned, actual = s.get("planned"), s.get("actual")
         rows.append({
             "n": i,
             "label": _STEP_KIND_LABELS.get(s.get("kind"), s.get("kind") or "крок"),
-            "planned": s.get("planned"),
-            "actual": s.get("actual"),
+            # Paces are stored as decimal minutes (5.92); a runner reads 5:55. Formatted
+            # here so the template never prints a bare float again.
+            "planned": (f"{fmt.pace(planned[0])}–{fmt.pace(planned[1])}"
+                        if isinstance(planned, list) and len(planned) == 2 else None),
+            "actual": fmt.pace(actual) if isinstance(actual, (int, float)) else None,
             "hit": s.get("hit"),
             "delta_s": delta,
             # Not run at all: the module already treats it as an honest miss, and the UI
             # must say "не виконано" rather than draw a 0:00 that never happened.
-            "missing": s.get("actual") is None,
+            "missing": actual is None,
             "width_pct": (round(100 * abs(delta) / worst) if worst and delta else 0),
             "slower": bool(delta and delta > 0),
         })

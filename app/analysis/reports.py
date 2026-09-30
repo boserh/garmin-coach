@@ -889,15 +889,23 @@ def _step_match_payload(step_match: dict) -> dict:
 
 def _planned_payload(workout) -> dict:
     """Compact planned-vs-actual slice for a matched PlannedWorkout (see matching.py)."""
+    from app.garmin.matching import session_target_pace
+
     info = workout.match_info or {}
-    return {
+    out = {
         "type": workout.type, "planned_dist_km": workout.dist_km,
         "description": workout.description,
-        "plan_pace_minkm": _fmt_pace(info.get("plan_pace_minkm")),
-        "actual_pace_minkm": _fmt_pace(info.get("actual_pace_minkm")),
         "dist_delta_km": info.get("dist_delta_km"),
         "status": workout.status,  # done | partial
     }
+    # Whole-run pace vs plan only when one target covers the whole session — re-checked
+    # here against the steps, since rows matched earlier stored an interval target that
+    # was then compared with an average over the warmup and jogs too. No key at all
+    # otherwise: a null still reads as "talk about pace".
+    if session_target_pace(workout.steps) is not None and info.get("plan_pace_minkm"):
+        out["plan_pace_minkm"] = _fmt_pace(info.get("plan_pace_minkm"))
+        out["actual_pace_minkm"] = _fmt_pace(info.get("actual_pace_minkm"))
+    return out
 
 
 def activity_payload(activity, planned=None, route=None) -> dict:
