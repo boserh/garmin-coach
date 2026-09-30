@@ -1170,6 +1170,17 @@ between then leaves an unscheduled saved workout, which `audit-calendar --delete
 can find, instead of a dead calendar entry nothing can see. Entries orphaned before this fix
 keep no stored id and have to be deleted by hand in Connect.
 
+**A date-only move re-dates the workout rather than replacing it (2026-09-30).** A session
+moved from its own day to the next showed in Connect but never reached the watch: the move
+went through the same delete + push as any edit, so the workout the watch already held was
+deleted and a same-named copy created at once, and the copy stayed off the device until it was
+deleted and pushed a second time by hand. `apply_plan_ops` now marks a row `reschedule_only`
+(a plain instance attribute, not a column) when the batch changed its date and nothing the
+payload is built from (`_pushed_content`), and `resync_workouts` then drops only the old
+schedule entry and schedules the SAME workout id on the new date (`reschedule_workout`). A
+move combined with a modify or a relabel still gets the full replacement, and a failed re-date
+falls back to it.
+
 ## Web UI conventions (UI batch, 2026-08)
 
 The batch answered one question — *what is already computed or stored that the user can't

@@ -427,3 +427,75 @@ async def test_remove_tolerates_a_schedule_garmin_has_already_dropped(session):
         assert await plan_sync.remove_workout(session, w) is True
     dele.assert_called_once_with(80)
     assert w.garmin_workout_id is None and w.garmin_schedule_id is None
+
+
+async def test_date_only_move_redates_the_same_workout(session):
+    """Live 2026-09-30: a session moved from its own day to the next showed up in Connect but
+    never on the watch — the move had deleted the workout the watch already held and pushed
+    a same-named copy. A move that changes nothing but the date keeps the workout and only
+    re-dates its calendar entry."""
+    from app.garmin.schemas import PlanOp
+
+    fut = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    new = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="intervals", dist_km=3.0, status="planned",
+             steps=[{"kind": "run", "dist_m": 3000}],
+             garmin_workout_id=90, garmin_schedule_id=91),
+    ])
+    affected = await repository.apply_plan_ops(
+        session, plan, [PlanOp(action="move", date=fut, to_date=new)])
+    (w,) = affected
+    assert w.reschedule_only is True
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "delete_schedule") as unsched, \
+         patch.object(plan_sync.client, "delete_workout") as dele, \
+         patch.object(plan_sync.client, "create_workout") as create, \
+         patch.object(plan_sync.client, "schedule_workout",
+                      return_value={"workoutScheduleId": 92}) as sched:
+        res = await plan_sync.resync_workouts(session, U1, affected)
+    assert res == {"pushed": 1, "removed": 0}
+    unsched.assert_called_once_with(91)
+    sched.assert_called_once_with(90, new)      # the same workout, on the new date
+    dele.assert_not_called()
+    create.assert_not_called()
+    assert (w.garmin_workout_id, w.garmin_schedule_id) == (90, 92)
+    assert w.reschedule_only is False            # consumed, never reused by a later call
+
+
+async def test_move_that_also_changes_the_session_is_replaced(session):
+    """A move plus a modify of the same session changes the workout itself — that one still
+    goes through the full delete + push."""
+    from app.garmin.schemas import PlanOp
+
+    fut = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    new = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="easy", dist_km=3.0, status="planned",
+             garmin_workout_id=90, garmin_schedule_id=91),
+    ])
+    affected = await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="move", date=fut, to_date=new),
+        PlanOp(action="modify", date=fut, description="легше"),
+    ])
+    assert affected and all(w.reschedule_only is False for w in affected)
+
+
+async def test_failed_redate_falls_back_to_replacement(session):
+    fut = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="easy", dist_km=3.0, status="planned",
+             garmin_workout_id=90, garmin_schedule_id=91),
+    ])
+    (w,) = await repository.list_workouts(session, plan.id)
+    w.reschedule_only = True
+    sched = Mock(side_effect=[RuntimeError("500"), {"workoutScheduleId": 94}])
+    with patch.object(plan_sync, "get_provider", return_value=_prov()), \
+         patch.object(plan_sync.client, "delete_schedule"), \
+         patch.object(plan_sync.client, "delete_workout") as dele, \
+         patch.object(plan_sync.client, "create_workout", return_value={"workoutId": 93}), \
+         patch.object(plan_sync.client, "schedule_workout", sched):
+        res = await plan_sync.resync_workouts(session, U1, [w])
+    assert res == {"pushed": 1, "removed": 1}
+    dele.assert_called_once_with(90)
+    assert (w.garmin_workout_id, w.garmin_schedule_id) == (93, 94)
