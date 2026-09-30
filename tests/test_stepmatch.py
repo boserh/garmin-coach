@@ -143,6 +143,41 @@ def test_match_survives_autolap_splitting_a_step_into_several_laps():
     assert result["misses"] == []
 
 
+def test_match_repeat_iterations_are_not_merged_by_their_shared_step_index():
+    """wkt_step_index names the step in the workout DEFINITION, so all five iterations of
+    a 5x(2' run + 2' jog) carry the same two indices. Grouping globally by index merged
+    the five intervals into one lap and the five jogs into another, then scored interval
+    #2 against the cooldown — 0/5 with a "too slow" miss on a session the athlete ran
+    faster than target throughout (the 2026-09-30 report)."""
+    steps = [
+        {"kind": "warmup", "dist_m": 1500},
+        _repeat(5, {"kind": "run", "dur_s": 120, "pace_min_km": [5.92, 6.25]},
+                {"kind": "recovery", "dur_s": 120}),
+        {"kind": "cooldown", "dist_m": 1500},
+    ]
+    laps = [_real_lap(1000.0, 450.0, 0), _real_lap(500.0, 225.0, 0)]
+    for fast_m in (430.0, 440.0, 450.0, 460.0, 470.0):
+        laps += [_real_lap(fast_m, 120.0, 2), _real_lap(200.0, 120.0, 3)]
+    laps += [_real_lap(1000.0, 445.0, 4), _real_lap(500.0, 222.0, 4)]
+
+    r = stepmatch.match(steps, laps)
+    assert r["steps_total"] == 5
+    assert [s["step"] for s in r["steps"]] == [2, 4, 6, 8, 10]
+    assert all(s["actual"] is not None and s["delta_s"] < 0 for s in r["steps"])   # all fast
+    assert r["steps"][0]["from_m"] == 1500 and r["steps"][0]["to_m"] == 1930
+
+
+def test_match_single_child_repeat_is_cut_by_the_steps_own_duration():
+    # 4x(1' fast) with no recovery child: consecutive iterations share ONE index, so the
+    # index change can't mark the boundary — the step's own 60s end condition does.
+    steps = [_repeat(4, {"kind": "run", "dur_s": 60, "pace_min_km": [4.5, 4.7]})]
+    laps = [_real_lap(220.0, 60.0, 1), _real_lap(215.0, 60.0, 1),
+            _real_lap(180.0, 60.0, 1), _real_lap(222.0, 60.0, 1)]
+    r = stepmatch.match(steps, laps)
+    assert r["steps_total"] == 4
+    assert [s["hit"] for s in r["steps"]] == [True, True, False, True]
+
+
 def test_match_warmup_recovery_not_counted_as_working_misses():
     steps = [
         {"kind": "warmup", "dist_m": 1000},           # no pace target at all
