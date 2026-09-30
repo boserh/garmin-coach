@@ -132,3 +132,26 @@ async def test_call_raises_without_bound_user(session, monkeypatch):
     monkeypatch.setattr(mcp_server, "async_session_maker", _FakeMaker(session))
     with pytest.raises(RuntimeError):
         await mcp_server._call("query_activities")
+
+
+def test_every_http_mcp_server_bounds_its_graceful_shutdown(monkeypatch):
+    """A client's long-lived streamable-HTTP stream never closes by itself, so uvicorn's
+    default "wait for every connection" shutdown hung each deploy's restart until systemd
+    SIGKILLed it 90 s later — 502 on the connector the whole time. All three servers go
+    through ``mcp_http.serve``, which is what carries the bound."""
+    import inspect
+
+    import uvicorn
+
+    from app import mcp_http, mcp_notify, mcp_plan
+    from app import mcp_server as srv
+
+    for mod in (srv, mcp_plan, mcp_notify):
+        src = inspect.getsource(mod)
+        assert "uvicorn.run" not in src and "serve(" in src, mod.__name__
+
+    seen = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    mcp_http.serve(object(), "127.0.0.1", 8788)
+    assert seen["timeout_graceful_shutdown"] == mcp_http.GRACEFUL_SHUTDOWN_S
+    assert 0 < mcp_http.GRACEFUL_SHUTDOWN_S < 15     # under the units' TimeoutStopSec

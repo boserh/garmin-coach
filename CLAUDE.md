@@ -208,6 +208,8 @@ Optional, with defaults:
 | `HEALTH_ALERTS` | `True` | master on/off for proactive recovery-anomaly alerts. |
 | `HEALTH_MIN_HISTORY_DAYS` | `7` | cold-start gate. |
 | `HEALTH_ALERT_COOLDOWN_DAYS` | `3` | same alert kind at most once per this many days. |
+| `PLAN_CALIBRATION` | `True` | after a structured session whose working steps ALL missed on the same side (`stepmatch.calibration`), propose re-set pace targets for the upcoming structured sessions (one adaptation call, ✅/❌ in Telegram). |
+| `PLAN_CALIBRATION_GUARD_DAYS` | `7` | after such a check reached Claude, stay quiet this many days. |
 | `SICKNESS_AUTO` | `True` | master on/off for the auto "схоже, захворів" rebuild offer (NF-18). |
 | `SICKNESS_MISSED_DAYS` | `3` | consecutive missed plan sessions (last 7 days) needed to ask. |
 | `SICKNESS_GUARD_DAYS` | `7` | after asking (or a ❌), stay quiet this many days. |

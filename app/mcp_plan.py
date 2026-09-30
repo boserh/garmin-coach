@@ -200,15 +200,12 @@ def main(argv=None) -> None:
         build_server().run()  # stdio transport; blocks until the client disconnects
         return
 
-    from app.mcp_http import http_app, require_public_url
+    from app.mcp_http import http_app, require_public_url, serve
 
     public = require_public_url(settings.MCP_PLAN_PUBLIC_URL, var="MCP_PLAN_PUBLIC_URL")
-    import uvicorn
-
     asyncio.run(init_db())
     logger.info(f"MCP plan server (http) on {args.host}:{args.port}, issuer {public}")
-    uvicorn.run(http_app(build_server(public_url=public), public),
-                host=args.host, port=args.port)
+    serve(http_app(build_server(public_url=public), public), args.host, args.port)
 
 
 if __name__ == "__main__":

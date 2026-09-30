@@ -183,17 +183,14 @@ def main(argv=None) -> None:
         build_server().run()  # blocks until the client disconnects
         return
 
-    from app.mcp_http import http_app, require_public_url
+    from app.mcp_http import http_app, require_public_url, serve
 
     public = require_public_url(
         settings.MCP_NOTIFY_PUBLIC_URL, var="MCP_NOTIFY_PUBLIC_URL"
     )
-    import uvicorn
-
     asyncio.run(init_db())
     logger.info(f"Notify MCP server (http) on {args.host}:{args.port}, issuer {public}")
-    uvicorn.run(http_app(build_server(public_url=public), public),
-                host=args.host, port=args.port)
+    serve(http_app(build_server(public_url=public), public), args.host, args.port)
 
 
 if __name__ == "__main__":
