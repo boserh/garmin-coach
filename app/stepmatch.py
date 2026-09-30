@@ -32,14 +32,12 @@ PACE_TOLERANCE_MIN_KM = 3.0 / 60.0   # ~3 sec/km floor, so tolerance never shrin
 _WORKING_KINDS = {"run", "tempo", "interval"}
 
 
-def flatten_steps(steps: Optional[list]) -> List[dict]:
-    """Expand a ``PlannedWorkout.steps`` tree (as pushed to Garmin) into the flat, ordered
-    list of steps a runner actually executes — one entry per lap the watch produces.
-    A ``repeat`` block's children are emitted ``reps`` times in sequence; the repeat
-    container itself is never a step (it's a container on the watch, not a lap). Each
-    entry keeps ``kind``/``dist_m``/``dur_s``/``pace_min_km``. Returns ``[]`` for
-    missing/empty input or malformed entries."""
-    out: List[dict] = []
+def _flatten_with_source(steps: Optional[list]) -> List[tuple]:
+    """:func:`flatten_steps`' walk, with each entry paired to the identity of the plan
+    step it came from — the same leaf repeated by a ``repeat`` block keeps one source, so
+    :func:`_group_laps_by_step` can tell "five iterations of one step" apart from "five
+    different steps"."""
+    out: List[tuple] = []
 
     def walk(items) -> None:
         for s in items or []:
@@ -51,15 +49,25 @@ def flatten_steps(steps: Optional[list]) -> List[dict]:
                 for _ in range(reps):
                     walk(children)
             else:
-                out.append({
+                out.append(({
                     "kind": s.get("kind"),
                     "dist_m": s.get("dist_m"),
                     "dur_s": s.get("dur_s"),
                     "pace_min_km": s.get("pace_min_km"),
-                })
+                }, id(s)))
 
     walk(steps)
     return out
+
+
+def flatten_steps(steps: Optional[list]) -> List[dict]:
+    """Expand a ``PlannedWorkout.steps`` tree (as pushed to Garmin) into the flat, ordered
+    list of steps a runner actually executes — one entry per lap the watch produces.
+    A ``repeat`` block's children are emitted ``reps`` times in sequence; the repeat
+    container itself is never a step (it's a container on the watch, not a lap). Each
+    entry keeps ``kind``/``dist_m``/``dur_s``/``pace_min_km``. Returns ``[]`` for
+    missing/empty input or malformed entries."""
+    return [entry for entry, _ in _flatten_with_source(steps)]
 
 
 def _is_hit(pace_actual: Optional[float], pace_range: Optional[list]) -> bool:
@@ -95,42 +103,86 @@ def _pace_delta_s(pace_actual: Optional[float], pace_range: Optional[list]) -> O
     return 0
 
 
-def _group_laps_by_step(laps: List[dict]) -> List[dict]:
-    """Re-derive one lap per plan step from the raw physical laps, using each lap's
-    ``wkt_step_index`` (Garmin's own 0-based "which pushed workout step was this" tag —
-    see :func:`app.garmin.client.fetch_activity_splits`).
+def _aggregate(laps: List[dict]) -> dict:
+    dist_m = sum(lap["dist_m"] for lap in laps if isinstance(lap.get("dist_m"), (int, float)))
+    dur_s = sum(lap["dur_s"] for lap in laps if isinstance(lap.get("dur_s"), (int, float)))
+    pace = round((dur_s / 60.0) / (dist_m / 1000.0), 3) if dist_m > 0 and dur_s > 0 else None
+    return {"dist_m": round(dist_m, 1), "dur_s": round(dur_s, 1), "pace_min_km": pace}
+
+
+def _split_by_target(run: List[dict], step: dict, parts: int) -> List[List[dict]]:
+    """Cut one run of same-index laps into at most ``parts`` consecutive iterations of
+    ``step``, closing an iteration once its laps reach the step's own end condition
+    (``dur_s`` or ``dist_m``, 5% slack for rounding). Without a usable target the run
+    stays whole — better one honest aggregate than an invented split."""
+    field = "dur_s" if step.get("dur_s") else ("dist_m" if step.get("dist_m") else None)
+    if field is None or parts <= 1:
+        return [run]
+    target = float(step[field]) * 0.95
+    chunks: List[List[dict]] = []
+    cur: List[dict] = []
+    acc = 0.0
+    for lap in run:
+        cur.append(lap)
+        v = lap.get(field)
+        acc += float(v) if isinstance(v, (int, float)) else 0.0
+        if acc >= target and len(chunks) < parts - 1:
+            chunks.append(cur)
+            cur, acc = [], 0.0
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _group_laps_by_step(laps: List[dict], flat: Optional[List[tuple]] = None) -> List[dict]:
+    """Re-derive one lap per EXECUTED plan step from the raw physical laps, using each
+    lap's ``wkt_step_index`` (Garmin's own 0-based "which pushed workout step was this"
+    tag — see :func:`app.garmin.client.fetch_activity_splits`).
 
     Exists because a watch with Auto Lap on keeps auto-lapping at ~1 km even mid-step, so
     a single plan step can arrive as several physical laps (a 1.5 km warmup as a 1000 m +
-    a 500 m lap) — pairing :func:`flatten_steps`' output against the raw, ungrouped lap
-    list by plain position then compares a step against whichever physical lap happens to
-    sit at that index, which is only ever correct until the first split. Grouping by
-    ``wkt_step_index`` and summing distance/duration within each group restores one
-    aggregate lap per step, in step order, regardless of how many physical laps it split
-    into. A lap with no ``wkt_step_index`` (e.g. a trailing GPS auto-stop sliver after the
-    workout ended) belongs to no step and is dropped.
+    a 500 m lap) — pairing :func:`flatten_steps`' output against the raw lap list by
+    plain position compares a step against whichever physical lap happens to sit at that
+    index. Consecutive laps sharing an index are summed into one aggregate lap.
 
-    Returns ``laps`` unchanged when none of them carry the field — an older disk-cached
-    ``splits:v1`` entry (pre this fix) or a free run with no pushed structure, so the
-    previous, purely-positional behaviour is preserved for data that predates it."""
+    CONSECUTIVE, not "all laps with that index": ``wkt_step_index`` names the step in
+    the workout DEFINITION, so every iteration of a ``repeat`` block carries the same
+    index. Grouping globally once merged all five 2-min intervals of a 5×(2' run + 2'
+    jog) into one "lap" (their average), all five jogs into another, and then scored the
+    second interval against the cooldown — 0/5 on a session run faster than target
+    throughout. An index change is the step boundary; the one case it can't see — a
+    repeat whose only child is the working step, so iterations follow each other with
+    the same index — is cut by the step's own duration/distance when ``flat``
+    (:func:`_flatten_with_source`) says consecutive entries are iterations of one step.
+
+    A lap with no ``wkt_step_index`` (e.g. a trailing GPS auto-stop sliver after the
+    workout ended) belongs to no step and is dropped. Returns ``laps`` unchanged when
+    none of them carry the field — an older disk-cached ``splits:v1`` entry or a free
+    run with no pushed structure, so the purely-positional behaviour is preserved."""
     if not any(lap.get("wkt_step_index") is not None for lap in laps):
         return laps
-    totals: dict = {}
+    runs: List[List[dict]] = []
+    prev = object()
     for lap in laps:
         idx = lap.get("wkt_step_index")
         if idx is None:
             continue
-        g = totals.setdefault(idx, {"dist_m": 0.0, "dur_s": 0.0})
-        if isinstance(lap.get("dist_m"), (int, float)):
-            g["dist_m"] += lap["dist_m"]
-        if isinstance(lap.get("dur_s"), (int, float)):
-            g["dur_s"] += lap["dur_s"]
-    grouped = []
-    for idx in sorted(totals):
-        dist_m, dur_s = totals[idx]["dist_m"], totals[idx]["dur_s"]
-        pace = round((dur_s / 60.0) / (dist_m / 1000.0), 3) if dist_m > 0 and dur_s > 0 else None
-        grouped.append({"dist_m": round(dist_m, 1), "dur_s": round(dur_s, 1),
-                        "pace_min_km": pace})
+        if idx != prev:
+            runs.append([])
+            prev = idx
+        runs[-1].append(lap)
+
+    grouped: List[dict] = []
+    pos = 0   # next flattened plan step the following run starts at
+    for run in runs:
+        parts = 1
+        if flat and pos < len(flat):
+            src = flat[pos][1]
+            while pos + parts < len(flat) and flat[pos + parts][1] == src:
+                parts += 1
+        chunks = _split_by_target(run, flat[pos][0], parts) if parts > 1 else [run]
+        grouped.extend(_aggregate(c) for c in chunks)
+        pos += len(chunks)
     return grouped
 
 
@@ -156,10 +208,11 @@ def match(steps: Optional[list], laps: Optional[list]) -> Optional[dict]:
     step's cumulative ACTUAL distance window, present only when the laps carry distances —
     that's what lets the pace curve shade the intervals.
     """
-    flat = flatten_steps(steps)
+    indexed = _flatten_with_source(steps)
+    flat = [entry for entry, _ in indexed]
     if not flat or not laps:
         return None
-    laps = _group_laps_by_step(laps)
+    laps = _group_laps_by_step(laps, indexed)
 
     hit = 0
     total = 0
