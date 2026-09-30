@@ -85,6 +85,16 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .ok{margin:0 0 1.3rem;padding:.7rem 1rem;border-radius:10px;font-size:.9rem;color:var(--easy);
     background:rgba(158,206,106,.07);border:1px solid rgba(158,206,106,.2)}
 
+/* ---- disclosure chevron ----
+   Drawn, not typed: the self-hosted Inter subsets carry no U+25BE, so "▾" fell back to
+   a system font at .7rem and rendered as a stray dot beside every accordion. The glyph
+   stays in the markup (it is what shows with no CSS at all); here it is hidden and a
+   bordered square turned 45° takes its place. Every <details> gets the same one. */
+.chev{display:inline-block;flex:none;width:.4rem;height:.4rem;font-size:0;line-height:0;
+      overflow:hidden;color:var(--muted);border:solid currentColor;border-width:0 1.5px 1.5px 0;
+      transform:translateY(-.12rem) rotate(45deg);transition:transform .15s}
+details[open]>summary .chev{transform:translateY(.08rem) rotate(-135deg)}
+
 /* ---- week section ---- */
 /* ST-22: every week is a <details>; a past one renders shut, so its header is the
    clickable summary. Marker suppressed in favour of the same .chev the other
@@ -96,11 +106,24 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 summary.week{cursor:pointer;list-style:none}
 summary.week::-webkit-details-marker{display:none}
 summary.week:hover .wn{color:var(--ink)}
-summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
-.wk[open]>summary.week .chev{transform:rotate(180deg)}
+summary.week .chev{align-self:center}   /* the row aligns text on its baseline */
 /* A collapsed week keeps its own bottom margin — without rows after it the header
    would otherwise sit flush against the next week's header. */
 .wk:not([open])>summary.week{margin-bottom:0}
+/* Finished weeks fold into one "Минулі тижні" disclosure, so a plan in its third month
+   opens on the current week instead of a wall of identical headers. Inside, a week header
+   is a compact row: the 2.5rem gap is for separating weeks you read, not ones you skim. */
+.pastwks{margin-top:2rem}
+.pastwks>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:.6rem;
+  padding:.7rem .9rem;border:1px solid var(--line-2);border-radius:12px;background:var(--surface);
+  font-size:.85rem;font-weight:600;color:var(--muted);user-select:none}
+.pastwks>summary::-webkit-details-marker{display:none}
+.pastwks>summary:hover{color:var(--ink);border-color:var(--accent)}
+.pastwks>summary .pwn{color:var(--ink)}
+.pastwks>summary .compliance{margin-left:auto}
+.pastwks[open]>summary{margin-bottom:.4rem}
+.pastwks .week{margin:0;padding:.7rem .15rem;border-bottom-color:var(--line)}
+.pastwks .wk[open]>summary.week{margin-bottom:.6rem}
 
 /* ---- workout card ---- */
 .row{display:grid;grid-template-columns:4.6rem 1fr auto;gap:1.1rem;align-items:start;
@@ -167,8 +190,6 @@ summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
 .strength-acc>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;
   gap:.35rem;font-size:.8rem;font-weight:600;color:var(--muted);user-select:none}
 .strength-acc>summary::-webkit-details-marker{display:none}
-.strength-acc>summary .chev{font-size:.7rem;transition:transform .15s}
-.strength-acc[open]>summary .chev{transform:rotate(180deg)}
 .strength-acc[open]>summary{margin-bottom:.5rem;color:var(--ink)}
 .sblock{border-left:2px solid var(--line-2);padding-left:.95rem;margin-bottom:.55rem}
 /* ST-21: manual plan/actual status menu on a past session */
@@ -176,8 +197,6 @@ summary.week .chev{font-size:.7rem;color:var(--muted);transition:transform .15s}
 .wmenu>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;
   gap:.3rem;font-size:.75rem;font-weight:600;color:var(--muted);user-select:none}
 .wmenu>summary::-webkit-details-marker{display:none}
-.wmenu>summary .chev{font-size:.65rem;transition:transform .15s}
-.wmenu[open]>summary .chev{transform:rotate(180deg)}
 .wmenu-body{display:flex;flex-wrap:wrap;gap:.4rem;margin:.45rem 0 .2rem}
 .wmenu-body button{padding:.28rem .6rem;border:1px solid var(--line-2);border-radius:8px;
   background:transparent;color:var(--ink);font-size:.75rem;cursor:pointer}
@@ -463,8 +482,6 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .fsum::-webkit-details-marker{display:none}
 .fsum:hover{border-color:var(--accent);color:var(--ink)}
 .fsum.on{border-color:var(--accent);color:var(--ink)}
-.fsum .chev{font-size:.7rem;transition:transform .15s}
-.fwrap[open]>.fsum .chev{transform:rotate(180deg)}
 .fbar{display:flex;flex-direction:column;gap:.6rem;margin:.7rem 0 1rem}
 .fgroup{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center}
 .fpill{font-size:.8rem;padding:.28rem .7rem;border-radius:20px;border:1px solid var(--line-2);
