@@ -72,7 +72,7 @@
       {% for r in stepbar.rows %}
       <div class="sbrow {{ 'hit' if r.hit else 'miss' }}{{ ' gone' if r.missing else '' }}">
         <div class="sname">{{ r.label }} {{ r.n }}/{{ stepbar.total }}</div>
-        <div class="splan">{{ '%.2f'|format(r.planned[0]) }}–{{ '%.2f'|format(r.planned[1]) }}</div>
+        <div class="splan">{{ r.planned or '' }}</div>
         <div class="sbar" aria-hidden="true">
           <span class="szero"></span>
           {% if r.width_pct %}
@@ -82,7 +82,7 @@
         </div>
         <div class="sact">
           {% if r.missing %}<span class="sgone">не виконано</span>
-          {% else %}{{ '%.2f'|format(r.actual) }}
+          {% else %}{{ r.actual }}
             {% if r.delta_s %}<span class="sdelta">{{ '%+d'|format(r.delta_s) }} с</span>{% endif %}
           {% endif %}
         </div>

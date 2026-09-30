@@ -79,6 +79,9 @@ def test_the_bar_agrees_with_the_counters(user):
     assert html.count('class="sbrow miss"') == len(match["misses"])
     assert "інтервал 1/4" not in html          # the kind is "run" here
     assert "відрізок 4/4" in html
+    # paces read as a runner reads them, never as decimal minutes
+    assert "4:30–4:42" in html and "5:18" in html
+    assert "4.50" not in html and "5.30" not in html
 
 
 def test_a_step_never_run_says_so_instead_of_showing_a_time(user):
