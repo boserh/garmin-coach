@@ -11,15 +11,96 @@ terminal ``done``/``failed`` event. A job already pruned from the registry is a 
 the page then simply reloads, and the result is wherever the job wrote it.
 """
 import json
+from typing import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from app import livejobs
 from app.core.auth import current_user
+from app.db.base import async_session_maker
 from app.db.models import User
+from app.templating import create_templates
 
 router = APIRouter(tags=["live"])
+templates = create_templates()
+
+# What the page's script sends to say "give me the job id, I'll follow it myself".
+JSON_ACCEPT = "application/json"
+BUSY_MSG = "Це вже генерується — зачекай, поки закінчиться."
+
+
+def wants_json(request: Request) -> bool:
+    return JSON_ACCEPT in (request.headers.get("accept") or "")
+
+
+def refuse(request: Request, redirect: str):
+    """A button refused before any work started (demo, no key, a cool-down): the page it
+    came from already knows how to say why — the URL carries the reason, as it always
+    did. The script just navigates there."""
+    if wants_json(request):
+        return JSONResponse({"redirect": redirect})
+    return RedirectResponse(redirect, status_code=303)
+
+
+def busy(request: Request, user: User, kind: str):
+    """The answer to a tap while that same button's job is still running — the running
+    job (its id for the script, its page without one), never a refusal or a second paid
+    call. Handlers check this FIRST: their own refusals (a cool-down) would otherwise
+    send the page away from the answer being written. None when nothing is running."""
+    running = livejobs.running(user.id, kind)
+    if running is None:
+        return None
+    if wants_json(request):
+        return JSONResponse({"error": BUSY_MSG, "job": running.id}, status_code=409)
+    return RedirectResponse(f"/live/{running.id}", status_code=303)
+
+
+def start_button(
+    request: Request, user: User, kind: str, *,
+    work: Callable[..., Awaitable[str]], back: str, label: str,
+):
+    """Run one paid button as a background job and answer at once.
+
+    ``work(session, user, on_text)`` does what the handler used to do inline — in its own
+    DB session, since the request's is gone by the time it runs — and returns the URL the
+    old handler redirected to (``?regen=ok``, ``?err=analyze``, …): that is still how a
+    result is shown, so every page keeps its own banners. ``on_text`` streams the model's
+    text to whoever is watching.
+
+    The page's script gets ``{"job": id}`` and follows ``/live/{id}/events``; a plain form
+    post is sent to ``/live/{id}``, a page that refreshes itself until the job is done and
+    then goes to the same URL. ``kind`` is one-at-a-time per user: a second tap while the
+    first runs is answered with the running job, never a second paid call."""
+    running = busy(request, user, kind)
+    if running is not None:
+        return running
+
+    async def run(job):
+        async with async_session_maker() as session:
+            fresh = await session.get(User, user.id)
+            url = await work(session, fresh, livejobs.text_sink(job))
+        await livejobs.flush()
+        job.emit("done", {"redirect": url})
+
+    job = livejobs.start(user.id, kind, run, meta={"back": back, "label": label})
+    if wants_json(request):
+        return JSONResponse({"job": job.id, "events": f"/live/{job.id}/events"})
+    return RedirectResponse(f"/live/{job.id}", status_code=303)
+
+
+@router.get("/live/{job_id}", response_class=HTMLResponse)
+async def job_page(job_id: str, request: Request, user: User = Depends(current_user)):
+    """Where a button's plain form post lands (no JavaScript, or a script that lost the
+    stream): the job's progress so far, refreshing itself until it's done — then off to
+    the page the result belongs on. A failure is shown here, with the way back."""
+    job = livejobs.get(job_id, user.id)
+    if job is None:
+        return RedirectResponse("/dashboard", status_code=303)
+    if job.done and not job.error():
+        return RedirectResponse(job.events[-1][1].get("redirect") or job.meta.get("back")
+                                or "/dashboard", status_code=303)
+    return templates.TemplateResponse(request, "live_wait.html", {"user": user, "job": job})
 
 
 def _frame(idx: int, name: str, data: dict) -> str:

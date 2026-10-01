@@ -602,13 +602,16 @@ form.inline{display:inline}
 .turn.me .kind{color:rgba(10,16,32,.55)}
 .when{align-self:center;font-size:.7rem;color:var(--faint);margin:.5rem 0 .1rem;letter-spacing:.02em}
 .thread:empty{margin:0}
-/* Live chat (app.js): the reply bubble while it's being written. `lv-` because .status/
-   .live are the kind of generic names another page will want too. */
-.turn .lv-status{display:block;font-size:.78rem;color:var(--faint)}
-.turn .lv-status:empty{display:none}
-.turn.lv .lv-status{animation:lvpulse 1.4s ease-in-out infinite}
+/* Live jobs (app.js): a chat reply bubble or a paid button's result while it's being
+   written. `lv-` because .status/.live are the kind of generic names another page will
+   want too. */
+.lv-status{display:block;font-size:.78rem;color:var(--faint)}
+.lv-status:empty{display:none}
+.lv .lv-status{animation:lvpulse 1.4s ease-in-out infinite}
 @keyframes lvpulse{50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.turn.lv .lv-status{animation:none}}
+@media (prefers-reduced-motion:reduce){.lv .lv-status{animation:none}}
+.lv-box{max-width:none;white-space:pre-wrap;word-break:break-word;margin:.8rem 0}
+.lv-box.fail{border-color:rgba(247,118,142,.35);color:#f7a8b8}
 .loadmore{text-align:center;margin:1.1rem 0 .2rem}
 .loadmore a{display:inline-block;padding:.5rem 1.1rem;border-radius:10px;border:1px solid var(--line-2);
             color:var(--muted);font-size:.85rem;background:var(--surface-2);text-decoration:none}

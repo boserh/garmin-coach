@@ -54,9 +54,12 @@
     </details>
 
     {% if supplements %}
-    <form method="post" action="/checkups/supplements/analyze" style="margin:1.2rem 0">
+    {# Live (app.js `form[data-live]`): a status line while Claude works (the answer is
+       structured JSON, nothing to stream), then the page reloads onto ?analyzed=1. #}
+    <form method="post" action="/checkups/supplements/analyze" style="margin:1.2rem 0"
+          data-live="" data-no-busy="1">
       {% if advice or advice_raw_text %}<input type="hidden" name="force" value="1">{% endif %}
-      <button class="btn-ghost" type="submit">
+      <button class="btn-ghost" type="submit" data-busy-text="Підбираю аналізи…">
         {% if advice or advice_raw_text %}🔄 Спробувати ще раз{% else %}🔬 Порадь, які аналізи здавати{% endif %}
       </button>
     </form>

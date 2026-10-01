@@ -56,17 +56,23 @@
     </div>
     {% endif %}
 
+    {# Live (app.js `form[data-live]`): the interpretation streams into #checkup-live,
+       then the page reloads onto ?analyzed=1. #}
     {% if c.analysis %}
-    <div class="note" style="margin-top:1.3rem">
+    <div class="note" id="checkup-analysis" style="margin-top:1.3rem">
       <b>🔬 Розбір</b>
       <div style="margin-top:.5rem;white-space:pre-wrap;line-height:1.55">{{ c.analysis }}</div>
     </div>
-    <form method="post" action="/checkups/{{ c.id }}/analyze" style="margin-top:.6rem">
-      <button class="btn-ghost" type="submit">🔄 Розібрати ще раз</button>
+    <div id="checkup-live" hidden></div>
+    <form method="post" action="/checkups/{{ c.id }}/analyze" style="margin-top:.6rem"
+          data-live="#checkup-live" data-live-hide="#checkup-analysis" data-no-busy="1">
+      <button class="btn-ghost" type="submit" data-busy-text="Розбираю…">🔄 Розібрати ще раз</button>
     </form>
     {% elif c.results %}
-    <form method="post" action="/checkups/{{ c.id }}/analyze" style="margin-top:.8rem">
-      <button class="btn-ghost" type="submit">🔬 Проаналізувати результати</button>
+    <div id="checkup-live" hidden></div>
+    <form method="post" action="/checkups/{{ c.id }}/analyze" style="margin-top:.8rem"
+          data-live="#checkup-live" data-no-busy="1">
+      <button class="btn-ghost" type="submit" data-busy-text="Розбираю…">🔬 Проаналізувати результати</button>
     </form>
     {% endif %}
 

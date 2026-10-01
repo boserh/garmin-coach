@@ -708,7 +708,7 @@ every call — instead of leaving the context unbound.
 it gets the chat back with a notice, never FastAPI's raw 422 JSON, and never the apply
 branch (see the submitter note under the frontend conventions in `CLAUDE.md`).
 
-## Live chat: background jobs + SSE (`app/livejobs.py`, `/live/{id}/events`)
+## Live paid buttons & chat: background jobs + SSE (`app/livejobs.py`, `/live/{id}/events`)
 
 Sending a chat message used to hold the POST open for the whole Claude call (up to a
 minute on a multi-round `/ask`) and then reload the page. Now `POST /chat` only starts a
@@ -745,6 +745,37 @@ job and returns; the page follows it over Server-Sent Events.
 - **Tests** wait for jobs with `tests.web_helpers.wait_live_jobs()` — inside the `patch`,
   or the job outlives it and runs the real engine. `conftest` empties the registry per test.
   `tests/test_live_chat_browser.py` drives the real page (stream, reload mid-answer, JS off).
+
+**Every other paid button runs the same way** (`routers.live.start_button`): activity
+«Перегенерувати розбір» / «…і надіслати в Telegram», checkup «Проаналізувати», supplement
+advice. The handler keeps its up-front refusals (demo, no key, the regenerate cool-down —
+`live.refuse` hands the script the old `?err=` URL to go to) and moves the paid part into
+`work(session, user, on_text)`, which returns **the URL the old handler redirected to**.
+That URL is the job's `done`, so each page still shows its result with its own
+server-rendered markup and banners — there is no client-side copy of any of them.
+- One widget for all of them in `app.js`: `<form data-live="#target"
+  data-live-hide="#old-result" data-no-busy="1">` streams into `#target`, then goes to
+  `done.redirect`. One `EventSource` implementation (`window.bihunLive.feed`) serves it and
+  the chat.
+- A plain form post lands on `GET /live/{id}`: progress so far + a `<noscript>` refresh,
+  a 303 to the result once done, the error with a way back if it failed. With a script the
+  same page follows the feed (`data-live-follow`).
+- One running job per button per user (`kind`, e.g. `activity:<id>`), and `live.busy` is
+  checked BEFORE the handler's own refusals: a second tap must show the answer being
+  written, not a "wait a minute" banner that navigates away from it.
+- Streaming is `client._send` — the single place a request goes out, `messages.create` or
+  the same request via `messages.stream`. `_complete`, `_complete_tools` and the activity
+  analysis use it; `*_with_stats` take an optional `on_text` that callers pass only when
+  set (`_run_cached_narration`), so stand-ins with the old signatures keep working. The
+  dump sweep treats `_send` as the transport and requires the dump in its callers.
+- **Plan generation / schedule rebuild** are live jobs too (kind `plan`): the waiting page
+  follows the feed and moves to the plan the moment it's ready, instead of a blind 5-second
+  refresh (kept only under `<noscript>`, or when there's no job in this process to follow).
+  The JSON reply isn't worth showing, but `_session_counter` counts `"date"` keys as it
+  streams — «складаю план: 12 тренувань…». `PLAN_GEN_KEY` stays the durable record.
+- Not converted: the strength preview (already a `fetch` on the setup form, never blocked
+  the page) and the lab-photo upload, which has its own older background job + WebSocket
+  (`routers.checkups._upload_jobs`). Folding the upload into `livejobs` is a follow-up.
 
 ## Dialogue about an unconfirmed proposal (ST-23)
 

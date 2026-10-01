@@ -84,3 +84,19 @@ def wait_live_jobs(timeout: float = 5.0) -> None:
         if time.monotonic() > end:
             raise AssertionError("a live job did not finish in time")
         time.sleep(0.01)
+
+
+def post_live(client, url, follow_redirects=True, **kwargs):
+    """POST a paid button that now runs as a live job (``routers.live.start_button``) and
+    return what the old synchronous handler returned: the post lands on ``/live/{id}``,
+    the job is waited for, and that page's redirect to the result URL is handed back
+    (followed, unless ``follow_redirects=False``). Refusals that never started a job
+    come back exactly as before."""
+    r = client.post(url, follow_redirects=False, **kwargs)
+    location = r.headers.get("location", "")
+    if r.status_code == 303 and location.startswith("/live/"):
+        wait_live_jobs()
+        r = client.get(location, follow_redirects=False)
+    if follow_redirects and r.status_code in (302, 303):
+        r = client.get(r.headers["location"])
+    return r

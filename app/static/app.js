@@ -345,6 +345,142 @@
   window.scrollTo({top: document.body.scrollHeight, behavior: 'auto'});
 })();
 
+// The live feed of one background job (app.livejobs → /live/{id}/events, Server-Sent
+// Events) — ONE implementation, used by the chat and by every paid button below.
+// `on` maps event names (status/delta/reset/done/failed) to handlers; the feed closes
+// itself after done/failed. If EventSource gives up for good (the job is gone, or the
+// session expired) the page reloads: whatever the job wrote is where the page reads it.
+window.bihunLive = (function () {
+  'use strict';
+  function feed(jobId, after, on) {
+    var url = '/live/' + encodeURIComponent(jobId) + '/events';
+    if (after >= 0) url += '?after=' + after;
+    var es = new EventSource(url);
+    var ended = false;
+    function data(e) {
+      try { return JSON.parse(e.data || '{}'); } catch (err) { return {}; }
+    }
+    ['status', 'delta', 'reset'].forEach(function (name) {
+      es.addEventListener(name, function (e) { if (on[name]) on[name](data(e)); });
+    });
+    ['done', 'failed'].forEach(function (name) {
+      es.addEventListener(name, function (e) {
+        ended = true;
+        es.close();
+        if (on[name]) on[name](data(e));
+      });
+    });
+    es.onerror = function () {
+      if (!ended && es.readyState === EventSource.CLOSED) location.reload();
+    };
+    return es;
+  }
+  return {
+    supported: !!(window.EventSource && window.fetch && window.FormData),
+    feed: feed
+  };
+})();
+
+// Every other paid button: `<form data-live="#target">` posts in the background, the
+// job's progress (a status line, then the model's text as it's written) shows in
+// `#target` (or under the form when the value is empty), and when it's done the page
+// goes where the server says — the same URL the button used to redirect to, so the
+// result is shown by the page's own server-rendered markup and banners.
+// `data-live-hide="#selector"` hides the stale result while the new one is written.
+// No JavaScript, or a failed fetch: the form posts normally and lands on /live/{id}.
+(function () {
+  'use strict';
+  if (!window.bihunLive.supported) return;
+
+  function box(target) {
+    var el = document.createElement('div');
+    el.className = 'note lv-box lv';
+    var st = document.createElement('span');
+    st.className = 'lv-status';
+    st.textContent = 'думаю…';
+    var tx = document.createElement('span');
+    tx.className = 'lv-txt';
+    el.appendChild(st);
+    el.appendChild(tx);
+    target.innerHTML = '';
+    target.appendChild(el);
+    target.hidden = false;
+    return el;
+  }
+
+  function follow(jobId, el, after, onEnd) {
+    var st = el.querySelector('.lv-status');
+    var tx = el.querySelector('.lv-txt');
+    window.bihunLive.feed(jobId, after, {
+      status: function (d) { if (!tx.textContent) st.textContent = d.text || ''; },
+      delta: function (d) { st.textContent = ''; tx.textContent += d.text || ''; },
+      reset: function () { tx.textContent = ''; },
+      done: function (d) { location.assign(d.redirect || location.href); },
+      failed: function (d) {
+        st.textContent = '';
+        tx.textContent = d.message || 'Щось пішло не так — спробуй ще раз.';
+        el.classList.remove('lv');
+        el.classList.add('fail');
+        if (onEnd) onEnd();
+      }
+    });
+  }
+
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-live')) return;
+    e.preventDefault();
+    var sel = form.getAttribute('data-live');
+    var target = sel ? document.querySelector(sel) : null;
+    if (!target) {
+      target = document.createElement('div');
+      form.insertAdjacentElement('afterend', target);
+    }
+    var buttons = form.querySelectorAll('button');
+    buttons.forEach(function (b) {
+      b.disabled = true;
+      b.dataset.origText = b.textContent;
+      b.textContent = b.getAttribute('data-busy-text') || 'Зачекайте…';
+    });
+    function release() {
+      buttons.forEach(function (b) {
+        b.disabled = false;
+        if (b.dataset.origText !== undefined) b.textContent = b.dataset.origText;
+      });
+    }
+    var hide = form.getAttribute('data-live-hide');
+    var el = box(target);
+    fetch(form.action, {
+      method: 'POST', body: new FormData(form), credentials: 'same-origin',
+      headers: {'Accept': 'application/json'}
+    }).then(function (r) {
+      return r.json();
+    }).then(function (d) {
+      if (d.job && !d.error) {
+        if (hide) document.querySelectorAll(hide).forEach(function (h) { h.hidden = true; });
+        follow(d.job, el, -1, release);
+      } else if (d.job) {
+        follow(d.job, el, -1, release);    // already running: show that one
+      } else if (d.redirect) {
+        location.assign(d.redirect);       // refused up front — the page says why
+      } else {
+        throw new Error('unexpected');
+      }
+    }).catch(function () {
+      target.innerHTML = '';
+      release();
+      form.submit();
+    });
+  });
+
+  // /live/{id} (the no-script landing page) — with a script, follow it live instead of
+  // refreshing.
+  document.querySelectorAll('[data-live-follow]').forEach(function (el) {
+    follow(el.getAttribute('data-live-follow'), el,
+           parseInt(el.getAttribute('data-after') || '-1', 10));
+  });
+})();
+
 // Live chat: a message is sent without leaving the page, and the answer streams into the
 // thread as Claude writes it. The server runs each message as a background job
 // (app.livejobs) and publishes its progress at /live/{id}/events (Server-Sent Events):
@@ -357,7 +493,7 @@
 (function () {
   'use strict';
 
-  if (!window.EventSource || !window.fetch || !window.FormData) return;
+  if (!window.bihunLive.supported) return;
   var thread = document.getElementById('chat-thread');
   if (!thread) return;
 
@@ -407,49 +543,30 @@
   function follow(jobId, el, after) {
     var st = el.querySelector('.lv-status');
     var tx = el.querySelector('.lv-txt');
-    var ended = false;
-    var url = '/live/' + encodeURIComponent(jobId) + '/events';
-    if (after >= 0) url += '?after=' + after;
-    var es = new EventSource(url);
     setBusy(true);
-
-    function data(e) {
-      try { return JSON.parse(e.data || '{}'); } catch (err) { return {}; }
-    }
-    function end() { ended = true; es.close(); }
-
-    es.addEventListener('status', function (e) {
-      if (!tx.textContent) st.textContent = data(e).text || '';
-    });
-    es.addEventListener('delta', function (e) {
-      var down = nearBottom();
-      st.textContent = '';
-      tx.textContent += data(e).text || '';
-      if (down) toBottom();
-    });
-    es.addEventListener('reset', function () { tx.textContent = ''; });
-    es.addEventListener('done', function (e) {
-      var d = data(e);
-      end();
-      // The stored reply replaces the streamed text: it is what the thread shows on the
-      // next load, and a cached answer arrives here without any deltas at all.
-      finish(el, d.reply);
-      if (typeof d.card === 'string') {
-        var card = document.getElementById('chat-pending');
-        if (card) card.innerHTML = d.card;
+    window.bihunLive.feed(jobId, after, {
+      status: function (d) { if (!tx.textContent) st.textContent = d.text || ''; },
+      delta: function (d) {
+        var down = nearBottom();
+        st.textContent = '';
+        tx.textContent += d.text || '';
+        if (down) toBottom();
+      },
+      reset: function () { tx.textContent = ''; },
+      done: function (d) {
+        // The stored reply replaces the streamed text: it is what the thread shows on
+        // the next load, and a cached answer arrives here without any deltas at all.
+        finish(el, d.reply);
+        if (typeof d.card === 'string') {
+          var card = document.getElementById('chat-pending');
+          if (card) card.innerHTML = d.card;
+        }
+        toBottom();
+      },
+      failed: function (d) {
+        finish(el, d.message || 'Щось пішло не так — спробуй ще раз.', true);
       }
-      toBottom();
     });
-    es.addEventListener('failed', function (e) {
-      end();
-      finish(el, data(e).message || 'Щось пішло не так — спробуй ще раз.', true);
-    });
-    es.onerror = function () {
-      // A dropped connection is retried by EventSource itself (resuming via
-      // Last-Event-ID). Only when it gives up — the job is gone, or we were signed out —
-      // does the page itself become the truth: reload it.
-      if (!ended && es.readyState === EventSource.CLOSED) location.reload();
-    };
   }
 
   document.addEventListener('submit', function (e) {

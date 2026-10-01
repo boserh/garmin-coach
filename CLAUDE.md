@@ -368,7 +368,8 @@ app/
     history.py                 GET /history?days=N — trends from DB, login, per-user
     plan.py                      GET/POST /plan — training-plan setup form + view, login, per-user
     chat.py                        GET/POST /chat, POST /chat/confirm — web chat (EP-11)
-    live.py                         GET /live/{id}/events — SSE feed of a background job
+    live.py                         GET /live/{id}[/events] — a background job's page + SSE feed;
+                                    start_button(): run a paid button as a live job
     checkups.py                     /checkups, /checkups/supplements
     admin.py                          /ui DB browser — admin only
   dependencies.py   shared deps (get_session)
@@ -441,6 +442,9 @@ That is an attention budget, not a cost one — see DESIGN_NOTES.
   "Live chat"). Login; current user.
 - `GET /live/{id}/events` — Server-Sent Events feed of one background job
   (`app.livejobs`): `status`/`delta`/`reset`, then `done` or `failed`. User-scoped. Login.
+  `GET /live/{id}` — where a paid button's plain form post lands: progress, then a 303 to
+  the result. Every paid web button (chat, activity regenerate/send, checkup analysis,
+  supplement advice, plan generation/rebuild) runs as such a job — see DESIGN_NOTES.
 - `GET /me/profile` + `POST /me/profile/forget|pin` — EP-18: what the coach remembers,
   with evidence links; "this isn't true" deletes + stop-lists, "this matters" pins.
   `POST /me/away` + `POST /me/away/{id}/delete` — NF-34: the half the athlete writes

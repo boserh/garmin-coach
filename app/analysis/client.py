@@ -157,6 +157,21 @@ async def _run_claude(fn, *args, session, user_id=None):
     return result
 
 
+def _send(client, kwargs: dict, on_text: Optional[Callable[[str], None]] = None):
+    """The one place a request goes out: ``messages.create`` — or, when a live page is
+    watching (``on_text``), the same request through ``messages.stream``, handing each
+    text delta to ``on_text`` as it arrives and returning the SDK's accumulated final
+    message. Either way the caller gets the same message object back, so usage
+    accounting, error mapping and parsing don't know the difference. ``on_text`` runs on
+    the Claude worker thread — it must be thread-safe (``livejobs.Job.emit_threadsafe``)."""
+    if on_text is None:
+        return client.messages.create(**kwargs)
+    with client.messages.stream(**kwargs) as stream:
+        for text in stream.text_stream:
+            on_text(text)
+        return stream.get_final_message()
+
+
 @dataclass
 class CallStats:
     kind: str
@@ -170,9 +185,11 @@ class CallStats:
 
 
 def _complete(model: str, system: str, user_content: dict, kind: str,
-              api_key: Optional[str], max_tokens: int = 1200) -> Tuple[str, CallStats]:
+              api_key: Optional[str], max_tokens: int = 1200,
+              on_text: Optional[Callable[[str], None]] = None) -> Tuple[str, CallStats]:
     """One Claude completion → (text, stats). Centralises usage accounting + error
-    mapping (used by the plan calls; the older report calls keep their inline copies)."""
+    mapping (used by the plan calls; the older report calls keep their inline copies).
+    ``on_text`` streams it to a live page — see ``_send``."""
     from anthropic import APIConnectionError, APIStatusError
 
     from app.analysis import budget
@@ -200,7 +217,7 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
                       user_content=user_content, max_tokens=max_tokens)
 
     try:
-        msg = _get_client(api_key).messages.create(**kwargs)
+        msg = _send(_get_client(api_key), kwargs, on_text)
         stats = CallStats(kind=kind, model=model)
         usage = getattr(msg, "usage", None)
         if usage:
@@ -333,14 +350,7 @@ def _complete_tools(
     )
 
     try:
-        client = _get_client(api_key)
-        if on_text is None:
-            msg = client.messages.create(**kwargs)
-        else:
-            with client.messages.stream(**kwargs) as stream:
-                for text in stream.text_stream:
-                    on_text(text)
-                msg = stream.get_final_message()
+        msg = _send(_get_client(api_key), kwargs, on_text)
         stats = CallStats(kind="ask", model=model)
         usage = getattr(msg, "usage", None)
         if usage:

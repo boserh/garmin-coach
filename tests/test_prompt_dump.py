@@ -84,8 +84,11 @@ def test_every_claude_call_site_dumps_first():
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            if fn.name == "_send":
+                continue   # the transport itself; every caller of it is held to the rule
             calls = [ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)]
-            if not any(c.endswith(("messages.create", "messages.stream")) for c in calls):
+            if not any(c.endswith(("messages.create", "messages.stream")) or c == "_send"
+                       for c in calls):
                 continue
             if not any(c.endswith("dump_request") for c in calls):
                 missing.append(f"{path.name}:{fn.name}")

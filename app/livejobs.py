@@ -137,6 +137,11 @@ def start(user_id: int, kind: str, run: Callable[[Job], Awaitable[None]], *,
     return job
 
 
+def text_sink(job: "Job") -> Callable[[str], None]:
+    """An ``on_text`` for the Claude helpers: each streamed piece becomes a ``delta``."""
+    return lambda text: job.emit_threadsafe("delta", {"text": text})
+
+
 async def flush() -> None:
     """Let every ``emit_threadsafe`` already queued run before what comes next. They are
     plain ``call_soon_threadsafe`` callbacks, FIFO on the loop, so one pass of the loop

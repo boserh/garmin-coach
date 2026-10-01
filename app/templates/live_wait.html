@@ -1,0 +1,22 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ job.meta.label or "Готую…" }}{% endblock %}
+
+{# Where a paid button's plain form post lands (app.routers.live.job_page). Without
+   JavaScript the page refreshes itself until the job is done; with it, app.js follows
+   the live feed and moves on the moment it ends. #}
+{% block head %}{% if not job.done %}<noscript><meta http-equiv="refresh" content="3"></noscript>{% endif %}{% endblock %}
+
+{% block body %}
+  {% include "_nav.html" %}
+  <div class="wrap">
+    <p class="eyebrow">{{ job.meta.label or "Готую…" }}</p>
+    {% if job.error() %}
+      <div class="note lv-box fail">{{ job.error() }}</div>
+      <p><a href="{{ job.meta.back or '/dashboard' }}">← Назад</a></p>
+    {% else %}
+      <div class="note lv-box lv" data-live-follow="{{ job.id }}" data-after="{{ job.events|length - 1 }}"><span class="lv-status">{{ "" if job.text() else (job.status() or "думаю…") }}</span><span class="lv-txt">{{ job.text() }}</span></div>
+      <p class="hint">Можна закрити сторінку — результат збережеться. <a href="{{ job.meta.back or '/dashboard' }}">← Назад</a></p>
+    {% endif %}
+  </div>
+{% endblock %}
