@@ -244,7 +244,8 @@ def _sse(client, url):
 
 
 def _streaming_ask(*chunks, reply=None):
-    async def fake(session, question, *, user_id=None, api_key=None, on_event=None):
+    async def fake(session, question, *, user_id=None, api_key=None, on_event=None,
+                   on_plan_change=None):
         for ch in chunks:
             on_event("delta", {"text": ch})
             await asyncio.sleep(0)
@@ -293,7 +294,8 @@ def test_a_second_message_while_one_is_answered_is_refused(web):
     client, _uid = web
     release = threading.Event()
 
-    async def slow(session, question, *, user_id=None, api_key=None, on_event=None):
+    async def slow(session, question, *, user_id=None, api_key=None, on_event=None,
+                   on_plan_change=None):
         while not release.is_set():
             await asyncio.sleep(0.01)
         return "ok"

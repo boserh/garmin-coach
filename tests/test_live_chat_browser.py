@@ -32,7 +32,8 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _fake_ask(session, question, *, user_id=None, api_key=None, on_event=None):
+async def _fake_ask(session, question, *, user_id=None, api_key=None, on_event=None,
+                   on_plan_change=None):
     from app.garmin import repository
 
     if on_event:

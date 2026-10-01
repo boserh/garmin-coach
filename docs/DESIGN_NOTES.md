@@ -823,8 +823,9 @@ spacing), so it is now a separate thing:
   the result shows once on `/plan` (`PLAN_REBUILD_KEY`). A ✅ while a generation is
   already running is refused with the proposal kept.
 
-Not covered: the web chat routes by verb heuristic, so «можна 3 пробіжки?» still goes to
-`/ask`, which can discuss but not change the plan; «замість» was added to the edit verbs.
+The web chat still routes by a verb heuristic, but a change request that lands on `/ask`
+is no longer a dead end — the coach hands it to the editor (`propose_plan_change`, see the
+`/ask` section).
 
 ## Per-user timezone (ST-14)
 
@@ -1061,6 +1062,21 @@ repeats the same session weekly: inlining Day 1's exercises on every date is wha
 eat `MAX_ASK_TOTAL_TOKENS`. No `detail` key = genuinely nothing stored, and `SYSTEM_ASK_
 TOOLS` says to report that instead of reconstructing exercises from `query_activities`
 (the exact hallucination ST-09 documented).
+
+**The coach hands change requests to the plan editor (`propose_plan_change`).** The web
+chat sends a message to the editor only on a few imperative verbs (`_looks_like_plan_edit`),
+so «можеш поміняти сьогоднішнє тренування», «зроби сьогодні легше» or «давай» after the
+coach's own advice reached `/ask` — whose prompt knew nothing about edits and told the
+athlete to change it in Garmin themselves. Adding verbs is whack-a-mole; instead the agent
+gets one more tool, offered only when the caller passes `on_plan_change` (web chat, bot
+`/ask`) together with `ASK_PLAN_CHANGE_SECTION` in the system prompt. The tool changes
+nothing: it records a self-contained `instruction` (the editor never sees the
+conversation) and tells the model the proposal follows its reply. After the answer the
+caller runs that instruction through the normal edit path — `chat._plan_edit_turn` (card
+with ✅/❌) or the bot's `_plan_edit` — so risk notes, schedule rebuilds and the ST-23
+dialogue all apply unchanged, and nothing moves without ✅. A reply that handed something
+over is not dedup-cached (a hit would replay "передав" with nothing handed). An editor
+failure (no active plan) is appended to the coach's answer rather than replacing it.
 
 ## Day-over-day continuity & relative day labels
 

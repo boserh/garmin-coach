@@ -340,7 +340,11 @@ async def deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/ask <питання> — EP-09: a bounded tool-use agent over the full stored history.
     Pure DB read + Claude calls; no Garmin fetch, so load_credentials (not user_runtime)
-    is enough, like /compare."""
+    is enough, like /compare.
+
+    When the athlete asks for a change rather than about one («поміняй сьогоднішнє»), the
+    agent hands it on (``propose_plan_change``): its answer goes out first, then the
+    request runs through ``_plan_edit`` — the same proposal + ✅/❌ as ``/plan <текст>``."""
     from app.garmin.credentials import load_credentials
 
     question = " ".join(ctx.args).strip()
@@ -356,14 +360,18 @@ async def ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         await update.message.reply_text("Шукаю у твоїй історії...")
         creds = load_credentials(user)
+        handed: list = []
         try:
             text = await run_ask(
-                session, question, user_id=user.id, api_key=creds.anthropic_key
+                session, question, user_id=user.id, api_key=creds.anthropic_key,
+                on_plan_change=handed.append,
             )
         except AnalystError as e:
             logger.error(f"ANALYST {e}")
             text = str(e)
     await update.message.reply_text(text)
+    if handed:
+        await _plan_edit(update, ctx, handed[-1])
 
 
 @bot_command
