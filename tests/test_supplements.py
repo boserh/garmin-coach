@@ -8,7 +8,7 @@ from app.analysis.client import CallStats
 from app.db import checkups as checkups_db
 from app.db import supplements as supplements_db
 from app.db.models import HealthCheckup, Supplement
-from tests.web_helpers import _user_id
+from tests.web_helpers import _user_id, post_live
 
 U1 = 1
 
@@ -300,7 +300,7 @@ def test_missing_name_redirects_with_error(auth_client):
 def test_analyze_route_no_active_supplements(auth_client):
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": "test-key"})()):
-        r = auth_client.post("/checkups/supplements/analyze", follow_redirects=False)
+        r = post_live(auth_client, "/checkups/supplements/analyze", follow_redirects=False)
     assert r.status_code == 303 and "err=none" in r.headers["location"]
 
 
@@ -313,7 +313,7 @@ def test_analyze_route_stores_and_shows_advice(auth_client):
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": "test-key"})()), \
          patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
-        r = auth_client.post("/checkups/supplements/analyze", follow_redirects=False)
+        r = post_live(auth_client, "/checkups/supplements/analyze", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/checkups/supplements?analyzed=1"
 
     detail = auth_client.get("/checkups/supplements").text
@@ -331,12 +331,12 @@ def test_analyze_route_force_regenerates(auth_client):
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": "test-key"})()), \
          patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
-        auth_client.post("/checkups/supplements/analyze")
+        post_live(auth_client, "/checkups/supplements/analyze")
         assert "перша спроба" in auth_client.get("/checkups/supplements").text
 
         # without force, an unchanged list would replay the cached first attempt;
         # force=1 (the "Спробувати ще раз" button) bypasses that and gets fresh text
-        auth_client.post("/checkups/supplements/analyze", data={"force": "1"})
+        post_live(auth_client, "/checkups/supplements/analyze", data={"force": "1"})
     assert "друга спроба" in auth_client.get("/checkups/supplements").text
 
 
@@ -353,7 +353,7 @@ def test_analyze_route_shows_structured_items_and_template_button(auth_client):
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": "test-key"})()), \
          patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
-        auth_client.post("/checkups/supplements/analyze")
+        post_live(auth_client, "/checkups/supplements/analyze")
 
     detail = auth_client.get("/checkups/supplements").text
     assert "Феритин" in detail and "раз на 6 міс" in detail
@@ -374,7 +374,7 @@ def test_apply_template_route_creates_checkup_and_redirects(auth_client):
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": "test-key"})()), \
          patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
-        auth_client.post("/checkups/supplements/analyze")
+        post_live(auth_client, "/checkups/supplements/analyze")
 
     r = auth_client.post("/checkups/supplements/apply-template", follow_redirects=False)
     assert r.status_code == 303
@@ -409,7 +409,7 @@ def test_apply_template_route_all_markers_none_redirects_with_error(auth_client)
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": "test-key"})()), \
          patch.object(reports, "supplement_advice_with_stats", fake_with_stats):
-        auth_client.post("/checkups/supplements/analyze")
+        post_live(auth_client, "/checkups/supplements/analyze")
 
     r = auth_client.post("/checkups/supplements/apply-template", follow_redirects=False)
     assert r.status_code == 303 and "err=notemplate" in r.headers["location"]

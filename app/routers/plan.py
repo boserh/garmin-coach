@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import format as fmt
 from app import goal as goal_mod
-from app import plansteps, stepmatch, weather
+from app import livejobs, plansteps, stepmatch, weather
 from app import race as race_mod
 from app.analysis.service import (
     ADJUST_LEVELS,
@@ -84,7 +84,8 @@ PLAN_GEN_STALE_S = 600
 # the next /plan: "ok:<n>" or "err:<message>". Separate from PLAN_GEN_KEY, whose "err:"
 # means "generation failed, show the setup form" — wrong for a plan that still exists.
 PLAN_REBUILD_KEY = "plan_rebuild"
-_bg_tasks: set = set()
+# The live job a generation/rebuild runs as (app.livejobs) — what the waiting page follows.
+PLAN_LIVE_KIND = "plan"
 
 templates = create_templates()
 
@@ -408,34 +409,46 @@ def _by_week(workouts, today: Optional[str] = None, readonly: bool = False):
     return out
 
 
-async def _generate_plan_bg(user_id: int, params: dict) -> None:
+def _progress_kw(progress) -> dict:
+    """``progress=`` only when someone is watching — the engines' stand-ins in tests keep
+    their older signatures."""
+    return {"progress": progress} if progress else {}
+
+
+async def _generate_plan_bg(user_id: int, params: dict, progress=None) -> bool:
     """Run the (slow, Opus) plan generation off the request path, in its own DB session.
     Writes the result via ``run_plan_generation``; updates the per-user ``PLAN_GEN_KEY``
-    state so ``GET /plan`` can show progress/result. Never raises — failures land in state."""
+    state so ``GET /plan`` can show progress/result. Never raises — failures land in state.
+    ``progress`` (the live waiting page) gets status lines. True when a plan was made."""
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         if user is None:
-            return
+            return False
         try:
             async with user_runtime(session, user) as creds:
                 plan = await run_plan_generation(
-                    session, user_id=user_id, api_key=creds.anthropic_key, **params)
+                    session, user_id=user_id, api_key=creds.anthropic_key, **params,
+                    **_progress_kw(progress))
                 # A fresh plan archives the prior one — sync now to remove the old plan's
                 # pushed workouts and push the new window (only if the user opted in).
                 # Never fail generation over it.
                 if user.garmin_sync_enabled:
+                    if progress:
+                        progress("status", {"text": "надсилаю тренування на годинник…"})
                     try:
                         await plan_sync.sync_plan_to_garmin(session, user_id)
                     except Exception:
                         logger.exception(f"PLAN gen sync failed user={user_id}")
             await repository.set_state(session, user_id, PLAN_GEN_KEY, "")  # done
             logger.info(f"PLAN created id={plan.id} user={user_id} (background)")
+            return True
         except AnalystError as e:
             logger.warning(f"PLAN generate failed user={user_id}: {e}")
             await repository.set_state(session, user_id, PLAN_GEN_KEY, f"err:{str(e)[:200]}")
         except Exception:
             logger.exception(f"PLAN background generation crashed user={user_id}")
             await repository.set_state(session, user_id, PLAN_GEN_KEY, "err:Внутрішня помилка.")
+        return False
 
 
 def _pending_stale(state: str) -> bool:
@@ -448,7 +461,7 @@ def _pending_stale(state: str) -> bool:
         return True
 
 
-async def _rebuild_plan_bg(user_id: int, schedule: dict) -> None:
+async def _rebuild_plan_bg(user_id: int, schedule: dict, progress=None) -> None:
     """A chat-confirmed schedule rebuild (``run_plan_rebuild``) off the request path —
     the same slow Opus generation, so the same background shape and the same waiting page
     (``PLAN_GEN_KEY``) as ``_generate_plan_bg``. The result lands in ``PLAN_REBUILD_KEY``
@@ -462,8 +475,10 @@ async def _rebuild_plan_bg(user_id: int, schedule: dict) -> None:
             async with user_runtime(session, user) as creds:
                 res = await run_plan_rebuild(
                     session, user_id=user_id, schedule=schedule,
-                    api_key=creds.anthropic_key)
+                    api_key=creds.anthropic_key, **_progress_kw(progress))
                 if user.garmin_sync_enabled:
+                    if progress:
+                        progress("status", {"text": "надсилаю тренування на годинник…"})
                     try:
                         await plan_sync.sync_plan_to_garmin(session, user_id)
                     except Exception:
@@ -494,17 +509,28 @@ async def spawn_plan_rebuild(session, user_id: int, schedule: dict) -> bool:
     if await generation_running(session, user_id):
         return False
     await repository.set_state(session, user_id, PLAN_GEN_KEY, f"pending:{int(time.time())}")
-    task = asyncio.create_task(_rebuild_plan_bg(user_id, schedule))
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+
+    async def run(job):
+        await _rebuild_plan_bg(user_id, schedule, progress=job.emit_threadsafe)
+        await livejobs.flush()
+        job.emit("done", {"redirect": "/plan"})
+
+    livejobs.start(user_id, PLAN_LIVE_KIND, run,
+                   meta={"back": "/plan", "label": "Перебудова плану"})
     return True
 
 
 def _spawn_plan_generation(user_id: int, params: dict) -> None:
-    """Fire-and-forget the background generation, keeping a reference so it isn't GC'd."""
-    task = asyncio.create_task(_generate_plan_bg(user_id, params))
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    """Start the background generation as a live job (``app.livejobs``): the waiting page
+    follows its progress and moves to the plan the moment it's done. ``PLAN_GEN_KEY``
+    stays the durable record of it (a no-script page, another process, a restart)."""
+    async def run(job):
+        made = await _generate_plan_bg(user_id, params, progress=job.emit_threadsafe)
+        await livejobs.flush()
+        job.emit("done", {"redirect": "/plan?created=1" if made else "/plan"})
+
+    livejobs.start(user_id, PLAN_LIVE_KIND, run,
+                   meta={"back": "/plan", "label": "Складаємо програму"})
 
 
 STRENGTH_WORKOUTS_CACHE_KEY = "strength_workouts_cache"
@@ -831,7 +857,9 @@ async def plan_page(
     error = request.query_params.get("error")
     if gen.startswith("pending"):
         if not _pending_stale(gen):
-            return templates.TemplateResponse(request, "plan_generating.html", {"user": user})
+            return templates.TemplateResponse(
+                request, "plan_generating.html",
+                {"user": user, "live": livejobs.running(user.id, PLAN_LIVE_KIND)})
         logger.warning(f"PLAN generation went stale user={user.id} — falling back to form")
         await repository.set_state(session, user.id, PLAN_GEN_KEY, "")
         error = error or "gen"

@@ -1,0 +1,54 @@
+{#
+  The unconfirmed plan proposal — rendered by /chat AND by the live chat job when a new
+  proposal lands (``app.routers.chat._card_html``), so the page and the live update can't
+  show two different cards.
+#}
+{% if pending %}
+  <div class="note pending">
+    <b>⏳ Пропозиція для плану</b>
+    {% if pending.risky %}<div style="margin-top:.5rem">⚠️ {{ pending.summary }}</div>
+      {% if pending.alt_summary %}<div style="margin-top:.4rem">🛡 Безпечніше: {{ pending.alt_summary }}</div>{% endif %}
+    {% else %}
+      <div style="margin-top:.5rem">{{ pending.summary or "Є незастосовані зміни." }}</div>
+    {% endif %}
+    {# NF-34: what will be recorded about the trip, visible BEFORE the ✅ — the same
+       line the bot shows, so a wrong kind/date can be corrected in the refine box. #}
+    {% if pending.away %}
+      <div style="margin-top:.5rem">📌 Запишу відсутність: {{ pending.away | away_line }}</div>
+    {% endif %}
+    {# A schedule change rebuilds the rest of the plan — what changes, what happens to
+       the plan and the price ceiling are spelled out before the ✅, as in the bot. #}
+    {% if pending.schedule_lines %}
+      <ul style="margin:.5rem 0 0 1.1rem;padding:0">
+        {% for line in pending.schedule_lines %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+    <form method="post" action="/chat/confirm" class="actions">
+      <button class="btn" type="submit" name="action" value="apply">
+        ✅ {% if pending.schedule %}Перебудувати{% elif pending.risky and pending.alt %}Як просив{% else %}Застосувати{% endif %}
+      </button>
+      {% if pending.risky and pending.alt %}
+        <button class="btn alt" type="submit" name="action" value="apply_alt">🛡 Пропоноване</button>
+      {% endif %}
+      <button class="btn cancel" type="submit" name="action" value="cancel">❌ Скасувати</button>
+    </form>
+    {# ST-23: ask about this proposal or correct it — a follow-up turn that either
+       answers (proposal untouched) or replaces it with a new one. #}
+    <form method="post" action="/chat" class="composer refine" data-live-chat="1" data-no-busy="1">
+      <input type="hidden" name="refine" value="1">
+      <textarea name="message" rows="2" required
+        placeholder="Питання чи корекція до пропозиції: «чому саме субота?» / «краще 8 км»"></textarea>
+      <button class="btn cancel" type="submit">💬 Уточнити</button>
+    </form>
+    {% if pending.thread %}
+      <details class="refine-thread">
+        <summary>Уточнення ({{ pending.thread|length }})</summary>
+        {% for t in pending.thread %}
+          <div class="turn me">{{ t.q }}</div>
+          <div class="turn bot">{{ t.a }}</div>
+        {% endfor %}
+      </details>
+    {% endif %}
+  </div>
+{% endif %}
+

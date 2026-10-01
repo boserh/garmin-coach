@@ -1,7 +1,7 @@
 """Web smoke tests: the /me per-user browser and the data export ZIP."""
 
 
-from tests.web_helpers import _report_id, _seed_two_users_with_data, _seed_user
+from tests.web_helpers import _report_id, _seed_two_users_with_data, _seed_user, wait_live_jobs
 
 
 def test_me_requires_login(client):
@@ -301,7 +301,8 @@ def test_send_telegram_success_regenerates_and_delivers(client, monkeypatch):
         lambda user: SimpleNamespace(anthropic_key="test-key"))
     monkeypatch.setattr(
         reports, "analyze_activity_with_stats",
-        lambda data, api_key=None: ("свіжий розбір", CallStats(kind="activity", model="m")))
+        lambda data, api_key=None, on_text=None:
+            ("свіжий розбір", CallStats(kind="activity", model="m")))
 
     sent = []
 
@@ -319,10 +320,19 @@ def test_send_telegram_success_regenerates_and_delivers(client, monkeypatch):
     monkeypatch.setattr(jobs_mod, "calibrate_after_regenerate", fake_calibrate)
 
     client.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    # The paid part runs as a background job: the post lands on its live page …
     r = client.post(f"/me/activities/{row}/send-telegram", follow_redirects=False)
-    assert r.status_code == 303 and "tg=ok" in r.headers["location"]
+    assert r.status_code == 303 and r.headers["location"].startswith("/live/")
+    wait_live_jobs()
+    # … which, once the job is done, sends the browser on to the usual banner.
+    done = client.get(r.headers["location"], follow_redirects=False)
+    assert done.status_code == 303 and "tg=ok" in done.headers["location"]
     assert sent == [(777, "свіжий розбір")]
     # the regenerated analysis may say "raise the targets" — the pace-target check follows
+    import time
+    deadline = time.monotonic() + 2
+    while not calibrations and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert calibrations == [(aid, row)]
 
 

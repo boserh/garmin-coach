@@ -250,19 +250,23 @@ async def _add_plan_strength(
 
 
 def generate_plan_with_stats(
-    context: dict, api_key: Optional[str] = None, model: Optional[str] = None
+    context: dict, api_key: Optional[str] = None, model: Optional[str] = None,
+    on_text=None,
 ) -> Tuple[GeneratedPlan, CallStats]:
     """Generate a structured training plan. Returns (GeneratedPlan, stats); one retry
     with a stricter JSON nudge before giving up. Raises AnalystError on API/parse failure.
     Not dedup-cached — dates are relative to today, so every generation is fresh.
-    ``model`` picks the engine (Opus default, Fable via the form toggle)."""
+    ``model`` picks the engine (Opus default, Fable via the form toggle). ``on_text``
+    streams the raw reply (``_session_counter`` turns it into a progress line)."""
     model = model or MODEL_PLAN_GEN
-    text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=16000)
+    text, stats = _complete(model, SYSTEM_PLAN, context, "plan", api_key, max_tokens=16000,
+                            on_text=on_text)
     try:
         return _coerce_plan(text), stats
     except Exception:
         retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
-        text, stats2 = _complete(model, SYSTEM_PLAN, retry, "plan", api_key, max_tokens=16000)
+        text, stats2 = _complete(model, SYSTEM_PLAN, retry, "plan", api_key, max_tokens=16000,
+                                 on_text=on_text)
         stats.input_tokens += stats2.input_tokens
         stats.output_tokens += stats2.output_tokens
         stats.cost_usd += stats2.cost_usd
@@ -356,16 +360,41 @@ def generate_strength_progression_with_stats(
             raise AnalystError("Не вдалось згенерувати прогресію силової з опису. Спробуй інакше.")
 
 
+def _session_counter(progress):
+    """An ``on_text`` for plan generation: the reply is JSON nobody wants to read as it
+    streams, but how many sessions it holds so far is exactly the progress a waiting page
+    should show. Counts ``"date"`` keys across chunk boundaries (a 5-char tail is kept,
+    one shorter than the key, so nothing is counted twice). Runs on the Claude worker
+    thread; ``progress`` must be thread-safe (``livejobs.Job.emit_threadsafe``)."""
+    state = {"n": 0, "tail": ""}
+
+    def on_text(chunk: str) -> None:
+        buf = state["tail"] + chunk
+        found = buf.count('"date"')
+        state["tail"] = buf[-5:]
+        if found:
+            state["n"] += found
+            progress("status", {"text": f"складаю план: {state['n']} тренувань…"})
+    return on_text
+
+
+def _gen_args(progress) -> tuple:
+    """``_run_claude``'s extra argument for a watched generation — none otherwise, so a
+    ``generate_plan_with_stats`` stand-in with the old three-argument shape still fits."""
+    return (_session_counter(progress),) if progress else ()
+
+
 async def run_plan_generation(
     session, *, user_id: int, goal: str, goal_label: Optional[str],
     target_date: Optional[str], start_date: Optional[str], days_per_week: Optional[int],
     intensity: Optional[str], intake: Optional[dict], api_key: Optional[str] = None,
     run_days: Optional[list] = None, long_run_day: Optional[str] = None,
-    model: Optional[str] = None,
+    model: Optional[str] = None, progress=None,
 ):
     """Build context, generate the plan, persist it (archiving any active plan), log a
     ReportLog(kind="plan"), and return the new TrainingPlan. ``model`` selects the
-    generation engine (Opus default; Fable via the setup-form toggle)."""
+    generation engine (Opus default; Fable via the setup-form toggle). ``progress(name,
+    data)`` (a live waiting page) gets status lines as it goes."""
     gen_model = model or MODEL_PLAN_GEN
     from app.garmin import repository
 
@@ -409,9 +438,11 @@ async def run_plan_generation(
         "away": await away_db.build_context(session, user_id),
     }
     logger.info(f"PLAN generating user={user_id} goal={goal} ({len(recent_runs)} recent runs)")
+    if progress:
+        progress("status", {"text": "складаю план…"})
     try:
         plan_out, stats = await _run_claude(
-            generate_plan_with_stats, context, api_key, gen_model,
+            generate_plan_with_stats, context, api_key, gen_model, *_gen_args(progress),
             session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(
@@ -425,6 +456,8 @@ async def run_plan_generation(
         start_date=start_date, days_per_week=days_per_week, intensity=intensity,
         intake=intake, summary=plan_out.summary, workouts=plan_out.workouts,
     )
+    if progress and (intake or {}).get("strength"):
+        progress("status", {"text": "додаю силові…"})
     await _add_plan_strength(
         session, plan, intake=intake, fitness=fitness, api_key=api_key, model=gen_model,
         end=strength_end,
@@ -622,7 +655,7 @@ def _relaid_strength(rows, mapping: dict, *, start: str) -> tuple:
 
 async def run_plan_rebuild(
     session, *, user_id: int, schedule: dict, api_key: Optional[str] = None,
-    model: Optional[str] = None,
+    model: Optional[str] = None, progress=None,
 ) -> dict:
     """Regenerate the rest of the active plan under a new weekly schedule — the ✅ of a
     chat-proposed schedule change («3 пробіжки на тиждень замість 2»).
@@ -642,6 +675,8 @@ async def run_plan_rebuild(
     is invisible to the sync's cleanup); pushing the new window is the caller's
     ``plan_sync.sync_plan_to_garmin``, as after a generation. Requires a bound user
     provider when any of the old tail is on the calendar.
+
+    ``progress(name, data)`` (a live waiting page) gets status lines as it goes.
 
     Returns ``{plan, added, removed, summary, start, end}``."""
     from fastapi.concurrency import run_in_threadpool
@@ -716,9 +751,11 @@ async def run_plan_rebuild(
     question = f"rebuild: {planschedule.day_list(new['run_days'])}"
     logger.info(f"PLAN rebuild user={user_id} plan={plan.id} {start}..{end} "
                 f"run_days={new['run_days']} strength_days={new['strength_days']}")
+    if progress:
+        progress("status", {"text": "перебудовую план…"})
     try:
         plan_out, stats = await _run_claude(
-            generate_plan_with_stats, context, api_key, gen_model,
+            generate_plan_with_stats, context, api_key, gen_model, *_gen_args(progress),
             session=session, user_id=user_id)
     except AnalystError as e:
         await repository.log_report(

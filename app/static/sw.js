@@ -227,6 +227,9 @@ self.addEventListener('fetch', function (e) {
   var url = new URL(request.url);
 
   if (url.origin !== self.location.origin) return;      // never touch a third party
+  // A live job feed (Server-Sent Events) is a stream that stays open for minutes: let the
+  // browser talk to the network directly — never a cache, never a worker in the middle.
+  if (url.pathname.indexOf('/live/') === 0) return;
 
   if (request.method !== 'GET') {
     // Signing out must not leave personal pages on the device — belt and braces next to

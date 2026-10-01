@@ -11,7 +11,7 @@ import base64
 import datetime as dt
 import json
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from app import daterel, gap, plankind
 from app.analysis.cache import (
@@ -56,6 +56,7 @@ from app.analysis.client import (
     _complete_vision,
     _get_client,
     _run_claude,
+    _send,
     _status_error,
 )
 from app.analysis.dump import dump_request
@@ -90,7 +91,7 @@ logger = logging.getLogger("claude")
 async def _run_cached_narration(
     session, *, user_id: Optional[int], kind: str, model: str, context: dict,
     cache_key: str, with_stats_fn, question: str, api_key: Optional[str] = None,
-    force: bool = False,
+    force: bool = False, on_text: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Shared engine for the cached ``run_*`` narrations (A1).
 
@@ -105,7 +106,11 @@ async def _run_cached_narration(
 
     ``force=True`` (ST-19) skips the cache **get** (a deliberate "look again" for a paid
     re-run after resynced data / a bad first analysis) but still **writes** the fresh result
-    back to the cache and logs a non-cached ReportLog, so the next non-force caller hits it."""
+    back to the cache and logs a non-cached ReportLog, so the next non-force caller hits it.
+
+    ``on_text`` (a live web page) is handed to ``with_stats_fn`` as a third argument — only
+    when set, so every ``*_with_stats`` that has no streaming keeps its two-argument shape.
+    A cache hit streams nothing: the caller shows the returned text."""
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -116,7 +121,8 @@ async def _run_cached_narration(
     else:
         try:
             text, stats = await _run_claude(
-                with_stats_fn, context, api_key, session=session, user_id=user_id)
+                with_stats_fn, context, api_key, *((on_text,) if on_text else ()),
+                session=session, user_id=user_id)
         except AnalystError as e:
             await repository.log_report(
                 session, user_id=user_id, kind=kind, model=model, ok=False,
@@ -661,18 +667,38 @@ async def _run_ask_tool(session, user_id: Optional[int], name: str, args: dict) 
         return {"error": str(e)[:200]}
 
 
+# What the live chat shows while a tool round runs — the question is being answered from
+# the athlete's own data, and "дивлюсь сон і відновлення" says which part of it.
+ASK_TOOL_STATUS = {
+    "query_activities": "дивлюсь твої тренування",
+    "query_daily": "дивлюсь сон і відновлення",
+    "aggregate_weekly": "рахую по тижнях",
+    "get_activity_detail": "розбираю тренування детально",
+    "get_training_plan": "дивлюсь програму",
+}
+
+
 async def run_ask_agent(
     session, user_id: Optional[int], question: str,
     reports: list, recent_asks: list, api_key: Optional[str],
+    on_event: Optional[Callable[[str, dict], None]] = None,
 ) -> Tuple[str, CallStats, int]:
     """The EP-09 tool-use loop: up to ``MAX_ASK_ROUNDS`` round trips, each either
     answering (``stop_reason != "tool_use"``) or requesting one or more of
     :func:`_ask_tools`. Returns ``(text, cumulative_stats, rounds_used)``. Hitting the
     round or token budget with the model still mid-tool-use returns
     :data:`ASK_LIMIT_TEXT` instead of a partial/guessed answer. Raises AnalystError on
-    an API failure (same mapping as every other Claude call)."""
+    an API failure (same mapping as every other Claude call).
+
+    ``on_event(name, data)`` (the live web chat) receives ``delta`` text as each round
+    streams, ``reset`` when a round turns out to be a tool call (its preamble is not the
+    answer), and ``status`` naming what the tools are reading. It is called from the
+    Claude worker thread as well as this loop, so it must be thread-safe."""
     model = MODEL_ASK
     tools = _ask_tools()
+    stream_args = ()
+    if on_event is not None:
+        stream_args = (lambda t: on_event("delta", {"text": t}),)
     user_content = {
         "today": dt.date.today().isoformat(),
         "recent_reports": reports,
@@ -696,7 +722,7 @@ async def run_ask_agent(
     for round_n in range(1, MAX_ASK_ROUNDS + 1):
         msg, stats = await _run_claude(
             _complete_tools, model, SYSTEM_ASK_TOOLS, messages, tools, api_key,
-            ASK_TOOL_MAX_TOKENS, session=session, user_id=user_id,
+            ASK_TOOL_MAX_TOKENS, *stream_args, session=session, user_id=user_id,
         )
         total.input_tokens += stats.input_tokens
         total.output_tokens += stats.output_tokens
@@ -709,6 +735,11 @@ async def run_ask_agent(
         if total.input_tokens + total.output_tokens > MAX_ASK_TOTAL_TOKENS:
             return ASK_LIMIT_TEXT, total, round_n
 
+        if on_event is not None:
+            names = [b.name for b in msg.content if getattr(b, "type", None) == "tool_use"]
+            on_event("reset", {})
+            on_event("status", {"text": ", ".join(dict.fromkeys(
+                ASK_TOOL_STATUS.get(n, "шукаю в даних") for n in names)) + "…"})
         messages.append({"role": "assistant", "content": msg.content})
         tool_results = []
         for block in msg.content:
@@ -730,6 +761,7 @@ async def run_ask(
     user_id: Optional[int] = None,
     n: int = ASK_DEFAULT_N,
     api_key: Optional[str] = None,
+    on_event: Optional[Callable[[str, dict], None]] = None,
 ) -> str:
     """Answer a free-form question about this user's training/recovery history (EP-09).
     Starts from the last ``n`` daily reports plus the recent /ask thread (so a question
@@ -738,7 +770,8 @@ async def run_ask(
     Persists a ReportLog (kind="ask", ``tool_rounds`` set on a fresh call) and returns the
     text. Dedup-cached on the question + a coarse daily-data slice (``last_data_date`` —
     a pure-DB, no-Garmin proxy for "has anything changed"): a repeat the same day the data
-    last changed is a cache hit."""
+    last changed is a cache hit. ``on_event`` streams progress — see ``run_ask_agent``; a
+    cache hit emits nothing, the caller shows the returned text."""
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -763,6 +796,7 @@ async def run_ask(
     try:
         text, stats, rounds = await run_ask_agent(
             session, user_id, question, reports, recent_asks, api_key,
+            **({"on_event": on_event} if on_event else {}),
         )
     except AnalystError as e:
         await repository.log_report(
@@ -965,11 +999,12 @@ def activity_payload(activity, planned=None, route=None) -> dict:
 
 
 def analyze_activity_with_stats(
-    activity_data: dict, api_key: Optional[str] = None
+    activity_data: dict, api_key: Optional[str] = None,
+    on_text: Optional[Callable[[str], None]] = None,
 ) -> Tuple[str, CallStats]:
     """Analyze one activity. Returns (text, stats); raises AnalystError on API failure.
     The dedup cache (keyed on the activity payload + model) is checked in
-    :func:`run_activity_analysis`."""
+    :func:`run_activity_analysis`. ``on_text`` streams it to a live page (``_send``)."""
     model = MODEL_ACTIVITY
     today_iso = dt.date.today().isoformat()
     user_content = {**daterel.today_context(today_iso), "activity": activity_data}
@@ -984,7 +1019,7 @@ def analyze_activity_with_stats(
     try:
         from anthropic import APIConnectionError, APIStatusError
 
-        msg = _get_client(api_key).messages.create(
+        msg = _send(_get_client(api_key), dict(
             model=model, max_tokens=1500, system=SYSTEM_ACTIVITY,
             # See analyze_with_stats above: Sonnet 5 (MODEL_ACTIVITY) defaults to
             # adaptive thinking when omitted, which can eat the whole max_tokens
@@ -992,7 +1027,7 @@ def analyze_activity_with_stats(
             thinking={"type": "disabled"},
             messages=[{"role": "user",
                        "content": json.dumps(user_content, ensure_ascii=False)}],
-        )
+        ), on_text)
         stats = CallStats(kind="activity", model=model)
         usage = getattr(msg, "usage", None)
         if usage:
@@ -1014,10 +1049,10 @@ def analyze_activity_with_stats(
 
 async def run_activity_analysis(
     session, activity, *, user_id: Optional[int] = None, api_key: Optional[str] = None,
-    force: bool = False,
+    force: bool = False, on_text: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Analyze one activity, store the text on the row (``analysis``) for the web detail
-    page, log a ReportLog (kind="activity"), and return the text.
+    page, log a ReportLog (kind="activity"), and return the text. ``on_text`` streams it.
 
     ``force=True`` (ST-19) regenerates even when a valid cached analysis exists — for an
     explicit "подивись ще раз" after resynced data or a poor first write. It still writes the
@@ -1037,7 +1072,7 @@ async def run_activity_analysis(
         session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, context=data,
         cache_key=_activity_cache_key(data, MODEL_ACTIVITY),
         with_stats_fn=analyze_activity_with_stats, question=q, api_key=api_key,
-        force=force,
+        force=force, on_text=on_text,
     )
     activity.analysis = text
     return text
@@ -1836,17 +1871,19 @@ def checkup_payload(checkup, history: Optional[list] = None) -> dict:
 
 
 def checkup_with_stats(
-    context: dict, api_key: Optional[str] = None
+    context: dict, api_key: Optional[str] = None,
+    on_text: Optional[Callable[[str], None]] = None,
 ) -> Tuple[str, CallStats]:
     """Interpret one health checkup's results (Sonnet). Returns (text, stats); raises
     AnalystError on API failure. The dedup cache is checked in
-    :func:`run_checkup_analysis`."""
+    :func:`run_checkup_analysis`. ``on_text`` streams it to a live page."""
     return _complete(MODEL_CHECKUP, SYSTEM_CHECKUP, context, "checkup", api_key,
-                     max_tokens=700)
+                     max_tokens=700, on_text=on_text)
 
 
 async def run_checkup_analysis(
     session, checkup, *, user_id: int, api_key: Optional[str] = None,
+    on_text: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Interpret one ``HealthCheckup``'s results, store the text on the row (``analysis``)
     for the web detail page, log a ``ReportLog(kind="checkup")``, and return the text.
@@ -1862,7 +1899,7 @@ async def run_checkup_analysis(
     text = await _run_cached_narration(
         session, user_id=user_id, kind="checkup", model=MODEL_CHECKUP, context=data,
         cache_key=_checkup_cache_key(data, MODEL_CHECKUP),
-        with_stats_fn=checkup_with_stats, question=q, api_key=api_key,
+        with_stats_fn=checkup_with_stats, question=q, api_key=api_key, on_text=on_text,
     )
     checkup.analysis = text
     return text

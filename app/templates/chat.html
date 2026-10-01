@@ -6,6 +6,10 @@
    pinned — see `body.chatpage .topnav` in app.css. #}
 {% block body_attrs %} class="chatpage"{% endblock %}
 
+{# No JavaScript: a page with a message still being answered refreshes itself until the
+   answer is in. With JavaScript the live stream does that job (app.js). #}
+{% block head %}{% if live %}<noscript><meta http-equiv="refresh" content="4"></noscript>{% endif %}{% endblock %}
+
 {% block body %}
   {% set active = 'chat' %}
   {% include "_nav.html" %}
@@ -24,77 +28,36 @@
       <div class="note" style="border-color:rgba(247,118,142,.35)"><span class="err">{{ error }}</span></div>
     {% endif %}
 
-    {% if not history %}
-      <p class="empty">Ще нема повідомлень. Запитай щось про сон/тренування або напиши,
+    {% if not history and not live %}
+      <p class="empty" id="chat-empty">Ще нема повідомлень. Запитай щось про сон/тренування або напиши,
         що змінити в плані (напр. «перенеси довгу на суботу»).</p>
-    {% else %}
-      {# Older messages live above, so the link that fetches them belongs above too. #}
-      {% if has_more %}
-        <div class="loadmore"><a href="/chat?limit={{ next_limit }}">↑ Показати старіші</a></div>
-      {% endif %}
-      <div class="thread"{% if jump_to_latest %} data-jump-latest="1"{% endif %}>
-        {% for h in history %}
-          {% if h.when %}<div class="when">{{ h.when }}</div>{% endif %}
-          {# keep the bubble content on one line: white-space:pre-wrap would otherwise render
-             the template's own newlines/indentation as phantom blank blocks inside it #}
-          <div class="turn me"><span class="kind">{{ "план" if h.kind != "ask" else "питання" }}</span>{{ h.question }}</div>
-          <div class="turn bot{% if not h.ok %} fail{% endif %}">{{ h.answer }}</div>
-        {% endfor %}
-      </div>
     {% endif %}
+    {# Older messages live above, so the link that fetches them belongs above too. #}
+    {% if has_more %}
+      <div class="loadmore"><a href="/chat?limit={{ next_limit }}">↑ Показати старіші</a></div>
+    {% endif %}
+    {# Always present: the live chat appends new turns here (app.js). #}
+    <div class="thread" id="chat-thread"{% if jump_to_latest %} data-jump-latest="1"{% endif %}>
+      {% for h in history %}
+        {% if h.when %}<div class="when">{{ h.when }}</div>{% endif %}
+        {# keep the bubble content on one line: white-space:pre-wrap would otherwise render
+           the template's own newlines/indentation as phantom blank blocks inside it #}
+        <div class="turn me"><span class="kind">{{ "план" if h.kind != "ask" else "питання" }}</span>{{ h.question }}</div>
+        <div class="turn bot{% if not h.ok %} fail{% endif %}">{{ h.answer }}</div>
+      {% endfor %}
+      {# A message still being answered (the job runs on the server, not in this page):
+         app.js re-attaches to its event stream; without JavaScript the page refreshes. #}
+      {% if live %}
+        <div class="turn me">{{ live.meta.text }}</div>
+        <div class="turn bot lv" data-live-job="{{ live.id }}" data-after="{{ live.events|length - 1 }}"><span class="lv-status">{{ "" if live.text() else (live.status() or "думаю…") }}</span><span class="lv-txt">{{ live.text() }}</span></div>
+      {% endif %}
+    </div>
 
     {# The proposal is the thing to act on right now, so it sits with the composer at the
-       bottom rather than above a screen of history. #}
-    {% if pending %}
-      <div class="note pending">
-        <b>⏳ Пропозиція для плану</b>
-        {% if pending.risky %}<div style="margin-top:.5rem">⚠️ {{ pending.summary }}</div>
-          {% if pending.alt_summary %}<div style="margin-top:.4rem">🛡 Безпечніше: {{ pending.alt_summary }}</div>{% endif %}
-        {% else %}
-          <div style="margin-top:.5rem">{{ pending.summary or "Є незастосовані зміни." }}</div>
-        {% endif %}
-        {# NF-34: what will be recorded about the trip, visible BEFORE the ✅ — the same
-           line the bot shows, so a wrong kind/date can be corrected in the refine box. #}
-        {% if pending.away %}
-          <div style="margin-top:.5rem">📌 Запишу відсутність: {{ pending.away | away_line }}</div>
-        {% endif %}
-        {# A schedule change rebuilds the rest of the plan — what changes, what happens to
-           the plan and the price ceiling are spelled out before the ✅, as in the bot. #}
-        {% if pending.schedule_lines %}
-          <ul style="margin:.5rem 0 0 1.1rem;padding:0">
-            {% for line in pending.schedule_lines %}<li>{{ line }}</li>{% endfor %}
-          </ul>
-        {% endif %}
-        <form method="post" action="/chat/confirm" class="actions">
-          <button class="btn" type="submit" name="action" value="apply">
-            ✅ {% if pending.schedule %}Перебудувати{% elif pending.risky and pending.alt %}Як просив{% else %}Застосувати{% endif %}
-          </button>
-          {% if pending.risky and pending.alt %}
-            <button class="btn alt" type="submit" name="action" value="apply_alt">🛡 Пропоноване</button>
-          {% endif %}
-          <button class="btn cancel" type="submit" name="action" value="cancel">❌ Скасувати</button>
-        </form>
-        {# ST-23: ask about this proposal or correct it — a follow-up turn that either
-           answers (proposal untouched) or replaces it with a new one. #}
-        <form method="post" action="/chat" class="composer refine">
-          <input type="hidden" name="refine" value="1">
-          <textarea name="message" rows="2" required
-            placeholder="Питання чи корекція до пропозиції: «чому саме субота?» / «краще 8 км»"></textarea>
-          <button class="btn cancel" type="submit">💬 Уточнити</button>
-        </form>
-        {% if pending.thread %}
-          <details class="refine-thread">
-            <summary>Уточнення ({{ pending.thread|length }})</summary>
-            {% for t in pending.thread %}
-              <div class="turn me">{{ t.q }}</div>
-              <div class="turn bot">{{ t.a }}</div>
-            {% endfor %}
-          </details>
-        {% endif %}
-      </div>
-    {% endif %}
+       bottom rather than above a screen of history. Replaced in place by the live chat. #}
+    <div id="chat-pending">{% include "_chat_pending.html" %}</div>
 
-    <form method="post" action="/chat" class="composer">
+    <form method="post" action="/chat" class="composer" data-live-chat="1" data-no-busy="1">
       <textarea name="message" placeholder="Напр.: як мій сон цього тижня? / перенеси довгу на суботу" required></textarea>
       <button class="btn" type="submit">Надіслати</button>
     </form>

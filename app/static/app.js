@@ -344,3 +344,285 @@
   // should watch, and an animation on load also fights prefers-reduced-motion.
   window.scrollTo({top: document.body.scrollHeight, behavior: 'auto'});
 })();
+
+// The live feed of one background job (app.livejobs → /live/{id}/events, Server-Sent
+// Events) — ONE implementation, used by the chat and by every paid button below.
+// `on` maps event names (status/delta/reset/done/failed) to handlers; the feed closes
+// itself after done/failed. If EventSource gives up for good (the job is gone, or the
+// session expired) the page reloads: whatever the job wrote is where the page reads it.
+window.bihunLive = (function () {
+  'use strict';
+  function feed(jobId, after, on) {
+    var url = '/live/' + encodeURIComponent(jobId) + '/events';
+    if (after >= 0) url += '?after=' + after;
+    var es = new EventSource(url);
+    var ended = false;
+    function data(e) {
+      try { return JSON.parse(e.data || '{}'); } catch (err) { return {}; }
+    }
+    ['status', 'delta', 'reset'].forEach(function (name) {
+      es.addEventListener(name, function (e) { if (on[name]) on[name](data(e)); });
+    });
+    ['done', 'failed'].forEach(function (name) {
+      es.addEventListener(name, function (e) {
+        ended = true;
+        es.close();
+        if (on[name]) on[name](data(e));
+      });
+    });
+    es.onerror = function () {
+      if (!ended && es.readyState === EventSource.CLOSED) location.reload();
+    };
+    return es;
+  }
+  return {
+    supported: !!(window.EventSource && window.fetch && window.FormData),
+    feed: feed
+  };
+})();
+
+// Every other paid button: `<form data-live="#target">` posts in the background, the
+// job's progress (a status line, then the model's text as it's written) shows in
+// `#target` (or under the form when the value is empty), and when it's done the page
+// goes where the server says — the same URL the button used to redirect to, so the
+// result is shown by the page's own server-rendered markup and banners.
+// `data-live-hide="#selector"` hides the stale result while the new one is written.
+// No JavaScript, or a failed fetch: the form posts normally and lands on /live/{id}.
+(function () {
+  'use strict';
+  if (!window.bihunLive.supported) return;
+
+  function box(target) {
+    var el = document.createElement('div');
+    el.className = 'note lv-box lv';
+    var st = document.createElement('span');
+    st.className = 'lv-status';
+    st.textContent = 'думаю…';
+    var tx = document.createElement('span');
+    tx.className = 'lv-txt';
+    el.appendChild(st);
+    el.appendChild(tx);
+    target.innerHTML = '';
+    target.appendChild(el);
+    target.hidden = false;
+    return el;
+  }
+
+  function follow(jobId, el, after, onEnd) {
+    var st = el.querySelector('.lv-status');
+    var tx = el.querySelector('.lv-txt');
+    window.bihunLive.feed(jobId, after, {
+      status: function (d) { if (!tx.textContent) st.textContent = d.text || ''; },
+      delta: function (d) { st.textContent = ''; tx.textContent += d.text || ''; },
+      reset: function () { tx.textContent = ''; },
+      done: function (d) { location.assign(d.redirect || location.href); },
+      failed: function (d) {
+        st.textContent = '';
+        tx.textContent = d.message || 'Щось пішло не так — спробуй ще раз.';
+        el.classList.remove('lv');
+        el.classList.add('fail');
+        if (onEnd) onEnd();
+      }
+    });
+  }
+
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-live')) return;
+    e.preventDefault();
+    var sel = form.getAttribute('data-live');
+    var target = sel ? document.querySelector(sel) : null;
+    if (!target) {
+      target = document.createElement('div');
+      form.insertAdjacentElement('afterend', target);
+    }
+    var buttons = form.querySelectorAll('button');
+    buttons.forEach(function (b) {
+      b.disabled = true;
+      b.dataset.origText = b.textContent;
+      b.textContent = b.getAttribute('data-busy-text') || 'Зачекайте…';
+    });
+    function release() {
+      buttons.forEach(function (b) {
+        b.disabled = false;
+        if (b.dataset.origText !== undefined) b.textContent = b.dataset.origText;
+      });
+    }
+    var hide = form.getAttribute('data-live-hide');
+    var el = box(target);
+    fetch(form.action, {
+      method: 'POST', body: new FormData(form), credentials: 'same-origin',
+      headers: {'Accept': 'application/json'}
+    }).then(function (r) {
+      return r.json();
+    }).then(function (d) {
+      if (d.job && !d.error) {
+        if (hide) document.querySelectorAll(hide).forEach(function (h) { h.hidden = true; });
+        follow(d.job, el, -1, release);
+      } else if (d.job) {
+        follow(d.job, el, -1, release);    // already running: show that one
+      } else if (d.redirect) {
+        location.assign(d.redirect);       // refused up front — the page says why
+      } else {
+        throw new Error('unexpected');
+      }
+    }).catch(function () {
+      target.innerHTML = '';
+      release();
+      form.submit();
+    });
+  });
+
+  // /live/{id} (the no-script landing page) — with a script, follow it live instead of
+  // refreshing.
+  document.querySelectorAll('[data-live-follow]').forEach(function (el) {
+    follow(el.getAttribute('data-live-follow'), el,
+           parseInt(el.getAttribute('data-after') || '-1', 10));
+  });
+})();
+
+// Live chat: a message is sent without leaving the page, and the answer streams into the
+// thread as Claude writes it. The server runs each message as a background job
+// (app.livejobs) and publishes its progress at /live/{id}/events (Server-Sent Events):
+// `status` lines while the coach reads the athlete's data, `delta` text, `reset` when a
+// round turns out to be a tool call, then `done` (the stored reply + the proposal card's
+// HTML) or `failed`.
+//
+// Progressive enhancement: without fetch/EventSource the composer forms post normally and
+// the server renders the message as in progress, refreshing until it's answered.
+(function () {
+  'use strict';
+
+  if (!window.bihunLive.supported) return;
+  var thread = document.getElementById('chat-thread');
+  if (!thread) return;
+
+  function nearBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+  }
+  function toBottom() {
+    window.scrollTo({top: document.body.scrollHeight, behavior: 'auto'});
+  }
+
+  function bubble(cls, text) {
+    var el = document.createElement('div');
+    el.className = 'turn ' + cls;
+    if (text) el.textContent = text;
+    thread.appendChild(el);
+    return el;
+  }
+
+  function liveBubble() {
+    var el = bubble('bot lv', '');
+    var st = document.createElement('span');
+    st.className = 'lv-status';
+    st.textContent = 'думаю…';
+    var tx = document.createElement('span');
+    tx.className = 'lv-txt';
+    el.appendChild(st);
+    el.appendChild(tx);
+    return el;
+  }
+
+  // One message at a time (the server refuses a second one anyway — each is a paid call).
+  function setBusy(busy) {
+    document.querySelectorAll('form[data-live-chat] button').forEach(function (b) {
+      b.disabled = busy;
+    });
+  }
+
+  function finish(el, text, failed) {
+    var st = el.querySelector('.lv-status');
+    if (st) st.remove();
+    el.classList.remove('lv');
+    if (failed) el.classList.add('fail');
+    if (text !== undefined && text !== null) el.querySelector('.lv-txt').textContent = text;
+    setBusy(false);
+  }
+
+  function follow(jobId, el, after) {
+    var st = el.querySelector('.lv-status');
+    var tx = el.querySelector('.lv-txt');
+    setBusy(true);
+    window.bihunLive.feed(jobId, after, {
+      status: function (d) { if (!tx.textContent) st.textContent = d.text || ''; },
+      delta: function (d) {
+        var down = nearBottom();
+        st.textContent = '';
+        tx.textContent += d.text || '';
+        if (down) toBottom();
+      },
+      reset: function () { tx.textContent = ''; },
+      done: function (d) {
+        // The stored reply replaces the streamed text: it is what the thread shows on
+        // the next load, and a cached answer arrives here without any deltas at all.
+        finish(el, d.reply);
+        if (typeof d.card === 'string') {
+          var card = document.getElementById('chat-pending');
+          if (card) card.innerHTML = d.card;
+        }
+        toBottom();
+      },
+      failed: function (d) {
+        finish(el, d.message || 'Щось пішло не так — спробуй ще раз.', true);
+      }
+    });
+  }
+
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!(form instanceof HTMLFormElement) || !form.hasAttribute('data-live-chat')) return;
+    var ta = form.querySelector('textarea');
+    var text = ta ? ta.value.trim() : '';
+    if (!text) return;   // let the browser's own `required` message show
+    e.preventDefault();
+
+    var body = new FormData(form);
+    var empty = document.getElementById('chat-empty');
+    if (empty) empty.remove();
+    var mine = bubble('me', text);
+    var el = liveBubble();
+    ta.value = '';
+    setBusy(true);
+    toBottom();
+
+    fetch(form.action, {
+      method: 'POST', body: body, credentials: 'same-origin',
+      headers: {'Accept': 'application/json'}
+    }).then(function (r) {
+      return r.json();
+    }).then(function (d) {
+      if (d.job) { follow(d.job, el, -1); return; }
+      // Refused before it started (busy, demo, empty): say why, give the text back.
+      finish(el, d.error || 'Не вдалось надіслати.', true);
+      ta.value = text;
+    }).catch(function () {
+      // Not JSON / no network: fall back to the plain form post, which always works.
+      mine.remove();
+      el.remove();
+      ta.value = text;
+      setBusy(false);
+      form.submit();
+    });
+  });
+
+  // Enter sends on a desktop keyboard, Shift+Enter is a new line — like every chat. On a
+  // touch keyboard Enter stays a new line: there is a send button, and an accidental
+  // send is worse than a missing shortcut.
+  var finePointer = window.matchMedia && window.matchMedia('(pointer: fine)').matches;
+  document.addEventListener('keydown', function (e) {
+    if (!finePointer || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    var ta = e.target;
+    if (!(ta instanceof HTMLTextAreaElement) || !ta.form
+        || !ta.form.hasAttribute('data-live-chat')) return;
+    e.preventDefault();
+    if (ta.form.requestSubmit) ta.form.requestSubmit();
+  });
+
+  // A page loaded while a message is still being answered picks its stream back up.
+  var live = thread.querySelector('[data-live-job]');
+  if (live) {
+    follow(live.getAttribute('data-live-job'), live,
+           parseInt(live.getAttribute('data-after') || '-1', 10));
+  }
+})();

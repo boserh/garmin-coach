@@ -68,3 +68,35 @@ def _report_id(user_id):
             )).scalar_one()
 
     return anyio.run(get)
+
+
+def wait_live_jobs(timeout: float = 5.0) -> None:
+    """Block until every background job (``app.livejobs``) has finished. A ``POST /chat``
+    returns before its answer exists — the job runs on the TestClient's event loop, in
+    another thread — so a test that asserts on the answer waits here first, INSIDE any
+    ``patch`` it set up (a job that outlives the patch would run the real engine)."""
+    import time
+
+    from app import livejobs
+
+    end = time.monotonic() + timeout
+    while any(not j.done for j in list(livejobs._jobs.values())):
+        if time.monotonic() > end:
+            raise AssertionError("a live job did not finish in time")
+        time.sleep(0.01)
+
+
+def post_live(client, url, follow_redirects=True, **kwargs):
+    """POST a paid button that now runs as a live job (``routers.live.start_button``) and
+    return what the old synchronous handler returned: the post lands on ``/live/{id}``,
+    the job is waited for, and that page's redirect to the result URL is handed back
+    (followed, unless ``follow_redirects=False``). Refusals that never started a job
+    come back exactly as before."""
+    r = client.post(url, follow_redirects=False, **kwargs)
+    location = r.headers.get("location", "")
+    if r.status_code == 303 and location.startswith("/live/"):
+        wait_live_jobs()
+        r = client.get(location, follow_redirects=False)
+    if follow_redirects and r.status_code in (302, 303):
+        r = client.get(r.headers["location"])
+    return r

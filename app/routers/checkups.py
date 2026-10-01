@@ -42,6 +42,7 @@ from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import repository
 from app.garmin.credentials import load_credentials
+from app.routers import live
 from app.templating import create_templates
 
 logger = logging.getLogger("checkups")
@@ -378,28 +379,35 @@ async def supplements_create(
 async def supplements_analyze(
     request: Request,
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_session),
 ):
     """On-demand advice on which lab markers to track given the active supplement list
     (a real Sonnet call — only from this explicit button tap). Dedup-cached, so
     re-tapping an unchanged list is free unless the form carries ``force=1`` (the
-    "спробуй ще раз" regenerate button shown once advice already exists)."""
+    "спробуй ще раз" regenerate button shown once advice already exists).
+
+    A background job (``routers.live.start_button``): the answer is structured JSON, so
+    the page shows a status line rather than text, then reloads onto ``?analyzed=1``."""
     if user.is_demo:
-        return RedirectResponse("/checkups/supplements?err=demo", status_code=303)
+        return live.refuse(request, "/checkups/supplements?err=demo")
     form = await request.form()
     force = (form.get("force") or "") == "1"
-    creds = load_credentials(user)
-    if not creds.anthropic_key:
-        return RedirectResponse("/checkups/supplements?err=nokey", status_code=303)
-    try:
-        text = await run_supplement_advice(
-            session, user_id=user.id, api_key=creds.anthropic_key, force=force)
-        await session.commit()
-    except AnalystError:
-        return RedirectResponse("/checkups/supplements?err=analyze", status_code=303)
-    if text is None:
-        return RedirectResponse("/checkups/supplements?err=none", status_code=303)
-    return RedirectResponse("/checkups/supplements?analyzed=1", status_code=303)
+    if not load_credentials(user).anthropic_key:
+        return live.refuse(request, "/checkups/supplements?err=nokey")
+
+    async def work(session, user, on_text):
+        try:
+            text = await run_supplement_advice(
+                session, user_id=user.id, api_key=load_credentials(user).anthropic_key,
+                force=force)
+            await session.commit()
+        except AnalystError:
+            return "/checkups/supplements?err=analyze"
+        if text is None:
+            return "/checkups/supplements?err=none"
+        return "/checkups/supplements?analyzed=1"
+
+    return live.start_button(request, user, "supplements", work=work,
+                             back="/checkups/supplements", label="Порада щодо аналізів")
 
 
 @router.post("/checkups/supplements/apply-template")
@@ -530,26 +538,39 @@ async def checkup_update(
 @router.post("/checkups/{checkup_id}/analyze")
 async def checkup_analyze(
     checkup_id: int,
+    request: Request,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """On-demand Claude interpretation of one checkup's results (a real Sonnet call —
-    only from this explicit button tap, never a background job). Dedup-cached, so
-    re-tapping without an edit in between is free (``run_checkup_analysis``)."""
+    only from this explicit button tap, never from a scheduled job). Dedup-cached, so
+    re-tapping without an edit in between is free (``run_checkup_analysis``).
+
+    Runs as a live job (``routers.live.start_button``): the interpretation is written
+    into the page as it streams, then the page reloads onto ``?analyzed=1``."""
     row = await checkups.get_checkup(session, user.id, checkup_id)
     if row is None:
-        return RedirectResponse("/checkups", status_code=303)
+        return live.refuse(request, "/checkups")
     if user.is_demo:
-        return RedirectResponse(f"/checkups/{checkup_id}?err=demo", status_code=303)
-    creds = load_credentials(user)
-    if not creds.anthropic_key:
-        return RedirectResponse(f"/checkups/{checkup_id}?err=nokey", status_code=303)
-    try:
-        await run_checkup_analysis(session, row, user_id=user.id, api_key=creds.anthropic_key)
-        await session.commit()
-    except AnalystError:
-        return RedirectResponse(f"/checkups/{checkup_id}?err=analyze", status_code=303)
-    return RedirectResponse(f"/checkups/{checkup_id}?analyzed=1", status_code=303)
+        return live.refuse(request, f"/checkups/{checkup_id}?err=demo")
+    if not load_credentials(user).anthropic_key:
+        return live.refuse(request, f"/checkups/{checkup_id}?err=nokey")
+
+    async def work(session, user, on_text):
+        row = await checkups.get_checkup(session, user.id, checkup_id)
+        if row is None:
+            return "/checkups"
+        try:
+            await run_checkup_analysis(session, row, user_id=user.id,
+                                       api_key=load_credentials(user).anthropic_key,
+                                       on_text=on_text)
+            await session.commit()
+        except AnalystError:
+            return f"/checkups/{checkup_id}?err=analyze"
+        return f"/checkups/{checkup_id}?analyzed=1"
+
+    return live.start_button(request, user, f"checkup:{checkup_id}", work=work,
+                             back=f"/checkups/{checkup_id}", label="Розбір аналізів")
 
 
 @router.post("/checkups/{checkup_id}/delete")

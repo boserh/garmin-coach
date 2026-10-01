@@ -108,14 +108,16 @@
         <button type="submit" class="btn-ghost">🔄 Ресинк із Garmin</button>
       </form>
       {% if analysis and has_claude_key %}
+      {# Live (app.js `form[data-live]`): the new analysis is written into #analysis-live
+         as it streams, then the page reloads onto the usual ?regen=/?tg= banner. #}
       <form method="post" action="/me/activities/{{ a.id }}/regenerate"
-            onsubmit="this.querySelector('button').disabled=true">
-        <button type="submit" class="btn-ghost" title="~$0.02">🔁 Перегенерувати розбір</button>
+            data-live="#analysis-live" data-live-hide="#analysis" data-no-busy="1">
+        <button type="submit" class="btn-ghost" title="~$0.02" data-busy-text="Пишу розбір…">🔁 Перегенерувати розбір</button>
       </form>
       {% if user.telegram_chat_id %}
       <form method="post" action="/me/activities/{{ a.id }}/send-telegram"
-            onsubmit="this.querySelector('button').disabled=true">
-        <button type="submit" class="btn-ghost" title="~$0.02, перегенерує і надішле в Telegram">📤 Перегенерувати й надіслати в Telegram</button>
+            data-live="#analysis-live" data-live-hide="#analysis" data-no-busy="1">
+        <button type="submit" class="btn-ghost" title="~$0.02, перегенерує і надішле в Telegram" data-busy-text="Пишу розбір…">📤 Перегенерувати й надіслати в Telegram</button>
       </form>
       {% endif %}
       {% endif %}
@@ -132,9 +134,12 @@
       {% endif %}
     </div>
 
+    <div id="analysis-live" hidden></div>
     {% if analysis %}
+    <div id="analysis">
     <h2 class="sec" style="font-size:1.05rem;margin:2rem 0 .7rem">💬 Розбір</h2>
     <div class="note" style="max-width:none"><div class="abody">{{ analysis }}</div></div>
+    </div>
     {% endif %}
 
     {# UI-05: NF-23 has computed all of this since it shipped — the km curve, the halves

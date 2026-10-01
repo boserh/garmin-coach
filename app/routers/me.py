@@ -1,6 +1,7 @@
 """Per-user data view — a logged-in user browses their own metrics, activities and
 reports (scoped to their user_id). Mirrors the admin /ui browser but never spans
 other users, and excludes the users / bot_state tables."""
+import asyncio
 import csv
 import datetime as dt
 import io
@@ -11,7 +12,7 @@ import time as _time
 import zipfile
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,7 @@ from app.db.models import (
 from app.dependencies import get_session
 from app.garmin import repository, service
 from app.garmin.runtime import user_runtime
+from app.routers import live
 from app.routers.admin import INDEX_COLS
 from app.templating import create_templates
 
@@ -1030,60 +1032,89 @@ _REGEN_MIN_INTERVAL_S = 60
 _regen_guard: dict = {}
 
 
-def _schedule_calibration(background: BackgroundTasks, user: User, row_id: int) -> None:
+_calibration_tasks: set = set()
+
+
+def _schedule_calibration(user: User, row_id: int) -> None:
     """After a regenerated analysis, the same pace-target check the bot runs after a fresh
     one (``bot.jobs._calibration_check``): the analysis may say "raise the targets", and
-    the proposal that acts on it goes to Telegram. After the response — it can take an
-    adaptation call — and only where there is a chat to send it to."""
+    the proposal that acts on it goes to Telegram. Off the job's critical path — it can
+    take an adaptation call — and only where there is a chat to send it to."""
     if user.telegram_chat_id and user.plan_adapt_enabled:
         from bot.jobs import calibrate_after_regenerate
-        background.add_task(calibrate_after_regenerate, user.id, row_id)
+        task = asyncio.create_task(calibrate_after_regenerate(user.id, row_id))
+        _calibration_tasks.add(task)
+        task.add_done_callback(_calibration_tasks.discard)
+
+
+def _regen_refusal(user: User, row_id: int, param: str):
+    """The reasons a regenerate is refused before anything is paid for — the same for
+    both buttons, each reporting under its own query parameter. None = go ahead (and the
+    once-a-minute cool-down starts now)."""
+    from app.garmin.credentials import load_credentials
+
+    if user.is_demo:
+        return f"/me/activities/{row_id}?{param}=demo"
+    if param == "tg" and not user.telegram_chat_id:
+        return f"/me/activities/{row_id}?tg=nochat"
+    if not load_credentials(user).anthropic_key:
+        return f"/me/activities/{row_id}?{param}=nokey"
+    now = _time.monotonic()
+    last = _regen_guard.get(row_id)
+    if last is not None and now - last < _REGEN_MIN_INTERVAL_S:
+        return f"/me/activities/{row_id}?{param}=wait"
+    _regen_guard[row_id] = now
+    return None
 
 
 @router.post("/me/activities/{row_id}/regenerate")
 async def me_regenerate_analysis(
     row_id: int,
-    background: BackgroundTasks,
+    request: Request,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """ST-19: regenerate one activity's Claude analysis, bypassing the dedup cache for a
     single paid re-run (after resynced data or a poor first write). Pure DB + Claude
     (``load_credentials``, no Garmin/MFA). A missing Claude key → a friendly banner; an
-    ``AnalystError`` keeps the old text. Guarded against an accidental double-tap."""
-    from app.analysis.reports import run_activity_analysis
-    from app.analysis.service import AnalystError
-    from app.garmin.credentials import load_credentials
+    ``AnalystError`` keeps the old text. Guarded against an accidental double-tap.
 
-    act = await repository.get_activity(session, user.id, row_id)
-    if act is None:
+    Runs as a background job (``routers.live.start_button``): the page shows the new
+    analysis being written, then reloads onto the same ``?regen=`` banners as before."""
+    if await repository.get_activity(session, user.id, row_id) is None:
         raise HTTPException(status_code=404, detail="Activity not found")
-    if user.is_demo:
-        return RedirectResponse(f"/me/activities/{row_id}?regen=demo", status_code=303)
-    creds = load_credentials(user)
-    if not creds.anthropic_key:
-        return RedirectResponse(f"/me/activities/{row_id}?regen=nokey", status_code=303)
-    now = _time.monotonic()
-    last = _regen_guard.get(row_id)
-    if last is not None and now - last < _REGEN_MIN_INTERVAL_S:
-        return RedirectResponse(f"/me/activities/{row_id}?regen=wait", status_code=303)
-    _regen_guard[row_id] = now
-    try:
-        await run_activity_analysis(
-            session, act, user_id=user.id, api_key=creds.anthropic_key, force=True
-        )
-        await session.commit()
-    except AnalystError as e:
-        logger.warning(f"REGEN activity user={user.id} id={row_id} failed: {e}")
-        return RedirectResponse(f"/me/activities/{row_id}?regen=err", status_code=303)
-    _schedule_calibration(background, user, row_id)
-    return RedirectResponse(f"/me/activities/{row_id}?regen=ok", status_code=303)
+    running = live.busy(request, user, f"activity:{row_id}")
+    if running is not None:
+        return running
+    refused = _regen_refusal(user, row_id, "regen")
+    if refused:
+        return live.refuse(request, refused)
+
+    async def work(session, user, on_text):
+        from app.analysis.reports import run_activity_analysis
+        from app.analysis.service import AnalystError
+        from app.garmin.credentials import load_credentials
+
+        act = await repository.get_activity(session, user.id, row_id)
+        try:
+            await run_activity_analysis(
+                session, act, user_id=user.id, api_key=load_credentials(user).anthropic_key,
+                force=True, on_text=on_text)
+            await session.commit()
+        except AnalystError as e:
+            logger.warning(f"REGEN activity user={user.id} id={row_id} failed: {e}")
+            return f"/me/activities/{row_id}?regen=err"
+        _schedule_calibration(user, row_id)
+        return f"/me/activities/{row_id}?regen=ok"
+
+    return live.start_button(request, user, f"activity:{row_id}", work=work,
+                             back=f"/me/activities/{row_id}", label="Розбір тренування")
 
 
 @router.post("/me/activities/{row_id}/send-telegram")
 async def me_send_activity_telegram(
     row_id: int,
-    background: BackgroundTasks,
+    request: Request,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1091,44 +1122,44 @@ async def me_send_activity_telegram(
     ``me_regenerate_analysis`` above) and push the result to the athlete's own linked
     Telegram chat over the product bot identity (``app.notify.send_coach_message`` — the
     web process has no running ``bot.Application`` of its own to reuse). Shares the same
-    double-tap guard as plain regenerate, since it makes the same paid call."""
-    from app.analysis.reports import run_activity_analysis
-    from app.analysis.service import AnalystError
-    from app.garmin.credentials import load_credentials
-    from app.notify import NotifyError, send_coach_message
-
-    act = await repository.get_activity(session, user.id, row_id)
-    if act is None:
+    double-tap guard and the same background job as plain regenerate, since it makes the
+    same paid call."""
+    if await repository.get_activity(session, user.id, row_id) is None:
         raise HTTPException(status_code=404, detail="Activity not found")
-    if user.is_demo:
-        return RedirectResponse(f"/me/activities/{row_id}?tg=demo", status_code=303)
-    if not user.telegram_chat_id:
-        return RedirectResponse(f"/me/activities/{row_id}?tg=nochat", status_code=303)
-    creds = load_credentials(user)
-    if not creds.anthropic_key:
-        return RedirectResponse(f"/me/activities/{row_id}?tg=nokey", status_code=303)
-    now = _time.monotonic()
-    last = _regen_guard.get(row_id)
-    if last is not None and now - last < _REGEN_MIN_INTERVAL_S:
-        return RedirectResponse(f"/me/activities/{row_id}?tg=wait", status_code=303)
-    _regen_guard[row_id] = now
-    try:
-        await run_activity_analysis(
-            session, act, user_id=user.id, api_key=creds.anthropic_key, force=True
-        )
-        await session.commit()
-    except AnalystError as e:
-        logger.warning(f"SEND-TG regenerate user={user.id} id={row_id} failed: {e}")
-        return RedirectResponse(f"/me/activities/{row_id}?tg=err", status_code=303)
-    if not act.analysis:
-        return RedirectResponse(f"/me/activities/{row_id}?tg=empty", status_code=303)
-    try:
-        await send_coach_message(user.telegram_chat_id, act.analysis)
-    except NotifyError as e:
-        logger.warning(f"SEND-TG deliver user={user.id} id={row_id} failed: {e}")
-        return RedirectResponse(f"/me/activities/{row_id}?tg=senderr", status_code=303)
-    _schedule_calibration(background, user, row_id)
-    return RedirectResponse(f"/me/activities/{row_id}?tg=ok", status_code=303)
+    running = live.busy(request, user, f"activity:{row_id}")
+    if running is not None:
+        return running
+    refused = _regen_refusal(user, row_id, "tg")
+    if refused:
+        return live.refuse(request, refused)
+
+    async def work(session, user, on_text):
+        from app.analysis.reports import run_activity_analysis
+        from app.analysis.service import AnalystError
+        from app.garmin.credentials import load_credentials
+        from app.notify import NotifyError, send_coach_message
+
+        act = await repository.get_activity(session, user.id, row_id)
+        try:
+            await run_activity_analysis(
+                session, act, user_id=user.id, api_key=load_credentials(user).anthropic_key,
+                force=True, on_text=on_text)
+            await session.commit()
+        except AnalystError as e:
+            logger.warning(f"SEND-TG regenerate user={user.id} id={row_id} failed: {e}")
+            return f"/me/activities/{row_id}?tg=err"
+        if not act.analysis:
+            return f"/me/activities/{row_id}?tg=empty"
+        try:
+            await send_coach_message(user.telegram_chat_id, act.analysis)
+        except NotifyError as e:
+            logger.warning(f"SEND-TG deliver user={user.id} id={row_id} failed: {e}")
+            return f"/me/activities/{row_id}?tg=senderr"
+        _schedule_calibration(user, row_id)
+        return f"/me/activities/{row_id}?tg=ok"
+
+    return live.start_button(request, user, f"activity:{row_id}", work=work,
+                             back=f"/me/activities/{row_id}", label="Розбір тренування")
 
 
 # ---- ST-17: hide / show an activity (dup / broken track) ----

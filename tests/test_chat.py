@@ -14,6 +14,7 @@ from app.garmin import repository
 from app.garmin.schemas import PlanEdit, PlanOp
 from app.main import create_app
 from app.routers import chat as chat_router
+from tests.web_helpers import wait_live_jobs
 
 
 @pytest.fixture
@@ -146,6 +147,7 @@ def test_chat_send_question_routes_to_run_ask(auth_client):
     fake_ask = AsyncMock(return_value="Сон непоганий.")
     with patch.object(chat_router, "run_ask", fake_ask):
         r = client.post("/chat", data={"message": "як мій сон?"}, follow_redirects=False)
+        wait_live_jobs()
     assert r.status_code == 303 and r.headers["location"] == "/chat"
     fake_ask.assert_awaited_once()
     assert fake_ask.await_args.kwargs["user_id"] == uid
@@ -164,6 +166,7 @@ def test_chat_send_plan_edit_sets_pending(auth_client):
         r = client.post(
             "/chat", data={"message": "перенеси довгу на суботу"}, follow_redirects=False
         )
+        wait_live_jobs()
     assert r.status_code == 303
 
     async def read():
@@ -184,6 +187,7 @@ def test_chat_send_plan_edit_with_no_operations_leaves_no_pending(auth_client):
     edit = PlanEdit(summary="Не зрозумів, що змінити.", operations=[])
     with patch.object(chat_router, "run_plan_edit", AsyncMock(return_value=(plan, edit))):
         client.post("/chat", data={"message": "заміни щось незрозуміле"})
+        wait_live_jobs()
 
     async def read():
         async with async_session_maker() as s:
@@ -192,23 +196,26 @@ def test_chat_send_plan_edit_with_no_operations_leaves_no_pending(auth_client):
     assert anyio.run(read) is None
 
 
-def test_chat_send_analyst_error_flashes_query_param(auth_client):
+def test_chat_send_analyst_error_is_shown_once_on_the_page(auth_client):
+    """A turn that fails before any Claude call never reaches report_logs, so it can't be
+    a turn in the thread — the next /chat says it once (the no-JavaScript path; with
+    JavaScript the live stream already showed it)."""
     from app.analysis.client import AnalystError
 
     client, _ = auth_client
     with patch.object(chat_router, "run_ask", AsyncMock(side_effect=AnalystError("Немає плану."))):
         r = client.post("/chat", data={"message": "що по плану?"}, follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"].startswith("/chat?err=")
-
-    page = client.get(r.headers["location"])
-    assert "Немає плану." in page.text
+        wait_live_jobs()
+    assert r.status_code == 303 and r.headers["location"] == "/chat"
+    assert "Немає плану." in client.get("/chat").text
+    assert "Немає плану." not in client.get("/chat").text
 
 
 def test_chat_send_blank_message_is_a_noop(auth_client):
     client, _ = auth_client
     with patch.object(chat_router, "run_ask", AsyncMock()) as fake_ask:
         r = client.post("/chat", data={"message": "   "}, follow_redirects=False)
+        wait_live_jobs()
     assert r.status_code == 303
     fake_ask.assert_not_called()
 
@@ -242,6 +249,7 @@ def test_chat_refine_question_keeps_the_proposal_and_grows_the_thread(auth_clien
     with patch.object(chat_router, "run_plan_edit", fake):
         r = client.post("/chat", data={"message": "чому саме субота?", "refine": "1"},
                         follow_redirects=False)
+        wait_live_jobs()
     assert r.status_code == 303
     # the pending proposal rode into the engine as context
     assert fake.await_args.kwargs["pending"]["summary"] == "Переніс довгу на суботу."
@@ -261,6 +269,7 @@ def test_chat_refine_correction_replaces_the_proposal(auth_client):
     )
     with patch.object(chat_router, "run_plan_edit", AsyncMock(return_value=(object(), edit))):
         client.post("/chat", data={"message": "краще неділя", "refine": "1"})
+        wait_live_jobs()
 
     pending = _read_pending(uid)
     assert pending["ops"][0]["to_date"] == "2026-07-05"
@@ -277,6 +286,7 @@ def test_chat_main_composer_still_answers_questions_while_a_proposal_waits(auth_
     fake_ask = AsyncMock(return_value="Сон непоганий.")
     with patch.object(chat_router, "run_ask", fake_ask):
         client.post("/chat", data={"message": "як мій сон?"})
+        wait_live_jobs()
     fake_ask.assert_awaited_once()
     assert _read_pending(uid)["ops"]        # proposal untouched
 
@@ -286,6 +296,7 @@ def test_chat_refine_without_a_pending_proposal_falls_back_to_the_heuristic(auth
     fake_ask = AsyncMock(return_value="Відповідь.")
     with patch.object(chat_router, "run_ask", fake_ask):
         client.post("/chat", data={"message": "як мій сон?", "refine": "1"})
+        wait_live_jobs()
     fake_ask.assert_awaited_once()          # stale card, no pending → plain question
     assert _read_pending(uid) is None
 
@@ -422,6 +433,7 @@ def test_chat_plan_edit_binds_the_users_garmin_provider(auth_client):
     with patch.object(chat_router, "run_plan_edit", fake_edit):
         r = client.post("/chat", data={"message": "перенеси довгу на суботу"},
                         follow_redirects=False)
+        wait_live_jobs()
     assert r.status_code == 303
     assert seen["provider"] is not None
     # the per-user provider, carrying this account's credentials — not the global one
@@ -457,6 +469,7 @@ def test_chat_plan_edit_survives_invalid_garmin_credentials(auth_client):
     with patch.object(chat_router, "run_plan_edit", fake_edit):
         r = client.post("/chat", data={"message": "перенеси довгу на суботу"},
                         follow_redirects=False)
+        wait_live_jobs()
     assert r.status_code == 303                      # not the 409 creds-invalid page
     assert seen["provider"] is not providers._default_provider()
     assert _read_pending(uid)["summary"] == "Переніс."

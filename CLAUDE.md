@@ -288,6 +288,8 @@ app/
     token_info.py                   session token issue/expiry decoding (OPS-01)
     exercises.py                     Garmin exercise category taxonomy
   templating.py         UI-02: one Jinja env for every router + `asset_v` (asset-byte digest)
+  livejobs.py           in-process background jobs for the paid web buttons + their event
+                        log (status/delta/done), followed by routers/live.py's SSE feed
   banners.py             UI-07: page notices as data — level → colour + ARIA role
   onboarding.py           pure setup checklist: which of Garmin/Claude/Telegram is still missing
   weather.py              Open-Meteo geocode (settings) + forecast (today/week) +
@@ -366,6 +368,8 @@ app/
     history.py                 GET /history?days=N — trends from DB, login, per-user
     plan.py                      GET/POST /plan — training-plan setup form + view, login, per-user
     chat.py                        GET/POST /chat, POST /chat/confirm — web chat (EP-11)
+    live.py                         GET /live/{id}[/events] — a background job's page + SSE feed;
+                                    start_button(): run a paid button as a live job
     checkups.py                     /checkups, /checkups/supplements
     admin.py                          /ui DB browser — admin only
   dependencies.py   shared deps (get_session)
@@ -433,8 +437,14 @@ That is an attention budget, not a cost one — see DESIGN_NOTES.
 - `GET/POST /plan` — training-plan setup form / plan view; `POST /plan/archive`,
   `POST /plan/adjust-level`, `POST /plan/season`, `GET /plan/archive` (list archived),
   `GET /plan/{id}` (read-only view of a past plan). Login; current user.
-- `GET/POST /chat` + `POST /chat/confirm` — web chat over `run_ask`/`run_plan_edit`, no
-  streaming (v1 scope, see EP-11 below). Login; current user.
+- `GET/POST /chat` + `POST /chat/confirm` — web chat over `run_ask`/`run_plan_edit`. A
+  message runs as a background job and its answer streams to the page (see DESIGN_NOTES,
+  "Live chat"). Login; current user.
+- `GET /live/{id}/events` — Server-Sent Events feed of one background job
+  (`app.livejobs`): `status`/`delta`/`reset`, then `done` or `failed`. User-scoped. Login.
+  `GET /live/{id}` — where a paid button's plain form post lands: progress, then a 303 to
+  the result. Every paid web button (chat, activity regenerate/send, checkup analysis,
+  supplement advice, plan generation/rebuild) runs as such a job — see DESIGN_NOTES.
 - `GET /me/profile` + `POST /me/profile/forget|pin` — EP-18: what the coach remembers,
   with evidence links; "this isn't true" deletes + stop-lists, "this matters" pins.
   `POST /me/away` + `POST /me/away/{id}/delete` — NF-34: the half the athlete writes

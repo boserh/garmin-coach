@@ -3,9 +3,15 @@
 {% block title %}Складаємо програму…{% endblock %}
 
 {% block head %}
-  <!-- Poll: the page reloads every 5s until generation finishes (then GET /plan
-       shows the plan, or the setup form with an error). -->
-  <meta http-equiv="refresh" content="5">
+  {#
+    With the live job in this process (``live``), app.js follows its feed: the status line
+    below updates as the plan is written and the page moves to it the moment it's done.
+    Without a script it refreshes itself. And when there's no live job to follow (another
+    process started it, or a restart lost it) the plain refresh is the only signal left:
+    GET /plan answers with the plan, or the setup form with an error, once it's over.
+  #}
+  {% if live %}<noscript><meta http-equiv="refresh" content="5"></noscript>
+  {% else %}<meta http-equiv="refresh" content="5">{% endif %}
 {% endblock %}
 
 {% block body %}
@@ -14,7 +20,9 @@
   <div class="center">
     <div class="spin"></div>
     <h1>Складаємо твою програму…</h1>
-    <p>Тренер аналізує форму, навантаження й історію бігу. Це займає до хвилини —
-      сторінка оновиться сама. Можна не чекати: повернись пізніше на <a href="/plan">/plan</a>.</p>
+    {% if live %}
+      <p class="lv" data-live-follow="{{ live.id }}" data-after="{{ live.events|length - 1 }}"><span class="lv-status">{{ live.status() or "аналізую форму, навантаження й історію бігу…" }}</span><span class="lv-txt"></span></p>
+    {% endif %}
+    <p>Це займає хвилину-дві. Можна не чекати: повернись пізніше на <a href="/plan">/plan</a>.</p>
   </div>
 {% endblock %}

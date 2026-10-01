@@ -689,9 +689,8 @@ plan questions via its own tool). `repository.get_chat_history` reads straight o
 confirm flow moved from Telegram's in-memory `context.user_data` to `bot_state`
 (`repository.set/get/pop_pending_plan_edit`) — a proposal shown in the bot can be
 confirmed from web chat and vice versa, survives a bot restart. `POST /chat/confirm`
-mirrors `plan_callback`. Deliberate v1 scope: **no token streaming** (would need
-`AsyncAnthropic`, out of scope for this router); `/sick`'s medical-safe framing stays
-bot-only.
+mirrors `plan_callback`. `/sick`'s medical-safe framing stays bot-only. Sending is live
+since — see "Live chat" below.
 
 **The edit runs inside a bound per-user runtime** (`_plan_edit_runtime`). `run_plan_edit`
 reads the plan's strength templates off Garmin (`fetch_workout_full`), and the router used
@@ -708,6 +707,75 @@ every call — instead of leaving the context unbound.
 **`action` on `POST /chat/confirm` is validated, not `Form(...)`-required**: a body without
 it gets the chat back with a notice, never FastAPI's raw 422 JSON, and never the apply
 branch (see the submitter note under the frontend conventions in `CLAUDE.md`).
+
+## Live paid buttons & chat: background jobs + SSE (`app/livejobs.py`, `/live/{id}/events`)
+
+Sending a chat message used to hold the POST open for the whole Claude call (up to a
+minute on a multi-round `/ask`) and then reload the page. Now `POST /chat` only starts a
+job and returns; the page follows it over Server-Sent Events.
+
+- **Jobs are in-process and in-memory** (`app.livejobs`), like the login rate limiter and
+  the MFA bridge — the Pi runs one web process. A job carries progress only; its result
+  lands where it always did (`report_logs`, the pending proposal), so a restart mid-job
+  loses the answer, never charges twice (nothing retries). One running job per user per
+  kind: a second send gets a 409 instead of a second paid call. Finished jobs stay 10 min
+  for reconnects, then are pruned.
+- **SSE, not WebSockets**: the page only listens. Plain HTTP passes Cloudflare, the
+  browser reconnects by itself with `Last-Event-ID` (the feed resumes, it doesn't replay),
+  no new dependency. A keepalive comment every 15 s keeps Cloudflare's ~100 s idle timeout
+  from cutting a long round. `Cache-Control: no-store` + `X-Accel-Buffering: no`; the
+  service worker returns before `respondWith` for `/live/`.
+- **Streaming stays inside the one Claude choke point.** `_complete_tools(on_text=…)`
+  switches the same request to `messages.stream` and returns the SDK's accumulated final
+  message, so budget checks, the prompt dump (the sweep now covers `messages.stream`),
+  cost accounting and the agent loop see exactly what they saw before. The callback runs
+  on the Claude worker thread; `Job.emit_threadsafe` hops to the loop with
+  `call_soon_threadsafe`, which keeps events in order, and `livejobs.flush()` lets queued
+  deltas land before `done`. Tool inputs stay buffered (no eager input streaming) — they
+  are tiny, and eager streaming would drop the server-side validation `strict` relies on.
+- **What the page sees**: `/ask` streams every round, sends `reset` when a round turns out
+  to be a tool call (its "Подивлюсь…" preamble isn't the answer) and a `status` naming what
+  the tools read (`ASK_TOOL_STATUS`). A plan edit sends one status, then `done` carries the
+  proposal card rendered from `_chat_pending.html` — the same partial the page uses, so
+  there is one card, not a JS copy of it. `done.reply` replaces the streamed text with
+  what was stored (a cache hit streams nothing).
+- **No JavaScript** still works: the plain post redirects to `/chat`, which renders the
+  message as in progress with a `<noscript>` meta refresh until it's answered; an error
+  that never reached `report_logs` is shown once (`Job.seen`).
+- **Tests** wait for jobs with `tests.web_helpers.wait_live_jobs()` — inside the `patch`,
+  or the job outlives it and runs the real engine. `conftest` empties the registry per test.
+  `tests/test_live_chat_browser.py` drives the real page (stream, reload mid-answer, JS off).
+
+**Every other paid button runs the same way** (`routers.live.start_button`): activity
+«Перегенерувати розбір» / «…і надіслати в Telegram», checkup «Проаналізувати», supplement
+advice. The handler keeps its up-front refusals (demo, no key, the regenerate cool-down —
+`live.refuse` hands the script the old `?err=` URL to go to) and moves the paid part into
+`work(session, user, on_text)`, which returns **the URL the old handler redirected to**.
+That URL is the job's `done`, so each page still shows its result with its own
+server-rendered markup and banners — there is no client-side copy of any of them.
+- One widget for all of them in `app.js`: `<form data-live="#target"
+  data-live-hide="#old-result" data-no-busy="1">` streams into `#target`, then goes to
+  `done.redirect`. One `EventSource` implementation (`window.bihunLive.feed`) serves it and
+  the chat.
+- A plain form post lands on `GET /live/{id}`: progress so far + a `<noscript>` refresh,
+  a 303 to the result once done, the error with a way back if it failed. With a script the
+  same page follows the feed (`data-live-follow`).
+- One running job per button per user (`kind`, e.g. `activity:<id>`), and `live.busy` is
+  checked BEFORE the handler's own refusals: a second tap must show the answer being
+  written, not a "wait a minute" banner that navigates away from it.
+- Streaming is `client._send` — the single place a request goes out, `messages.create` or
+  the same request via `messages.stream`. `_complete`, `_complete_tools` and the activity
+  analysis use it; `*_with_stats` take an optional `on_text` that callers pass only when
+  set (`_run_cached_narration`), so stand-ins with the old signatures keep working. The
+  dump sweep treats `_send` as the transport and requires the dump in its callers.
+- **Plan generation / schedule rebuild** are live jobs too (kind `plan`): the waiting page
+  follows the feed and moves to the plan the moment it's ready, instead of a blind 5-second
+  refresh (kept only under `<noscript>`, or when there's no job in this process to follow).
+  The JSON reply isn't worth showing, but `_session_counter` counts `"date"` keys as it
+  streams — «складаю план: 12 тренувань…». `PLAN_GEN_KEY` stays the durable record.
+- Not converted: the strength preview (already a `fetch` on the setup form, never blocked
+  the page) and the lab-photo upload, which has its own older background job + WebSocket
+  (`routers.checkups._upload_jobs`). Folding the upload into `livejobs` is a follow-up.
 
 ## Dialogue about an unconfirmed proposal (ST-23)
 

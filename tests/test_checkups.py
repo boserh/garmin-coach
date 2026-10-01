@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from tests.web_helpers import _seed_user, _user_id
+from tests.web_helpers import _seed_user, _user_id, post_live
 
 
 def test_checkups_requires_login(client):
@@ -358,11 +358,11 @@ def test_analyze_route_stores_and_shows_text(auth_client):
     uid = _user_id("t@example.com")
     cid = _get_id_by_title(uid, "Аналіз на аналіз")
 
-    def fake_with_stats(context, api_key=None):
+    def fake_with_stats(context, api_key=None, on_text=None):
         return "🔬 усе в нормі", CallStats(kind="checkup", model="m")
 
     with _fake_creds(), patch.object(reports, "checkup_with_stats", fake_with_stats):
-        r = auth_client.post(f"/checkups/{cid}/analyze", follow_redirects=False)
+        r = post_live(auth_client, f"/checkups/{cid}/analyze", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}?analyzed=1"
 
     detail = auth_client.get(f"/checkups/{cid}").text
@@ -377,7 +377,7 @@ def test_analyze_route_no_claude_key_redirects(auth_client):
 
     with patch("app.routers.checkups.load_credentials",
               return_value=type("C", (), {"anthropic_key": None})()):
-        r = auth_client.post(f"/checkups/{cid}/analyze", follow_redirects=False)
+        r = post_live(auth_client, f"/checkups/{cid}/analyze", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}?err=nokey"
 
 
@@ -389,11 +389,11 @@ def test_analyze_route_analyst_error_redirects(auth_client):
     uid = _user_id("t@example.com")
     cid = _get_id_by_title(uid, "Помилка API")
 
-    def failing_with_stats(context, api_key=None):
+    def failing_with_stats(context, api_key=None, on_text=None):
         raise AnalystError("боом")
 
     with _fake_creds(), patch.object(reports, "checkup_with_stats", failing_with_stats):
-        r = auth_client.post(f"/checkups/{cid}/analyze", follow_redirects=False)
+        r = post_live(auth_client, f"/checkups/{cid}/analyze", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/checkups/{cid}?err=analyze"
 
 
@@ -405,11 +405,11 @@ def test_editing_a_checkup_clears_stale_analysis(auth_client):
     uid = _user_id("t@example.com")
     cid = _get_id_by_title(uid, "Стара версія")
 
-    def fake_with_stats(context, api_key=None):
+    def fake_with_stats(context, api_key=None, on_text=None):
         return "стара інтерпретація", CallStats(kind="checkup", model="m")
 
     with _fake_creds(), patch.object(reports, "checkup_with_stats", fake_with_stats):
-        auth_client.post(f"/checkups/{cid}/analyze")
+        post_live(auth_client, f"/checkups/{cid}/analyze")
     assert "стара інтерпретація" in auth_client.get(f"/checkups/{cid}").text
 
     auth_client.post(f"/checkups/{cid}", data={"date": "2026-07-16", "title": "Нова версія"})
