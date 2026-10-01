@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import away as away_mod
 from app import livejobs, planschedule
+from app.analysis.client import AnalystError
 from app.analysis.plans import run_plan_edit, schedule_proposal
 from app.analysis.reports import run_ask
 from app.core.auth import current_user
@@ -189,12 +190,30 @@ async def _process_message(session, user: User, text: str, refine: bool,
     field (not "pending exists ⇒ everything is a follow-up") means the main composer still
     answers an unrelated «як мій сон?» while a proposal waits."""
     pending = await repository.get_pending_plan_edit(session, user.id) if refine else None
-    if not (pending or _looks_like_plan_edit(text)):
-        creds = load_credentials(user)
-        reply = await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key,
-                              **({"on_event": on_event} if on_event else {}))
-        return {"reply": reply}
+    if pending or _looks_like_plan_edit(text):
+        return await _plan_edit_turn(session, user, text, pending, on_event)
 
+    # A question for the coach. The verb heuristic above only catches a few imperative
+    # words, so the coach can hand a change request on itself (propose_plan_change): it
+    # answers, and the request then goes through the very same plan-edit turn.
+    creds = load_credentials(user)
+    handed: list = []
+    reply = await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key,
+                          on_plan_change=handed.append,
+                          **({"on_event": on_event} if on_event else {}))
+    if not handed:
+        return {"reply": reply}
+    try:
+        edit = await _plan_edit_turn(session, user, handed[-1], None, on_event)
+    except AnalystError as e:
+        # e.g. no active plan — the coach's answer still stands; say why nothing follows.
+        return {"reply": f"{reply}\n\n{e}"}
+    return {"reply": reply, "card": edit["card"]}
+
+
+async def _plan_edit_turn(session, user: User, text: str, pending, on_event=None) -> dict:
+    """The plan-edit half of a chat turn: run the editor on ``text`` (a follow-up to
+    ``pending`` when there is one), store the proposal, return ``{reply, card}``."""
     if on_event:
         on_event("status", {"text": "думаю над змінами в плані…"})
     # run_plan_edit reads the plan's strength templates off Garmin, so it needs a bound

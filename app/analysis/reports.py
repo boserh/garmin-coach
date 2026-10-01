@@ -62,6 +62,7 @@ from app.analysis.client import (
 from app.analysis.dump import dump_request
 from app.analysis.plans import _days_to_target, _recent_compliance
 from app.analysis.prompts import (
+    ASK_PLAN_CHANGE_SECTION,
     SYSTEM,
     SYSTEM_ACTIVITY,
     SYSTEM_ASK_TOOLS,
@@ -506,6 +507,42 @@ ASK_LIMIT_TEXT = (
 )
 
 
+# The /ask agent's one write-ish tool: it changes nothing itself. The caller records the
+# request and, after the reply, runs it through the plan editor (run_plan_edit), whose
+# proposal the user confirms with ✅. Offered only when the caller passes on_plan_change.
+PLAN_CHANGE_TOOL = {
+    "name": "propose_plan_change",
+    "description": (
+        "Pass the user's request to change their training plan to the plan editor. The "
+        "editor drafts a concrete proposal that the user confirms (✅) or rejects (❌) — "
+        "nothing changes without their confirmation. Use only when the user asks for a "
+        "change, not when they merely ask whether one would be wise."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "instruction": {
+                "type": "string",
+                "description": (
+                    "The change, self-contained (the editor does not see this "
+                    "conversation): what to change, which dates/sessions, and any "
+                    "specifics agreed above. Ukrainian, in the user's voice."
+                ),
+            },
+        },
+        "required": ["instruction"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+PLAN_CHANGE_INSTRUCTION_MAX = 500
+PLAN_CHANGE_TOOL_RESULT = {
+    "ok": True,
+    "note": ("Прохання передано редактору плану. Пропозицію буде показано користувачу з "
+             "кнопками ✅/❌ одразу після твоєї відповіді. Коротко скажи, що передав."),
+}
+
+
 def _ask_tools() -> list:
     """Anthropic tool schemas for the /ask agent loop — read-only, user-scoped DB queries
     over the full stored history (never raw Garmin/API calls). Built on each call (cheap)
@@ -675,6 +712,7 @@ ASK_TOOL_STATUS = {
     "aggregate_weekly": "рахую по тижнях",
     "get_activity_detail": "розбираю тренування детально",
     "get_training_plan": "дивлюсь програму",
+    "propose_plan_change": "передаю зміну в редактор плану",
 }
 
 
@@ -682,6 +720,7 @@ async def run_ask_agent(
     session, user_id: Optional[int], question: str,
     reports: list, recent_asks: list, api_key: Optional[str],
     on_event: Optional[Callable[[str, dict], None]] = None,
+    on_plan_change: Optional[Callable[[str], None]] = None,
 ) -> Tuple[str, CallStats, int]:
     """The EP-09 tool-use loop: up to ``MAX_ASK_ROUNDS`` round trips, each either
     answering (``stop_reason != "tool_use"``) or requesting one or more of
@@ -693,9 +732,15 @@ async def run_ask_agent(
     ``on_event(name, data)`` (the live web chat) receives ``delta`` text as each round
     streams, ``reset`` when a round turns out to be a tool call (its preamble is not the
     answer), and ``status`` naming what the tools are reading. It is called from the
-    Claude worker thread as well as this loop, so it must be thread-safe."""
+    Claude worker thread as well as this loop, so it must be thread-safe.
+
+    ``on_plan_change(instruction)`` offers the ``propose_plan_change`` tool (and the
+    prompt section that explains it): a call records the request through it and tells
+    the model the proposal will follow its reply. The caller runs the plan editor
+    afterwards — nothing about the plan changes in here."""
     model = MODEL_ASK
-    tools = _ask_tools()
+    tools = _ask_tools() + ([PLAN_CHANGE_TOOL] if on_plan_change else [])
+    system = SYSTEM_ASK_TOOLS + (ASK_PLAN_CHANGE_SECTION if on_plan_change else "")
     stream_args = ()
     if on_event is not None:
         stream_args = (lambda t: on_event("delta", {"text": t}),)
@@ -721,7 +766,7 @@ async def run_ask_agent(
     total = CallStats(kind="ask", model=model)
     for round_n in range(1, MAX_ASK_ROUNDS + 1):
         msg, stats = await _run_claude(
-            _complete_tools, model, SYSTEM_ASK_TOOLS, messages, tools, api_key,
+            _complete_tools, model, system, messages, tools, api_key,
             ASK_TOOL_MAX_TOKENS, *stream_args, session=session, user_id=user_id,
         )
         total.input_tokens += stats.input_tokens
@@ -743,12 +788,21 @@ async def run_ask_agent(
         messages.append({"role": "assistant", "content": msg.content})
         tool_results = []
         for block in msg.content:
-            if getattr(block, "type", None) == "tool_use":
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            if block.name == PLAN_CHANGE_TOOL["name"] and on_plan_change:
+                instruction = str((block.input or {}).get("instruction") or "").strip()
+                if instruction:
+                    on_plan_change(instruction[:PLAN_CHANGE_INSTRUCTION_MAX])
+                    result = PLAN_CHANGE_TOOL_RESULT
+                else:
+                    result = {"error": "instruction is required"}
+            else:
                 result = await _run_ask_tool(session, user_id, block.name, block.input or {})
-                tool_results.append({
-                    "type": "tool_result", "tool_use_id": block.id,
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
+            tool_results.append({
+                "type": "tool_result", "tool_use_id": block.id,
+                "content": json.dumps(result, ensure_ascii=False),
+            })
         messages.append({"role": "user", "content": tool_results})
 
     return ASK_LIMIT_TEXT, total, MAX_ASK_ROUNDS
@@ -762,6 +816,7 @@ async def run_ask(
     n: int = ASK_DEFAULT_N,
     api_key: Optional[str] = None,
     on_event: Optional[Callable[[str, dict], None]] = None,
+    on_plan_change: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Answer a free-form question about this user's training/recovery history (EP-09).
     Starts from the last ``n`` daily reports plus the recent /ask thread (so a question
@@ -771,7 +826,11 @@ async def run_ask(
     text. Dedup-cached on the question + a coarse daily-data slice (``last_data_date`` —
     a pure-DB, no-Garmin proxy for "has anything changed"): a repeat the same day the data
     last changed is a cache hit. ``on_event`` streams progress — see ``run_ask_agent``; a
-    cache hit emits nothing, the caller shows the returned text."""
+    cache hit emits nothing, the caller shows the returned text.
+
+    ``on_plan_change(instruction)`` lets the agent hand a requested plan change to the
+    caller (see ``run_ask_agent``). A reply that did so is not cached: a cache hit would
+    replay "передаю зміну" without anything being handed over."""
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -793,10 +852,17 @@ async def run_ask(
         )
         return text
 
+    handed: list = []
+
+    def hand_over(instruction: str) -> None:
+        handed.append(instruction)
+        on_plan_change(instruction)
+
     try:
         text, stats, rounds = await run_ask_agent(
             session, user_id, question, reports, recent_asks, api_key,
             **({"on_event": on_event} if on_event else {}),
+            **({"on_plan_change": hand_over} if on_plan_change else {}),
         )
     except AnalystError as e:
         await repository.log_report(
@@ -804,7 +870,8 @@ async def run_ask(
             question=question, error=str(e)[:512]
         )
         raise
-    await llm_cache.put(session, key, text, CACHE_TTL_S)
+    if not handed:
+        await llm_cache.put(session, key, text, CACHE_TTL_S)
     await repository.log_report(
         session,
         user_id=user_id,
