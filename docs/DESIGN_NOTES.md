@@ -721,6 +721,43 @@ commands still win); `_retire_proposal_message` strips the keyboard off supersed
 proposals (single-use pending state). Not covered: automatic proposers' own proposals
 (EP-02/EP-13/NF-09) — no follow-ups there yet.
 
+## Changing the weekly schedule from chat (`app/planschedule.py`)
+
+«3 пробіжки на тиждень замість 2» used to be answered with `add` operations — a third
+session dropped into however many weeks fit the edit's 1500-token reply — while the plan
+itself still said 2 days. The open-ended auto-extension then built the next block on the
+old days and `/ask` kept describing a 2-day plan. A schedule is a property of the plan, and
+a third run changes every remaining week (volume split, long-run share, key-session
+spacing), so it is now a separate thing:
+
+- `SYSTEM_PLAN_EDIT` gets the current `schedule` and may return `PlanEdit.schedule`
+  (full new `run_days`/`long_run_day`, `strength_days` or null) INSTEAD of operations. A
+  one-off extra session stays an operation.
+- `analysis.plans.schedule_proposal` normalises it (`planschedule.normalize`: ≥2 run days,
+  long run on a run day, strength days only on a plan that has strength) and is what the
+  pending state stores — so the confirmation shows exactly what ✅ applies, plus the price
+  ceiling (`rebuild_cost_ceiling_usd`: full 16k Opus output + a typical context).
+- ✅ → `run_plan_rebuild`: the same plan row, history up to today untouched, the planned
+  tail from tomorrow regenerated through `SYSTEM_PLAN` with `rebuild=true` and the past
+  sessions WITH their statuses (start from what was done, not what was planned). Then the
+  schedule is written onto the plan (`days_per_week`, `intake.run_days/long_run_day`,
+  remapped `intake.strength`). Week numbers are re-derived from the plan's start.
+- Failure order is deliberate: the Garmin login is checked before the Opus call (pushed
+  sessions must come off the calendar before their rows are deleted — the sync's cleanup
+  can't see a deleted row), the call happens before anything is deleted, and the swap is
+  one commit. An empty/out-of-window reply is logged (it was paid for) and changes nothing.
+- Strength on new days is re-laid from the plan's OWN rows (`planschedule.remap`: a day
+  that stays keeps its session, the rest take the leftovers in weekday order) — no Claude
+  call and no Garmin template fetch, so an outage can't silently drop the strength half.
+  Per-row exercise swaps (`exercise_edits`) don't carry over.
+- Bot: inline in `plan_callback` (no gateway timeout). Web: `/chat/confirm` starts it in
+  the background (`routers.plan.spawn_plan_rebuild`, the generation's waiting page) and
+  the result shows once on `/plan` (`PLAN_REBUILD_KEY`). A ✅ while a generation is
+  already running is refused with the proposal kept.
+
+Not covered: the web chat routes by verb heuristic, so «можна 3 пробіжки?» still goes to
+`/ask`, which can discuss but not change the plan; «замість» was added to the edit verbs.
+
 ## Per-user timezone (ST-14)
 
 `User.timezone` (IANA, default `Europe/Warsaw`) + `zoneinfo` validation on save.

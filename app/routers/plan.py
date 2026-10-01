@@ -28,6 +28,7 @@ from app.analysis.service import (
     plan_adjust_level,
     resolve_plan_model,
     run_plan_generation,
+    run_plan_rebuild,
     run_strength_preview,
 )
 from app.core.auth import current_user
@@ -39,6 +40,8 @@ from app.dependencies import get_session
 from app.garmin import exercises as _exercises
 from app.garmin import plan_sync, repository
 from app.garmin.credentials import load_credentials
+from app.garmin.mfa import MFARequired
+from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from app.templating import create_templates
 
@@ -77,6 +80,10 @@ PLAN_GEN_KEY = "plan_gen"
 # A "pending:<epoch>" older than this is treated as dead (e.g. the worker restarted
 # mid-generation) so /plan falls back to the form instead of spinning forever.
 PLAN_GEN_STALE_S = 600
+# The outcome of a chat-confirmed schedule rebuild (``spawn_plan_rebuild``), shown once on
+# the next /plan: "ok:<n>" or "err:<message>". Separate from PLAN_GEN_KEY, whose "err:"
+# means "generation failed, show the setup form" — wrong for a plan that still exists.
+PLAN_REBUILD_KEY = "plan_rebuild"
 _bg_tasks: set = set()
 
 templates = create_templates()
@@ -441,6 +448,58 @@ def _pending_stale(state: str) -> bool:
         return True
 
 
+async def _rebuild_plan_bg(user_id: int, schedule: dict) -> None:
+    """A chat-confirmed schedule rebuild (``run_plan_rebuild``) off the request path —
+    the same slow Opus generation, so the same background shape and the same waiting page
+    (``PLAN_GEN_KEY``) as ``_generate_plan_bg``. The result lands in ``PLAN_REBUILD_KEY``
+    for /plan to show once. Never raises."""
+    async with async_session_maker() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            return
+        result = "err:Внутрішня помилка."
+        try:
+            async with user_runtime(session, user) as creds:
+                res = await run_plan_rebuild(
+                    session, user_id=user_id, schedule=schedule,
+                    api_key=creds.anthropic_key)
+                if user.garmin_sync_enabled:
+                    try:
+                        await plan_sync.sync_plan_to_garmin(session, user_id)
+                    except Exception:
+                        logger.exception(f"PLAN rebuild sync failed user={user_id}")
+            result = f"ok:{res['added']}"
+        except AnalystError as e:
+            logger.warning(f"PLAN rebuild failed user={user_id}: {e}")
+            result = f"err:{str(e)[:200]}"
+        except (MFARequired, GarminAuthFailed):
+            logger.warning(f"PLAN rebuild user={user_id}: Garmin login needed")
+            result = ("err:Garmin потребує входу — заверши його в /settings і спробуй ще "
+                      "раз. План без змін.")
+        except Exception:
+            logger.exception(f"PLAN background rebuild crashed user={user_id}")
+        await repository.set_state(session, user_id, PLAN_REBUILD_KEY, result)
+        await repository.set_state(session, user_id, PLAN_GEN_KEY, "")
+
+
+async def generation_running(session, user_id: int) -> bool:
+    """A plan generation or schedule rebuild is in flight for this user."""
+    cur = await repository.get_state(session, user_id, PLAN_GEN_KEY) or ""
+    return cur.startswith("pending") and not _pending_stale(cur)
+
+
+async def spawn_plan_rebuild(session, user_id: int, schedule: dict) -> bool:
+    """Start a schedule rebuild in the background; False when a generation or rebuild is
+    already running for this user (a double submit must not pay twice)."""
+    if await generation_running(session, user_id):
+        return False
+    await repository.set_state(session, user_id, PLAN_GEN_KEY, f"pending:{int(time.time())}")
+    task = asyncio.create_task(_rebuild_plan_bg(user_id, schedule))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return True
+
+
 def _spawn_plan_generation(user_id: int, params: dict) -> None:
     """Fire-and-forget the background generation, keeping a reference so it isn't GC'd."""
     task = asyncio.create_task(_generate_plan_bg(user_id, params))
@@ -781,6 +840,9 @@ async def plan_page(
         error = error or "gen"
 
     plan = await repository.get_active_plan(session, user.id)
+    rebuilt = await repository.get_state(session, user.id, PLAN_REBUILD_KEY) or ""
+    if rebuilt:
+        await repository.set_state(session, user.id, PLAN_REBUILD_KEY, "")  # show once
     if plan is None:
         return templates.TemplateResponse(
             request, "plan_setup.html",
@@ -835,6 +897,8 @@ async def plan_page(
          "target_time_s": (plan.intake or {}).get("target_time_s"),
          "target_time_str": goal_mod.fmt_time((plan.intake or {}).get("target_time_s")),
          "error": error,
+         "rebuilt": rebuilt[3:] if rebuilt.startswith("ok:") else None,
+         "rebuild_error": rebuilt[4:] if rebuilt.startswith("err:") else None,
          "count": len(workouts), "readonly": False},
     )
 

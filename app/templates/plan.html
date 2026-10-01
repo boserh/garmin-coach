@@ -17,6 +17,13 @@
 
   <div class="wrap">
     {% if created %}<div class="ok">✅ Програму створено — {{ count }} тренувань.</div>{% endif %}
+    {% if rebuilt %}<div class="ok">✅ План перебудовано під новий розклад — {{ rebuilt }} нових тренувань.</div>{% endif %}
+    {% if rebuild_error %}
+      <div class="banner banner--warn" role="alert">
+        <span class="bicon" aria-hidden="true">⚠️</span>
+        <div class="btext">Не вдалось перебудувати план: {{ rebuild_error }}</div>
+      </div>
+    {% endif %}
     <div class="crumb">
       {% if readonly %}<a href="/plan/archive">← Архів</a> · архівна програма
       {% else %}<a href="/plan/archive">Архів програм →</a>{% endif %}

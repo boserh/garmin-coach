@@ -20,7 +20,7 @@ from telegram.ext import ContextTypes
 
 from app import away as away_mod
 from app import deploy as deploy_ops
-from app import onboarding, records, subjective, weather
+from app import onboarding, planschedule, records, subjective, weather
 from app import returntorun as returntorun_mod
 from app.analysis import delivery
 from app.analysis.service import (
@@ -30,6 +30,8 @@ from app.analysis.service import (
     run_ask,
     run_plan_edit,
     run_plan_extension,
+    run_plan_rebuild,
+    schedule_proposal,
 )
 from app.core import tglink
 from app.core.config import settings
@@ -1523,14 +1525,26 @@ async def plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def _proposal_view(summary: Optional[str], alt_summary: Optional[str],
                    risky: bool, ops: list, alt: list,
-                   away: Optional[dict] = None) -> tuple:
+                   away: Optional[dict] = None, schedule: Optional[dict] = None) -> tuple:
     """Render a proposal as (text, keyboard) — shared by the first proposal and every
     ST-23 refinement of it, so a re-proposal looks exactly like the original.
 
     ``away`` (NF-34) is shown as its own line: the period is written on the same ✅ as the
     plan changes, so the user has to be able to SEE what will be recorded about their trip
-    (and correct it — "не кайт, просто відпочинок" — before confirming)."""
-    if risky and alt:
+    (and correct it — "не кайт, просто відпочинок" — before confirming).
+
+    ``schedule`` (a weekly-schedule change) turns the proposal into a REBUILD offer: the
+    change, what happens to the plan and the price ceiling, with a ✅ that says so —
+    the tap starts a paid regeneration, so it must not read like a cheap edit."""
+    if schedule:
+        text = ("⚠️ " if risky else "") + "Пропоную перебудувати план під новий розклад:\n\n"
+        text += (summary or "") + "\n\n" + "\n".join(
+            f"• {line}" for line in planschedule.confirmation_lines(schedule))
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Перебудувати", callback_data="plan_apply"),
+            InlineKeyboardButton("❌ Скасувати", callback_data="plan_cancel"),
+        ]])
+    elif risky and alt:
         # risky request → keep what the user asked AND offer the coach's safer version,
         # so the user explicitly chooses (apply-as-asked / take-suggestion / cancel).
         text = "⚠️ " + (summary or "")
@@ -1606,7 +1620,17 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
     # about the trip again, so the pending period carries forward rather than evaporating
     # on the second turn.
     away = away_mod.from_op(edit.away) or (pending or {}).get("away")
-    if edit.operations:
+    # A weekly-schedule change («3 пробіжки замість 2») — its ✅ regenerates the rest of the
+    # plan (plan_callback), so it replaces any operations the model also returned.
+    try:
+        schedule = schedule_proposal(_plan, edit.schedule)
+    except AnalystError as e:
+        await update.message.reply_text(str(e))
+        return
+    if schedule:
+        ops, alt = [], []
+        summary, alt_summary, risky = edit.summary, None, edit.risky
+    elif edit.operations:
         ops = [op.model_dump() for op in edit.operations]
         alt = [op.model_dump() for op in (edit.alt_operations or [])]
         summary, alt_summary, risky = edit.summary, edit.alt_summary, edit.risky
@@ -1616,6 +1640,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         ops, alt = pending.get("ops") or [], pending.get("alt") or []
         summary, alt_summary = pending.get("summary"), pending.get("alt_summary")
         risky = bool(pending.get("risky"))
+        schedule = pending.get("schedule")
     elif away:
         # No plan operations, but the trip itself is worth recording — "я у відпустці
         # 16-24.08, кайт" with nothing to move is a perfectly normal thing to say.
@@ -1625,7 +1650,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
         return
 
-    text, kb = _proposal_view(summary, alt_summary, risky, ops, alt, away)
+    text, kb = _proposal_view(summary, alt_summary, risky, ops, alt, away, schedule)
     if edit.answer:
         text = edit.answer + "\n\n" + text
     # The new message carries the only live buttons; the previous one loses its keyboard.
@@ -1640,7 +1665,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
             thread=repository.append_thread(pending, instruction,
                                             edit.answer or edit.summary) if pending else [],
             message=_message_ref(sent),
-            away=away,
+            away=away, schedule=schedule,
         )
 
 
@@ -1772,6 +1797,9 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # recorded even when the proposal carried no plan operations (a trip with nothing
         # to move is still a trip the coach must know about).
         away_saved = await away_db.apply_pending(session, user.id, pending)
+        if (pending or {}).get("schedule"):
+            await _apply_schedule_rebuild(q, session, user, pending["schedule"])
+            return
         # plan_apply → the literal request; plan_apply_alt → the safer counter-proposal.
         ops_data = (pending or {}).get("alt" if q.data == "plan_apply_alt" else "ops")
         if not ops_data:
@@ -1798,6 +1826,41 @@ async def plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tail = (f"\n📌 Відсутність: {away_mod.describe(away_saved)}" if away_saved else "")
     await q.edit_message_text(
         f"✅ Застосовано змін: {len(affected)}. /plan — переглянути.{tail}")
+
+
+async def _apply_schedule_rebuild(q, session, user, schedule: dict) -> None:
+    """The ✅ of a weekly-schedule change: regenerate the rest of the plan under it
+    (``run_plan_rebuild`` — a real Opus call, only ever after this explicit tap), then
+    reconcile the Garmin calendar. Inline like ``plan_extend_callback``: a Telegram
+    callback has no gateway timeout to dodge."""
+    await q.edit_message_text("⏳ Перебудовую план під новий розклад — це 1–2 хвилини…")
+    try:
+        async with user_runtime(session, user) as creds:
+            res = await run_plan_rebuild(
+                session, user_id=user.id, schedule=schedule, api_key=creds.anthropic_key)
+            if user.garmin_sync_enabled:
+                try:
+                    await plan_sync.sync_plan_to_garmin(session, user.id)
+                except Exception:
+                    logger.exception(f"PLAN rebuild sync failed user={user.id}")
+    except AnalystError as e:
+        await q.edit_message_text(f"Не вдалось перебудувати план: {e}")
+        return
+    except (MFARequired, GarminAuthFailed):
+        await q.edit_message_text(
+            "Garmin потребує входу — заверши його в /settings і спробуй ще раз. "
+            "План без змін.")
+        return
+    except Exception:
+        logger.exception(f"PLAN rebuild failed user={user.id}")
+        await q.edit_message_text("Не вдалось перебудувати план. Спробуй пізніше.")
+        return
+    lines = planschedule.confirmation_lines(schedule)[:1]
+    text = (f"✅ План перебудовано: {lines[0] if lines else 'новий розклад'}. "
+            f"Нових тренувань: {res['added']}. /plan — переглянути.")
+    if res.get("summary"):
+        text += "\n\n" + res["summary"]
+    await q.edit_message_text(text)
 
 
 async def adapt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

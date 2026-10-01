@@ -35,8 +35,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import away as away_mod
+from app import planschedule
 from app.analysis.client import AnalystError
-from app.analysis.plans import run_plan_edit
+from app.analysis.plans import run_plan_edit, schedule_proposal
 from app.analysis.reports import run_ask
 from app.core.auth import current_user
 from app.core.demo import DEMO_DISABLED_MSG
@@ -50,6 +51,7 @@ from app.garmin.mfa import MFARequired
 from app.garmin.providers import GarminAuthFailed
 from app.garmin.runtime import user_runtime
 from app.garmin.schemas import PlanOp
+from app.routers import plan as plan_router
 from app.templating import create_templates
 
 logger = logging.getLogger("api")
@@ -63,6 +65,9 @@ CHAT_HISTORY_MAX = 500    # hard cap so a crafted ?limit= can't pull the whole h
 
 CONFIRM_NO_ACTION_MSG = (
     "Не зрозумів, що робити з пропозицією — онови сторінку і натисни кнопку ще раз."
+)
+REBUILD_BUSY_MSG = (
+    "Програма зараз генерується — підтверди перебудову, коли це завершиться."
 )
 
 
@@ -96,6 +101,7 @@ _PLAN_EDIT_VERBS = (
     "перенеси", "перенос", "пересунь", "зсунь", "додай", "додати", "прибери", "прибрати",
     "видали", "скасуй", "скасувати", "заміни", "замінити", "зменш", "збільш", "полегш",
     "ускладни", "постав", "зроби довш", "зроби коротш", "зроби легш", "зроби важч",
+    "замість",
 )
 
 
@@ -153,6 +159,8 @@ async def chat_page(
     history = _with_local_time(history[:limit], _user_tz(user))
     history.reverse()
     pending = await repository.get_pending_plan_edit(session, user.id)
+    if pending and pending.get("schedule"):
+        pending["schedule_lines"] = planschedule.confirmation_lines(pending["schedule"])
     return templates.TemplateResponse(
         request, "chat.html",
         {"user": user, "history": history, "pending": pending,
@@ -195,19 +203,24 @@ async def chat_send(
                     session, user_id=user.id, instruction=text,
                     api_key=edit_creds.anthropic_key, pending=pending,
                 )
+            # A weekly-schedule change («3 пробіжки замість 2») is a rebuild of the rest of
+            # the plan, not operations — its ✅ regenerates (see chat_confirm).
+            schedule = schedule_proposal(_plan, edit.schedule)
             # NF-34: a trip mentioned in passing rides with the proposal and is written on
             # the same confirmation (or dropped with it on cancel).
             away = away_mod.from_op(edit.away) or (pending or {}).get("away")
-            if edit.operations or away:
-                ops = [op.model_dump() for op in edit.operations]
-                alt = [op.model_dump() for op in (edit.alt_operations or [])]
+            if schedule or edit.operations or away:
+                ops = [] if schedule else [op.model_dump() for op in edit.operations]
+                alt = [] if schedule else [op.model_dump()
+                                           for op in (edit.alt_operations or [])]
                 await repository.set_pending_plan_edit(
                     session, user.id, ops, alt,
-                    summary=edit.summary, alt_summary=edit.alt_summary, risky=edit.risky,
+                    summary=edit.summary,
+                    alt_summary=None if schedule else edit.alt_summary, risky=edit.risky,
                     instruction=(pending or {}).get("instruction") or text,
                     thread=repository.append_thread(pending, text, edit.answer) if pending
                     else [],
-                    away=away,
+                    away=away, schedule=schedule,
                 )
             elif pending:
                 # a question about the proposal — it stays exactly as it was, only the
@@ -221,6 +234,7 @@ async def chat_send(
                                                     edit.answer or edit.summary),
                     message=pending.get("message"),
                     away=pending.get("away"),
+                    schedule=pending.get("schedule"),
                 )
         else:
             await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key)
@@ -251,12 +265,25 @@ async def chat_confirm(
         return RedirectResponse(
             f"/chat?err={quote(CONFIRM_NO_ACTION_MSG)}", status_code=303,
         )
+    peek = await repository.get_pending_plan_edit(session, user.id)
+    if action == "apply" and (peek or {}).get("schedule") \
+            and await plan_router.generation_running(session, user.id):
+        # Leave the proposal where it is: a ✅ while the plan is already being generated
+        # would otherwise be consumed and silently do nothing.
+        return RedirectResponse(f"/chat?err={quote(REBUILD_BUSY_MSG)}", status_code=303)
     pending = await repository.pop_pending_plan_edit(session, user.id)
     if action != "cancel" and pending:
         # NF-34: a trip declared inside the edit is written on the same confirmation as the
         # plan changes — through the same helper the bot's confirm uses, so the two paths
         # cannot disagree about whether it was recorded.
         await away_db.apply_pending(session, user.id, pending)
+        if pending.get("schedule"):
+            # A schedule change: regenerate the rest of the plan — a slow Opus call, so in
+            # the background, with /plan's waiting page in front of it (as a generation).
+            if action == "apply" and not user.is_demo:
+                await plan_router.spawn_plan_rebuild(session, user.id, pending["schedule"])
+                return RedirectResponse("/plan", status_code=303)
+            return RedirectResponse("/chat", status_code=303)
         ops_data = pending.get("alt" if action == "apply_alt" else "ops")
         if ops_data:
             plan_obj = await repository.get_active_plan(session, user.id)
