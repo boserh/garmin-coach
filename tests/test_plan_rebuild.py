@@ -24,6 +24,7 @@ from app.db.base import async_session_maker
 from app.db.models import PlannedWorkout, ReportLog, TrainingPlan, User
 from app.garmin import repository
 from app.garmin.schemas import GeneratedPlan, PlanEdit, PlanOp, PlanWorkout, ScheduleOp
+from tests.web_helpers import wait_live_jobs
 
 U1 = 1
 TODAY = dt.date.today()
@@ -480,6 +481,7 @@ def test_web_schedule_proposal_is_stored_and_shown(web):
     with patch.object(chat_router, "run_plan_edit",
                       AsyncMock(return_value=(_plan(uid), edit))):
         client.post("/chat", data={"message": "три пробіжки замість двох"})
+        wait_live_jobs()
     assert _pending(uid)["schedule"]["run_days"] == ["tue", "thu", "sun"]
     page = client.get("/chat").text
     assert "біг: 2 → 3 дні" in page and "Перебудувати" in page

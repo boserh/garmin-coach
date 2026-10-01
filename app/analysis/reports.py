@@ -11,7 +11,7 @@ import base64
 import datetime as dt
 import json
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from app import daterel, gap, plankind
 from app.analysis.cache import (
@@ -661,18 +661,38 @@ async def _run_ask_tool(session, user_id: Optional[int], name: str, args: dict) 
         return {"error": str(e)[:200]}
 
 
+# What the live chat shows while a tool round runs — the question is being answered from
+# the athlete's own data, and "дивлюсь сон і відновлення" says which part of it.
+ASK_TOOL_STATUS = {
+    "query_activities": "дивлюсь твої тренування",
+    "query_daily": "дивлюсь сон і відновлення",
+    "aggregate_weekly": "рахую по тижнях",
+    "get_activity_detail": "розбираю тренування детально",
+    "get_training_plan": "дивлюсь програму",
+}
+
+
 async def run_ask_agent(
     session, user_id: Optional[int], question: str,
     reports: list, recent_asks: list, api_key: Optional[str],
+    on_event: Optional[Callable[[str, dict], None]] = None,
 ) -> Tuple[str, CallStats, int]:
     """The EP-09 tool-use loop: up to ``MAX_ASK_ROUNDS`` round trips, each either
     answering (``stop_reason != "tool_use"``) or requesting one or more of
     :func:`_ask_tools`. Returns ``(text, cumulative_stats, rounds_used)``. Hitting the
     round or token budget with the model still mid-tool-use returns
     :data:`ASK_LIMIT_TEXT` instead of a partial/guessed answer. Raises AnalystError on
-    an API failure (same mapping as every other Claude call)."""
+    an API failure (same mapping as every other Claude call).
+
+    ``on_event(name, data)`` (the live web chat) receives ``delta`` text as each round
+    streams, ``reset`` when a round turns out to be a tool call (its preamble is not the
+    answer), and ``status`` naming what the tools are reading. It is called from the
+    Claude worker thread as well as this loop, so it must be thread-safe."""
     model = MODEL_ASK
     tools = _ask_tools()
+    stream_args = ()
+    if on_event is not None:
+        stream_args = (lambda t: on_event("delta", {"text": t}),)
     user_content = {
         "today": dt.date.today().isoformat(),
         "recent_reports": reports,
@@ -696,7 +716,7 @@ async def run_ask_agent(
     for round_n in range(1, MAX_ASK_ROUNDS + 1):
         msg, stats = await _run_claude(
             _complete_tools, model, SYSTEM_ASK_TOOLS, messages, tools, api_key,
-            ASK_TOOL_MAX_TOKENS, session=session, user_id=user_id,
+            ASK_TOOL_MAX_TOKENS, *stream_args, session=session, user_id=user_id,
         )
         total.input_tokens += stats.input_tokens
         total.output_tokens += stats.output_tokens
@@ -709,6 +729,11 @@ async def run_ask_agent(
         if total.input_tokens + total.output_tokens > MAX_ASK_TOTAL_TOKENS:
             return ASK_LIMIT_TEXT, total, round_n
 
+        if on_event is not None:
+            names = [b.name for b in msg.content if getattr(b, "type", None) == "tool_use"]
+            on_event("reset", {})
+            on_event("status", {"text": ", ".join(dict.fromkeys(
+                ASK_TOOL_STATUS.get(n, "шукаю в даних") for n in names)) + "…"})
         messages.append({"role": "assistant", "content": msg.content})
         tool_results = []
         for block in msg.content:
@@ -730,6 +755,7 @@ async def run_ask(
     user_id: Optional[int] = None,
     n: int = ASK_DEFAULT_N,
     api_key: Optional[str] = None,
+    on_event: Optional[Callable[[str, dict], None]] = None,
 ) -> str:
     """Answer a free-form question about this user's training/recovery history (EP-09).
     Starts from the last ``n`` daily reports plus the recent /ask thread (so a question
@@ -738,7 +764,8 @@ async def run_ask(
     Persists a ReportLog (kind="ask", ``tool_rounds`` set on a fresh call) and returns the
     text. Dedup-cached on the question + a coarse daily-data slice (``last_data_date`` —
     a pure-DB, no-Garmin proxy for "has anything changed"): a repeat the same day the data
-    last changed is a cache hit."""
+    last changed is a cache hit. ``on_event`` streams progress — see ``run_ask_agent``; a
+    cache hit emits nothing, the caller shows the returned text."""
     from app.db import llm_cache
     from app.garmin import repository
 
@@ -763,6 +790,7 @@ async def run_ask(
     try:
         text, stats, rounds = await run_ask_agent(
             session, user_id, question, reports, recent_asks, api_key,
+            **({"on_event": on_event} if on_event else {}),
         )
     except AnalystError as e:
         await repository.log_report(

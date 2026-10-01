@@ -689,9 +689,8 @@ plan questions via its own tool). `repository.get_chat_history` reads straight o
 confirm flow moved from Telegram's in-memory `context.user_data` to `bot_state`
 (`repository.set/get/pop_pending_plan_edit`) — a proposal shown in the bot can be
 confirmed from web chat and vice versa, survives a bot restart. `POST /chat/confirm`
-mirrors `plan_callback`. Deliberate v1 scope: **no token streaming** (would need
-`AsyncAnthropic`, out of scope for this router); `/sick`'s medical-safe framing stays
-bot-only.
+mirrors `plan_callback`. `/sick`'s medical-safe framing stays bot-only. Sending is live
+since — see "Live chat" below.
 
 **The edit runs inside a bound per-user runtime** (`_plan_edit_runtime`). `run_plan_edit`
 reads the plan's strength templates off Garmin (`fetch_workout_full`), and the router used
@@ -708,6 +707,44 @@ every call — instead of leaving the context unbound.
 **`action` on `POST /chat/confirm` is validated, not `Form(...)`-required**: a body without
 it gets the chat back with a notice, never FastAPI's raw 422 JSON, and never the apply
 branch (see the submitter note under the frontend conventions in `CLAUDE.md`).
+
+## Live chat: background jobs + SSE (`app/livejobs.py`, `/live/{id}/events`)
+
+Sending a chat message used to hold the POST open for the whole Claude call (up to a
+minute on a multi-round `/ask`) and then reload the page. Now `POST /chat` only starts a
+job and returns; the page follows it over Server-Sent Events.
+
+- **Jobs are in-process and in-memory** (`app.livejobs`), like the login rate limiter and
+  the MFA bridge — the Pi runs one web process. A job carries progress only; its result
+  lands where it always did (`report_logs`, the pending proposal), so a restart mid-job
+  loses the answer, never charges twice (nothing retries). One running job per user per
+  kind: a second send gets a 409 instead of a second paid call. Finished jobs stay 10 min
+  for reconnects, then are pruned.
+- **SSE, not WebSockets**: the page only listens. Plain HTTP passes Cloudflare, the
+  browser reconnects by itself with `Last-Event-ID` (the feed resumes, it doesn't replay),
+  no new dependency. A keepalive comment every 15 s keeps Cloudflare's ~100 s idle timeout
+  from cutting a long round. `Cache-Control: no-store` + `X-Accel-Buffering: no`; the
+  service worker returns before `respondWith` for `/live/`.
+- **Streaming stays inside the one Claude choke point.** `_complete_tools(on_text=…)`
+  switches the same request to `messages.stream` and returns the SDK's accumulated final
+  message, so budget checks, the prompt dump (the sweep now covers `messages.stream`),
+  cost accounting and the agent loop see exactly what they saw before. The callback runs
+  on the Claude worker thread; `Job.emit_threadsafe` hops to the loop with
+  `call_soon_threadsafe`, which keeps events in order, and `livejobs.flush()` lets queued
+  deltas land before `done`. Tool inputs stay buffered (no eager input streaming) — they
+  are tiny, and eager streaming would drop the server-side validation `strict` relies on.
+- **What the page sees**: `/ask` streams every round, sends `reset` when a round turns out
+  to be a tool call (its "Подивлюсь…" preamble isn't the answer) and a `status` naming what
+  the tools read (`ASK_TOOL_STATUS`). A plan edit sends one status, then `done` carries the
+  proposal card rendered from `_chat_pending.html` — the same partial the page uses, so
+  there is one card, not a JS copy of it. `done.reply` replaces the streamed text with
+  what was stored (a cache hit streams nothing).
+- **No JavaScript** still works: the plain post redirects to `/chat`, which renders the
+  message as in progress with a `<noscript>` meta refresh until it's answered; an error
+  that never reached `report_logs` is shown once (`Job.seen`).
+- **Tests** wait for jobs with `tests.web_helpers.wait_live_jobs()` — inside the `patch`,
+  or the job outlives it and runs the real engine. `conftest` empties the registry per test.
+  `tests/test_live_chat_browser.py` drives the real page (stream, reload mid-answer, JS off).
 
 ## Dialogue about an unconfirmed proposal (ST-23)
 

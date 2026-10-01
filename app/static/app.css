@@ -601,6 +601,14 @@ form.inline{display:inline}
             color:var(--faint);margin-bottom:.3rem}
 .turn.me .kind{color:rgba(10,16,32,.55)}
 .when{align-self:center;font-size:.7rem;color:var(--faint);margin:.5rem 0 .1rem;letter-spacing:.02em}
+.thread:empty{margin:0}
+/* Live chat (app.js): the reply bubble while it's being written. `lv-` because .status/
+   .live are the kind of generic names another page will want too. */
+.turn .lv-status{display:block;font-size:.78rem;color:var(--faint)}
+.turn .lv-status:empty{display:none}
+.turn.lv .lv-status{animation:lvpulse 1.4s ease-in-out infinite}
+@keyframes lvpulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.turn.lv .lv-status{animation:none}}
 .loadmore{text-align:center;margin:1.1rem 0 .2rem}
 .loadmore a{display:inline-block;padding:.5rem 1.1rem;border-radius:10px;border:1px solid var(--line-2);
             color:var(--muted);font-size:.85rem;background:var(--surface-2);text-decoration:none}

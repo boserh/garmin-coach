@@ -16,13 +16,11 @@ straight off ``ReportLog`` (``repository.get_chat_history``): the bot's /ask and
 /plan <text>/`/sick` already log every turn there, user-scoped not chat-scoped, so a
 question asked in Telegram shows up in the web transcript too, with no new table.
 
-**Deliberate v1 limitation** (documented, not a bug — matches how the rest of this
-backlog notes a scoped-down first cut): responses are NOT token-streamed. The ticket's
-SSE AC would mean moving the Anthropic client off the dedicated sync threadpool
-PERF-04b deliberately chose (see CLAUDE.md) onto ``AsyncAnthropic`` — a much larger,
-separate change than this router. Every turn is a plain POST + full-page reload, so the
-"no-JS still works" AC holds by construction (there's no JS-only fast path to fall back
-from yet).
+Each message runs as a background job (``app.livejobs``): ``POST /chat`` returns at once,
+the answer streams to the page over ``/live/{id}/events`` as Claude writes it (``/ask``'s
+rounds are streamed by ``_complete_tools``; a plan edit reports a status line and ends with
+the proposal card's HTML). No JavaScript still works: the post redirects back here, the
+page shows the message as in progress and refreshes until it's answered.
 """
 import datetime as dt
 import logging
@@ -31,18 +29,18 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import away as away_mod
-from app import planschedule
-from app.analysis.client import AnalystError
+from app import livejobs, planschedule
 from app.analysis.plans import run_plan_edit, schedule_proposal
 from app.analysis.reports import run_ask
 from app.core.auth import current_user
 from app.core.demo import DEMO_DISABLED_MSG
 from app.core.tz import user_tz as core_user_tz
 from app.db import away as away_db
+from app.db.base import async_session_maker
 from app.db.models import User
 from app.dependencies import get_session
 from app.garmin import plan_sync, providers, repository
@@ -66,6 +64,7 @@ CHAT_HISTORY_MAX = 500    # hard cap so a crafted ?limit= can't pull the whole h
 CONFIRM_NO_ACTION_MSG = (
     "Не зрозумів, що робити з пропозицією — онови сторінку і натисни кнопку ще раз."
 )
+CHAT_BUSY_MSG = "Ще відповідаю на попереднє повідомлення — зачекай кілька секунд."
 REBUILD_BUSY_MSG = (
     "Програма зараз генерується — підтверди перебудову, коли це завершиться."
 )
@@ -158,91 +157,160 @@ async def chat_page(
     has_more = len(history) > limit
     history = _with_local_time(history[:limit], _user_tz(user))
     history.reverse()
-    pending = await repository.get_pending_plan_edit(session, user.id)
-    if pending and pending.get("schedule"):
-        pending["schedule_lines"] = planschedule.confirmation_lines(pending["schedule"])
+    pending = _pending_view(await repository.get_pending_plan_edit(session, user.id))
+    live = livejobs.running(user.id, "chat")
+    error = request.query_params.get("err")
+    last = livejobs.latest(user.id, "chat")
+    if not error and last is not None and last.error() and not last.seen:
+        # A turn that failed before any Claude call (e.g. "no active plan") never reaches
+        # report_logs, so it can't appear in the thread — say it once here instead.
+        error, last.seen = last.error(), True
     return templates.TemplateResponse(
         request, "chat.html",
-        {"user": user, "history": history, "pending": pending,
+        {"user": user, "history": history, "pending": pending, "live": live,
          "has_more": has_more, "next_limit": limit + CHAT_HISTORY_N,
          # Jump to the newest turn only on the default view — after "load more" the reader
          # is looking at older messages and must not be yanked back to the bottom.
          "jump_to_latest": "limit" not in request.query_params,
-         "error": request.query_params.get("err")},
+         "error": error},
     )
+
+
+async def _process_message(session, user: User, text: str, refine: bool,
+                           on_event=None) -> dict:
+    """One chat turn, start to finish: route it (plan edit or question), run the engine,
+    store what it produced (the pending proposal; ``report_logs`` is written by the
+    engines themselves). Returns what the live page needs to finish the turn:
+    ``{"reply": <the bot bubble's text>, "card": <the proposal card's HTML>}``.
+
+    ``refine`` (ST-23) comes from the input inside the pending-proposal card: the message
+    is then a follow-up **to that proposal** — a question about it or a correction —
+    rather than a message routed by the plan-edit/ask heuristic. Keeping it an explicit
+    field (not "pending exists ⇒ everything is a follow-up") means the main composer still
+    answers an unrelated «як мій сон?» while a proposal waits."""
+    pending = await repository.get_pending_plan_edit(session, user.id) if refine else None
+    if not (pending or _looks_like_plan_edit(text)):
+        creds = load_credentials(user)
+        reply = await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key,
+                              **({"on_event": on_event} if on_event else {}))
+        return {"reply": reply}
+
+    if on_event:
+        on_event("status", {"text": "думаю над змінами в плані…"})
+    # run_plan_edit reads the plan's strength templates off Garmin, so it needs a bound
+    # per-user provider — exactly like the bot's /plan <text>. Without it get_provider()
+    # fell through to the legacy .env single-user provider and every template fetch died
+    # with `KeyError: 'GARMIN_EMAIL'` (visible as a GARMIN ERR line), leaving the model to
+    # propose edits with no exercises in front of it.
+    async with _plan_edit_runtime(session, user) as edit_creds:
+        _plan, edit = await run_plan_edit(
+            session, user_id=user.id, instruction=text,
+            api_key=edit_creds.anthropic_key, pending=pending,
+        )
+    # A weekly-schedule change («3 пробіжки замість 2») is a rebuild of the rest of the
+    # plan, not operations — its ✅ regenerates (see chat_confirm).
+    schedule = schedule_proposal(_plan, edit.schedule)
+    # NF-34: a trip mentioned in passing rides with the proposal and is written on the
+    # same confirmation (or dropped with it on cancel).
+    away = away_mod.from_op(edit.away) or (pending or {}).get("away")
+    if schedule or edit.operations or away:
+        ops = [] if schedule else [op.model_dump() for op in edit.operations]
+        alt = [] if schedule else [op.model_dump() for op in (edit.alt_operations or [])]
+        await repository.set_pending_plan_edit(
+            session, user.id, ops, alt,
+            summary=edit.summary,
+            alt_summary=None if schedule else edit.alt_summary, risky=edit.risky,
+            instruction=(pending or {}).get("instruction") or text,
+            thread=repository.append_thread(pending, text, edit.answer) if pending
+            else [],
+            away=away, schedule=schedule,
+        )
+        reply = edit.summary
+    elif pending:
+        # a question about the proposal — it stays exactly as it was, only the dialogue
+        # thread grows (so the next follow-up keeps the context).
+        await repository.set_pending_plan_edit(
+            session, user.id, pending.get("ops") or [], pending.get("alt") or [],
+            summary=pending.get("summary"), alt_summary=pending.get("alt_summary"),
+            risky=bool(pending.get("risky")),
+            instruction=pending.get("instruction"),
+            thread=repository.append_thread(pending, text, edit.answer or edit.summary),
+            message=pending.get("message"),
+            away=pending.get("away"),
+            schedule=pending.get("schedule"),
+        )
+        reply = edit.answer or edit.summary
+    else:
+        reply = edit.summary
+    return {"reply": reply,
+            "card": _card_html(await repository.get_pending_plan_edit(session, user.id))}
+
+
+def _pending_view(pending):
+    """The pending blob plus what only the page needs (the schedule's confirmation
+    lines) — one place, for the page and the live card alike."""
+    if pending and pending.get("schedule"):
+        pending["schedule_lines"] = planschedule.confirmation_lines(pending["schedule"])
+    return pending
+
+
+def _card_html(pending) -> str:
+    return templates.get_template("_chat_pending.html").render(pending=_pending_view(pending))
+
+
+async def _chat_job(job, user_id: int, text: str, refine: bool) -> None:
+    """The background half of ``POST /chat``: its own DB session (the request's is gone
+    by now), the same ``_process_message`` the turn always ran, progress into ``job``."""
+    async with async_session_maker() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            return
+        result = await _process_message(session, user, text, refine,
+                                        on_event=job.emit_threadsafe)
+    await livejobs.flush()   # progress queued from the worker thread lands first
+    job.emit("done", result)
+
+
+def _wants_json(request: Request) -> bool:
+    return "application/json" in (request.headers.get("accept") or "")
+
+
+def _refused(request: Request, msg: str, status: int):
+    if _wants_json(request):
+        return JSONResponse({"error": msg}, status_code=status)
+    return RedirectResponse(f"/chat?err={quote(msg)}", status_code=303)
 
 
 @router.post("/chat", response_class=HTMLResponse)
 async def chat_send(
+    request: Request,
     message: str = Form(...),
     refine: str = Form(""),
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_session),
 ):
-    """``refine=1`` (ST-23) comes from the input inside the pending-proposal card: the
-    message is then a follow-up **to that proposal** — a question about it or a
-    correction — rather than a message routed by the plan-edit/ask heuristic. Keeping it
-    an explicit field (not "pending exists ⇒ everything is a follow-up") means the main
-    composer still answers an unrelated «як мій сон?» while a proposal waits."""
+    """Start answering a chat message and return at once — the answer arrives over
+    ``/live/{id}/events`` (``app.livejobs``). The page's script asks for JSON and gets the
+    job id; a plain form post (no JavaScript) is redirected back to /chat, which shows the
+    message as in progress and refreshes until it's answered. Either way nothing holds a
+    request open for the minute a Claude call can take.
+
+    One message at a time per account: a second send while one is still being answered
+    is refused, never queued — each one is a paid call."""
     text = message.strip()
     if not text:
+        if _wants_json(request):
+            return JSONResponse({"error": "Порожнє повідомлення."}, status_code=400)
         return RedirectResponse("/chat", status_code=303)
     if user.is_demo:
-        return RedirectResponse(f"/chat?err={quote(DEMO_DISABLED_MSG)}", status_code=303)
-    pending = await repository.get_pending_plan_edit(session, user.id) if refine else None
-    creds = load_credentials(user)
-    try:
-        if pending or _looks_like_plan_edit(text):
-            # run_plan_edit reads the plan's strength templates off Garmin, so it needs a
-            # bound per-user provider — exactly like the bot's /plan <text>. Without it
-            # get_provider() fell through to the legacy .env single-user provider and every
-            # template fetch died with `KeyError: 'GARMIN_EMAIL'` (visible as a GARMIN ERR
-            # line), leaving the model to propose edits with no exercises in front of it.
-            async with _plan_edit_runtime(session, user) as edit_creds:
-                _plan, edit = await run_plan_edit(
-                    session, user_id=user.id, instruction=text,
-                    api_key=edit_creds.anthropic_key, pending=pending,
-                )
-            # A weekly-schedule change («3 пробіжки замість 2») is a rebuild of the rest of
-            # the plan, not operations — its ✅ regenerates (see chat_confirm).
-            schedule = schedule_proposal(_plan, edit.schedule)
-            # NF-34: a trip mentioned in passing rides with the proposal and is written on
-            # the same confirmation (or dropped with it on cancel).
-            away = away_mod.from_op(edit.away) or (pending or {}).get("away")
-            if schedule or edit.operations or away:
-                ops = [] if schedule else [op.model_dump() for op in edit.operations]
-                alt = [] if schedule else [op.model_dump()
-                                           for op in (edit.alt_operations or [])]
-                await repository.set_pending_plan_edit(
-                    session, user.id, ops, alt,
-                    summary=edit.summary,
-                    alt_summary=None if schedule else edit.alt_summary, risky=edit.risky,
-                    instruction=(pending or {}).get("instruction") or text,
-                    thread=repository.append_thread(pending, text, edit.answer) if pending
-                    else [],
-                    away=away, schedule=schedule,
-                )
-            elif pending:
-                # a question about the proposal — it stays exactly as it was, only the
-                # dialogue thread grows (so the next follow-up keeps the context).
-                await repository.set_pending_plan_edit(
-                    session, user.id, pending.get("ops") or [], pending.get("alt") or [],
-                    summary=pending.get("summary"), alt_summary=pending.get("alt_summary"),
-                    risky=bool(pending.get("risky")),
-                    instruction=pending.get("instruction"),
-                    thread=repository.append_thread(pending, text,
-                                                    edit.answer or edit.summary),
-                    message=pending.get("message"),
-                    away=pending.get("away"),
-                    schedule=pending.get("schedule"),
-                )
-        else:
-            await run_ask(session, text, user_id=user.id, api_key=creds.anthropic_key)
-    except AnalystError as e:
-        # A failure BEFORE any Claude call (e.g. "no active plan") never reaches
-        # ReportLog, so it can't show up as a chat turn on reload — surface it via a
-        # query-string flash instead (same pattern as /settings' ``?tz=fail``).
-        return RedirectResponse(f"/chat?err={quote(str(e)[:200])}", status_code=303)
+        return _refused(request, DEMO_DISABLED_MSG, 403)
+    if livejobs.running(user.id, "chat"):
+        return _refused(request, CHAT_BUSY_MSG, 409)
+    job = livejobs.start(
+        user.id, "chat", lambda j: _chat_job(j, user.id, text, bool(refine)),
+        meta={"text": text},
+    )
+    if _wants_json(request):
+        return JSONResponse({"job": job.id, "events": f"/live/{job.id}/events"})
     return RedirectResponse("/chat", status_code=303)
 
 

@@ -85,7 +85,7 @@ def test_every_claude_call_site_dumps_first():
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             calls = [ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)]
-            if not any(c.endswith("messages.create") for c in calls):
+            if not any(c.endswith(("messages.create", "messages.stream")) for c in calls):
                 continue
             if not any(c.endswith("dump_request") for c in calls):
                 missing.append(f"{path.name}:{fn.name}")

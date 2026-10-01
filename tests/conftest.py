@@ -112,6 +112,17 @@ class _BlockedGConnClient:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_live_jobs():
+    """Each test starts with an empty in-process job registry (app.livejobs) — a job left
+    by an earlier test would otherwise read as "still answering" for its user."""
+    from app import livejobs
+
+    livejobs.reset_for_tests()
+    yield
+    livejobs.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_garmin(monkeypatch):
     """Block the real native Garmin client in every test (see _BlockedGConnClient).
     Tests that need specific provider behavior override providers._gconn_client_cls
