@@ -58,9 +58,16 @@
         {% if pending.away %}
           <div style="margin-top:.5rem">📌 Запишу відсутність: {{ pending.away | away_line }}</div>
         {% endif %}
+        {# A schedule change rebuilds the rest of the plan — what changes, what happens to
+           the plan and the price ceiling are spelled out before the ✅, as in the bot. #}
+        {% if pending.schedule_lines %}
+          <ul style="margin:.5rem 0 0 1.1rem;padding:0">
+            {% for line in pending.schedule_lines %}<li>{{ line }}</li>{% endfor %}
+          </ul>
+        {% endif %}
         <form method="post" action="/chat/confirm" class="actions">
           <button class="btn" type="submit" name="action" value="apply">
-            ✅ {% if pending.risky and pending.alt %}Як просив{% else %}Застосувати{% endif %}
+            ✅ {% if pending.schedule %}Перебудувати{% elif pending.risky and pending.alt %}Як просив{% else %}Застосувати{% endif %}
           </button>
           {% if pending.risky and pending.alt %}
             <button class="btn alt" type="submit" name="action" value="apply_alt">🛡 Пропоноване</button>

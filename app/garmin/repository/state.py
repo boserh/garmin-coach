@@ -54,7 +54,7 @@ async def set_pending_plan_edit(
     *, summary: Optional[str] = None, alt_summary: Optional[str] = None,
     risky: bool = False, instruction: Optional[str] = None,
     thread: Optional[list] = None, message: Optional[dict] = None,
-    away: Optional[dict] = None,
+    away: Optional[dict] = None, schedule: Optional[dict] = None,
 ) -> None:
     """``summary``/``alt_summary``/``risky`` are display-only extras (EP-11's web chat
     re-renders the proposal text across page loads, unlike a Telegram message which
@@ -71,14 +71,18 @@ async def set_pending_plan_edit(
     kind, note}`` that the confirmation should ALSO write to ``away_periods``. It is stored
     with the proposal rather than applied on the spot because "зсунь тренування, я у
     відпустці 16-24.08" is ONE decision — a ❌ must leave no trace of it, and a ✅ must
-    record the trip even though the period itself is not a plan operation."""
+    record the trip even though the period itself is not a plan operation.
+
+    ``schedule`` is a weekly-schedule change (``analysis.plans.schedule_proposal``'s dict):
+    its ✅ regenerates the rest of the plan instead of applying ``ops`` (empty then)."""
     await set_state(
         session, user_id, PENDING_PLAN_EDIT_KEY,
         json.dumps({"ops": ops, "alt": alt or [], "summary": summary,
                     "alt_summary": alt_summary, "risky": bool(risky),
                     "instruction": instruction,
                     "thread": (thread or [])[-PENDING_THREAD_MAX:],
-                    "message": message, "away": away}, ensure_ascii=False),
+                    "message": message, "away": away, "schedule": schedule},
+                   ensure_ascii=False),
     )
 
 

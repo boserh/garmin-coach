@@ -192,6 +192,24 @@ class AwayOp(BaseModel):
     note: Optional[str] = None             # the athlete's own words about what they'll do
 
 
+class ScheduleOp(BaseModel):
+    """A change to the plan's WEEKLY SHAPE — which weekdays carry a run, which one the long
+    run, and (when the plan has strength) which carry strength — as opposed to a ``PlanOp``,
+    which touches one dated session.
+
+    Not expressible as operations: a third run day changes every remaining week's volume
+    split, long-run share and key-session spacing, so the honest answer is to regenerate the
+    rest of the plan under the new schedule (``analysis.plans.run_plan_rebuild``) and store
+    the schedule on the plan, where the open-ended auto-extension and /ask read it. Bounds
+    and normalisation live in ``app.planschedule``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_days: List[str] = []                  # mon..sun
+    long_run_day: Optional[str] = None
+    strength_days: Optional[List[str]] = None  # None = strength days unchanged
+
+
 class PlanEdit(BaseModel):
     """Proposed changes to the active plan: a human-readable summary + operations.
 
@@ -215,6 +233,9 @@ class PlanEdit(BaseModel):
     # NF-34: an away period declared in passing ("зсунь усе, я у відпустці 16-24.08 — кайт").
     # Applied together with the operations, on the same confirmation.
     away: Optional[AwayOp] = None
+    # A weekly-schedule change ("3 пробіжки на тиждень замість 2"). When set, the proposal
+    # is a REBUILD of the remaining plan and ``operations`` is ignored — see ScheduleOp.
+    schedule: Optional[ScheduleOp] = None
 
 
 PlanStep.model_rebuild()  # resolve the self-referential `steps` forward ref

@@ -103,9 +103,11 @@ from app.analysis.plans import (  # noqa: F401
     run_plan_edit,
     run_plan_extension,
     run_plan_generation,
+    run_plan_rebuild,
     run_sick_check,
     run_strength_preview,
     run_weather_plan_check,
+    schedule_proposal,
     sick_with_stats,
     weather_plan_with_stats,
 )

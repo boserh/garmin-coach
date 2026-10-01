@@ -314,6 +314,9 @@ app/
   plankind.py                   which columns a planned session's type may own — a run
                                 (dist_km/steps) or a strength session (template/strength_plan),
                                 never both; applied on write and again before push
+  planschedule.py               pure: the plan's weekly schedule (run/long/strength days) —
+                                bounds for a chat-requested change, strength-day remap,
+                                confirmation lines; the rebuild is analysis.plans.run_plan_rebuild
   gap.py                        EP-15: grade-adjusted pace (GAP) — elevation smoothing + Minetti cost model
   daterel.py                     relative day labels (сьогодні/вчора/через N дн) for LLM context
   injury.py                       NF-04: pure injury-risk detector

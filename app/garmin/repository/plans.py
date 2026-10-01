@@ -651,6 +651,59 @@ async def append_workouts(
     return added
 
 
+async def replace_future_workouts(
+    session: AsyncSession, plan: TrainingPlan, drop: list, workouts: list,
+) -> int:
+    """Swap the plan's not-yet-done tail for a regenerated one (a schedule rebuild,
+    ``analysis.plans.run_plan_rebuild``): delete the ``drop`` rows, add ``workouts`` (run
+    rows, same shape ``append_workouts`` takes) to the SAME plan. One commit, so a failure
+    leaves the old tail in place rather than a plan with a hole in it. The caller has
+    already taken any pushed ``drop`` row off the Garmin calendar — a deleted row can no
+    longer be found by the sync's cleanup pass. Week numbers come from ``renumber_weeks``,
+    not the model. Returns the number of rows added."""
+    for w in drop:
+        await session.delete(w)
+    await session.flush()
+    added = 0
+    for w in workouts:
+        dist_km, steps = _consistent(
+            w.dist_km, _dump_steps(getattr(w, "steps", None)),
+            steps_given=True, where=f"rebuild {w.date}",
+        )
+        session.add(PlannedWorkout(
+            plan_id=plan.id, user_id=plan.user_id, date=w.date,
+            week=getattr(w, "week", None),
+            type=w.type, dist_km=dist_km, description=w.description,
+            steps=steps, status="planned",
+        ))
+        added += 1
+    await _relabel_long_runs(session, plan.id, [w.date for w in workouts])
+    await session.commit()
+    await prune_redundant_rest(session, plan.id)
+    return added
+
+
+async def renumber_weeks(session: AsyncSession, plan: TrainingPlan, from_date: str) -> None:
+    """Re-derive ``week`` for the plan's rows dated ``from_date`` or later from the plan's
+    own ``start_date`` (week 1 = its first seven days) — what generation numbers by. A
+    rebuild generates from tomorrow, so the model's own week 1 would otherwise restart the
+    count mid-plan. No-op for a plan without a usable ``start_date``."""
+    try:
+        start = dt.date.fromisoformat(plan.start_date or "")
+    except ValueError:
+        return
+    rows = (await session.execute(
+        select(PlannedWorkout).where(PlannedWorkout.plan_id == plan.id,
+                                     PlannedWorkout.date >= from_date)
+    )).scalars().all()
+    for w in rows:
+        try:
+            w.week = max(1, (dt.date.fromisoformat(w.date) - start).days // 7 + 1)
+        except ValueError:
+            continue
+    await session.commit()
+
+
 _WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 

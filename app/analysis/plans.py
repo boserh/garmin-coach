@@ -12,7 +12,7 @@ import json
 import logging
 from typing import List, Optional, Tuple
 
-from app import daterel
+from app import daterel, plankind, planschedule
 from app.analysis.cache import _build_multisport, build_fitness_context
 from app.analysis.client import (
     MODEL_PLAN,
@@ -531,6 +531,235 @@ async def run_plan_extension(
     return plan
 
 
+# ---------- SCHEDULE REBUILD ----------
+
+# What a rebuild's confirmation quotes as its price ceiling: the generation's full
+# max_tokens output plus a typical context. A ceiling, not a guess at the bill — the
+# confirmation sits BEFORE the call precisely because a ❌ after it would be money spent.
+REBUILD_INPUT_TOKENS_TYPICAL = 20000
+REBUILD_MAX_TOKENS = 16000
+
+
+def rebuild_cost_ceiling_usd(model: Optional[str] = None) -> float:
+    from app.analysis.client import PRICES
+
+    pin, pout = PRICES.get(model or MODEL_PLAN_GEN, (0.0, 0.0))
+    return (REBUILD_INPUT_TOKENS_TYPICAL * pin + REBUILD_MAX_TOKENS * pout) / 1_000_000
+
+
+def _rebuild_window(plan, last_date: Optional[str], today: dt.date) -> Tuple[str, str]:
+    """``(start, end)`` ISO of the part of the plan a rebuild regenerates: from tomorrow
+    (today's session stays — the athlete may be about to run it) to the race date, or, for
+    an open-ended plan, to where it currently reaches — at least a full block when it is
+    about to run out anyway. Raises ``AnalystError`` when a race plan has nothing left."""
+    start = today + dt.timedelta(days=1)
+    if plan.target_date:
+        end = plan.target_date
+        if end < start.isoformat():
+            raise AnalystError("Програма вже закінчилась — перебудовувати нічого.")
+        return start.isoformat(), end
+    if last_date and last_date >= (start + dt.timedelta(days=6)).isoformat():
+        return start.isoformat(), last_date
+    return start.isoformat(), _block_end(start.isoformat(), settings.PLAN_BLOCK_WEEKS)
+
+
+def schedule_proposal(plan, proposed) -> Optional[dict]:
+    """The pending-state form of a model-proposed schedule change, or None when there is
+    none to make (no ``schedule``, or the same one the plan already has).
+
+    ``{run_days, long_run_day, strength_days, lines, start, cost_usd}`` — normalised
+    (``app.planschedule``) so what the confirmation SHOWS is exactly what ✅ applies, with
+    the old → new lines, the date the rebuild starts from and the price ceiling the user is
+    agreeing to. Raises ``AnalystError`` with a user-facing reason for a schedule that
+    can't be applied."""
+    if proposed is None:
+        return None
+    cur = planschedule.current(plan)
+    try:
+        new = planschedule.normalize(proposed, cur)
+    except planschedule.ScheduleError as e:
+        raise AnalystError(str(e))
+    if not planschedule.is_change(new, cur):
+        return None
+    start = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    if plan.target_date and plan.target_date < start:
+        raise AnalystError("Програма вже закінчилась — перебудовувати нічого.")
+    return dict(new, lines=planschedule.describe(new, cur), start=start,
+                cost_usd=round(rebuild_cost_ceiling_usd(), 2))
+
+
+def _strength_source(rows, slug: str, start: str):
+    """The session a strength weekday carries forward into a rebuild: its next upcoming
+    occurrence (so a progression continues from where it is), else its latest one."""
+    on_day = [w for w in rows if plankind.is_strength(w.type)
+              and (w.garmin_template_id or w.strength_plan)
+              and _WD_SLUGS[dt.date.fromisoformat(w.date).weekday()] == slug]
+    upcoming = [w for w in on_day if w.date >= start]
+    return (upcoming or on_day[-1:] or [None])[0]
+
+
+def _relaid_strength(rows, mapping: dict, *, start: str) -> tuple:
+    """``(assignments, snapshots, custom)`` for ``repository.add_strength_workouts`` that
+    lay the plan's EXISTING strength sessions onto their new weekdays — ``mapping`` is
+    ``planschedule.remap``'s ``{new day: old day}``. Built from the rows already in the plan
+    (template id + snapshot, or the generated ``strength_plan``), so it costs no Claude call
+    and no Garmin request: a Garmin outage cannot silently drop the strength half of a
+    rebuild. Read BEFORE the old tail is deleted — those rows are the source."""
+    amap, snapshots, custom = {}, {}, {}
+    for new_day, old_day in mapping.items():
+        src = _strength_source(rows, old_day, start)
+        if src is None:
+            continue
+        if src.strength_plan:
+            custom[new_day] = src.strength_plan
+        else:
+            amap[new_day] = {"id": src.garmin_template_id,
+                             "name": src.description or "Силова"}
+            if src.strength_snapshot:
+                snapshots[src.garmin_template_id] = src.strength_snapshot
+    return amap, snapshots, custom
+
+
+async def run_plan_rebuild(
+    session, *, user_id: int, schedule: dict, api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """Regenerate the rest of the active plan under a new weekly schedule — the ✅ of a
+    chat-proposed schedule change («3 пробіжки на тиждень замість 2»).
+
+    Not a new plan: the plan row, its history (every session up to today, done or missed)
+    and its goal stay; only the planned tail from tomorrow is replaced. The model gets
+    that history as ``previous_weeks`` (WITH statuses) and continues from where the athlete
+    actually is, but lays the remaining weeks out from scratch for the new days — a third
+    run changes every week's volume split and key-session spacing, which is why this isn't
+    an ``add`` per week. The schedule is then written onto the plan (``days_per_week``,
+    ``intake.run_days``/``long_run_day``, the strength weekdays), where the open-ended
+    auto-extension and /ask read it.
+
+    Order is chosen so that a failure costs as little as possible: the Garmin check comes
+    before the (Opus) call, the call before anything is deleted, and the swap itself is one
+    commit. Pushed sessions of the old tail are taken off the calendar here (a deleted row
+    is invisible to the sync's cleanup); pushing the new window is the caller's
+    ``plan_sync.sync_plan_to_garmin``, as after a generation. Requires a bound user
+    provider when any of the old tail is on the calendar.
+
+    Returns ``{plan, added, removed, summary, start, end}``."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.garmin import plan_sync, repository
+    from app.garmin.providers import get_provider
+
+    gen_model = model or MODEL_PLAN_GEN
+    plan = await repository.get_active_plan(session, user_id)
+    if plan is None:
+        raise AnalystError("Немає активної програми. Створи її на сторінці /plan у вебі.")
+    cur = planschedule.current(plan)
+    try:
+        new = planschedule.normalize(schedule, cur)
+    except planschedule.ScheduleError as e:
+        raise AnalystError(str(e))
+
+    today = dt.date.today()
+    today_s = today.isoformat()
+    rows = await repository.list_workouts(session, plan.id)
+    start, end = _rebuild_window(
+        plan, await repository.last_workout_date(session, plan.id), today)
+    replace_strength = new["strength_days"] is not None
+    drop = [w for w in rows
+            if w.date >= start and w.status == "planned" and w.completed_activity_id is None
+            and (replace_strength or not plankind.is_strength(w.type))]
+    pushed = [w for w in drop if w.garmin_workout_id is not None]
+    if pushed:
+        # Checked before the paid call: rows that are on the watch can't be deleted
+        # without taking them off it first, and a rebuild that can't is better refused
+        # now than paid for and then left half-applied.
+        try:
+            await run_in_threadpool(get_provider().login)
+        except Exception as e:
+            logger.warning(f"PLAN rebuild user={user_id}: Garmin unavailable ({e!r})")
+            raise AnalystError(
+                "Garmin зараз недоступний, а частина тренувань уже на годиннику — їх треба "
+                "прибрати перед перебудовою. Спробуй трохи пізніше; план без змін.")
+
+    intake = dict(plan.intake or {}, run_days=new["run_days"],
+                  long_run_day=new["long_run_day"])
+    if replace_strength:
+        intake["strength"] = planschedule.remap_strength_intake(
+            intake.get("strength") or {}, new["strength_days"])
+    from app import stepmatch
+    history = [{"date": w.date, "type": w.type, "dist_km": w.dist_km, "status": w.status,
+                **({"work_pace": wp} if (wp := stepmatch.work_pace(w.steps)) else {})}
+               for w in rows if w.date <= today_s and not plankind.is_strength(w.type)][-18:]
+
+    recent_runs = [a for a in await repository.list_activities(session, user_id, n=10)
+                   if "run" in (a.get("type") or "")]
+    recovery = await repository.read_history(session, user_id, days=30)
+    weekly_volume = await repository.weekly_run_volume(session, user_id, weeks=8)
+    fitness = await build_fitness_context(session, user_id)
+    multisport = await _build_multisport(session, user_id)
+    context = {
+        "today": today_s,
+        "goal": plan.goal, "start_date": start, "target_date": end,
+        "open_ended": not plan.target_date, "rebuild": True, "previous_weeks": history,
+        "days_per_week": len(new["run_days"]), "intensity": plan.intensity,
+        "run_days": new["run_days"], "long_run_day": new["long_run_day"],
+        "intake": intake,
+        "recent_runs": recent_runs, "recovery": recovery[-14:],
+        "weekly_volume": weekly_volume or None,
+        "fitness": fitness or None, "multisport": multisport,
+        "season": intake.get("season") or None,
+        "cycling": intake.get("cycling") or None,
+        "target_time_s": intake.get("target_time_s") or None,
+        "athlete_profile": await profile_db.build_context(session, user_id),
+        "away": await away_db.build_context(session, user_id),
+    }
+    question = f"rebuild: {planschedule.day_list(new['run_days'])}"
+    logger.info(f"PLAN rebuild user={user_id} plan={plan.id} {start}..{end} "
+                f"run_days={new['run_days']} strength_days={new['strength_days']}")
+    try:
+        plan_out, stats = await _run_claude(
+            generate_plan_with_stats, context, api_key, gen_model,
+            session=session, user_id=user_id)
+    except AnalystError as e:
+        await repository.log_report(
+            session, user_id=user_id, kind="plan", model=gen_model, ok=False,
+            question=question, error=str(e)[:512],
+        )
+        raise
+    # Strength is laid separately (below, or left as it was) — never from the generator,
+    # which is told so; and nothing outside the window this rebuild owns.
+    fresh = [w for w in plan_out.workouts
+             if start <= w.date <= end and not plankind.is_strength(w.type)]
+    await repository.log_report(
+        session, user_id=user_id, kind=stats.kind, model=stats.model,
+        input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
+        cost_usd=stats.cost_usd, ok=bool(fresh), cached=stats.cached,
+        question=question, report_text=plan_out.summary,
+        **({} if fresh else {"error": "rebuild: no sessions in the window"}),
+    )
+    if not fresh:
+        raise AnalystError("Не вдалось перебудувати план (порожня відповідь). План без змін.")
+
+    relaid = (_relaid_strength(
+        rows, planschedule.remap(cur["strength_days"], new["strength_days"]), start=start)
+        if replace_strength else ({}, {}, {}))
+    for w in pushed:
+        await plan_sync.remove_workout(session, w)
+    added = await repository.replace_future_workouts(session, plan, drop, fresh)
+    if any(relaid):
+        added += await repository.add_strength_workouts(
+            session, plan, *relaid, start=start, end=end)
+    await repository.renumber_weeks(session, plan, start)
+    plan.days_per_week = len(new["run_days"])
+    plan.intake = intake   # reassign (not mutate) so SQLAlchemy sees the JSON change
+    if plan_out.summary:
+        plan.summary = plan_out.summary
+    await session.commit()
+    logger.info(f"PLAN rebuild user={user_id} plan={plan.id}: -{len(drop)} +{added}")
+    return {"plan": plan, "added": added, "removed": len(drop),
+            "summary": plan_out.summary, "start": start, "end": end}
+
+
 async def run_strength_preview(
     session, *, user_id: int, description: str, api_key: Optional[str] = None,
     model: Optional[str] = None,
@@ -699,6 +928,9 @@ async def run_plan_edit(
         # NF-34: periods already declared, so a follow-up edit ("а перенеси ще й довгу")
         # doesn't re-propose the same trip — and doesn't schedule into it.
         "away": await away_db.build_context(session, user_id),
+        # The plan's weekly shape, so «3 пробіжки замість 2» is answered with a `schedule`
+        # change (a rebuild) built on the days it has now, not a third session per week.
+        "schedule": planschedule.current(plan),
     }
     if pending:
         context["pending"] = {
@@ -707,6 +939,7 @@ async def run_plan_edit(
             "operations": pending.get("ops") or [],
             "alt_summary": pending.get("alt_summary"),
             "thread": pending.get("thread") or [],
+            "schedule": pending.get("schedule"),
         }
     # A follow-up is marked in the stored question so the web-chat transcript (and /me's
     # report_logs) reads as a thread rather than a series of unrelated edit requests.
