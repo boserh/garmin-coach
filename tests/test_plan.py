@@ -234,6 +234,56 @@ def test_coerce_edit_parses_risky_with_alternative():
     assert e.alt_operations[0].dist_km == 8.0       # the safer counter-proposal
 
 
+def _fake_complete(replies):
+    """Stand-in for client._complete: hands out (text, stop_reason) pairs in order and
+    records the max_tokens each call asked for."""
+    from app.analysis.client import CallStats
+    calls = []
+
+    def fake(model, system, context, kind, api_key, max_tokens=1200, on_text=None):
+        text, stop = replies[len(calls)]
+        calls.append({"max_tokens": max_tokens, "note": context.get("_note")})
+        return text, CallStats(kind=kind, model=model, output_tokens=10, cost_usd=0.01,
+                               stop_reason=stop)
+    return fake, calls
+
+
+_GOOD_EDIT = ('{"summary": "темп Z2", "operations": [{"action": "modify", '
+              '"date": "2026-10-06", "type": "easy"}]}')
+
+
+def test_plan_edit_truncated_reply_retries_with_bigger_budget():
+    # A pace re-target over every upcoming session ran past the token budget and was cut
+    # off mid-JSON; the retry used to get the same budget and was cut off again.
+    cut = _GOOD_EDIT[:60]
+    fake, calls = _fake_complete([(cut, "max_tokens"), (_GOOD_EDIT, "end_turn")])
+    with patch.object(plans, "_complete", side_effect=fake):
+        edit, stats = plans.plan_edit_with_stats({"instruction": "x"})
+    assert edit.operations[0].date == "2026-10-06"
+    assert calls[0]["max_tokens"] == plans.PLAN_OPS_MAX_TOKENS
+    assert calls[1]["max_tokens"] == plans.PLAN_OPS_RETRY_MAX_TOKENS > calls[0]["max_tokens"]
+    assert "стисло" in calls[1]["note"]
+    assert stats.cost_usd == 0.02 and stats.output_tokens == 20
+
+
+def test_plan_edit_malformed_reply_retries_with_same_budget():
+    fake, calls = _fake_complete([("not json", "end_turn"), (_GOOD_EDIT, "end_turn")])
+    with patch.object(plans, "_complete", side_effect=fake):
+        edit, _ = plans.plan_edit_with_stats({"instruction": "x"})
+    assert edit.summary == "темп Z2"
+    assert [c["max_tokens"] for c in calls] == [plans.PLAN_OPS_MAX_TOKENS] * 2
+
+
+def test_plan_edit_gives_up_after_one_retry():
+    import pytest
+
+    from app.analysis.client import AnalystError
+    fake, calls = _fake_complete([("{", "max_tokens"), ("{", "max_tokens")])
+    with patch.object(plans, "_complete", side_effect=fake), pytest.raises(AnalystError):
+        plans.plan_edit_with_stats({"instruction": "x"})
+    assert len(calls) == 2
+
+
 def test_ops_hint_label():
     from bot.handlers import _ops_hint
     assert _ops_hint([{"action": "modify", "date": "x", "dist_km": 20.0}]) == " · 20 км"
