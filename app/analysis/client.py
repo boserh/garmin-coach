@@ -182,6 +182,9 @@ class CallStats:
     ok: bool = True
     cached: bool = False
     error: Optional[str] = None
+    # Why the reply ended ("end_turn", "max_tokens", …) — lets a JSON caller tell a reply
+    # cut off by the token budget from one that is simply malformed.
+    stop_reason: Optional[str] = None
 
 
 def _complete(model: str, system: str, user_content: dict, kind: str,
@@ -219,6 +222,7 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
     try:
         msg = _send(_get_client(api_key), kwargs, on_text)
         stats = CallStats(kind=kind, model=model)
+        stats.stop_reason = getattr(msg, "stop_reason", None)
         usage = getattr(msg, "usage", None)
         if usage:
             pin, pout = PRICES.get(model, (0, 0))
@@ -226,8 +230,8 @@ def _complete(model: str, system: str, user_content: dict, kind: str,
             stats.output_tokens = usage.output_tokens
             stats.cost_usd = usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout
             logger.info(
-                f"CLAUDE OK  {model} ({kind})  in={usage.input_tokens} "
-                f"out={usage.output_tokens} ~${stats.cost_usd:.4f}"
+                f"CLAUDE OK  {model} ({kind})  stop={stats.stop_reason}  "
+                f"in={usage.input_tokens} out={usage.output_tokens} ~${stats.cost_usd:.4f}"
             )
         text = "".join(b.text for b in msg.content if b.type == "text")
         return text, stats

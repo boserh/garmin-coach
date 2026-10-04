@@ -840,6 +840,16 @@ def _coerce_edit(text: str) -> PlanEdit:
     return PlanEdit(**json.loads(s))
 
 
+# Output budget for plan_edit / plan_adapt. A pace re-target across every upcoming
+# session is one `modify` op with full `steps` per session (plus, when `risky`, a
+# second `alt_operations` set) — mostly Ukrainian text, which tokenises densely. The old
+# flat 1500 cut such a reply off mid-JSON, and the retry, given the same budget, was cut
+# off at the same place: "Не вдалось зрозуміти зміну" for a perfectly clear request.
+PLAN_OPS_MAX_TOKENS = 4000
+# A reply that still hit the budget gets one retry with this much room.
+PLAN_OPS_RETRY_MAX_TOKENS = 8000
+
+
 def _plan_ops_with_stats(
     context: dict, api_key: Optional[str], *,
     system: str, kind: str, log_label: str, error_msg: str,
@@ -848,21 +858,36 @@ def _plan_ops_with_stats(
     build the message, call Claude, parse into a ``PlanEdit`` with one retry, else
     ``AnalystError``. Callers differ only in system prompt, ReportLog ``kind``, the
     ``claude`` log label and the user-facing error. Deliberately un-cached (adaptation
-    must not be dedup-cached — see CODE-06)."""
+    must not be dedup-cached — see CODE-06).
+
+    A parse miss on a reply that ended on ``max_tokens`` is a truncation, not malformed
+    JSON — so the retry gets a bigger budget instead of the same one (which would just
+    truncate again in the same place)."""
     model = MODEL_PLAN
-    text, stats = _complete(model, system, context, kind, api_key, max_tokens=1500)
+    text, stats = _complete(model, system, context, kind, api_key,
+                            max_tokens=PLAN_OPS_MAX_TOKENS)
     try:
         return _coerce_edit(text), stats
-    except Exception:
-        retry = dict(context, _note="Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо.")
-        text, stats2 = _complete(model, system, retry, kind, api_key, max_tokens=1500)
+    except Exception as e:
+        truncated = stats.stop_reason == "max_tokens"
+        logger.warning(f"{log_label} parse miss (stop={stats.stop_reason}), retrying: {e}")
+        if truncated:
+            note = ("Попередня відповідь не вмістилась і обірвалась. Поверни ЛИШЕ валідний "
+                    "JSON за схемою, максимально стисло: короткі description, без зайвих полів.")
+            budget = PLAN_OPS_RETRY_MAX_TOKENS
+        else:
+            note = "Поверни ЛИШЕ валідний JSON за схемою, без тексту навколо."
+            budget = PLAN_OPS_MAX_TOKENS
+        retry = dict(context, _note=note)
+        text, stats2 = _complete(model, system, retry, kind, api_key, max_tokens=budget)
         stats.input_tokens += stats2.input_tokens
         stats.output_tokens += stats2.output_tokens
         stats.cost_usd += stats2.cost_usd
+        stats.stop_reason = stats2.stop_reason
         try:
             return _coerce_edit(text), stats
         except Exception as e:
-            logger.error(f"{log_label} parse failed: {e}")
+            logger.error(f"{log_label} parse failed (stop={stats2.stop_reason}): {e}")
             raise AnalystError(error_msg)
 
 
