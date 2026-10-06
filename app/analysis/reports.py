@@ -396,7 +396,10 @@ async def run_analysis(
             # run out of sight and the report answered "немає в календарі". So when the
             # window holds no RUN, carry the first one that follows it; its ``day`` label
             # ("через 2 дн (сб)") is what tells the analyst to keep the advice strategic.
-            if not any(plankind.is_run(w.type) for w in ws):
+            # TODAY's run doesn't count as "next": with a run today and nothing tomorrow the
+            # report narrated today's session and then, for 📅, said there were no further
+            # entries — while Sunday's long run sat in the plan.
+            if not any(plankind.is_run(w.type) and w.date > today_d.isoformat() for w in ws):
                 nxt = await repository.next_planned_run(
                     session, user_id, after=today_d + dt.timedelta(days=PLAN_WINDOW_DAYS - 1))
                 if nxt is not None:
