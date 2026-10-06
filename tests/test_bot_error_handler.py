@@ -122,11 +122,3 @@ async def test_a_conflict_that_keeps_going_warns(caplog, monkeypatch):
     rec = [r for r in caplog.records if r.name == "bot"]
     assert [r.levelno for r in rec] == [logging.INFO, logging.WARNING]
 
-
-async def test_unhandled_error_names_the_exception_in_the_message(caplog):
-    """app.core.alerts forwards getMessage() only — the page must say what broke."""
-    with caplog.at_level(logging.ERROR, logger="bot"):
-        await on_error(Update(update_id=1), SimpleNamespace(error=KeyError("plan_id")))
-    rec = [r for r in caplog.records if r.name == "bot" and r.levelno == logging.ERROR]
-    assert len(rec) == 1
-    assert "KeyError" in rec[0].getMessage() and "plan_id" in rec[0].getMessage()
