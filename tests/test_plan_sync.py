@@ -108,7 +108,7 @@ async def test_resync_moved_workout_redrops_and_repushes(session):
          patch.object(plan_sync.client, "schedule_workout",
                       return_value={"workoutScheduleId": 13}):
         res = await plan_sync.resync_workouts(session, U1, [w])
-    assert res == {"pushed": 1, "removed": 1}
+    assert res == {"pushed": 1, "removed": 1, "errors": []}
     unsched.assert_called_once_with(11)       # old calendar entry dropped too
     dele.assert_called_once_with(10)          # old copy dropped
     assert w.garmin_workout_id == 12          # re-pushed (on the new date)
@@ -126,7 +126,7 @@ async def test_resync_skipped_only_removes(session):
          patch.object(plan_sync.client, "delete_workout") as dele, \
          patch.object(plan_sync.client, "create_workout") as create:
         res = await plan_sync.resync_workouts(session, U1, [w])
-    assert res == {"pushed": 0, "removed": 1}
+    assert res == {"pushed": 0, "removed": 1, "errors": []}
     unsched.assert_called_once_with(11)
     dele.assert_called_once_with(10)
     create.assert_not_called()
@@ -401,7 +401,7 @@ async def test_relabelled_long_run_leaves_no_dead_calendar_entry(session):
          patch.object(plan_sync.client, "schedule_workout",
                       return_value={"workoutScheduleId": 73}):
         res = await plan_sync.resync_workouts(session, U1, [w])
-    assert res == {"pushed": 1, "removed": 1}
+    assert res == {"pushed": 1, "removed": 1, "errors": []}
     # both halves of the old push are gone, schedule first (a failure in between then
     # leaves an unscheduled workout, which audit-calendar can find, not a dead entry)
     assert calls == [("schedule", 71), ("workout", 70)]
@@ -429,73 +429,84 @@ async def test_remove_tolerates_a_schedule_garmin_has_already_dropped(session):
     assert w.garmin_workout_id is None and w.garmin_schedule_id is None
 
 
-async def test_date_only_move_redates_the_same_workout(session):
-    """Live 2026-09-30: a session moved from its own day to the next showed up in Connect but
-    never on the watch — the move had deleted the workout the watch already held and pushed
-    a same-named copy. A move that changes nothing but the date keeps the workout and only
-    re-dates its calendar entry."""
+async def test_edit_rebuilds_the_whole_window_like_the_toggle(session):
+    """Live 2026-09-30 and 2026-10-06: after a plan edit the watch lost EVERY workout of the
+    plan, not just the edited one, while Connect still showed them all — and re-dating the
+    moved workout in place (instead of replacing it) didn't help. Switching sync off and on
+    in /settings always fixed it: everything removed, everything created anew. An edit now
+    does exactly that, so the session nobody touched is re-pushed too."""
     from app.garmin.schemas import PlanOp
 
-    fut = (dt.date.today() + dt.timedelta(days=1)).isoformat()
-    new = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    d1 = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    d2 = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    d3 = (dt.date.today() + dt.timedelta(days=4)).isoformat()
     plan = await _seed_plan(session, workouts=[
-        dict(date=fut, week=1, type="intervals", dist_km=3.0, status="planned",
+        dict(date=d1, week=1, type="intervals", dist_km=3.0, status="planned",
              steps=[{"kind": "run", "dist_m": 3000}],
              garmin_workout_id=90, garmin_schedule_id=91),
+        dict(date=d3, week=1, type="easy", dist_km=5.0, status="planned",
+             garmin_workout_id=95, garmin_schedule_id=96),
     ])
     affected = await repository.apply_plan_ops(
-        session, plan, [PlanOp(action="move", date=fut, to_date=new)])
-    (w,) = affected
-    assert w.reschedule_only is True
+        session, plan, [PlanOp(action="move", date=d1, to_date=d2)])
+    ids = iter(range(200, 300))
     with patch.object(plan_sync, "get_provider", return_value=_prov()), \
          patch.object(plan_sync.client, "delete_schedule") as unsched, \
          patch.object(plan_sync.client, "delete_workout") as dele, \
-         patch.object(plan_sync.client, "create_workout") as create, \
+         patch.object(plan_sync.client, "create_workout",
+                      side_effect=lambda p: {"workoutId": next(ids)}), \
          patch.object(plan_sync.client, "schedule_workout",
-                      return_value={"workoutScheduleId": 92}) as sched:
+                      side_effect=lambda wid, d: {"workoutScheduleId": wid + 1000}) as sched:
         res = await plan_sync.resync_workouts(session, U1, affected)
-    assert res == {"pushed": 1, "removed": 0}
-    unsched.assert_called_once_with(91)
-    sched.assert_called_once_with(90, new)      # the same workout, on the new date
-    dele.assert_not_called()
-    create.assert_not_called()
-    assert (w.garmin_workout_id, w.garmin_schedule_id) == (90, 92)
-    assert w.reschedule_only is False            # consumed, never reused by a later call
+    assert res == {"pushed": 2, "removed": 2, "errors": []}
+    assert sorted(c.args[0] for c in unsched.call_args_list) == [91, 96]
+    assert sorted(c.args[0] for c in dele.call_args_list) == [90, 95]
+    assert sorted(c.args[1] for c in sched.call_args_list) == [d2, d3]
+    ws = await repository.list_workouts(session, plan.id)
+    assert all(w.garmin_workout_id >= 200 for w in ws)   # every one a fresh workout
 
 
-async def test_move_that_also_changes_the_session_is_replaced(session):
-    """A move plus a modify of the same session changes the workout itself — that one still
-    goes through the full delete + push."""
-    from app.garmin.schemas import PlanOp
-
-    fut = (dt.date.today() + dt.timedelta(days=1)).isoformat()
-    new = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+async def test_edit_keeps_todays_completed_session(session):
+    """Same keep rule as the daily reconcile: today's done session is not re-pushed, so
+    taking it down would only drop it from the watch's history for the rest of the day."""
+    today = dt.date.today().isoformat()
+    fut = (dt.date.today() + dt.timedelta(days=3)).isoformat()
     plan = await _seed_plan(session, workouts=[
-        dict(date=fut, week=1, type="easy", dist_km=3.0, status="planned",
-             garmin_workout_id=90, garmin_schedule_id=91),
+        dict(date=today, week=1, type="easy", dist_km=5.0, status="done",
+             garmin_workout_id=40, garmin_schedule_id=41),
+        dict(date=fut, week=1, type="easy", dist_km=5.0, status="planned",
+             garmin_workout_id=50, garmin_schedule_id=51),
     ])
-    affected = await repository.apply_plan_ops(session, plan, [
-        PlanOp(action="move", date=fut, to_date=new),
-        PlanOp(action="modify", date=fut, description="легше"),
-    ])
-    assert affected and all(w.reschedule_only is False for w in affected)
-
-
-async def test_failed_redate_falls_back_to_replacement(session):
-    fut = (dt.date.today() + dt.timedelta(days=1)).isoformat()
-    plan = await _seed_plan(session, workouts=[
-        dict(date=fut, week=1, type="easy", dist_km=3.0, status="planned",
-             garmin_workout_id=90, garmin_schedule_id=91),
-    ])
-    (w,) = await repository.list_workouts(session, plan.id)
-    w.reschedule_only = True
-    sched = Mock(side_effect=[RuntimeError("500"), {"workoutScheduleId": 94}])
+    edited = [w for w in await repository.list_workouts(session, plan.id) if w.date == fut]
     with patch.object(plan_sync, "get_provider", return_value=_prov()), \
          patch.object(plan_sync.client, "delete_schedule"), \
          patch.object(plan_sync.client, "delete_workout") as dele, \
-         patch.object(plan_sync.client, "create_workout", return_value={"workoutId": 93}), \
-         patch.object(plan_sync.client, "schedule_workout", sched):
-        res = await plan_sync.resync_workouts(session, U1, [w])
-    assert res == {"pushed": 1, "removed": 1}
-    dele.assert_called_once_with(90)
-    assert (w.garmin_workout_id, w.garmin_schedule_id) == (93, 94)
+         patch.object(plan_sync.client, "create_workout", return_value={"workoutId": 52}), \
+         patch.object(plan_sync.client, "schedule_workout",
+                      return_value={"workoutScheduleId": 53}):
+        res = await plan_sync.resync_workouts(session, U1, edited)
+    assert res == {"pushed": 1, "removed": 1, "errors": []}
+    dele.assert_called_once_with(50)
+    done = next(w for w in await repository.list_workouts(session, plan.id) if w.date == today)
+    assert (done.garmin_workout_id, done.garmin_schedule_id) == (40, 41)
+
+
+async def test_edit_with_nothing_on_the_calendar_leaves_garmin_alone(session):
+    """An edit to a rest day (never pushed, not pushable) must not churn the calendar."""
+    fut = (dt.date.today() + dt.timedelta(days=2)).isoformat()
+    other = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    plan = await _seed_plan(session, workouts=[
+        dict(date=fut, week=1, type="rest", status="planned"),
+        dict(date=other, week=1, type="easy", dist_km=5.0, status="planned",
+             garmin_workout_id=60, garmin_schedule_id=61),
+    ])
+    edited = [w for w in await repository.list_workouts(session, plan.id) if w.date == fut]
+    prov = _prov()
+    with patch.object(plan_sync, "get_provider", return_value=prov), \
+         patch.object(plan_sync.client, "delete_workout") as dele, \
+         patch.object(plan_sync.client, "create_workout") as create:
+        res = await plan_sync.resync_workouts(session, U1, edited)
+    assert res == {"pushed": 0, "removed": 0, "errors": []}
+    prov.login.assert_not_called()
+    dele.assert_not_called()
+    create.assert_not_called()
