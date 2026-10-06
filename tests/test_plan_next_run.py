@@ -72,6 +72,19 @@ async def test_window_with_a_run_is_left_alone(session):
     assert [s["type"] for s in plan_today] == ["strength", "easy"]
 
 
+async def test_todays_run_is_not_the_next_run(session):
+    """The 2026-10-07 report: a tempo run today, nothing tomorrow, the long run on Sunday —
+    and 📅 said there were no further entries. Today's run is "today", not "next"."""
+    today = dt.date.today()
+    await _plan(session, today, [(0, "tempo", 5.9), (2, "strength", None),
+                                 (5, "long", 9.5)])
+
+    plan_today = await _capture_plan_today(session, today)
+
+    assert [s["type"] for s in plan_today] == ["tempo", "long"]
+    assert plan_today[-1]["date"] == (today + dt.timedelta(days=5)).isoformat()
+
+
 async def test_no_run_left_in_the_plan_adds_nothing(session):
     today = dt.date.today()
     await _plan(session, today, [(0, "strength", None), (1, "rest", None)])
