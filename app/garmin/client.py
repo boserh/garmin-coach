@@ -14,6 +14,8 @@ import threading
 import time as _time
 from typing import Optional
 
+import requests
+
 from app.core.config import settings
 from app.garmin.exercise_names import EXERCISE_NAMES
 from app.garmin.providers import get_provider
@@ -200,17 +202,43 @@ def _is_rate_limited(exc: Exception) -> bool:
     return "429" in text or "too many requests" in text
 
 
+def _is_transient_network(exc: Exception) -> bool:
+    """True for a request that never got an answer: a read/connect timeout or a dropped
+    connection (``requests``' own types — the native engine lets them through raw, garth
+    wraps them under ``.error``). One of these on the Pi's link is a blip the next attempt
+    usually clears, and it failed a whole morning tick (and paged) on its own."""
+    return any(
+        isinstance(obj, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+        for obj in (exc, getattr(exc, "error", None))
+    )
+
+
 def _api(path: str, **kwargs):
     """Throttled connectapi call with exponential backoff on 429 (PERF-05). Once
     ``GARMIN_RETRIES`` are exhausted, a genuine rate-limit raises ``GarminRateLimited``
     (chained from the original exception) so callers can tell "Garmin is blocking us"
-    apart from any other failure; any non-429 exception still propagates unchanged."""
+    apart from any other failure.
+
+    A timeout or dropped connection on a GET is retried on the same budget and re-raised
+    unchanged once it runs out. Never a write: a POST that timed out may well have landed,
+    and repeating it would put a second copy of a workout on the calendar."""
     attempts = max(0, settings.GARMIN_RETRIES)
+    is_get = str(kwargs.get("method", "GET")).upper() == "GET"
     for attempt in range(attempts + 1):
         _limiter.acquire()
         try:
             return get_provider().connectapi(path, **kwargs)
         except Exception as exc:
+            if is_get and _is_transient_network(exc) and attempt < attempts:
+                backoff = 2.0 ** attempt
+                # INFO, not WARNING: app.core.alerts pages on WARNING+, and this is the
+                # retry absorbing it. Only the final failure propagates (and pages).
+                logger.info(
+                    f"GARMIN {type(exc).__name__} {path} — retry in {backoff:.0f}s "
+                    f"({attempt + 1}/{attempts})"
+                )
+                _time.sleep(backoff)
+                continue
             if not _is_rate_limited(exc):
                 raise
             if attempt < attempts:

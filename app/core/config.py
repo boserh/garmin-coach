@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     # PERF-05: a process-wide, polite request pattern to Garmin's unofficial API
     # (post-Cloudflare an aggressive pattern risks an account ban, not just a 429).
     # GARMIN_RPS caps requests/sec across all threads (0 disables the limiter);
-    # GARMIN_RETRIES is how many times a 429 is retried with exponential backoff.
+    # GARMIN_RETRIES is how many times a 429 — or a timeout/dropped connection on a GET —
+    # is retried with exponential backoff.
     GARMIN_RPS: float = 3.0
     GARMIN_RETRIES: int = 2
     # OPS-05: how many Garmin API failures in the last hour count as a "burst" worth a
