@@ -155,6 +155,76 @@ def test_api_does_not_retry_non_429(monkeypatch):
     assert calls["n"] == 1   # a non-429 is not retried
 
 
+def test_api_retries_a_read_timeout_on_a_get(monkeypatch):
+    """A Garmin ReadTimeout on the Pi's link failed the whole morning tick and paged the
+    owner — one more attempt is what usually clears it."""
+    import requests
+
+    clock = _FakeClock()
+    monkeypatch.setattr(client, "_time", clock)
+    monkeypatch.setattr(client, "_limiter", client._RateLimiter(rps=0))
+    monkeypatch.setattr(client.settings, "GARMIN_RETRIES", 2)
+    calls = {"n": 0}
+
+    class P:
+        def connectapi(self, path, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=15)")
+            return {"ok": True}
+
+    monkeypatch.setattr(client, "get_provider", lambda: P())
+    assert client._api("/x") == {"ok": True}
+    assert calls["n"] == 2
+
+
+def test_api_reraises_the_timeout_once_retries_run_out(monkeypatch):
+    import requests
+
+    monkeypatch.setattr(client, "_time", _FakeClock())
+    monkeypatch.setattr(client, "_limiter", client._RateLimiter(rps=0))
+    monkeypatch.setattr(client.settings, "GARMIN_RETRIES", 2)
+    calls = {"n": 0}
+
+    class P:
+        def connectapi(self, path, **kw):
+            calls["n"] += 1
+            raise requests.exceptions.ConnectionError("reset")
+
+    monkeypatch.setattr(client, "get_provider", lambda: P())
+    with pytest.raises(requests.exceptions.ConnectionError):
+        client._api("/x")
+    assert calls["n"] == 3
+
+
+def test_api_never_repeats_a_write_that_timed_out(monkeypatch):
+    """The POST may have landed — a retry would put a second workout on the calendar."""
+    import requests
+
+    monkeypatch.setattr(client, "_limiter", client._RateLimiter(rps=0))
+    monkeypatch.setattr(client.settings, "GARMIN_RETRIES", 2)
+    calls = {"n": 0}
+
+    class P:
+        def connectapi(self, path, **kw):
+            calls["n"] += 1
+            raise requests.exceptions.ReadTimeout("Read timed out.")
+
+    monkeypatch.setattr(client, "get_provider", lambda: P())
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        client._api("/workout-service/workout", method="POST", json={})
+    assert calls["n"] == 1
+
+
+def test_a_timeout_garth_wrapped_is_recognised():
+    import requests
+
+    wrapped = Exception("GarthException")
+    wrapped.error = requests.exceptions.ReadTimeout("x")
+    assert client._is_transient_network(wrapped) is True
+    assert client._is_transient_network(ValueError("x")) is False
+
+
 # ---------- PERF-05: per-user fetch lock ----------
 
 class _CountingProvider:

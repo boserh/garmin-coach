@@ -194,7 +194,7 @@ Optional, with defaults:
 | `MCP_PLAN_RATE_LIMIT` / `MCP_PLAN_RATE_WINDOW_S` | `10` / `3600` | sliding-window cap on move proposals one account may push through the tool. `0` disables. |
 | `GARMIN_PROVIDER` | `gconn` | Garmin auth engine: `gconn` (native `python-garminconnect`) or `garth` (rollback — needs `pip install -e ".[garth]"`). |
 | `GARMIN_RPS` | `3.0` | process-wide Garmin request rate cap (req/s); `0` disables. |
-| `GARMIN_RETRIES` | `2` | 429 retries w/ exponential backoff in `client._api`. |
+| `GARMIN_RETRIES` | `2` | 429 retries w/ exponential backoff in `client._api` — also a timeout/dropped connection on a GET (never a write: it may have landed). |
 | `CLAUDE_MAX_WORKERS` | `4` | dedicated Claude thread pool size, off the shared anyio pool. |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./garmin.db` | DB; Postgres via env alone (`postgresql+asyncpg://...`). |
 | `LOG_FILE` | `bot.log` | log file path. |
@@ -768,7 +768,9 @@ architecture + current operational state.
   ONE `run_in_threadpool` hop.
 - **Garmin rate limiter + 429 backoff** (PERF-05): a process-wide leaky-bucket spacer
   throttles every `client._api` call to `GARMIN_RPS`. A 429 retries `GARMIN_RETRIES`
-  times with exponential backoff; the MFA login gate is a separate, never-throttled path.
+  times with exponential backoff, and so does a timeout/dropped connection on a GET (never
+  a write — a POST that timed out may have landed); the MFA login gate is a separate,
+  never-throttled path.
 - **Per-user fetch lock**: `build_payload_cached` wraps fetch+persist in a per-user
   `asyncio.Lock` (`WeakValueDictionary`). A 30s memo lets a blocked concurrent caller
   reuse the just-built payload (with `new_activities=[]`, so auto-analysis never
