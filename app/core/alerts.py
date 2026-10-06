@@ -89,6 +89,19 @@ def _send(token: str, chat_id: int, text: str) -> None:
         pass  # best-effort — never re-raise into logging
 
 
+def _exc_summary(record: logging.LogRecord) -> str:
+    """``KeyError: 'plan_id'`` for a record logged with exc_info, else ''."""
+    exc = record.exc_info[1] if record.exc_info else None
+    if exc is None:
+        return ""
+    try:
+        detail = str(exc)
+    except Exception:
+        detail = ""
+    name = type(exc).__name__
+    return f"{name}: {detail}"[:500] if detail else name
+
+
 class TelegramAlertHandler(logging.Handler):
     """Root-logger handler: forwards WARNING+ records to the admin bot owner chat.
 
@@ -107,6 +120,14 @@ class TelegramAlertHandler(logging.Handler):
             text = record.getMessage()
         except Exception:
             return
+        # ``logger.exception("TICK failed for user=1")`` carries the cause only in exc_info,
+        # and the page used to drop it — the owner got "failed" with no clue what failed and
+        # had to go dig in the Pi's log. The exception's own one-liner rides along instead
+        # (not the traceback: that stays in bot.log / job_runs). It is part of the dedup key
+        # too, so two different failures behind the same message both get through.
+        summary = _exc_summary(record)
+        if summary:
+            text = f"{text}\n{summary}"
         key = f"{record.name}:{record.levelno}:{text}"
         now = time.monotonic()
         with _lock:

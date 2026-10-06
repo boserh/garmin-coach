@@ -2402,9 +2402,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
         if isinstance(update, Update) and update.effective_message:
             await update.effective_message.reply_text(GARMIN_AUTH_INVALID_MSG)
     else:
-        # The type + message go in the text itself: app.core.alerts forwards only the
-        # message, so a bare "Unhandled bot error" page said nothing without the Pi's log.
-        logger.exception(f"Unhandled bot error: {type(err).__name__}: {err}", exc_info=err)
+        logger.exception("Unhandled bot error", exc_info=err)
     # A failed inline-button tap (plan/adapt/checkin callbacks) otherwise leaves the
     # button visibly stuck — the user taps and, from their side, nothing happens. Best
     # effort: pop a toast so they know the tap failed and to retry, instead of silence.
