@@ -1295,16 +1295,22 @@ between then leaves an unscheduled saved workout, which `audit-calendar --delete
 can find, instead of a dead calendar entry nothing can see. Entries orphaned before this fix
 keep no stored id and have to be deleted by hand in Connect.
 
-**A date-only move re-dates the workout rather than replacing it (2026-09-30).** A session
-moved from its own day to the next showed in Connect but never reached the watch: the move
-went through the same delete + push as any edit, so the workout the watch already held was
-deleted and a same-named copy created at once, and the copy stayed off the device until it was
-deleted and pushed a second time by hand. `apply_plan_ops` now marks a row `reschedule_only`
-(a plain instance attribute, not a column) when the batch changed its date and nothing the
-payload is built from (`_pushed_content`), and `resync_workouts` then drops only the old
-schedule entry and schedules the SAME workout id on the new date (`reschedule_workout`). A
-move combined with a modify or a relabel still gets the full replacement, and a failed re-date
-falls back to it.
+**An edit rebuilds the whole calendar window (2026-10-06).** Edits used to sync only the
+sessions they touched: a delete + push of each, and from 2026-09-30 a date-only move instead
+re-dated the workout in place (drop its schedule entry, schedule the same workout id on the
+new date). Neither held. After any edit — move or modify alike — the watch lost EVERY workout
+of the plan, not just the edited one, while Connect still showed them all on the calendar; the
+one thing that brought them back was switching the sync toggle off and on in /settings, i.e.
+`unpush_all` followed by a fresh `sync_plan_to_garmin`. So `resync_workouts` now does exactly
+that in one call: every workout we pushed comes off Garmin (today's completed session aside —
+the same keep rule as the daily reconcile), then the active plan's window is pushed afresh.
+The touched rows only decide whether the calendar is touched at all (an edit to a rest day,
+or to an unpushed session outside the window, leaves Garmin alone). The cost is ~4 Garmin
+calls per session in the 14-day window per edit. The re-date path (`reschedule_workout`,
+`reschedule_only`) is gone with it. We don't know Garmin's device-side rule that makes a
+partial calendar change drop the device's whole set; if a full rebuild ever stops being
+enough, the next suspect is timing (the toggle has a human-sized gap between the removal
+and the push).
 
 ## Web UI conventions (UI batch, 2026-08)
 

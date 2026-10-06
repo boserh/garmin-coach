@@ -252,39 +252,6 @@ async def remove_workout(session, w) -> bool:
     return deleted
 
 
-async def reschedule_workout(session, w) -> bool:
-    """Move an already-pushed workout to ``w.date`` on the Garmin calendar, keeping the
-    workout itself: drop the old schedule entry, schedule the SAME workout id on the new
-    date. For a date-only ``move`` (``apply_plan_ops`` marks it ``reschedule_only``).
-
-    Why not the delete + push every other edit uses. The watch already holds this workout
-    by the time a session is moved (it is usually moved on its own day); deleting it and
-    creating a copy under the identical name at the same moment left the copy visible in
-    Connect but never on the device (2026-09-30). Re-dating touches only the calendar.
-
-    Returns False when it could not finish, with the row left for the caller's full
-    replacement: the old schedule is gone or not, but ``remove_workout`` tolerates both."""
-    old = w.garmin_schedule_id
-    try:
-        try:
-            await run_in_threadpool(client.delete_schedule, old)
-        except Exception as e:
-            logger.info(f"GARMIN move: schedule {old} already gone ({type(e).__name__})")
-        sched = await run_in_threadpool(client.schedule_workout, w.garmin_workout_id, w.date)
-    except Exception:
-        logger.exception(f"GARMIN move FAILED workout={w.id} date={w.date} — replacing it")
-        return False
-    new = sched.get("workoutScheduleId") if isinstance(sched, dict) else None
-    if new is None:
-        logger.error(f"GARMIN move: no workoutScheduleId for workout={w.id}: {sched!r} "
-                     f"— replacing it")
-        return False
-    w.garmin_schedule_id = new
-    await session.commit()
-    logger.info(f"GARMIN move: workout {w.garmin_workout_id} re-dated to {w.date}")
-    return True
-
-
 async def sync_plan_to_garmin(session, user_id: int, *, days: int = PLAN_SYNC_WINDOW_DAYS) -> dict:
     """Reconcile the calendar with the user's plan (cleanup + forward). Requires a bound
     user provider. Returns ``{"pushed": n, "removed": n, "errors": [...]}``.
@@ -338,35 +305,47 @@ async def unpush_all(session, user_id: int) -> int:
     return len(pushed)
 
 
-async def resync_workouts(session, user_id: int, workouts, *, days: int = 14) -> dict:
-    """Mirror an edit onto the calendar — only the touched sessions, not the whole plan.
-    For each: drop its old Garmin copy (move changed the date, modify the content), then
-    re-push if it's still an upcoming in-window run (skip/past/rest just get removed). The
-    daily ``sync_plan_to_garmin`` is the full reconciler; this is the cheap per-edit path.
-    A date-only move (``reschedule_only``, set by ``apply_plan_ops``) keeps its workout and
-    is only re-dated — see ``reschedule_workout``. Requires a bound user provider."""
-    await run_in_threadpool(get_provider().login)
+async def resync_workouts(session, user_id: int, workouts, *,
+                          days: int = PLAN_SYNC_WINDOW_DAYS) -> dict:
+    """Mirror an edit onto the calendar by **rebuilding the whole window**: take every
+    workout we pushed off Garmin, then push the active plan's window afresh — exactly what
+    switching the sync toggle off and on in /settings does, in one call. ``workouts`` (the
+    rows the edit touched) only decides WHETHER the calendar needs touching at all: an edit
+    to a rest day, or to a session outside the window that was never pushed, leaves it be.
+
+    Why not just the touched sessions. Replacing one session (delete + push), and even
+    only re-dating it (drop its schedule, schedule the same workout id again), left the
+    watch without ANY of the plan's workouts — not just the edited one — while Connect
+    showed them all on the calendar (2026-09-30; reported again on 2026-10-06 for moves
+    and modifies alike, i.e. with the re-date path in place). The one thing that reliably
+    put them back was the toggle: everything removed, everything created anew. So an edit
+    now does that, and pays a handful of Garmin calls (~4 per session in the window) for a
+    calendar the device actually syncs.
+
+    Today's completed (done/partial) session stays, as in the daily reconcile — it is not
+    re-pushed, so removing it would only drop it from the watch's history for the day.
+    Requires a bound user provider."""
     today = dt.date.today().isoformat()
     end = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-    pushed = removed = 0
-    for w in workouts:
-        wanted = w.status == "planned" and today <= w.date <= end and _pushable(w)
-        move_only, w.reschedule_only = getattr(w, "reschedule_only", False), False
-        if (wanted and move_only and fully_pushed(w)
-                and await reschedule_workout(session, w)):
-            pushed += 1
+    touches = [w for w in workouts
+               if w.garmin_workout_id is not None
+               or (w.status == "planned" and today <= w.date <= end and _pushable(w))]
+    if not touches:
+        logger.info(f"GARMIN edit-sync user={user_id}: nothing on the calendar to change "
+                    f"(touched {len(workouts)})")
+        return {"pushed": 0, "removed": 0, "errors": []}
+    await run_in_threadpool(get_provider().login)
+    active = await repository.get_active_plan(session, user_id)
+    active_id = active.id if active else None
+    removed = 0
+    for w in await repository.list_pushed_workouts(session, user_id):
+        if (w.plan_id == active_id and w.date == today
+                and w.status in ("done", "partial")):
             continue
-        if w.garmin_workout_id is not None:
-            await remove_workout(session, w)
-            removed += 1
-        if wanted:
-            if await push_workout(session, w):
-                pushed += 1
-        else:
-            logger.info(
-                f"GARMIN edit-sync SKIP workout={w.id} date={w.date} status={w.status} "
-                f"type={w.type} in_window={today <= w.date <= end} pushable={_pushable(w)}"
-            )
-    logger.info(f"GARMIN edit-sync user={user_id}: +{pushed} pushed, -{removed} removed "
-                f"(touched {len(workouts)})")
-    return {"pushed": pushed, "removed": removed}
+        await remove_workout(session, w)
+        removed += 1
+    res = await sync_plan_to_garmin(session, user_id, days=days)
+    logger.info(f"GARMIN edit-sync user={user_id}: window rebuilt, -{removed} removed, "
+                f"+{res['pushed']} pushed (touched {len(workouts)})")
+    return {"pushed": res["pushed"], "removed": removed + res["removed"],
+            "errors": res["errors"]}

@@ -1,7 +1,6 @@
 """TrainingPlan + PlannedWorkout reads/writes: active plan, workouts, compliance,
 step-match, plan creation/archival/extension, strength days and plan-op apply. Split
 out of the flat ``repository.py`` (B1)."""
-import copy
 import datetime as dt
 import logging
 from typing import List, Optional
@@ -894,7 +893,6 @@ async def apply_plan_ops(
     # up a session an earlier ``add`` in the same batch created.
     targets = {d: await workout_on_date(session, plan.id, d)
                for d in {op.date for op in ops if op.action != "add" and op.date}}
-    before = {id(w): (w.date, _pushed_content(w)) for w in targets.values() if w is not None}
     affected: List[PlannedWorkout] = []
     for op in ops:
         if op.action == "add":
@@ -988,27 +986,6 @@ async def apply_plan_ops(
     for w in await _relabel_long_runs(session, plan.id, touched):
         if w not in affected:
             affected.append(w)
-    # Last, so it sees the rows as the whole batch (relabel included) leaves them.
-    for w in affected:
-        was = before.get(id(w))
-        w.reschedule_only = (was is not None and w.date != was[0]
-                             and _pushed_content(w) == was[1])
     await session.commit()
     return affected
 
-
-def _pushed_content(w) -> tuple:
-    """Everything a pushed workout is built from, except its date.
-
-    A `move` that leaves this unchanged is a calendar change only, and ``apply_plan_ops``
-    marks such a row ``reschedule_only`` (a plain attribute, not a column) so
-    ``plan_sync.resync_workouts`` re-dates the workout already on Garmin instead of deleting
-    it and creating a same-named copy. That replacement is what lost a moved session on the
-    watch (2026-09-30): the copy showed in Connect but never reached the device, until it
-    was deleted and pushed once more. Anything else in the batch that touches the row (a
-    modify, the long-run relabel renaming it) makes the tuple differ and keeps the full
-    replacement, since then the workout itself has changed."""
-    return copy.deepcopy((
-        w.type, w.dist_km, w.description, w.week, w.status, w.steps,
-        w.garmin_template_id, w.strength_plan, w.exercise_edits,
-    ))
