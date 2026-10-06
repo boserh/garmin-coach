@@ -108,9 +108,33 @@ def test_rpe_rise_explained_by_slower_pace_not_flagged():
 # --- recovery drift -----------------------------------------------------------
 
 def test_hrv_below_baseline_flags_recovery():
-    daily = _daily(14, acwr=100, hrv=[40, 40, 40] + [60] * 11, hrv_base=45)
+    daily = _daily(14, acwr=100, hrv=[60] * 11 + [40, 40, 40], hrv_base=45)
     a = injury.assess(daily, [], history_days=60)
     assert "recovery" in {s.kind for s in a.signals}
+
+
+def test_hrv_old_low_streak_already_recovered_is_quiet():
+    # Three low nights at the start of the window, normal ever since: that dip is over.
+    daily = _daily(14, acwr=100, hrv=[40, 40, 40] + [60] * 11, hrv_base=45)
+    a = injury.assess(daily, [], history_days=60)
+    assert "recovery" not in {s.kind for s in a.signals}
+
+
+def test_hrv_scattered_dips_are_not_a_streak():
+    # The real false alarm: five single low nights spread over two weeks, normal between,
+    # last night back in the band — Garmin called every day BALANCED.
+    hrv = [60, 40, 60, 40, 60, 60, 40, 60, 40, 60, 60, 40, 60, 60]
+    a = injury.assess(_daily(14, acwr=100, hrv=hrv, hrv_base=45), [], history_days=60)
+    assert "recovery" not in {s.kind for s in a.signals}
+    assert a.actionable is False
+
+
+def test_hrv_streak_skips_nights_without_a_reading():
+    # Today isn't synced yet (no HRV) — it must not hide the run of low nights before it.
+    daily = _daily(14, acwr=100, hrv=[60] * 10 + [40, 40, 40, None], hrv_base=45)
+    rec = next(s for s in injury.assess(daily, [], history_days=60).signals
+               if s.kind == "recovery")
+    assert "ночі поспіль: 3" in rec.detail
 
 
 # --- aggregate level ----------------------------------------------------------
