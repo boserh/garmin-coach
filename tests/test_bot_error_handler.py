@@ -91,3 +91,42 @@ async def test_a_network_error_that_lost_a_reply_or_a_report_always_warns(caplog
         await on_error(None, SimpleNamespace(error=NetworkError(""), job=_Job()))
     rec = [r for r in caplog.records if r.name == "bot"]
     assert [r.levelno for r in rec] == [logging.WARNING, logging.WARNING]
+
+
+# ---------- Conflict: the reconnecting poll meeting its own dead long-poll ----------
+
+async def test_a_lone_polling_conflict_after_a_blip_is_not_a_page(caplog):
+    """After the link drops, Telegram still holds the dead getUpdates, so the reconnect is
+    refused once with Conflict — the bot against itself, already healed by the retry."""
+    from telegram.error import Conflict
+
+    _reset_streak()
+    with caplog.at_level(logging.INFO, logger="bot"):
+        await on_error(None, SimpleNamespace(error=Conflict(
+            "Conflict: terminated by other getUpdates request")))
+    rec = [r for r in caplog.records if r.name == "bot"]
+    assert len(rec) == 1 and rec[0].levelno == logging.INFO
+
+
+async def test_a_conflict_that_keeps_going_warns(caplog, monkeypatch):
+    """A real second instance on the token conflicts on every poll: that one must page."""
+    from telegram.error import Conflict
+
+    _reset_streak()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(handlers.time, "monotonic", lambda: clock["t"])
+    with caplog.at_level(logging.INFO, logger="bot"):
+        await on_error(None, SimpleNamespace(error=Conflict("x")))
+        clock["t"] += handlers._NET_WARN_AFTER_S + 1
+        await on_error(None, SimpleNamespace(error=Conflict("x")))
+    rec = [r for r in caplog.records if r.name == "bot"]
+    assert [r.levelno for r in rec] == [logging.INFO, logging.WARNING]
+
+
+async def test_unhandled_error_names_the_exception_in_the_message(caplog):
+    """app.core.alerts forwards getMessage() only — the page must say what broke."""
+    with caplog.at_level(logging.ERROR, logger="bot"):
+        await on_error(Update(update_id=1), SimpleNamespace(error=KeyError("plan_id")))
+    rec = [r for r in caplog.records if r.name == "bot" and r.levelno == logging.ERROR]
+    assert len(rec) == 1
+    assert "KeyError" in rec[0].getMessage() and "plan_id" in rec[0].getMessage()

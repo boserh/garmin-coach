@@ -56,7 +56,11 @@ owner got paged per hiccup. Now a *streak* warns — still failing `_NET_WARN_AF
 while a lone blip is INFO, and a network error carrying an update or a job still warns at
 once, because that one lost a reply or a report. The warning text is deliberately constant so
 the 5-minute dedup in `alerts` collapses an ongoing outage to one message per window; putting
-an elapsed time or a counter in it would defeat that.
+an elapsed time or a counter in it would defeat that. `telegram.error.Conflict` rides the same
+path: after a link drop Telegram still holds the dead long-poll, so the reconnect is refused
+once as "terminated by other getUpdates request" — each bot process conflicting with its own
+ghost, which arrived as two bare 🛑 `Unhandled bot error` pages. A genuine second instance on
+the token conflicts on every poll, so it still warns as a streak.
 
 ## Remote deploy from Telegram (OPS-03)
 

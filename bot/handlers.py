@@ -15,7 +15,7 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import NetworkError, TimedOut
+from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from app import away as away_mod
@@ -2350,6 +2350,12 @@ async def deploy_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # arrives as a bare `httpx.ReadError` with no message at all — paged the owner about a blip
 # the retry had already absorbed. Same call as the weather retries: only a run of them that
 # keeps failing is an outage worth waking up for.
+#
+# ``Conflict`` ("terminated by other getUpdates request") belongs here too. When the Pi's
+# link drops mid long-poll, Telegram still holds the dead request; the reconnecting poll
+# is a second one on the same token and is refused until the old one times out — the bot
+# conflicting with its own ghost, once per process (main + admin bot → two 🛑 at the same
+# second). A real second instance on the token conflicts on every poll, i.e. a streak.
 _NET_WARN_AFTER_S = 120.0     # a streak still going this long has stopped being a blip
 _NET_STREAK_GAP_S = 300.0     # a quiet gap this long means polling recovered — count afresh
 # None, not 0.0: ``monotonic``'s epoch is arbitrary and starts near zero on a fresh
@@ -2384,7 +2390,7 @@ def _log_network_error(err: Exception, *, polling: bool) -> None:
 
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     err = ctx.error
-    if isinstance(err, (NetworkError, TimedOut)):
+    if isinstance(err, (NetworkError, TimedOut, Conflict)):
         _log_network_error(
             err, polling=update is None and getattr(ctx, "job", None) is None)
     elif isinstance(err, MFARequired):
@@ -2396,7 +2402,9 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
         if isinstance(update, Update) and update.effective_message:
             await update.effective_message.reply_text(GARMIN_AUTH_INVALID_MSG)
     else:
-        logger.exception("Unhandled bot error", exc_info=err)
+        # The type + message go in the text itself: app.core.alerts forwards only the
+        # message, so a bare "Unhandled bot error" page said nothing without the Pi's log.
+        logger.exception(f"Unhandled bot error: {type(err).__name__}: {err}", exc_info=err)
     # A failed inline-button tap (plan/adapt/checkin callbacks) otherwise leaves the
     # button visibly stuck — the user taps and, from their side, nothing happens. Best
     # effort: pop a toast so they know the tap failed and to retry, instead of silence.
