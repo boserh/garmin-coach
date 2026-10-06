@@ -119,8 +119,12 @@ def test_every_number_comes_from_the_module(lifter, no_llm_no_garmin):
 def test_a_hidden_session_is_not_in_the_statistics(lifter, no_llm_no_garmin):
     """Same filter as the records: a hidden activity is hidden everywhere, or a bogus
     500 kg bench becomes a permanent "personal best" on this page."""
+    from app.templating import ASSET_V
+
     client, _uid = lifter
-    html = client.get("/strength").text
+    # The asset digest in every `?v=` is hex and contained "500" once (d89f1f9500) — a
+    # red CI about nothing. Drop it; the bogus lift must not show anywhere ELSE.
+    html = client.get("/strength").text.replace(ASSET_V, "")
     assert "500" not in html
 
 
