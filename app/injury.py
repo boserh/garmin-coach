@@ -12,8 +12,8 @@ Signals (each contributes a severity; the strongest — subjective pain — weig
      `activities.subjective`). The single best predictor, so it weighs heaviest.
   3. **RPE rising at a stable pace** — the run felt harder for the same speed (early fatigue
      / illness), from the EP-12 RPE + the run's pace.
-  4. **Recovery drift** — HRV below its baseline band for several days and/or resting HR
-     drifting up.
+  4. **Recovery drift** — HRV below its baseline band for the last several nights in a row
+     and/or resting HR drifting up.
 
 Calibration (the EP-08 pitfall: false positives kill trust): **no warnings until the user
 has ``min_history_days`` of data** — the detector runs in a quiet mode first, exactly like
@@ -143,13 +143,27 @@ def _rpe_signal(runs: List[dict]) -> Optional[Signal]:
     )
 
 
+def _hrv_low_streak(daily: List[dict]) -> int:
+    """How many of the most RECENT nights in a row sat below the baseline band.
+
+    Only the current, unbroken run counts. A total over the window flagged scattered single
+    dips (three low nights a week apart, with normal ones between) as "recovery is sagging",
+    and the narration then turned that total into "N days in a row" — while Garmin itself
+    called every one of those days BALANCED. A night without a reading (today before the
+    sync, a night the watch was off) neither extends nor breaks the run."""
+    streak = 0
+    for r in reversed(daily):
+        hrv, low = r.get("hrv_avg"), r.get("hrv_baseline_low")
+        if not isinstance(hrv, (int, float)) or not isinstance(low, (int, float)):
+            continue
+        if hrv >= low:
+            break
+        streak += 1
+    return streak
+
+
 def _recovery_signal(daily: List[dict]) -> Optional[Signal]:
-    low_hrv = sum(
-        1 for r in daily
-        if isinstance(r.get("hrv_avg"), (int, float))
-        and isinstance(r.get("hrv_baseline_low"), (int, float))
-        and r["hrv_avg"] < r["hrv_baseline_low"]
-    )
+    low_hrv = _hrv_low_streak(daily)
     rhr = [float(r["resting_hr"]) for r in daily
            if isinstance(r.get("resting_hr"), (int, float))]
     drift = False
@@ -162,7 +176,7 @@ def _recovery_signal(daily: List[dict]) -> Optional[Signal]:
     sev = 0
     if low_hrv >= HRV_LOW_DAYS:
         sev += 2
-        parts.append(f"HRV нижче базової смуги {low_hrv} дн.")
+        parts.append(f"HRV нижче базової смуги останні ночі поспіль: {low_hrv}")
     if drift:
         sev += 1
         parts.append(f"пульс спокою дрейфує вгору (+{RHR_DRIFT:.0f})")
