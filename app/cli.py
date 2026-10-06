@@ -668,8 +668,8 @@ async def _fix_plan_kinds(email: str, apply: bool, repush: bool) -> int:
             return 0
         print(f"Re-pushing {len(pushed)} session(s) to the Garmin calendar...")
         async with garmin_login(session, user):
-            # resync_workouts is the per-edit path: drop our old copy, re-push the corrected
-            # row when it is still an upcoming in-window session (a past one just goes).
+            # resync_workouts is the per-edit path: it rebuilds the calendar window, so the
+            # corrected rows go up afresh (a past one just goes).
             res = await plan_sync.resync_workouts(session, user.id, pushed)
         print(f"Garmin: -{res['removed']} removed, +{res['pushed']} re-pushed.")
     return 0
