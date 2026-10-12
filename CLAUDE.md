@@ -308,6 +308,9 @@ app/
                              moving ONE already-planned session, via the same Telegram
                              ✅/❌ flow EP-02 adaptation uses (bot.jobs._send_adapt_
                              proposal) — no LLM call, no read tool, own scope/origin
+  mcp_logs.py                ADMIN-only ops-log tools served BY mcp_server (no own process):
+                             app log (+ rotations), journalctl/systemctl for whitelisted
+                             garmin-* units, secrets redacted, refused per call to non-admins
   deploy.py                 OPS-03: git pull + systemd restart subprocess wrappers, bot-triggered
   race.py                    EP-05: race-pack target/distance mapping + narration-context builder
   gear.py                     NF-15: shoe-mileage parsing (defensive) + wear-threshold/rewarn logic
@@ -636,7 +639,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 
 ## Remote MCP server (NF-08, http transport)
 
-`app.mcp_server` serves the same five read-only tools over two transports, and the
+`app.mcp_server` serves the same five read-only tools (plus `app.mcp_logs`'s three
+admin-only log readers — `read_app_log`, `read_journal`, `service_status`; journal needs
+the service user in `systemd-journal`) over two transports, and the
 difference between them is **who a request speaks for**:
 
 - **stdio** (default, unchanged): the client launches it as a local child process, so

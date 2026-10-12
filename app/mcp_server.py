@@ -18,12 +18,15 @@ Two transports, and the difference between them is *who the request speaks for*:
     id — see :mod:`app.mcp_oauth`. The server is multi-user in this mode; each call is
     scoped to the token's own account and nothing else.
 
-Every tool is read-only in both modes and funnels through the single dispatch point in
-``_run_ask_tool`` — the same validation/caps as ``/ask`` (row caps, whitelisted daily
-fields). Adding a write tool here would defeat NF-08's whole point (its own ticket names
-scope creep as the main risk) — keep it read-only. When something genuinely has to write,
-it gets its own service on its own origin with its own OAuth scope, the way the
-monitoring channel did: see :mod:`app.mcp_notify`.
+Every tool is read-only in both modes. The athlete tools funnel through the single
+dispatch point in ``_run_ask_tool`` — the same validation/caps as ``/ask`` (row caps,
+whitelisted daily fields). Adding a write tool here would defeat NF-08's whole point
+(its own ticket names scope creep as the main risk) — keep it read-only. When something
+genuinely has to write, it gets its own service on its own origin with its own OAuth
+scope, the way the monitoring channel did: see :mod:`app.mcp_notify`.
+
+The ops-log tools (:mod:`app.mcp_logs`) are the one exception to "your own data": they
+read the install's logs, so each refuses any account that isn't an admin, per call.
 
 Run (opt-in dependency — ``./venv/bin/python -m pip install -e ".[mcp]"``)::
 
@@ -147,6 +150,10 @@ _TOOLS = (
 )
 
 
+# Admin-only; see app.mcp_logs for why they live here and not on a server of their own.
+from app.mcp_logs import TOOLS as _LOG_TOOLS  # noqa: E402
+
+
 def build_server(*, public_url: Optional[str] = None) -> MCPServer:
     """The MCP server, with OAuth wired up when ``public_url`` is given.
 
@@ -158,7 +165,7 @@ def build_server(*, public_url: Optional[str] = None) -> MCPServer:
 
     kwargs = auth_kwargs(public_url, SCOPE) if public_url else {}
     server = MCPServer("bihun", **kwargs)
-    for fn in _TOOLS:
+    for fn in (*_TOOLS, *_LOG_TOOLS):
         server.tool()(fn)
     if public_url:
         register_consent(server)
