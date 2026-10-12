@@ -1030,7 +1030,8 @@ def main(argv=None) -> int:
 
     pp = sub.add_parser("push-plan", help="Push upcoming plan workouts to the Garmin calendar")
     pp.add_argument("--email", required=True)
-    pp.add_argument("--days", type=int, default=14, help="rolling window size (default 14)")
+    # = plan_sync.PLAN_SYNC_WINDOW_DAYS (not imported here: cli keeps its imports lazy)
+    pp.add_argument("--days", type=int, default=7, help="rolling window size (default 7)")
     pp.add_argument("--date", help="push only the session on this ISO date (overrides --days)")
     pp.add_argument("--dry-run", action="store_true", help="build + print payloads, don't write")
 

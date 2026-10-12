@@ -1312,6 +1312,18 @@ partial calendar change drop the device's whole set; if a full rebuild ever stop
 enough, the next suspect is timing (the toggle has a human-sized gap between the removal
 and the push).
 
+**It was the watch's workout limit, not timing (2026-10-12).** The rebuild was not enough:
+today's session sat on Connect's calendar and not on the watch's, and the toggle no longer
+helped either. A sync then showed the cause on the device itself: *"Exceeded maximum number
+of workouts. Some workouts not imported."* A watch keeps a limited number of workouts (25 is
+the figure usually cited, not an official spec; scheduled ones appear to count) and silently
+skips the rest. With a 14-day window ~10 of ours sat there next to whatever else the watch
+holds, and deletions on Connect do not always clear the device right away, so each delete +
+recreate could push it over. The push window is now 7 days (`PLAN_SYNC_WINDOW_DAYS`), which
+roughly halves our footprint. If the message comes back, the fix is on the device (delete
+workouts under Training → Workouts, or the files in `GARMIN/WORKOUTS` over USB); deleting
+activities does not free anything.
+
 ## Web UI conventions (UI batch, 2026-08)
 
 The batch answered one question — *what is already computed or stored that the user can't
