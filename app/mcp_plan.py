@@ -1,73 +1,51 @@
-"""The plan-move MCP server: one narrow write tool — move ONE already planned session to
-another date, proposed to the athlete's own Telegram chat for a ✅/❌ tap, never applied
-directly.
+"""``propose_move`` — a tool of the coach MCP server (:mod:`app.mcp_server`): move ONE
+already planned session to another date, proposed to the athlete's own Telegram chat for
+a ✅/❌ tap, never applied directly.
 
-Why this is its own service rather than one more tool on :mod:`app.mcp_server` or
-:mod:`app.mcp_notify`, same reasoning as the notify/coach split in ``app.mcp_oauth``:
+It used to be a server of its own (own process, origin, OAuth scope and
+``MCP_PLAN_PUBLIC_URL``). That cost a tunnel hostname, a systemd unit and a second
+connector for one tool, so it now rides on the connector the athlete already has. What
+keeps it safe is unchanged and lives in the tool itself, not in a scope:
 
-    coach : app.mcp_server · MCP_PUBLIC_URL      · scope garmin:read  · reads, cannot write
-    notify: app.mcp_notify · MCP_NOTIFY_PUBLIC_URL· scope notify:write· sends, cannot read
-    plan  : app.mcp_plan   · MCP_PLAN_PUBLIC_URL  · scope plan:propose· proposes ONE move
-
-A coach-scoped token can never reach this endpoint even though both sit on the same OAuth
-storage — the SDK refuses a token whose scope doesn't match what the endpoint requires.
-
-Deliberately NOT a general plan-edit tool: no free text, no add/modify/skip, no LLM call
-on our side (the calling Claude session already decided what to move — that is the whole
-point of doing this over MCP instead of through ``/plan <text>``). The tool only accepts
-a `date` + `to_date` pair, validates them mechanically against the stored plan, and hands
-the result to the EXACT SAME confirm/reject flow EP-02's adaptive-plan proposals already
-use (``bot.jobs._send_adapt_proposal`` + the existing ``adapt_callback``) — so nothing new
-gets applied outside the one place ``apply_plan_ops`` already is. This is also why the
-scope grants no "modify"/"skip"/"add": those need real judgement about volume, breaks and
-context (see ``SYSTEM_PLAN_EDIT``) that a bare pair of dates cannot express safely.
-
-Run (needs the ``mcp`` extra, ``pip install -e ".[mcp]"``)::
-
-    ./venv/bin/python -m app.mcp_plan --email me@example.com                # stdio
-    ./venv/bin/python -m app.mcp_plan --transport http --port 8790          # + MCP_PLAN_PUBLIC_URL
-
-Over stdio (as with ``app.mcp_server``) there is no request to authenticate: ``--email``
-binds the process to one user for its whole lifetime. Over http, identity is per-request
-from the OAuth token's subject — the same account whose Telegram chat receives the
-proposal, never anyone else's.
+* Nothing is applied here. The proposal goes through the EXACT SAME confirm/reject flow
+  EP-02's adaptive-plan proposals use (``bot.jobs._send_adapt_proposal`` + the existing
+  ``adapt_callback``), so the plan changes only on the athlete's tap, in the one place
+  ``apply_plan_ops`` already is.
+* Deliberately NOT a general plan-edit tool: no free text, no add/modify/skip, no LLM call
+  on our side (the calling Claude session already decided what to move). Only a
+  `date` + `to_date` pair, validated mechanically against the stored plan — "modify"/
+  "skip"/"add" need judgement about volume and context (see ``SYSTEM_PLAN_EDIT``) that a
+  pair of dates cannot express safely.
+* Rate limited per account (``MCP_PLAN_RATE_LIMIT`` per ``MCP_PLAN_RATE_WINDOW_S``), and
+  it only ever writes to the caller's own chat.
 """
 from __future__ import annotations
 
-import argparse
-import asyncio
 import datetime as dt
 import logging
 from types import SimpleNamespace
-from typing import Optional
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.mcpserver import MCPServer
 from telegram import Bot
 
 from app.core.config import settings
-from app.core.logging import setup as setup_logging
 from app.core.ratelimit import RateLimiter
 from app.db import users
-from app.db.base import async_session_maker, init_db
+from app.db.base import async_session_maker
 
 logger = logging.getLogger("mcp.plan")
-
-# Bound once at startup in stdio mode, and never set in http mode — mirrors
-# app.mcp_server._user_id; see its docstring for why the fallback there is unreachable
-# rather than merely unlikely over http.
-_user_id: Optional[int] = None
 
 _limiter = RateLimiter(settings.MCP_PLAN_RATE_LIMIT, settings.MCP_PLAN_RATE_WINDOW_S)
 
 
 def _current_user_id() -> int:
+    """The token's user over http; over stdio, the coach process's bound --email user."""
     token = get_access_token()
     if token is not None and token.subject:
         return int(token.subject)
-    if _user_id is not None:
-        return _user_id
-    raise RuntimeError("MCP call with no authenticated user and no bound --email user")
+    from app.mcp_server import _current_user_id as coach_user_id
+
+    return coach_user_id()
 
 
 async def propose_move(date: str, to_date: str) -> dict:
@@ -85,6 +63,10 @@ async def propose_move(date: str, to_date: str) -> dict:
     from app.garmin import repository
 
     user_id = _current_user_id()
+    if not settings.TELEGRAM_BOT_TOKEN:
+        raise ValueError(
+            "TELEGRAM_BOT_TOKEN is not set on the server — nowhere to send the proposal."
+        )
     if not _limiter.allow(str(user_id)):
         raise ValueError(
             f"Rate limit reached ({settings.MCP_PLAN_RATE_LIMIT} proposals per "
@@ -132,81 +114,4 @@ async def propose_move(date: str, to_date: str) -> dict:
     return {"proposed": True, "date": date, "to_date": to_date}
 
 
-_TOOLS = (propose_move,)
-
-
-def build_server(*, public_url: Optional[str] = None) -> MCPServer:
-    """The MCP server, with OAuth wired up when ``public_url`` is given.
-
-    Auth is configured per transport rather than always-on: over stdio there is no HTTP
-    request to carry a token, and the SDK refuses auth settings without one.
-    """
-    from app.mcp_http import auth_kwargs, register_consent
-    from app.mcp_oauth import PLAN_SCOPE
-
-    kwargs = auth_kwargs(public_url, PLAN_SCOPE) if public_url else {}
-    server = MCPServer("bihun-plan", **kwargs)
-    for fn in _TOOLS:
-        server.tool()(fn)
-    if public_url:
-        register_consent(server)
-    return server
-
-
-async def _resolve_user_id(email: str) -> int:
-    await init_db()
-    async with async_session_maker() as session:
-        user = await users.get_by_email(session, email)
-        if user is None:
-            raise SystemExit(
-                f"No user with email {email!r}. Create one first: "
-                "./venv/bin/python -m app.cli create-user --email ..."
-            )
-        return user.id
-
-
-def main(argv=None) -> None:
-    setup_logging()
-    parser = argparse.ArgumentParser(
-        description="Plan-move MCP server — one write tool, proposes a session move "
-                     "for Telegram confirmation (NF-08 sibling, no LLM call)."
-    )
-    parser.add_argument(
-        "--transport", choices=("stdio", "http"), default="stdio",
-        help="stdio: a local child process bound to one --email user (default). "
-             "http: a public endpoint, per-request OAuth identity.",
-    )
-    parser.add_argument("--email", help="stdio only: which user's plan this server proposes for")
-    parser.add_argument(
-        "--host", default="127.0.0.1",
-        help="http only: bind address. Keep the default and put a reverse proxy or "
-             "tunnel in front — binding to 0.0.0.0 publishes it to the whole network.",
-    )
-    parser.add_argument("--port", type=int, default=8790, help="http only: bind port")
-    args = parser.parse_args(argv)
-
-    if not settings.TELEGRAM_BOT_TOKEN:
-        raise SystemExit(
-            "TELEGRAM_BOT_TOKEN must be set: this server has nowhere to send a proposal "
-            "without it."
-        )
-
-    if args.transport == "stdio":
-        if not args.email:
-            raise SystemExit("--email is required for --transport stdio")
-        global _user_id
-        _user_id = asyncio.run(_resolve_user_id(args.email))
-        logger.info(f"MCP plan server bound to user_id={_user_id} ({args.email})")
-        build_server().run()  # stdio transport; blocks until the client disconnects
-        return
-
-    from app.mcp_http import http_app, require_public_url, serve
-
-    public = require_public_url(settings.MCP_PLAN_PUBLIC_URL, var="MCP_PLAN_PUBLIC_URL")
-    asyncio.run(init_db())
-    logger.info(f"MCP plan server (http) on {args.host}:{args.port}, issuer {public}")
-    serve(http_app(build_server(public_url=public), public), args.host, args.port)
-
-
-if __name__ == "__main__":
-    main()
+TOOLS = (propose_move,)

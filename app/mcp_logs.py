@@ -51,7 +51,6 @@ UNITS = (
     "garmin-web",
     "garmin-mcp",
     "garmin-mcp-notify",
-    "garmin-mcp-plan",
     "garmin-backup",
 )
 
@@ -351,7 +350,7 @@ async def read_journal(
     output, the nightly backup unit (garmin-backup), anything printed to stderr.
 
     `unit`: one of garmin-bot, garmin-admin-bot, garmin-web, garmin-mcp,
-    garmin-mcp-notify, garmin-mcp-plan, garmin-backup.
+    garmin-mcp-notify, garmin-backup.
     `since` / `until`: '30m', '2h', '3d' or ISO datetime (Pi local time); since
     defaults to '1h'. `priority`: max syslog priority, e.g. 'err', 'warning'.
     `grep`: case-insensitive regex (filtered here, after journalctl).

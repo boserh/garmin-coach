@@ -190,7 +190,6 @@ Optional, with defaults:
 | `REGISTRATION_PENDING_MAX` | `5` | self-registration closes while this many accounts sit unapproved (the rate limit is a burst guard and resets; this is the standing ceiling). An admin approving/deleting the backlog reopens it. `0` disables. |
 | `MCP_PUBLIC_URL` | `` (unset) | NF-08 http transport: the public HTTPS origin the remote MCP server is reached at — also the OAuth issuer, so it must match what clients connect to. Unset → `--transport http` refuses to start; stdio unaffected. |
 | `MCP_OAUTH_MAX_CLIENTS` | `20` | ceiling on dynamically registered OAuth clients (RFC 7591 registration is unauthenticated by design, so it needs a bound). |
-| `MCP_PLAN_PUBLIC_URL` | `` (unset) | `app.mcp_plan`'s own public HTTPS origin/OAuth issuer — the narrow write MCP server (`propose_move`: move ONE already-planned session, sent to Telegram for ✅/❌, no LLM call). Separate process/port/scope from the coach server on purpose. Unset → `--transport http` refuses to start; stdio unaffected. |
 | `MCP_PLAN_RATE_LIMIT` / `MCP_PLAN_RATE_WINDOW_S` | `10` / `3600` | sliding-window cap on move proposals one account may push through the tool. `0` disables. |
 | `GARMIN_PROVIDER` | `gconn` | Garmin auth engine: `gconn` (native `python-garminconnect`) or `garth` (rollback — needs `pip install -e ".[garth]"`). |
 | `GARMIN_RPS` | `3.0` | process-wide Garmin request rate cap (req/s); `0` disables. |
@@ -301,13 +300,13 @@ app/
   mcp_oauth.py             NF-08: the OAuth 2.1 authorization server + consent screen
                            that makes the http transport safe to expose
   mcp_http.py               shared http-transport plumbing (OAuth wiring, consent
-                            mount, DNS-rebinding settings) for all three MCP servers
+                            mount, DNS-rebinding settings) for both MCP servers
   mcp_notify.py              write-only monitoring-channel MCP server (admin only,
-                             its own scope/origin/port — see app.mcp_plan's docstring)
-  mcp_plan.py                write-only, one-move-at-a-time plan MCP server: proposes
+                             its own scope/origin/port — see its docstring)
+  mcp_plan.py                propose_move, served BY mcp_server (no own process): proposes
                              moving ONE already-planned session, via the same Telegram
                              ✅/❌ flow EP-02 adaptation uses (bot.jobs._send_adapt_
-                             proposal) — no LLM call, no read tool, own scope/origin
+                             proposal) — no LLM call, nothing applied without the tap
   mcp_logs.py                ADMIN-only ops-log tools served BY mcp_server (no own process):
                              app log (+ rotations), journalctl/systemctl for whitelisted
                              garmin-* units, secrets redacted, refused per call to non-admins
@@ -639,7 +638,8 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
 
 ## Remote MCP server (NF-08, http transport)
 
-`app.mcp_server` serves the same five read-only tools (plus `app.mcp_logs`'s three
+`app.mcp_server` serves the same five read-only tools (plus `app.mcp_plan`'s
+`propose_move` — Telegram-confirmed, applies nothing itself — and `app.mcp_logs`'s three
 admin-only log readers — `read_app_log`, `read_journal`, `service_status`; journal needs
 the service user in `systemd-journal`) over two transports, and the
 difference between them is **who a request speaks for**:

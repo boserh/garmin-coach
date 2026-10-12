@@ -191,33 +191,49 @@ async def test_tool_rate_limits(session, bot, monkeypatch):
     assert len(bot.sent) == 1
 
 
-# --- separation from the coach/notify servers ----------------------------------------
+# --- it lives on the existing coach server ------------------------------------------
 
 
-def test_all_three_servers_require_disjoint_scopes():
-    from app.mcp_http import auth_kwargs
-    from app.mcp_oauth import NOTIFY_SCOPE, PLAN_SCOPE, SCOPE
+def test_coach_server_carries_propose_move():
+    """No own process/origin/connector: the "Bihun" connector the athlete already has
+    serves it. Still nothing is applied without the Telegram ✅."""
+    import anyio
 
-    coach = auth_kwargs("https://mcp.example.com", SCOPE)["auth"].required_scopes
-    notify = auth_kwargs("https://mon.example.com", NOTIFY_SCOPE)["auth"].required_scopes
-    plan = auth_kwargs("https://plan.example.com", PLAN_SCOPE)["auth"].required_scopes
-    assert coach == [SCOPE] and notify == [NOTIFY_SCOPE] and plan == [PLAN_SCOPE]
-    assert not (set(coach) & set(notify)) and not (set(coach) & set(plan))
-    assert not (set(notify) & set(plan))
+    from app.mcp_server import build_server
 
-
-def test_plan_server_exposes_only_the_move_tool():
-    assert [fn.__name__ for fn in mcp_plan._TOOLS] == ["propose_move"]
+    names = {t.name for t in anyio.run(build_server().list_tools)}
+    assert "propose_move" in names and "get_training_plan" in names
 
 
-def test_plan_server_refuses_to_start_unconfigured(monkeypatch):
+def test_there_is_no_separate_plan_server():
+    import app.mcp_oauth as oauth_mod
+
+    assert not hasattr(mcp_plan, "main") and not hasattr(mcp_plan, "build_server")
+    assert not hasattr(oauth_mod, "PLAN_SCOPE")
+    assert not hasattr(settings, "MCP_PLAN_PUBLIC_URL")
+
+
+async def test_stdio_uses_the_coach_servers_bound_user(session, bot, monkeypatch):
+    """Over stdio the coach process binds one --email user; propose_move must act for
+    that user, not demand a binding of its own."""
+    from app import mcp_server
+
+    user, plan, w = await _seed_user_with_plan(session, date=_to_date(1))
+    monkeypatch.setattr(mcp_plan, "async_session_maker", _FakeMaker(session))
+    monkeypatch.setattr(mcp_plan, "get_access_token", lambda: None)
+    monkeypatch.setattr(mcp_server, "get_access_token", lambda: None)
+    monkeypatch.setattr(mcp_server, "_user_id", user.id)
+    got = await mcp_plan.propose_move(w.date, _to_date(2))
+    assert got["proposed"] is True and bot.sent[0][0] == 555
+
+
+async def test_propose_move_refuses_without_a_bot_token(session, bot, monkeypatch):
+    """The token was checked at process start while this had a process of its own; on
+    the coach server it is checked per call, so a missing one is a clear tool error."""
+    user, plan, w = await _seed_user_with_plan(session, date=_to_date(1))
+    monkeypatch.setattr(mcp_plan, "async_session_maker", _FakeMaker(session))
+    monkeypatch.setattr(mcp_plan, "get_access_token", lambda: _Token(user.id))
     monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", None)
-    with pytest.raises(SystemExit, match="TELEGRAM_BOT_TOKEN"):
-        mcp_plan.main(["--email", "x@example.com"])
-
-
-def test_plan_http_refuses_to_start_without_a_public_url(monkeypatch):
-    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "t")
-    monkeypatch.setattr(settings, "MCP_PLAN_PUBLIC_URL", None)
-    with pytest.raises(SystemExit, match="MCP_PLAN_PUBLIC_URL"):
-        mcp_plan.main(["--transport", "http"])
+    with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN"):
+        await mcp_plan.propose_move(w.date, _to_date(2))
+    assert bot.sent == []
