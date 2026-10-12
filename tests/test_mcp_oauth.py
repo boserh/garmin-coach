@@ -379,11 +379,12 @@ def test_stdio_server_registers_every_tool_and_no_auth():
     """stdio is the unchanged NF-08 shape: same five read-only tools, no OAuth (there is
     no HTTP request to carry a token, and the SDK rejects auth settings without one)."""
     from app.mcp_logs import TOOLS as LOG_TOOLS
+    from app.mcp_plan import TOOLS as PLAN_TOOLS
     from app.mcp_server import _TOOLS, build_server
 
     server = build_server()
     names = {t.name for t in anyio.run(server.list_tools)}
-    assert names == {fn.__name__ for fn in (*_TOOLS, *LOG_TOOLS)}
+    assert names == {fn.__name__ for fn in (*_TOOLS, *PLAN_TOOLS, *LOG_TOOLS)}
     assert server.settings.auth is None
 
 
