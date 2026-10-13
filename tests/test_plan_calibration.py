@@ -330,3 +330,76 @@ async def test_a_plain_activity_lookup_does_not_run_it(session, monkeypatch):
     user, plan, act, _ = await _setup(session)
     check, _ = await _run_activity(session, user, [str(act.id)], monkeypatch)
     check.assert_not_called()
+
+
+# ---------- across sessions: a one-block tempo day ----------
+# 2026-09-16 → 10-13: every tempo block run faster than its target, RPE 3 each time, the
+# next tempo day set SLOWER than the one before, and 0/1 never reached the 3-step rule.
+
+TEMPO = [6.08, 6.42]
+
+
+def _tempo(delta, n=2):
+    return {"steps_hit": 0, "steps_total": 1, "misses": [], "steps": [
+        {"step": n, "kind": "run", "planned": TEMPO, "actual": 5.77,
+         "hit": False, "delta_s": delta}]}
+
+
+TEMPO_HISTORY = [
+    {"date": "2026-09-16", "step_match": _tempo(-13)},
+    {"date": "2026-10-06", "step_match": {"steps": [
+        {"step": 2, "kind": "run", "planned": [5.75, 6.08], "actual": 5.68, "delta_s": -4},
+        {"step": 4, "kind": "run", "planned": [5.75, 6.08], "actual": 5.33, "delta_s": -25}]}},
+]
+
+
+def test_one_tempo_block_alone_is_not_enough():
+    assert stepmatch.calibration(_tempo(-18)) is None
+    assert stepmatch.calibration_across(_tempo(-18), []) is None
+
+
+def test_a_run_of_fast_tempo_days_is_a_calibration_signal():
+    v = stepmatch.calibration_across(_tempo(-18), TEMPO_HISTORY, date="2026-10-13")
+    assert v["direction"] == "fast" and v["steps"] == 4 and v["missed"] == 4
+    assert v["median_delta_s"] <= -15
+    # planned/actual describe the session just run; sessions show the streak
+    assert v["planned"] == TEMPO and v["actual"] == [5.77]
+    assert [s["date"] for s in v["sessions"]] == ["2026-09-16", "2026-10-06", "2026-10-13"]
+
+
+def test_a_hit_today_does_not_recalibrate_on_old_misses():
+    assert stepmatch.calibration_across(_tempo(0), TEMPO_HISTORY) is None
+
+
+def test_mixed_history_is_not_a_signal():
+    slow = [{"date": "2026-10-06", "step_match": {"steps": [
+        {"step": 2, "kind": "run", "planned": TEMPO, "actual": 6.9, "delta_s": 30},
+        {"step": 4, "kind": "run", "planned": TEMPO, "actual": 7.0, "delta_s": 35}]}}]
+    assert stepmatch.calibration_across(_tempo(-18), slow) is None
+
+
+async def test_the_hook_pools_earlier_tempo_days_from_the_db(session):
+    user, plan, act, nxt = await _setup(session, step_match=_tempo(-18))
+    today = dt.date.fromisoformat(act.date)
+    for i, (days_ago, delta) in enumerate(((7, -25), (14, -13), (40, -90))):
+        session.add(ActivityRecord(
+            user_id=user.id, activity_id=90_000 + user.id * 10 + i, type="running",
+            date=(today - dt.timedelta(days=days_ago)).isoformat(),
+            dist_km=6.0, dur_min=40.0, step_match=_tempo(delta)))
+    await session.commit()
+    ctx = _ctx()
+    with patch.object(jobs_module, "run_plan_adaptation",
+                      new=AsyncMock(return_value=(plan, _faster(nxt)))) as m:
+        await jobs_module._calibration_check(ctx, session, user, CREDS, act)
+    assert m.await_count == 1
+    verdict = m.await_args.kwargs["calibration"]
+    assert verdict["direction"] == "fast"
+    # 40 days ago is outside the window; this session closes the streak
+    assert len(verdict["sessions"]) == 3 and verdict["sessions"][-1]["date"] == act.date
+
+
+async def test_the_hook_stays_quiet_on_a_lone_tempo_day(session):
+    user, plan, act, _ = await _setup(session, step_match=_tempo(-18))
+    with patch.object(jobs_module, "run_plan_adaptation", new=AsyncMock()) as m:
+        await jobs_module._calibration_check(_ctx(), session, user, CREDS, act)
+    m.assert_not_called()

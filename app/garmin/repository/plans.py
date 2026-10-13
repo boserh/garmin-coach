@@ -532,6 +532,35 @@ async def recent_step_match(
     return out
 
 
+async def recent_step_sessions(
+    session: AsyncSession, user_id: int, *, before_activity_id: int, before_date: str,
+    days: int,
+) -> List[dict]:
+    """This user's structured runs scored step by step (NF-14) in the ``days`` before
+    ``before_date`` — ``[{"date", "type", "step_match"}]``, oldest first, the activity
+    ``before_activity_id`` itself excluded. Unlike :func:`recent_step_match` this keeps
+    the per-step deltas and needs no active plan: it is "how did the last few
+    structured sessions go", for the calibration check and the activity analysis."""
+    try:
+        end = dt.date.fromisoformat(before_date)
+    except (TypeError, ValueError):
+        return []
+    start = (end - dt.timedelta(days=days)).isoformat()
+    rows = (
+        await session.execute(
+            select(ActivityRecord.date, ActivityRecord.type, ActivityRecord.step_match).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.id != before_activity_id,
+                ActivityRecord.date >= start,
+                ActivityRecord.date <= end.isoformat(),
+                ActivityRecord.step_match.is_not(None),
+            ).order_by(ActivityRecord.date, ActivityRecord.id)
+        )
+    ).all()
+    return [{"date": d, "type": t, "step_match": sm}
+            for d, t, sm in rows if isinstance(sm, dict) and sm.get("steps")]
+
+
 async def list_pushed_workouts(session: AsyncSession, user_id: int) -> List[PlannedWorkout]:
     """This user's workouts already pushed to Garmin (``garmin_workout_id`` set), across
     all plans — for the sync cleanup pass. (A BigInteger column → real SQL NULL, so
