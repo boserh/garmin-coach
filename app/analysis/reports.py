@@ -991,6 +991,39 @@ def _step_match_payload(step_match: dict) -> dict:
     return out
 
 
+def _paces_as_text(data: dict) -> dict:
+    """``activity_payload`` with every decimal min/km pace (the run's ``avg_pace``, each
+    segment's ``avg_pace``/``gap_pace``) turned into "M:SS" — the :func:`_fmt_pace` fix
+    applied to the fields it had missed. With only step_match pre-formatted, the analysis
+    kept writing "7:78/км" for a 7.78 segment. A copy: ``activity_payload`` itself stays
+    decimal for the /ask tools that do arithmetic on it."""
+    out = dict(data)
+    if isinstance(out.get("avg_pace"), (int, float)):
+        out["avg_pace"] = _fmt_pace(out["avg_pace"])
+    if out.get("segments"):
+        out["segments"] = [
+            {k: (_fmt_pace(v) if k in ("avg_pace", "gap_pace")
+                 and isinstance(v, (int, float)) else v) for k, v in seg.items()}
+            for seg in out["segments"]
+        ]
+    return out
+
+
+def _recent_structured_payload(history: list) -> Optional[list]:
+    """``repository.recent_step_sessions`` rows → the compact per-session deltas the
+    activity analysis reads as ``recent_structured`` (``None`` when there are none)."""
+    out = []
+    for h in history or []:
+        sm = h.get("step_match") or {}
+        deltas = [s.get("delta_s") for s in sm.get("steps") or []
+                  if isinstance(s, dict) and isinstance(s.get("delta_s"), (int, float))]
+        if deltas:
+            out.append({"date": h.get("date"), "type": h.get("type"),
+                        "steps_hit": sm.get("steps_hit"), "steps_total": sm.get("steps_total"),
+                        "delta_s": deltas})
+    return out or None
+
+
 def _planned_payload(workout) -> dict:
     """Compact planned-vs-actual slice for a matched PlannedWorkout (see matching.py)."""
     from app.garmin.matching import session_target_pace
@@ -1136,7 +1169,17 @@ async def run_activity_analysis(
     # None for a first pass or a run with no recognised route.
     route = await repository.build_route_context(session, user_id, activity) \
         if user_id is not None else None
-    data = activity_payload(activity, planned, route)
+    data = _paces_as_text(activity_payload(activity, planned, route))
+    # A tempo block run 20 s/km fast reads as "you ignored the coach" on its own and as
+    # "the targets are behind you" next to three earlier ones that went the same way.
+    if user_id is not None and getattr(activity, "step_match", None) and activity.date:
+        from app import stepmatch
+
+        recent = _recent_structured_payload(await repository.recent_step_sessions(
+            session, user_id, before_activity_id=activity.id, before_date=activity.date,
+            days=stepmatch.CALIBRATION_HISTORY_DAYS))
+        if recent:
+            data["recent_structured"] = recent
     q = f"activity #{activity.id} ({activity.type})"
     text = await _run_cached_narration(
         session, user_id=user_id, kind="activity", model=MODEL_ACTIVITY, context=data,

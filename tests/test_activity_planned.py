@@ -118,3 +118,41 @@ async def test_run_activity_analysis_feeds_planned_context(session, monkeypatch)
     assert captured["data"]["planned"]["status"] == "done"
     assert captured["data"]["planned"]["type"] == "easy"
     assert captured["data"]["planned"]["description"] == "Легкий біг, розмовний темп"
+
+
+def test_narrated_paces_are_already_minutes_and_seconds():
+    """2026-10-13: "7:30-7:70/км", "~7:78/км" — segment paces were the one place still
+    handed over as decimal minutes. The /ask tools keep the decimals."""
+    act = ActivityRecord(type="running", date=TODAY, dur_min=40.9, dist_km=6.01,
+                         series=[{"d": 0.1 * i, "p": 7.78, "h": 130} for i in range(1, 6)])
+    raw = reports.activity_payload(act)
+    assert isinstance(raw["segments"][0]["avg_pace"], float)
+    text = reports._paces_as_text(raw)
+    assert text["avg_pace"] == "6:49"
+    assert text["segments"][0]["avg_pace"] == "7:47"
+    assert raw["segments"][0]["avg_pace"] == 7.78   # the copy, not the original
+
+
+async def test_analysis_sees_the_earlier_structured_sessions(session, monkeypatch):
+    sm = lambda d: {"steps_hit": 0, "steps_total": 1, "steps": [   # noqa: E731
+        {"step": 2, "kind": "run", "planned": [6.08, 6.42], "actual": 5.77, "delta_s": d}]}
+    day = dt.date.fromisoformat(TODAY)
+    await _mk_activity(session, activity_id=331, step_match=sm(-25),
+                       date=(day - dt.timedelta(days=7)).isoformat())
+    await _mk_activity(session, activity_id=332, step_match=sm(-13),
+                       date=(day - dt.timedelta(days=60)).isoformat())   # out of the window
+    await _mk_activity(session, user_id=U1 + 1, activity_id=333, step_match=sm(-40),
+                       date=(day - dt.timedelta(days=3)).isoformat())    # someone else's
+    act = await _mk_activity(session, activity_id=334, step_match=sm(-18))
+
+    captured = {}
+
+    def fake_analyze(activity_data, api_key=None):
+        captured["data"] = activity_data
+        return "аналіз", CallStats(kind="activity", model="m")
+
+    monkeypatch.setattr(reports, "analyze_activity_with_stats", fake_analyze)
+    await reports.run_activity_analysis(session, act, user_id=U1, api_key="k")
+    recent = captured["data"]["recent_structured"]
+    assert [r["delta_s"] for r in recent] == [[-25]]
+    assert recent[0]["date"] == (day - dt.timedelta(days=7)).isoformat()

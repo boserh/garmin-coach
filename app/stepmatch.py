@@ -299,6 +299,59 @@ def calibration(step_match: Optional[dict]) -> Optional[dict]:
     }
 
 
+# A tempo day has one or two working steps, so the single-session rule above can never
+# fire on it. Tuned against 2026-09-16 → 10-13: four tempo blocks in a row run 4–25 s/km
+# faster than target (every one of them feeling easy), and the next tempo day was still
+# set SLOWER than the one before — the analyst then told the athlete off for "too fast".
+CALIBRATION_HISTORY_DAYS = 21
+CALIBRATION_MIN_SESSIONS = 2
+
+
+def _run_steps(step_match: Optional[dict]) -> List[dict]:
+    if not isinstance(step_match, dict):
+        return []
+    return [s for s in step_match.get("steps") or []
+            if isinstance(s, dict) and isinstance(s.get("delta_s"), (int, float))]
+
+
+def calibration_across(step_match: Optional[dict], history: Optional[List[dict]] = None,
+                       date: Optional[str] = None) -> Optional[dict]:
+    """:func:`calibration` for this session, or — when it has too few working steps to
+    say anything on its own — the same rule over its steps PLUS those of the recent
+    structured sessions before it (``history``: ``[{"date", "step_match"}]``, this one
+    excluded). The thresholds stay the same; what changes is where the steps come from.
+
+    This session must still have missed on the verdict's side itself: a hit today is not
+    the moment to re-set targets, however the earlier sessions went. The pooled verdict
+    carries ``sessions`` (``[{date, delta_s: [...]}]``, oldest first) so the adaptation
+    sees it is a run of sessions, not one."""
+    verdict = calibration(step_match)
+    if verdict is not None:
+        return verdict
+    own = _run_steps(step_match)
+    if not own:
+        return None
+    sessions = []
+    pooled: List[dict] = []
+    for h in history or []:
+        steps = _run_steps(h.get("step_match")) if isinstance(h, dict) else []
+        if steps:
+            sessions.append({"date": h.get("date"), "delta_s": [s["delta_s"] for s in steps]})
+            pooled.extend(steps)
+    if len(sessions) + 1 < CALIBRATION_MIN_SESSIONS:
+        return None
+    pooled_verdict = calibration({"steps": pooled + own})
+    if pooled_verdict is None:
+        return None
+    side_fast = pooled_verdict["direction"] == "fast"
+    if not any((s["delta_s"] < 0) if side_fast else (s["delta_s"] > 0) for s in own):
+        return None
+    return {**pooled_verdict,
+            "planned": own[0].get("planned"),
+            "actual": [s.get("actual") for s in own],
+            "sessions": sessions + [{"date": date, "delta_s": [s["delta_s"] for s in own]}]}
+
+
 def work_pace(steps: Optional[list]) -> Optional[list]:
     """The first pace-targeted working step's ``[fast, slow]`` range — what a session's
     "target pace" means when talking about it in one number (a proposal line, the tail an
