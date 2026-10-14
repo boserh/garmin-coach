@@ -609,7 +609,7 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   Garmin creds on the user), `import-garth-token`,
   `backfill-series`, `import-export --path [--since] [--overwrite]` (GDPR export
   offline backfill, merge-fill only), `import-fit-series` (pace/HR series from FIT
-  files), `push-plan [--days 14] [--dry-run]` (writes plan to Garmin calendar, idempotent
+  files), `push-plan [--days 7] [--dry-run]` (writes plan to Garmin calendar, idempotent
   via stored `garmin_workout_id`/`garmin_schedule_id`), `unpush-plan`, `token-expiry`
   (OPS-01, per-user auth deadline), `trigger-plan-adapt` (on-demand EP-02 review),
   `list-workouts`, `audit-calendar [--delete-orphans] [--clear-stale]` (compare the
