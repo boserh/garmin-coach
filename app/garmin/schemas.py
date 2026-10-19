@@ -7,7 +7,7 @@ only — the persistence models live in ``app.db.models``.
 """
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class DailySummary(BaseModel):
@@ -67,6 +67,11 @@ class Payload(BaseModel):
     planned_runs: List[PlannedRun]
 
 
+# Names a model has been seen (or is plausibly going) to give a repeat's count instead of
+# ``reps`` — see ``PlanStep._reps_alias``.
+_REPS_ALIASES = ("times", "count", "repeats", "repetitions", "iterations", "repeat", "n")
+
+
 class PlanStep(BaseModel):
     """One step of a structured workout — mirrors the Runna ``planned_runs[].detail.steps``
     shape (``dist_m`` + ``pace_min_km`` range) extended with warmup/cooldown/recovery and
@@ -91,6 +96,20 @@ class PlanStep(BaseModel):
                                                # hr_zone steps this carries the pace-range hint
                                                # text (e.g. "орієнтовно 6:45–7:00/км") since the
                                                # watch target itself is HR, not pace
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reps_alias(cls, data):
+        """A repeat's count under another name («times», «count», …) used to be dropped by
+        ``extra="ignore"``, and the workout reached the watch as "1 time" — 5×600 m pushed as
+        a single 600 m. Take the first such key when ``reps`` itself is missing."""
+        if isinstance(data, dict) and data.get("kind") == "repeat" and data.get("reps") is None:
+            for key in _REPS_ALIASES:
+                v = data.get(key)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 1:
+                    data = {**data, "reps": int(v)}
+                    break
+        return data
 
 
 class PlanWorkout(BaseModel):

@@ -28,7 +28,8 @@ logger = logging.getLogger("api")
 CURRENT_PLAN_STATUSES = ("active", "paused")
 
 
-def _consistent(dist_km, steps, *, steps_given: bool, where: str):
+def _consistent(dist_km, steps, *, steps_given: bool, where: str,
+                description: Optional[str] = None):
     """Store a headline distance and its structured steps only in agreement — see
     ``app.plansteps``. ``steps`` is already ``_dump_steps``-serialized.
 
@@ -41,6 +42,13 @@ def _consistent(dist_km, steps, *, steps_given: bool, where: str):
     steps are partly prescribed in TIME is not a mismatch at all and never reaches this
     warning (``plansteps.describes_distance``) — its metres are unknown here, so the headline
     stands as written."""
+    if steps_given:
+        steps, filled = plansteps.fill_missing_reps(steps, description)
+        if filled:
+            logger.warning("PLAN repeat without reps (%s) — count taken from the description",
+                           where)
+        elif plansteps.repeats_without_reps(steps):
+            logger.warning("PLAN repeat without reps (%s) — exported as a single pass", where)
     gap = plansteps.mismatch(dist_km, steps)
     if gap is not None and gap > plansteps.TOLERANCE:
         logger.warning(
@@ -612,7 +620,7 @@ async def create_plan(
     for w in workouts:
         dist_km, steps = _consistent(
             w.dist_km, _dump_steps(getattr(w, "steps", None)),
-            steps_given=True, where=f"create {w.date}",
+            steps_given=True, where=f"create {w.date}", description=w.description,
         )
         session.add(PlannedWorkout(
             plan_id=plan.id, user_id=user_id, date=w.date, week=w.week,
@@ -664,7 +672,7 @@ async def append_workouts(
         base_week = getattr(w, "week", None) or 1
         dist_km, steps = _consistent(
             w.dist_km, _dump_steps(getattr(w, "steps", None)),
-            steps_given=True, where=f"extend {w.date}",
+            steps_given=True, where=f"extend {w.date}", description=w.description,
         )
         session.add(PlannedWorkout(
             plan_id=plan.id, user_id=plan.user_id, date=w.date,
@@ -696,7 +704,7 @@ async def replace_future_workouts(
     for w in workouts:
         dist_km, steps = _consistent(
             w.dist_km, _dump_steps(getattr(w, "steps", None)),
-            steps_given=True, where=f"rebuild {w.date}",
+            steps_given=True, where=f"rebuild {w.date}", description=w.description,
         )
         session.add(PlannedWorkout(
             plan_id=plan.id, user_id=plan.user_id, date=w.date,
@@ -927,7 +935,7 @@ async def apply_plan_ops(
         if op.action == "add":
             dist_km, steps = _consistent(
                 op.dist_km, _dump_steps(getattr(op, "steps", None)),
-                steps_given=True, where=f"add {op.date}",
+                steps_given=True, where=f"add {op.date}", description=op.description,
             )
             w = PlannedWorkout(
                 plan_id=plan.id, user_id=plan.user_id, date=op.date, week=op.week,
@@ -975,7 +983,7 @@ async def apply_plan_ops(
                 dist_km = op.dist_km if op.dist_km is not None else w.dist_km
                 w.dist_km, w.steps = _consistent(
                     dist_km, steps, steps_given=steps_given,
-                    where=f"modify {op.date}",
+                    where=f"modify {op.date}", description=w.description,
                 )
             if getattr(op, "garmin_template_id", None) is not None:
                 w.garmin_template_id = op.garmin_template_id
