@@ -28,10 +28,13 @@ Rules here:
   a headline no bigger than the distance steps alone is wrong for certain (it left the
   timed steps out), so it is replaced by an estimate at each step's target pace.
 * ``reconcile`` — the one decision table both writers use.
+* ``fill_missing_reps`` — a ``repeat`` that arrived without its count takes it from the
+  session's own description ("5×600 м", "повтор ×5"), when that names exactly one.
 """
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional, TypeGuard
 
 # Below this relative difference the two numbers are "the same" — steps rounded to 10 m
@@ -285,6 +288,51 @@ def mismatch(dist_km: Optional[float], steps) -> Optional[float]:
     return abs(total - float(dist_km) * 1000.0) / (float(dist_km) * 1000.0)
 
 
+# "5×600 м" / "5 x 3 хв" — a count right before the multiplication sign and a number.
+_COUNT_BEFORE = re.compile(r"(?<![\d.,])(\d{1,2})\s*[×xXхХ]\s*\d")
+# "повтор ×5" / "×5:" — the sign before the count, which is not itself a distance/duration
+# ("×1 км" is a step length, not a count).
+_COUNT_AFTER = re.compile(
+    r"[×]\s*(\d{1,2})(?![\d.,])(?!\s*(?:м|км|хв|с|сек|m|km|min|s)\b)")
+
+
+def repeats_without_reps(steps) -> list:
+    """The ``repeat`` blocks in ``steps`` that carry sub-steps but no usable ``reps``."""
+    return [s for s in steps or []
+            if isinstance(s, dict) and s.get("kind") == "repeat" and s.get("steps")
+            and not (_is_num(s.get("reps")) and s.get("reps") >= 1)]
+
+
+def description_reps(description: Optional[str]) -> Optional[int]:
+    """The one repetition count ``description`` names, or None when it names none or
+    several different ones (then there is no telling which block it belongs to)."""
+    if not description:
+        return None
+    found = {int(m) for rx in (_COUNT_BEFORE, _COUNT_AFTER) for m in rx.findall(description)}
+    found.discard(0)
+    found.discard(1)
+    return found.pop() if len(found) == 1 else None
+
+
+def fill_missing_reps(steps, description: Optional[str]):
+    """Return ``(steps, filled)`` with a count-less ``repeat`` given the count the
+    description names.
+
+    The exporter reads a missing ``reps`` as 1, so a "5×600 м" session whose repeat came back
+    without its count reached the watch as ONE 600 m rep — and asking the model to fix it
+    produced the same shape again. Only the unambiguous case is repaired: exactly one such
+    block and exactly one count in the text. ``filled`` is False otherwise (and when there
+    was nothing to fill), so the caller can log what it could not resolve."""
+    missing = repeats_without_reps(steps)
+    if len(missing) != 1:
+        return steps, False
+    n = description_reps(description)
+    if n is None:
+        return steps, False
+    out = [dict(s, reps=n) if s is missing[0] else s for s in steps]
+    return out, True
+
+
 def reconcile(dist_km: Optional[float], steps, *, steps_given: bool):
     """Return the ``(dist_km, steps)`` pair to actually store.
 
@@ -319,4 +367,6 @@ def reconcile(dist_km: Optional[float], steps, *, steps_given: bool):
 
 __all__: List[str] = ["TOLERANCE", "total_dist_m", "has_timed_steps",
                       "describes_distance", "estimate_dist_m", "undercounts",
-                      "step_pace_min_km", "scale_steps", "mismatch", "reconcile"]
+                      "step_pace_min_km", "scale_steps", "mismatch", "reconcile",
+                      "description_reps", "repeats_without_reps",
+                      "fill_missing_reps"]
