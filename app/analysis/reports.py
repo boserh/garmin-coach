@@ -149,6 +149,13 @@ RECORDS_CONTEXT_DAYS = 3  # mention a personal record set within the last N days
 # report has to name even when it falls outside (see ``run_analysis``).
 PLAN_WINDOW_DAYS = 2
 
+# How far back the daily report sees our plan's already-resolved sessions (``plan_recent``):
+# today plus the two days before — "yesterday's session" with one day of slack for a report
+# that skipped a morning. ``recent_activities`` alone carries only whole-run averages, and an
+# interval day averaged over warm-up, rests and cool-down reads as an easy jog (5×600 at 4:50
+# with HR 164 came out as "легкий темп, avg hr 136").
+PLAN_RECENT_DAYS = 2
+
 _DEFAULT_DAILY_Q = (
     "Дай щоденний статус відновлення. "
     "Детальну пораду до пробіжки — лише якщо вона сьогодні/завтра."
@@ -186,6 +193,65 @@ def _strength_exercises(w) -> Optional[dict]:
     return None
 
 
+def _plan_recent_row(w, act) -> dict:
+    """One resolved plan session for the daily report's ``plan_recent``: what was planned
+    (type/description) and, when it was matched to an activity, how it actually went —
+    the step-by-step result (NF-14, paces pre-formatted "M:SS") and the post-run check-in
+    (EP-12). Compact on purpose: the full step table lives in the activity analysis."""
+    row = {k: v for k, v in {
+        "date": w.date,
+        "type": w.type,
+        "dist_km": w.dist_km,
+        "description": w.description,
+        "status": w.status,
+    }.items() if v is not None}
+    if act is None:
+        return row
+    actual = {k: v for k, v in {
+        "dist_km": act.dist_km, "dur_min": act.dur_min,
+        "avg_hr": act.avg_hr, "max_hr": act.max_hr,
+    }.items() if v is not None}
+    sm = getattr(act, "step_match", None)
+    if isinstance(sm, dict) and sm.get("steps"):
+        fmt = _step_match_payload(sm)
+        actual["step_match"] = {
+            "steps_hit": fmt.get("steps_hit"),
+            "steps_total": fmt.get("steps_total"),
+            "steps": [{k: st.get(k) for k in ("step", "kind", "planned", "actual", "hit")}
+                      for st in fmt["steps"]],
+        }
+    subj = getattr(act, "subjective", None)
+    if isinstance(subj, dict) and subj:
+        actual["subjective"] = {k: subj[k] for k in ("rpe", "pain", "note") if k in subj}
+    if actual:
+        row["actual"] = actual
+    return row
+
+
+async def _plan_recent(session, user_id: int, today_d: dt.date) -> Optional[list]:
+    """Our plan's sessions over the last ``PLAN_RECENT_DAYS`` days (and today) that are
+    already resolved — done/partial/missed/skipped. Still-``planned`` rows are left out:
+    today's are in ``plan_today``, and a past one may simply not be matched yet, which is
+    not the same as missed."""
+    from app.db.models import ActivityRecord
+    from app.garmin import repository
+
+    ws = [w for w in await repository.recent_plan_workouts(
+        session, user_id, days=PLAN_RECENT_DAYS, today=today_d)
+        if w.status != "planned"]
+    if not ws:
+        return None
+    rows = []
+    for w in ws:
+        act = None
+        if w.completed_activity_id:
+            act = await session.get(ActivityRecord, w.completed_activity_id)
+            if act is not None and (act.user_id != user_id or act.is_hidden):
+                act = None
+        rows.append(_plan_recent_row(w, act))
+    return rows
+
+
 def _labelled_data(data: dict, today: str) -> dict:
     """Payload copy with a relative-day ``day`` label on every dated list (see
     ``app.daterel``) — so the analyst reads "вчора (вт)" off the record instead of
@@ -217,6 +283,7 @@ def analyze_with_stats(
     intensity_ctx: Optional[dict] = None,
     athlete_profile: Optional[dict] = None,
     away_ctx: Optional[dict] = None,
+    plan_recent: Optional[list] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -255,6 +322,8 @@ def analyze_with_stats(
         user_content["weather"] = weather
     if plan_today:
         user_content["plan_today"] = daterel.annotate(plan_today, today_iso)
+    if plan_recent:
+        user_content["plan_recent"] = daterel.annotate(plan_recent, today_iso)
     if fitness:
         user_content["fitness"] = fitness
     if records:
@@ -382,6 +451,7 @@ async def run_analysis(
     intensity_ctx = None
     athlete_profile = None
     away_ctx = None
+    plan_recent = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -464,6 +534,8 @@ async def run_analysis(
             # surface reads — so "he's away until the 24th" can't be true for the morning
             # report and unknown to the Sunday digest.
             away_ctx = await away_db.build_context(session, user_id, today_d)
+            # How yesterday's planned session actually went — type, per-rep result, RPE.
+            plan_recent = await _plan_recent(session, user_id, today_d)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
@@ -471,7 +543,7 @@ async def run_analysis(
         _as_dict(payload, today=today_iso), question or _DEFAULT_DAILY_Q, model,
         previous_report, weather, plan_today, fitness, records, norm,
         subjective, health_alerts, fueling, today_iso, intensity_ctx,
-        athlete_profile, away_ctx)
+        athlete_profile, away_ctx, plan_recent)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -481,7 +553,7 @@ async def run_analysis(
         return analyze_with_stats(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
-            today_iso, intensity_ctx, athlete_profile, away_ctx,
+            today_iso, intensity_ctx, athlete_profile, away_ctx, plan_recent,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
