@@ -236,7 +236,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                today: Optional[str] = None,
                intensity: Optional[dict] = None,
                athlete_profile: Optional[dict] = None,
-               away: Optional[dict] = None) -> str:
+               away: Optional[dict] = None,
+               plan_recent: Optional[list] = None) -> str:
     # ``today`` is the user's own date (their timezone, ST-14) when the caller knows it —
     # it is part of the prompt (and of every relative-day label built from it), so it must
     # be part of the key. Falls back to the process date for callers without a user.
@@ -267,6 +268,9 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
         # cache hit on the one written before the coach knew.
         "away": away,
     }
+    # Only when present, so every report without a resolved plan session keeps its old key.
+    if plan_recent:
+        material["plan_recent"] = plan_recent
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

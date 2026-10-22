@@ -288,7 +288,7 @@ async def test_daily_report_context_carries_the_period(session):
                      api_key=None, weather=None, plan_today=None, fitness=None,
                      records=None, norm=None, subjective=None, health_alerts=None,
                      fueling=None, today=None, intensity_ctx=None,
-                     athlete_profile=None, away_ctx=None):
+                     athlete_profile=None, away_ctx=None, plan_recent=None):
         captured["away"] = away_ctx
         return "звіт", CallStats(kind=kind or "report", model="m")
 
@@ -311,7 +311,7 @@ async def test_declaring_a_period_busts_the_report_dedup_cache(session):
                      api_key=None, weather=None, plan_today=None, fitness=None,
                      records=None, norm=None, subjective=None, health_alerts=None,
                      fueling=None, today=None, intensity_ctx=None,
-                     athlete_profile=None, away_ctx=None):
+                     athlete_profile=None, away_ctx=None, plan_recent=None):
         calls.append(away_ctx)
         return "звіт", CallStats(kind=kind or "report", model="m")
 
