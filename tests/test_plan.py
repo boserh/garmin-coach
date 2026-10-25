@@ -817,6 +817,29 @@ async def test_swapping_a_run_and_a_strength_day_with_moves(session):
         assert by_date["2026-08-27"].dist_km is None
 
 
+async def test_skip_targets_the_still_planned_session_not_an_already_skipped_one(session):
+    """A date holding an already-skipped session AND its planned replacement (an earlier
+    edit skipped the 12 km long run and added a 10 km one beside it). "пропусти біг 1.11"
+    must cancel the 10 km — the only one the model was shown. Taking the lowest id re-skipped
+    the dead row on every retry and left the replacement planned and on the watch."""
+    from app.db.models import PlannedWorkout
+    plan = await _dated_plan(session, [
+        dict(date="2026-11-01", type="long", dist_km=12.0, description="old"),
+    ])
+    old = (await repository.list_workouts(session, plan.id))[0]
+    old.status = "skipped"
+    session.add(PlannedWorkout(plan_id=plan.id, user_id=U1, date="2026-11-01", type="long",
+                               dist_km=10.0, description="new", status="planned"))
+    await session.commit()
+    touched = await repository.apply_plan_ops(session, plan, [
+        PlanOp(action="skip", date="2026-11-01"),
+    ])
+    rows = {w.description: w for w in await repository.list_workouts(session, plan.id)}
+    assert rows["new"].status == "skipped"
+    assert rows["old"].status == "skipped"
+    assert [w.description for w in touched] == ["new"]
+
+
 async def test_an_op_still_finds_a_session_added_in_the_same_batch(session):
     """Pre-resolving targets must not blind a later op to a row an earlier ``add`` created."""
     plan = await _dated_plan(session, [
