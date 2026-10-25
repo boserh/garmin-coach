@@ -863,15 +863,25 @@ async def prune_redundant_rest(session: AsyncSession, plan_id: int) -> int:
 
 async def workout_on_date(session: AsyncSession, plan_id: int, date: str):
     """The plan's session on a given date, or None. Public: also used to describe a
-    proposed op's before-state (bot/jobs.py) without duplicating the query."""
-    return (
+    proposed op's before-state (bot/jobs.py) without duplicating the query.
+
+    A date can hold more than one row — a session skipped by an earlier edit stays put, and
+    a later ``add`` on the same day sits beside it. Every caller means the session that is
+    still to be run (the plan edit only ever SHOWS the model still-planned sessions), so a
+    still-planned row wins over the lowest id. Taking the lowest id blindly sent "пропусти
+    біг 1.11" to the row an earlier edit had already skipped, again and again, while the
+    replacement next to it stayed planned and on the watch."""
+    rows = (
         await session.execute(
             select(PlannedWorkout)
             .where(PlannedWorkout.plan_id == plan_id, PlannedWorkout.date == date)
             .order_by(PlannedWorkout.id)
-            .limit(1)
         )
-    ).scalar_one_or_none()
+    ).scalars().all()
+    for w in rows:
+        if w.status == "planned" and w.completed_activity_id is None:
+            return w
+    return rows[0] if rows else None
 
 
 def _sanitize_strength(sp) -> Optional[dict]:
@@ -924,10 +934,10 @@ async def apply_plan_ops(
     # and the ops describe changes to the plan the model was SHOWN — so re-querying between
     # them answers a question nobody asked. Swapping two days is two moves onto each other's
     # dates, and resolved lazily the second one re-found the row the first had just moved
-    # (``workout_on_date`` takes the lowest id on the date) and moved it straight back: for
-    # two run days, where the earlier date holds the lower id, the swap silently did nothing
-    # at all. A date with no row here is still looked up live below — that is how an op picks
-    # up a session an earlier ``add`` in the same batch created.
+    # (``workout_on_date`` takes the lowest still-planned id on the date) and moved it
+    # straight back: for two run days, where the earlier date holds the lower id, the swap
+    # silently did nothing at all. A date with no row here is still looked up live below —
+    # that is how an op picks up a session an earlier ``add`` in the same batch created.
     targets = {d: await workout_on_date(session, plan.id, d)
                for d in {op.date for op in ops if op.action != "add" and op.date}}
     affected: List[PlannedWorkout] = []
