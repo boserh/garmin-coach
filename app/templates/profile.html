@@ -87,17 +87,18 @@
 
   {# NF-34: the half of "what the coach knows" that the athlete writes themselves. #}
   <section class="away">
-    <h2>🏖 Відпустка / поїздки</h2>
+    <h2>🏖 Відпустка / поїздки / травма / хвороба</h2>
     <p class="meta">
       Оголоси період, коли ти не тренуєшся як звичайно — і напиши, що саме там робитимеш.
       Пропущені сесії в ці дні не рахуються за зрив плану, а тижневий підсумок пояснить
       обсяг саме цим. Тип важливий: пляж, гори й кайт-тиждень — це три різні навантаження.
+      Для травми чи хвороби кінець можна не вказувати — буде тиждень.
     </p>
     {% if away_error %}<p class="err">{{ away_error }}</p>{% endif %}
 
     <form class="add" method="post" action="/me/away">
       <input type="date" name="start" value="{{ today }}" required aria-label="Початок">
-      <input type="date" name="end" required aria-label="Кінець">
+      <input type="date" name="end" aria-label="Кінець">
       <select name="kind" aria-label="Тип">
         {% for slug in away_kinds %}
           <option value="{{ slug }}">{{ away_kind_label(slug) }}</option>

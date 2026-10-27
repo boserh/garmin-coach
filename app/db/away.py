@@ -66,7 +66,11 @@ async def save(session: AsyncSession, user_id: int, data: dict,
 
     An identical period declared twice (the classic "confirmed the plan edit, then also typed
     ``/away``") updates the existing row instead of stacking duplicates: overlapping rows
-    would make ``days_in_week`` meaningless."""
+    would make ``days_in_week`` meaningless.
+
+    The same goes for an injury/illness that drags on: "/away травма до 10.11" typed while
+    an injury period is already running EXTENDS that row (its start is kept) rather than
+    stacking a second, overlapping one."""
     row = await get_by_id(session, user_id, row_id) if row_id else None
     if row is None:
         row = next(
@@ -76,6 +80,18 @@ async def save(session: AsyncSession, user_id: int, data: dict,
                     AwayPeriod.start_date == data["start_date"],
                     AwayPeriod.end_date == data["end_date"])
             )).scalars().all()), None)
+    if row is None and data.get("kind") in away_rules.HEALTH_KINDS:
+        row = (await session.execute(
+            select(AwayPeriod).where(
+                AwayPeriod.user_id == user_id,
+                AwayPeriod.kind == data["kind"],
+                AwayPeriod.start_date <= data["end_date"],
+                AwayPeriod.end_date >= data["start_date"])
+            .order_by(AwayPeriod.start_date)
+        )).scalars().first()
+        if row is not None:
+            data = {**data, "start_date": min(row.start_date, data["start_date"]),
+                    "note": data.get("note") or row.note}
     if row is None:
         row = AwayPeriod(user_id=user_id, **data)
         session.add(row)

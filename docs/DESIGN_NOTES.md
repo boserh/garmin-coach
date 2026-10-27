@@ -493,6 +493,16 @@ zero running. The athlete's own words live in `note`.
 - **The nudges stay quiet**: `_sickness_check_for_user` returns before the detector runs
   while a period is active — three missed sessions during a kite week is not an illness to
   repair, and that DM is exactly the nag this feature exists to stop.
+- **Injury and illness are kinds too** (`injury`/`sick`, listed first so they win a keyword
+  tie). The bug was the same divergence again: injured and not running, the morning report
+  kept reading the plan's `missed` sessions as skipped ones and saying they shouldn't be.
+  A health period is open-ended (`HEALTH_DEFAULT_DAYS` when no end is given), re-declaring
+  one while it runs extends the row instead of stacking an overlap, and «/away одужав»
+  (`end_early`) cuts a running period to yesterday rather than deleting it — deleting would
+  turn the sick days back into missed sessions. `/sick` declares one itself before the
+  rebuild; a `/plan` edit («захворів, скасуй усе») returns `away.kind=sick` with `end=null`.
+  `AWAY_BLOCK` forbids «не пропускай» for an active health period and keeps the medical
+  boundary (no diagnosis, never run through pain).
 - Part of the dedup-cache keys (`_cache_key`, `_ask_cache_key`, `_DIGEST_KEY_FIELDS`):
   declaring a trip has to produce a fresh report, not a hit on the one written before the
   coach knew.

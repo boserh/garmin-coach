@@ -207,7 +207,7 @@ class AwayOp(BaseModel):
 
     start: Optional[str] = None            # ISO
     end: Optional[str] = None              # ISO
-    kind: Optional[str] = None             # rest / active / sport / work
+    kind: Optional[str] = None             # injury / sick / rest / active / sport / work
     note: Optional[str] = None             # the athlete's own words about what they'll do
 
 

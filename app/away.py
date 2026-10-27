@@ -27,6 +27,18 @@ from typing import Iterable, List, Optional
 #
 # slug → (emoji, Ukrainian label, what the coach should expect of the body, /away keywords)
 KINDS: dict = {
+    # The two health kinds come FIRST: they are the reason the runs stopped, and they win a
+    # keyword tie ("захворів після кайту" is a sick week, not a kite week).
+    "injury": ("🩹", "травма",
+               "бігу немає через біль/травму — це вимушена пауза, а не лінь; відновлення "
+               "важливіше за обсяг, повернення лише без болю і поступово",
+               ("травм", "болить", "болі", "розтяг", "забій", "коліно", "ахіл", "injur",
+                "hurt")),
+    "sick": ("🤒", "хвороба",
+             "організм бореться з хворобою — тренувань немає свідомо, HRV/пульс спокою "
+             "можуть бути гіршими за норму; після одужання — кілька легких днів",
+             ("хвор", "захвор", "застуд", "грип", "температур", "ковід", "covid", "sick",
+              "flu")),
     "rest": ("🏖", "відпочинок", "майже без навантаження — можливе легке розтренування",
              ("відпочинок", "лежат", "пляж", "нічого", "rest", "chill")),
     "active": ("🥾", "активний відпочинок",
@@ -46,6 +58,11 @@ KINDS: dict = {
 
 DEFAULT_KIND = "rest"
 KIND_ORDER: List[str] = list(KINDS)
+# Being injured or ill is open-ended — nobody knows the day they'll be well again, so a
+# missing end date is not an error for these kinds: the period runs this many days and the
+# athlete ends it early ("/away одужав") or extends it.
+HEALTH_KINDS = frozenset({"injury", "sick"})
+HEALTH_DEFAULT_DAYS = 7
 
 MAX_NOTE_CHARS = 200
 # A period longer than this is not "away", it's a life change — and an unbounded row would
@@ -182,9 +199,15 @@ def normalize(start, end, kind: Optional[str] = None, note: Optional[str] = None
     web form and the plan-edit proposal — goes through this, so an LLM-proposed period is
     held to exactly the same bounds as a hand-typed one."""
     today = today or dt.date.today()
+    note = (note or "").strip()[:MAX_NOTE_CHARS] or None
+    kind = kind if kind in KINDS else (parse_kind(note or "") or DEFAULT_KIND)
     s, e = _coerce_date(start), _coerce_date(end)
+    if s is None and kind in HEALTH_KINDS:
+        s = today   # "/away травма" — it's happening now
     if s is None:
         raise AwayError("Не зрозумів дати. Напр.: /away 16.08-24.08 кайт")
+    if e is None and kind in HEALTH_KINDS:
+        e = max(s, today) + dt.timedelta(days=HEALTH_DEFAULT_DAYS - 1)
     if e is None:
         raise AwayError("Потрібна дата кінця: /away 16.08-24.08 кайт (або «на 7 днів»)")
     if e < s:
@@ -194,8 +217,6 @@ def normalize(start, end, kind: Optional[str] = None, note: Optional[str] = None
         raise AwayError(f"Задовгий період ({span} дн). Максимум {MAX_DAYS} днів.")
     if (s - today).days > MAX_FUTURE_DAYS:
         raise AwayError("Задалеко в майбутньому — заплануй ближче до дати.")
-    note = (note or "").strip()[:MAX_NOTE_CHARS] or None
-    kind = kind if kind in KINDS else (parse_kind(note or "") or DEFAULT_KIND)
     return {"start_date": s.isoformat(), "end_date": e.isoformat(),
             "kind": kind, "note": note}
 
@@ -330,6 +351,20 @@ def to_context(periods: Iterable[dict], today, *,
             item["days_in_week"] = days_in_range(p, ws, we)
         out.append(item)
     return {"periods": out}
+
+
+def end_early(period: dict, today) -> Optional[str]:
+    """The new ``end_date`` for "it's over" said on ``today`` — or ``None`` when the row should
+    simply go (it hasn't started yet, or started today).
+
+    A period that is already under way is cut to yesterday, never deleted: its past days are
+    exactly what explains the missed sessions to the digest, and deleting the row on "я
+    одужав" would turn a sick week back into "compliance 0%"."""
+    d = _coerce_date(today) or dt.date.today()
+    s = _coerce_date(period.get("start_date"))
+    if s is None or s >= d or not covers(period, d):
+        return None
+    return (d - dt.timedelta(days=1)).isoformat()
 
 
 def describe(period: dict) -> str:

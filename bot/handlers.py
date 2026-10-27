@@ -1012,15 +1012,21 @@ async def forget_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, us
 # ---------- AWAY PERIODS (NF-34) ----------
 
 AWAY_HELP = (
-    "🏖 Відсутність — щоб тренер знав, що ти не зник, а у відпустці/поїздці, і що саме "
-    "там робитимеш.\n\n"
+    "🏖 Відсутність — щоб тренер знав, що ти не зник, а у відпустці/поїздці, травмований "
+    "чи хворієш, і що саме зараз робиш.\n\n"
     "Приклади:\n"
     "/away 16.08-24.08 кайт тиждень в Дахабі\n"
     "/away 20.12 на 10 днів гори, ходитиму по 15 км\n"
-    "/away стоп — прибрати найближчу/поточну\n\n"
-    "Пропущені тренування в ці дні не рахуються як зрив плану, а тижневий підсумок "
-    "пояснить обсяг саме цим."
+    "/away травма болить ахілл — з сьогодні, на тиждень (дати можна вказати)\n"
+    "/away хвороба застуда\n"
+    "/away одужав (або стоп) — завершити поточну / прибрати найближчу\n\n"
+    "Пропущені тренування в ці дні не рахуються як зрив плану, ранковий звіт не "
+    "проситиме їх не пропускати, а тижневий підсумок пояснить обсяг саме цим."
 )
+# Words that END the current period (or drop the next one). The recovery words belong here
+# because that's how an injured/sick athlete will actually say it.
+_AWAY_STOP_WORDS = {"стоп", "стop", "-", "скасувати", "clear", "stop", "одужав", "одужала",
+                    "здоровий", "здорова", "повернувся", "повернулась", "кінець"}
 
 
 @bot_command
@@ -1036,14 +1042,25 @@ async def away_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     logger.info(f"CMD /away {arg[:60]}")
     rows = await away_db.list_periods(session, user.id, since=today)
 
-    if arg.lower() in {"стоп", "стop", "-", "скасувати", "clear", "stop"}:
+    if arg.lower() in _AWAY_STOP_WORDS:
         if not rows:
             await update.message.reply_text("Немає запланованої відсутності.")
             return
         target = rows[0]
-        await away_db.delete(session, user.id, target["id"])
+        new_end = away_mod.end_early(target, today)
+        if new_end is None:
+            await away_db.delete(session, user.id, target["id"])
+            reply = f"✅ Прибрав: {away_mod.describe(target)}"
+        else:
+            # Already under way: keep the days that happened — they explain the missed runs.
+            ended = {**target, "end_date": new_end}
+            await away_db.save(session, user.id, {k: ended[k] for k in
+                                                  ("start_date", "end_date", "kind", "note")},
+                               row_id=target["id"])
+            reply = (f"✅ Завершив: {away_mod.describe(ended)}\n\n"
+                     "Перші дні після паузи — легше, без спроб наздогнати пропущене.")
         await session.commit()
-        await update.message.reply_text(f"✅ Прибрав: {away_mod.describe(target)}")
+        await update.message.reply_text(reply)
         return
 
     if not arg:
@@ -1064,14 +1081,20 @@ async def away_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     except away_mod.AwayError as e:
         await update.message.reply_text(str(e))
         return
-    await away_db.save(session, user.id, data)
+    row = await away_db.save(session, user.id, data)
     await session.commit()
+    # Describe what is STORED: a repeated injury/illness extends the running row.
+    data = {"start_date": row.start_date, "end_date": row.end_date, "kind": row.kind,
+            "note": row.note}
     logger.info(f"AWAY stored user={user.id} {data['start_date']}..{data['end_date']} "
                 f"kind={data['kind']} (from /away)")
+    health = data["kind"] in away_mod.HEALTH_KINDS
     await update.message.reply_text(
         f"✅ Записав: {away_mod.describe(data)}\n\n"
         "Тренер це врахує — і в ранкових звітах, і в тижневому підсумку. "
-        "Якщо треба ще й посунути тренування — напиши /plan з проханням."
+        + ("Одужаєш раніше — /away одужав; триває довше — додай ще раз з новою датою. "
+           if health else "")
+        + "Якщо треба ще й посунути/скасувати тренування — напиши /plan з проханням."
     )
 
 
@@ -1721,7 +1744,12 @@ async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = await _resolve_user(update, session)
         if user is None:
             return
-        await update.message.reply_text("Перебудовую план під хворобу/подорож…")
+        # Record THAT he's ill before anything else — even with no plan to rebuild, the
+        # morning report and the digest must stop reading the missed days as skipped ones.
+        sick_line = await _record_sick_period(session, user)
+        await update.message.reply_text(
+            (f"🤒 Відмітив: {sick_line}. Одужаєш раніше — /away одужав.\n\n"
+             if sick_line else "") + "Перебудовую план під хворобу/подорож…")
         creds = load_credentials(user)
         try:
             _plan, edit = await run_sick_check(
@@ -1746,6 +1774,24 @@ async def sick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     async with async_session_maker() as session:
         await _store_sick_proposal(session, user.id, edit, days_missed, sent)
+
+
+async def _record_sick_period(session, user) -> Optional[str]:
+    """``/sick`` declares an illness period (NF-34's ``sick`` kind) from today — or extends
+    the one already running — so every report knows WHY the sessions stop. Returns the
+    human line, or ``None`` if storing failed (the rebuild is still the user's request)."""
+    try:
+        data = away_mod.normalize(None, None, "sick", None, today=user_today(user))
+        row = await away_db.save(session, user.id, data)
+        await session.commit()
+    except Exception:  # noqa: BLE001 — never sink the rebuild over the context row
+        logger.exception(f"AWAY sick save failed user={user.id}")
+        await session.rollback()
+        return None
+    logger.info(f"AWAY stored user={user.id} {row.start_date}..{row.end_date} "
+                "kind=sick (from /sick)")
+    return away_mod.describe({"start_date": row.start_date, "end_date": row.end_date,
+                              "kind": row.kind, "note": row.note})
 
 
 def _sick_keyboard() -> InlineKeyboardMarkup:
@@ -2112,7 +2158,9 @@ async def pain_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
                                         note=note or None)
     trigger = {"pain_runs": 1, "window": 1, "note": note or None}
     await update.message.reply_text(
-        returntorun.offer_text(trigger),
+        returntorun.offer_text(trigger)
+        + "\n\nЯкщо через біль зараз узагалі не бігаєш — /away травма, і звіти не "
+          "проситимуть не пропускати сесії.",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Веди мене", callback_data="rtr:yes"),
             InlineKeyboardButton("❌ Не треба", callback_data="rtr:no"),

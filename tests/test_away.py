@@ -38,7 +38,7 @@ async def _user(session, email="away@example.com") -> User:
 
 def test_kind_slugs_are_stable_storage_values():
     """Slugs are DB values; only the labels may change (same rule as NF-28's tags)."""
-    assert set(away.KIND_ORDER) == {"rest", "active", "sport", "work"}
+    assert set(away.KIND_ORDER) == {"injury", "sick", "rest", "active", "sport", "work"}
     assert away.label("sport").endswith("інший спорт")
 
 
@@ -54,6 +54,11 @@ def test_each_kind_carries_a_body_expectation():
     ("лежатиму на пляжі", "rest"),
     ("відрядження в Берлін", "work"),
     ("поїздка до батьків", None),
+    ("болить ахілл, не бігаю", "injury"),
+    ("травма коліна", "injury"),
+    ("захворів, температура", "sick"),
+    ("застуда після кайту", "sick"),      # the reason the runs stopped wins the tie
+    ("більше гулятиму", None),            # "біль" must not match inside "більше"
 ])
 def test_parse_kind_from_free_text(text, slug):
     assert away.parse_kind(text) == slug
@@ -114,6 +119,30 @@ def test_normalize_swaps_reversed_dates():
 def test_normalize_refuses_a_missing_end():
     with pytest.raises(away.AwayError):
         away.normalize("2026-08-16", None, "rest", None, today=TODAY)
+
+
+@pytest.mark.parametrize("kind", ["injury", "sick"])
+def test_an_injury_or_illness_may_be_open_ended(kind):
+    """Nobody knows the day they'll be well again: no dates at all means "from today, for a
+    week", and the athlete ends it early with /away одужав."""
+    p = away.normalize(None, None, kind, None, today=TODAY)
+    assert p["start_date"] == TODAY.isoformat()
+    assert p["end_date"] == (TODAY + dt.timedelta(days=away.HEALTH_DEFAULT_DAYS - 1)).isoformat()
+
+
+def test_from_op_accepts_an_illness_without_an_end():
+    """The plan-edit model is told to send end=null for «захворів, скасуй усе»."""
+    p = away.from_op({"start": "2026-08-16", "end": None, "kind": "sick"}, today=TODAY)
+    assert p and p["kind"] == "sick" and p["end_date"] > p["start_date"]
+
+
+def test_end_early_keeps_the_days_that_already_happened():
+    """Deleting a running sick period on «одужав» would turn the week back into missed
+    sessions; it is cut to yesterday instead. One not yet started simply goes."""
+    running = _period("2026-08-12", "2026-08-20", "sick")
+    assert away.end_early(running, TODAY) == "2026-08-15"
+    assert away.end_early(_period("2026-08-16", "2026-08-20", "sick"), TODAY) is None
+    assert away.end_early(_period("2026-08-20", "2026-08-25"), TODAY) is None
 
 
 def test_normalize_refuses_an_unbounded_period():
@@ -217,6 +246,23 @@ async def test_saving_the_same_period_twice_updates_instead_of_stacking(session)
 
     rows = await away_db.list_periods(session, u.id)
     assert len(rows) == 1 and rows[0]["kind"] == "sport" and rows[0]["note"] == "кайт"
+
+
+async def test_a_repeated_injury_extends_the_running_period(session):
+    """«/away травма» again (or with a later date) while one is running must not stack an
+    overlapping row — it moves the end, keeping the original start."""
+    u = await _user(session, "inj@example.com")
+    await away_db.save(session, u.id, away.normalize(
+        "2026-08-12", "2026-08-18", "injury", "ахілл", today=TODAY))
+    await session.commit()
+    await away_db.save(session, u.id, away.normalize(
+        None, "2026-08-25", "injury", None, today=TODAY))
+    await session.commit()
+
+    rows = await away_db.list_periods(session, u.id)
+    assert len(rows) == 1
+    assert (rows[0]["start_date"], rows[0]["end_date"]) == ("2026-08-12", "2026-08-25")
+    assert rows[0]["note"] == "ахілл"
 
 
 async def test_periods_are_user_scoped(session):
@@ -496,7 +542,7 @@ async def _fake_session_maker(session):
     yield session
 
 
-async def _run_away(session, user, args):
+async def _run_away(session, user, args, today=None):
     """Drive ``/away`` with the handler's session/user resolution stubbed out."""
     from bot import handlers
 
@@ -505,7 +551,9 @@ async def _run_away(session, user, args):
     ctx = SimpleNamespace(args=args)
     with patch.object(handlers, "async_session_maker",
                       lambda: _fake_session_maker(session)), \
-         patch.object(handlers, "_resolve_user", AsyncReturn(user)):
+         patch.object(handlers, "_resolve_user", AsyncReturn(user)), \
+         patch.object(handlers, "user_today",
+                      (lambda _u: today) if today else handlers.user_today):
         await handlers.away_cmd(update, ctx)
     return msg.replies
 
@@ -528,6 +576,60 @@ async def test_away_command_records_dates_kind_and_note(session):
     rows = await away_db.list_periods(session, u.id, since=dt.date(2026, 1, 1))
     assert len(rows) == 1
     assert rows[0]["kind"] == "sport" and "кайт" in rows[0]["note"]
+
+
+async def test_away_command_records_an_injury_without_dates(session):
+    u = await _user(session, "injcmd@example.com")
+    replies = await _run_away(session, u, ["травма", "болить", "коліно"], today=TODAY)
+    assert "Записав" in replies[0] and "одужав" in replies[0]
+
+    rows = await away_db.list_periods(session, u.id)
+    assert len(rows) == 1 and rows[0]["kind"] == "injury"
+    assert rows[0]["start_date"] == TODAY.isoformat()
+
+
+async def test_recovered_ends_a_running_period_without_erasing_it(session):
+    u = await _user(session, "well@example.com")
+    await away_db.save(session, u.id, away.normalize(
+        "2026-08-12", "2026-08-20", "sick", None, today=TODAY))
+    await session.commit()
+
+    replies = await _run_away(session, u, ["одужав"], today=TODAY)
+    assert "Завершив" in replies[0]
+    rows = await away_db.list_periods(session, u.id)
+    assert len(rows) == 1 and rows[0]["end_date"] == "2026-08-15"
+
+
+async def test_sick_command_declares_the_illness(session):
+    """/sick is the user saying «I'm ill» — the reports must know it even when there is no
+    plan to rebuild."""
+    from bot import handlers
+
+    u = await _user(session, "sickcmd@example.com")
+    msg = _Msg()
+    update = SimpleNamespace(message=msg, effective_chat=SimpleNamespace(id=42))
+    with patch.object(handlers, "async_session_maker",
+                      lambda: _fake_session_maker(session)), \
+         patch.object(handlers, "_resolve_user", AsyncReturn(u)), \
+         patch.object(handlers, "user_today", lambda _u: TODAY), \
+         patch("app.analysis.service.run_sick_check", AsyncReturn((None, None))), \
+         patch("app.garmin.credentials.load_credentials",
+               lambda _u: SimpleNamespace(anthropic_key="x")):
+        await handlers.sick(update, SimpleNamespace(args=[]))
+
+    rows = await away_db.list_periods(session, u.id)
+    assert len(rows) == 1 and rows[0]["kind"] == "sick"
+    assert "Відмітив" in msg.replies[0]
+
+
+def test_the_away_block_stops_the_dont_skip_nagging():
+    """The reported bug: injured and not running, yet the morning report kept saying the
+    sessions shouldn't be skipped."""
+    from app.analysis import prompts
+
+    assert "injury / sick зі status=active" in prompts.AWAY_BLOCK
+    assert "«не пропускай»" in prompts.AWAY_BLOCK
+    assert "injury|sick" in prompts.SYSTEM_PLAN_EDIT
 
 
 async def test_away_command_without_args_explains_itself(session):
