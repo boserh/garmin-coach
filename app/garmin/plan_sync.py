@@ -28,7 +28,12 @@ logger = logging.getLogger("garmin")
 # The rolling push window every caller uses (all default ``days=`` to this) — a named
 # constant so /plan's badge logic (OPS-09: "in window but not pushed yet" vs "out of
 # window, nothing expected") can share the exact same cutoff instead of a second literal.
-PLAN_SYNC_WINDOW_DAYS = 14
+#
+# A week, not two: the watch stores a limited number of workouts (commonly cited as 25,
+# scheduled ones included) and on overflow refuses the rest with "Exceeded maximum number
+# of workouts. Some workouts not imported." (seen live 2026-10-12) — the sessions stay on
+# Connect's calendar and never reach the device. A 14-day window kept ~10 of ours there.
+PLAN_SYNC_WINDOW_DAYS = 7
 
 # rest/cross sessions carry no structure — don't push them to the watch. "strength" is
 # excluded here too: it only becomes pushable via garmin_template_id/strength_plan below,
@@ -86,7 +91,8 @@ def fully_pushed(w) -> bool:
     return w.garmin_workout_id is not None and w.garmin_schedule_id is not None
 
 
-async def select_forward(session, plan_id: int, *, days: int = 14, only_date: str = None):
+async def select_forward(session, plan_id: int, *, days: int = PLAN_SYNC_WINDOW_DAYS,
+                         only_date: str = None):
     """The forward-pass selection: a plan's upcoming, pushable, not-yet-pushed sessions
     within the next ``days`` (or exactly ``only_date`` if given). The single source for
     "what counts as pushable and in-window", shared by the daily ``sync_plan_to_garmin``
