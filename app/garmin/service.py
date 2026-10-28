@@ -312,6 +312,43 @@ def _daily_extra_metrics(uds: dict, vo2: dict, race: dict, endurance: dict) -> d
     return {k: v for k, v in raw.items() if v is not None}
 
 
+def _mass_kg(v) -> Optional[float]:
+    """Garmin sends body masses in grams (72350 → 72.35 kg); a value that already looks like
+    kilograms is taken as-is, so a future unit change can't turn 72 kg into 0.072."""
+    if not isinstance(v, (int, float)) or v <= 0:
+        return None
+    return round(v / 1000.0, 2) if v > 1000 else round(float(v), 2)
+
+
+def body_metrics(entry: Optional[dict]) -> dict:
+    """NF-26: one weigh-in (or a day's ``totalAverage``) → the ``extra`` keys
+    ``app.bodyweight`` reads. Only what actually came — a plain scale sends weight alone."""
+    if not isinstance(entry, dict):
+        return {}
+    pct = lambda v: round(float(v), 1) if isinstance(v, (int, float)) and v > 0 else None  # noqa: E731
+    raw = {
+        "weight_kg": _mass_kg(entry.get("weight")),
+        "body_fat_pct": pct(entry.get("bodyFat")),
+        "body_water_pct": pct(entry.get("bodyWater")),
+        "muscle_kg": _mass_kg(entry.get("muscleMass")),
+        "bone_kg": _mass_kg(entry.get("boneMass")),
+        "bmi": pct(entry.get("bmi")),
+    }
+    if raw["weight_kg"] is None:
+        return {}
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+def _daily_body(weight: dict) -> dict:
+    """The day's average when Garmin computed one, else the latest weigh-in of the day."""
+    out = body_metrics(_g(weight, "totalAverage"))
+    if out:
+        return out
+    entries = [e for e in (_g(weight, "dateWeightList") or []) if isinstance(e, dict)]
+    entries.sort(key=lambda e: e.get("date") or e.get("timestampGMT") or 0)
+    return body_metrics(entries[-1]) if entries else {}
+
+
 def daily_summary(date: dt.date) -> dict:
     sleep = client.fetch_sleep(date)
     hrv = client.fetch_hrv(date)
@@ -323,12 +360,14 @@ def daily_summary(date: dt.date) -> dict:
     race = client.fetch_race_predictions()
     endurance = client.fetch_endurance(date)
     events = client.fetch_daily_events(date)
+    weight = client.fetch_weight(date) if settings.BODY_METRICS else {}
     dto = _g(sleep, "dailySleepDTO") or {}
     sec = lambda v: round(v / 3600, 2) if isinstance(v, (int, float)) else None
 
     extra = {
         **_daily_extra(sleep, hrv, dto, readiness),
         **_daily_extra_metrics(uds, vo2, race, endurance),
+        **_daily_body(weight),
     }
     auto = _auto_activities(events)
     if auto:

@@ -251,7 +251,8 @@ def _fake_analyze(captured):
              api_key=None, weather=None, plan_today=None, fitness=None, records=None,
              norm=None, subjective=None, health_alerts=None, fueling=None,
              today=None, intensity_ctx=None,
-             athlete_profile=None, away_ctx=None, plan_recent=None):
+             athlete_profile=None, away_ctx=None, plan_recent=None,
+             body_weight=None):
         captured["health_alerts"] = health_alerts
         return "звіт", service.CallStats(kind=kind or "report", model="m")
     return fake

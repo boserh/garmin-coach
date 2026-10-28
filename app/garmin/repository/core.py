@@ -645,6 +645,8 @@ async def read_history(session: AsyncSession, user_id: int, days: int = 30,
             "bb_drained": m.bb_drained,
             # resting HR drift is a key fatigue marker; it lives in extra, not a column
             "resting_hr": (m.extra or {}).get("resting_hr"),
+            # NF-26: a weigh-in day carries it (most days don't) — NF-02 correlates it.
+            "weight_kg": (m.extra or {}).get("weight_kg"),
             # NF-16: the evening sleep-nudge wants Garmin's own sleep_need_h (extra) vs
             # actual sleep_h — cheaper to carry the whole dict than add a second column.
             "extra": m.extra,

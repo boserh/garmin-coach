@@ -232,6 +232,7 @@ Optional, with defaults:
 | `POLARIZATION_LOW_TARGET` | `0.8` | target share of weekly TIME in zones 1-2. |
 | `GRAY_ZONE_MAX` | `0.15` | zone-3 share above which several weeks in a row is flagged. |
 | `ANAEROBIC_WEEKLY_CAP` | `8.0` | weekly sum of anaerobic training effect before it's called over. |
+| `BODY_METRICS` | `True` | NF-26 master switch: fetch Garmin weigh-ins into `DailyMetric.extra`, show the smoothed trend (dashboard, `/goal`), and a daily-report line only when weight falls fast / falls on a climbing load. Off → nothing fetched, every consumer silent. |
 | `CHARTS_IN_TELEGRAM` | `True` | NF-32: send the digest / run recap / `/compare` / `/insights` with a PNG chart (needs the optional `.[charts]` extra + system `libcairo`; absent → text only, never an error). |
 | `LLM_BUDGET_MONTH_USD` | `25.0` | OPS-11 hard monthly Claude ceiling per user; `0` disables. |
 | `LLM_BUDGET_DAY_USD` | `5.0` | same, per calendar day (user's timezone, ST-14). |
@@ -354,6 +355,8 @@ app/
                                                         HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
   moodcycle.py                                            NF-35: pure weekly pattern + cycle-length hint over the
                                                           opt-in daytime energy/mood/irritability check-in
+  bodyweight.py                                            NF-26: pure weight trend — time-aware EMA, Theil–Sen
+                                                          kg/week, fast-loss / loss-on-rising-load flags, projection
   whatif.py                                                NF-29: pure «а що, якщо» — baseline vs scenario weeks
                                                           (load/km/rolling ACWR) + goal date shift + bot phrase parser
   tgcharts.py                                              NF-32: what each Telegram picture draws (digest/run/
@@ -628,7 +631,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   Garmin calendar with the plan: half-pushed rows, stored ids Garmin no longer has, and
   workouts of ours nothing references — read-only by default, 0 LLM), `backfill-records` (running bests **and** NF-27's strength e1RM /
   tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
-  stored activities; idempotent, paced, 0 LLM cost), `backfill-routes` (NF-33 route
+  stored activities; idempotent, paced, 0 LLM cost), `backfill-weight [--days 365]` (NF-26
+  weigh-in history into EXISTING daily rows' `extra` — one ranged request per 90 days, never
+  creates a bare day row; 0 LLM), `backfill-routes` (NF-33 route
   clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent),
   `backfill-activity-analysis [--apply]` (re-attach activity analyses that were
   generated but never stored on the row — reads the text back out of `report_logs`,

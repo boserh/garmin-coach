@@ -284,6 +284,7 @@ def analyze_with_stats(
     athlete_profile: Optional[dict] = None,
     away_ctx: Optional[dict] = None,
     plan_recent: Optional[list] = None,
+    body_weight: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -348,6 +349,9 @@ def analyze_with_stats(
     # accident — through yesterday's report text — so it knew on Monday and forgot by Friday.
     if away_ctx:
         user_content["away"] = away_ctx
+    # NF-26: a flagged weight trend only (bodyweight.to_context is None otherwise).
+    if body_weight:
+        user_content["body_weight"] = body_weight
     dump_request(kind=kind, model=model, system=SYSTEM,
                  user_content=user_content, max_tokens=2000)
     try:
@@ -452,6 +456,7 @@ async def run_analysis(
     athlete_profile = None
     away_ctx = None
     plan_recent = None
+    body_weight = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -536,6 +541,9 @@ async def run_analysis(
             away_ctx = await away_db.build_context(session, user_id, today_d)
             # How yesterday's planned session actually went — type, per-rep result, RPE.
             plan_recent = await _plan_recent(session, user_id, today_d)
+            # NF-26: a weight line ONLY when it falls fast or falls on a climbing load.
+            body_weight = await build_body_weight_context(session, user_id=user_id,
+                                                          today=today_d)
 
     # Dedup-cache check — same key inputs as analyze_with_stats builds its prompt from
     # (the README pitfall: every piece of Claude context must be part of the key).
@@ -543,7 +551,7 @@ async def run_analysis(
         _as_dict(payload, today=today_iso), question or _DEFAULT_DAILY_Q, model,
         previous_report, weather, plan_today, fitness, records, norm,
         subjective, health_alerts, fueling, today_iso, intensity_ctx,
-        athlete_profile, away_ctx, plan_recent)
+        athlete_profile, away_ctx, plan_recent, body_weight)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -554,6 +562,7 @@ async def run_analysis(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
             today_iso, intensity_ctx, athlete_profile, away_ctx, plan_recent,
+            body_weight,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
@@ -1821,6 +1830,39 @@ async def run_insights(
         with_stats_fn=insights_with_stats,
         question=f"insights:{len(findings)}", api_key=api_key,
     )
+
+
+# ---------- BODY WEIGHT (NF-26) ----------
+
+async def build_body_weight_trend(session, *, user_id: int,
+                                  today: Optional[dt.date] = None) -> Optional[dict]:
+    """The full ``bodyweight.trend`` for one user (dashboard tile, ``/goal``), or None — off,
+    or too few weigh-ins. The "rising volume" half reads NF-20's forecast, the same number
+    /plan and the dashboard show; no plan → no volume signal (only the fast-loss flag)."""
+    if not settings.BODY_METRICS:
+        return None
+    from app import bodyweight
+    from app.garmin import repository
+
+    today = today or dt.date.today()
+    history = await repository.read_history(session, user_id,
+                                            days=bodyweight.TREND_WINDOW_DAYS, today=today)
+    forecast = await repository.load_forecast(session, user_id, today=today)
+    plan = await repository.get_active_plan(session, user_id)
+    return bodyweight.trend(
+        history, today=today,
+        volume_delta_pct=(forecast or {}).get("delta_pct"),
+        target_date=plan.target_date if plan is not None else None,
+    )
+
+
+async def build_body_weight_context(session, *, user_id: int,
+                                    today: Optional[dt.date] = None) -> Optional[dict]:
+    """The daily report's ``body_weight`` block — None unless a flag fired."""
+    from app import bodyweight
+
+    return bodyweight.to_context(
+        await build_body_weight_trend(session, user_id=user_id, today=today))
 
 
 # ---------- INTENSITY DISTRIBUTION (NF-24) ----------

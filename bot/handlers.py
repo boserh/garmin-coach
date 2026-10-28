@@ -557,6 +557,13 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     if eff_block:
         blocks.append(eff_block)
 
+    # NF-26: the smoothed weight trend (+ where it lands on race day) — descriptive only.
+    from app import bodyweight
+    from app.analysis.reports import build_body_weight_trend
+    weight = await build_body_weight_trend(session, user_id=user.id, today=user_today(user))
+    if weight:
+        blocks.append(bodyweight.summary(weight))
+
     if not blocks:
         if plan is None:
             await update.message.reply_text(

@@ -38,7 +38,8 @@ async def _capture_plan_today(session, today: dt.date):
                      api_key=None, weather=None, plan_today=None, fitness=None,
                      records=None, norm=None, subjective=None, health_alerts=None,
                      fueling=None, today=None, intensity_ctx=None,
-                     athlete_profile=None, away_ctx=None, plan_recent=None):
+                     athlete_profile=None, away_ctx=None, plan_recent=None,
+             body_weight=None):
         captured["plan_today"] = plan_today
         return "звіт", CallStats(kind=kind or "report", model="m")
 
@@ -105,7 +106,8 @@ async def test_fueling_still_only_looks_at_todays_session(session):
                      api_key=None, weather=None, plan_today=None, fitness=None,
                      records=None, norm=None, subjective=None, health_alerts=None,
                      fueling=None, today=None, intensity_ctx=None,
-                     athlete_profile=None, away_ctx=None, plan_recent=None):
+                     athlete_profile=None, away_ctx=None, plan_recent=None,
+             body_weight=None):
         captured["fueling"] = fueling
         return "звіт", CallStats(kind=kind or "report", model="m")
 

@@ -34,6 +34,7 @@ _NAMES = {
     "stress_avg": "середній стрес",
     "bb_charged": "заряд Body Battery",
     "resting_hr": "пульс спокою",
+    "weight_kg": "вага",
 }
 
 # The candidate pairs: (x_metric, lag_days, y_metric). x on day d vs y on day d+lag. Chosen
@@ -47,6 +48,10 @@ _PAIRS = [
     ("sleep_h", 0, "stress_avg"),       # sleep length ↔ next day's stress load
     ("bb_charged", 0, "hrv_avg"),       # overnight recharge ↔ HRV
     ("hrv_avg", 1, "sleep_score"),      # HRV today ↔ sleep tomorrow
+    # NF-26: a weigh-in day vs that night's / next morning's recovery. Gated like every pair
+    # (MIN_SAMPLES paired days), so occasional weigh-ins simply never qualify.
+    ("weight_kg", 0, "sleep_score"),
+    ("weight_kg", 1, "hrv_avg"),
 ]
 
 

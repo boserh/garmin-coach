@@ -42,6 +42,10 @@ _DROP_DAILY_EXTRA = frozenset({
     # (b) near-constant day to day, and carried properly by `fitness`
     "race_5k_s", "race_10k_s", "race_half_s", "race_marathon_s",
     "endurance_score", "endurance_class", "vo2max",
+    # (d) NF-26: body composition. Never the raw number in front of the analyst — a daily
+    # weight in a coaching message is a trigger, not a feature. What it may see is the
+    # flagged trend (`body_weight`, computed in app.bodyweight), and only when a flag fires.
+    "weight_kg", "body_fat_pct", "body_water_pct", "muscle_kg", "bone_kg", "bmi",
 })
 
 # Same rule for an activity row. `series` is the big one (5-6 KB per run) and was always
@@ -237,7 +241,8 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
                intensity: Optional[dict] = None,
                athlete_profile: Optional[dict] = None,
                away: Optional[dict] = None,
-               plan_recent: Optional[list] = None) -> str:
+               plan_recent: Optional[list] = None,
+               body_weight: Optional[dict] = None) -> str:
     # ``today`` is the user's own date (their timezone, ST-14) when the caller knows it —
     # it is part of the prompt (and of every relative-day label built from it), so it must
     # be part of the key. Falls back to the process date for callers without a user.
@@ -271,6 +276,9 @@ def _cache_key(data: dict, question: str, model: str, previous_report: Optional[
     # Only when present, so every report without a resolved plan session keeps its old key.
     if plan_recent:
         material["plan_recent"] = plan_recent
+    # NF-26: same rule — and only when a flag fired, so every other report keeps its key.
+    if body_weight:
+        material["body_weight"] = body_weight
     blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

@@ -492,6 +492,25 @@ def fetch_endurance(date: dt.date) -> dict:
     return d if isinstance(d, dict) and "_error" not in d else {}
 
 
+def fetch_weight(date: dt.date) -> dict:
+    """NF-26: the day's weigh-ins (``dateWeightList``) + their average (``totalAverage``).
+    The day is mutable (a second weigh-in later today), so no disk cache — the same
+    "today is always refetched" rule as every other daily fetch. Masses are in GRAMS."""
+    d = _safe(_api, f"/weight-service/weight/dayview/{date.isoformat()}",
+              params={"includeAll": "true"})
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
+def fetch_weight_range(start: dt.date, end: dt.date) -> list:
+    """NF-26 backfill: one request for a whole range — ``[{summaryDate, latestWeight,
+    allWeightMetrics, …}]`` — instead of one dayview call per day of history."""
+    d = _safe(_api, f"/weight-service/weight/range/{start.isoformat()}/{end.isoformat()}",
+              params={"includeAll": "true"})
+    if isinstance(d, dict) and "_error" not in d:
+        return d.get("dailyWeightSummaries") or []
+    return []
+
+
 def fetch_activities(limit: int = 30) -> list:
     return _safe(
         _api,
