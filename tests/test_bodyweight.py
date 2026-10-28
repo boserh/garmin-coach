@@ -239,7 +239,7 @@ async def test_daily_report_gets_the_flag_only_when_it_fires(session, monkeypatc
                      records=None, norm=None, subjective=None, health_alerts=None,
                      fueling=None, today=None, intensity_ctx=None,
                      athlete_profile=None, away_ctx=None, plan_recent=None,
-                     body_weight=None):
+                     body_weight=None, acclimation=None):
         captured["bw"] = body_weight
         return "звіт", CallStats(kind=kind or "report", model="m")
 

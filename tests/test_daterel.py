@@ -242,7 +242,7 @@ async def test_run_analysis_uses_the_passed_today_for_plan_window_and_labels(
                      records=None, norm=None, subjective=None, health_alerts=None,
                      fueling=None, today=None, intensity_ctx=None,
              athlete_profile=None, away_ctx=None, plan_recent=None,
-             body_weight=None):
+             body_weight=None, acclimation=None):
         captured.update(plan_today=plan_today, today=today)
         return "звіт", service.CallStats(kind=kind or "report", model="m")
 

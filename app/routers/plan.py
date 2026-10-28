@@ -717,6 +717,10 @@ async def fueling_today(session, user: User, workouts,
     day = next((d for d in (forecast or []) if d.get("date") == today_iso), None)
     if not day:
         return None
+    # NF-31: the same unacclimated-runner fluid bump the morning report applies.
+    from app import acclimation as acclim_mod
+    st = acclim_mod.status(await repository.read_history(session, user.id, days=14,
+                                                         today=today), today=today)
     return fueling_mod.advise(
         {"type": session_today.type, "dist_km": session_today.dist_km,
          "steps": session_today.steps},
@@ -724,6 +728,7 @@ async def fueling_today(session, user: User, workouts,
         heat_feels_c=settings.FUELING_HEAT_FEELS_C,
         min_duration_min=settings.FUELING_MIN_DURATION_MIN,
         anchor_pace=anchor_pace,
+        acclimation_class=(st or {}).get("heat_class"),
     )
 
 

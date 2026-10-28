@@ -252,7 +252,7 @@ def _fake_analyze(captured):
              norm=None, subjective=None, health_alerts=None, fueling=None,
              today=None, intensity_ctx=None,
              athlete_profile=None, away_ctx=None, plan_recent=None,
-             body_weight=None):
+             body_weight=None, acclimation=None):
         captured["health_alerts"] = health_alerts
         return "звіт", service.CallStats(kind=kind or "report", model="m")
     return fake

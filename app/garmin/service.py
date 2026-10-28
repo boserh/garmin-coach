@@ -339,6 +339,47 @@ def body_metrics(entry: Optional[dict]) -> dict:
     return {k: v for k, v in raw.items() if v is not None}
 
 
+def _find_key(obj, key: str, depth: int = 0):
+    """First value stored under ``key`` anywhere in a nested DTO (depth-capped). The
+    training-status DTO nests its blocks under per-device maps whose keys are device ids, so
+    a fixed path would break on the next watch."""
+    if depth > 6:
+        return None
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            found = _find_key(v, key, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_key(v, key, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def training_status_metrics(ts: Optional[dict]) -> dict:
+    """NF-31: heat/altitude acclimation + training status/load balance → ``extra`` keys.
+    Only what the watch reported — an older model yields ``{}`` and every consumer stays
+    silent."""
+    if not isinstance(ts, dict) or not ts:
+        return {}
+    acc = _find_key(ts, "heatAltitudeAcclimation") or {}
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+    phrase = lambda v: v.lower() if isinstance(v, str) and v else None  # noqa: E731
+    raw = {
+        "heat_acclimation_pct": num(_g(acc, "heatAcclimationPercentage")),
+        "altitude_acclimation_m": num(_g(acc, "altitudeAcclimation")),
+        "heat_trend": phrase(_g(acc, "heatTrend")),
+        "altitude_trend": phrase(_g(acc, "altitudeTrend")),
+        "training_status": phrase(_find_key(ts, "trainingStatusFeedbackPhrase")),
+        "load_balance": phrase(_find_key(ts, "trainingBalanceFeedbackPhrase")),
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
 def _daily_body(weight: dict) -> dict:
     """The day's average when Garmin computed one, else the latest weigh-in of the day."""
     out = body_metrics(_g(weight, "totalAverage"))
@@ -361,6 +402,7 @@ def daily_summary(date: dt.date) -> dict:
     endurance = client.fetch_endurance(date)
     events = client.fetch_daily_events(date)
     weight = client.fetch_weight(date) if settings.BODY_METRICS else {}
+    training_status = client.fetch_training_status(date)
     dto = _g(sleep, "dailySleepDTO") or {}
     sec = lambda v: round(v / 3600, 2) if isinstance(v, (int, float)) else None
 
@@ -368,6 +410,7 @@ def daily_summary(date: dt.date) -> dict:
         **_daily_extra(sleep, hrv, dto, readiness),
         **_daily_extra_metrics(uds, vo2, race, endurance),
         **_daily_body(weight),
+        **training_status_metrics(training_status),
     }
     auto = _auto_activities(events)
     if auto:

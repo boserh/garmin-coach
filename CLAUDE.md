@@ -355,6 +355,8 @@ app/
                                                         HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
   moodcycle.py                                            NF-35: pure weekly pattern + cycle-length hint over the
                                                           opt-in daytime energy/mood/irritability check-in
+  acclimation.py                                           NF-31: pure heat/altitude acclimation classes, loss
+                                                          detection, fixed heat-pace table (race pack/fueling/report)
   bodyweight.py                                            NF-26: pure weight trend — time-aware EMA, Theil–Sen
                                                           kg/week, fast-loss / loss-on-rising-load flags, projection
   whatif.py                                                NF-29: pure «а що, якщо» — baseline vs scenario weeks
@@ -839,3 +841,9 @@ uses ~30% more tokens for the same text than Sonnet 4.6.
   (create → schedule → delete a workout — the one branch recon never exercised) and one
   full cycle `/report` → morning job → `push-plan --dry-run` → a real MFA connect
   through `/settings`.
+- NF-26 / NF-31 live verification on the Pi: the weight-service (`dayview`, `range`) and
+  `trainingstatus/aggregated` DTO shapes were written desk-only from the `garminconnect`
+  library's endpoints — check one real day lands `weight_kg` / `heat_acclimation_pct` in
+  `extra`, then run `app.cli backfill-weight`.
+- NF-32 on the Pi: `apt install libcairo2` + `pip install -e ".[charts]"`, else the bot keeps
+  sending text only (by design, but then the feature is silently off).

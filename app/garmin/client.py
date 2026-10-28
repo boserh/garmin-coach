@@ -492,6 +492,14 @@ def fetch_endurance(date: dt.date) -> dict:
     return d if isinstance(d, dict) and "_error" not in d else {}
 
 
+def fetch_training_status(date: dt.date) -> dict:
+    """NF-31: the aggregated training-status DTO — Garmin's heat/altitude acclimation
+    (``heatAltitudeAcclimation``), training status and load balance. Older watches return
+    none of it; an empty dict is the normal answer there."""
+    d = _safe(_api, f"/metrics-service/metrics/trainingstatus/aggregated/{date.isoformat()}")
+    return d if isinstance(d, dict) and "_error" not in d else {}
+
+
 def fetch_weight(date: dt.date) -> dict:
     """NF-26: the day's weigh-ins (``dateWeightList``) + their average (``totalAverage``).
     The day is mutable (a second weigh-in later today), so no disk cache — the same

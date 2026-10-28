@@ -285,6 +285,7 @@ def analyze_with_stats(
     away_ctx: Optional[dict] = None,
     plan_recent: Optional[list] = None,
     body_weight: Optional[dict] = None,
+    acclimation: Optional[dict] = None,
 ) -> Tuple[str, CallStats]:
     """Run analysis and return (text, stats). Raises AnalystError on API failure.
 
@@ -352,6 +353,9 @@ def analyze_with_stats(
     # NF-26: a flagged weight trend only (bodyweight.to_context is None otherwise).
     if body_weight:
         user_content["body_weight"] = body_weight
+    # NF-31: only on the day the heat/altitude acclimation class changed (guarded).
+    if acclimation:
+        user_content["acclimation"] = acclimation
     dump_request(kind=kind, model=model, system=SYSTEM,
                  user_content=user_content, max_tokens=2000)
     try:
@@ -457,6 +461,8 @@ async def run_analysis(
     away_ctx = None
     plan_recent = None
     body_weight = None
+    acclimation_ctx = None
+    acclim_status = None
     if kind != "deep":
         last = await repository.get_last_report(session, user_id)
         if last:
@@ -500,6 +506,17 @@ async def run_analysis(
             from app import baselines
             history = await repository.read_history(session, user_id, days=baselines.WINDOW_DAYS)
             norm = baselines.compute_baselines(history)
+            # NF-31: heat/altitude acclimation from the same 90-day slice. The report hears
+            # about it once per class change; the first reading is a silent baseline.
+            from app import acclimation as acclim_mod
+            acclim_status = acclim_mod.status(history, today=today_d)
+            if acclim_status:
+                prev_guard = await repository.get_state(session, user_id, ACCLIM_GUARD_KEY)
+                if prev_guard is None:
+                    await repository.set_state(session, user_id, ACCLIM_GUARD_KEY,
+                                               acclim_mod.guard_value(acclim_status))
+                else:
+                    acclimation_ctx = acclim_mod.change_context(acclim_status, prev_guard)
             # Subjective check-ins (EP-12 phase 3): surface a recurring niggle / rising effort
             # so the daily report acknowledges felt state, not only the objective numbers.
             from app import subjective as subjective_mod
@@ -527,6 +544,7 @@ async def run_analysis(
                 fueling = fueling_mod.advise(
                     today_session, weather, heat_feels_c=settings.FUELING_HEAT_FEELS_C,
                     min_duration_min=settings.FUELING_MIN_DURATION_MIN, anchor_pace=anchor_pace,
+                    acclimation_class=(acclim_status or {}).get("heat_class"),
                 )
             # NF-24: intensity distribution — carried only when the detector actually found
             # a deviation, so the daily report gains ~120 tokens on the days it has
@@ -551,7 +569,7 @@ async def run_analysis(
         _as_dict(payload, today=today_iso), question or _DEFAULT_DAILY_Q, model,
         previous_report, weather, plan_today, fitness, records, norm,
         subjective, health_alerts, fueling, today_iso, intensity_ctx,
-        athlete_profile, away_ctx, plan_recent, body_weight)
+        athlete_profile, away_ctx, plan_recent, body_weight, acclimation_ctx)
 
     # analyze_with_stats takes its context as positional args (not a single ``context`` dict
     # like the other narrations), so bind them in a closure that matches the engine's
@@ -562,15 +580,21 @@ async def run_analysis(
             payload, question, deep, kind, previous_report, _api_key, weather,
             plan_today, fitness, records, norm, subjective, health_alerts, fueling,
             today_iso, intensity_ctx, athlete_profile, away_ctx, plan_recent,
-            body_weight,
+            body_weight, acclimation_ctx,
         )
 
     # ``question or None``: /report's default daily prompt is logged as NULL (CLAUDE.md), so
     # an empty question must reach ``log_report`` as None, not "".
-    return await _run_cached_narration(
+    text = await _run_cached_narration(
         session, user_id=user_id, kind=kind, model=model, context=None,
         cache_key=cache_key, with_stats_fn=_analyze, question=question or None, api_key=api_key,
     )
+    if acclimation_ctx and text:
+        # Announced — burn the guard so tomorrow's report doesn't repeat it (NF-31 AC).
+        from app import acclimation as acclim_mod
+        await repository.set_state(session, user_id, ACCLIM_GUARD_KEY,
+                                   acclim_mod.guard_value(acclim_status))
+    return text
 
 
 # EP-09: /ask is a bounded tool-use agent, not a single completion — the first tool-use
@@ -1538,6 +1562,15 @@ async def run_race_plan(
                     (d for d in week if d.get("date") == plan.target_date), None)
 
     context = race_mod.build_context(plan, fitness, recent_sessions, forecast_day)
+    # NF-31: "hot" vs "hot for YOU" — a fixed-table pace adjustment + an adaptation tip when
+    # the athlete isn't heat-acclimated. Absent without acclimation data (old watches), so the
+    # pack, its context and its cache key stay exactly what they were.
+    from app import acclimation as acclim_mod
+    acclim = acclim_mod.race_context(
+        acclim_mod.status(await repository.read_history(session, user_id, days=14)),
+        forecast_day, settings.FUELING_HEAT_FEELS_C)
+    if acclim:
+        context["acclimation"] = acclim
     return await _run_cached_narration(
         session, user_id=user_id, kind="race", model=MODEL_RACE, context=context,
         cache_key=_race_cache_key(context, MODEL_RACE),
@@ -1830,6 +1863,10 @@ async def run_insights(
         with_stats_fn=insights_with_stats,
         question=f"insights:{len(findings)}", api_key=api_key,
     )
+
+
+# NF-31: the acclimation classes the daily report last announced (bot_state, per user).
+ACCLIM_GUARD_KEY = "acclim_class_mentioned"
 
 
 # ---------- BODY WEIGHT (NF-26) ----------
