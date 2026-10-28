@@ -173,6 +173,9 @@ async def chat_page(
          # Jump to the newest turn only on the default view — after "load more" the reader
          # is looking at older messages and must not be yanked back to the bottom.
          "jump_to_latest": "limit" not in request.query_params,
+         # NF-29: /whatif's "Застосувати" lands here with the plan-edit request pre-filled —
+         # nothing is sent (or spent) until the athlete presses «Надіслати».
+         "draft": (request.query_params.get("draft") or "")[:500],
          "error": error},
     )
 

@@ -354,6 +354,8 @@ app/
                                                         HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
   moodcycle.py                                            NF-35: pure weekly pattern + cycle-length hint over the
                                                           opt-in daytime energy/mood/irritability check-in
+  whatif.py                                                NF-29: pure «а що, якщо» — baseline vs scenario weeks
+                                                          (load/km/rolling ACWR) + goal date shift + bot phrase parser
   tgcharts.py                                              NF-32: what each Telegram picture draws (digest/run/
                                                           compare/insights) + best-effort send — 0 LLM, 0 Garmin
   analysis/
@@ -369,6 +371,8 @@ app/
     dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
     insights.py           GET /insights — UI-05: risk/load/correlations/mood-cycle/recap, 0 LLM, 0 Garmin
     strength.py            GET /strength — UI-06: e1RM per lift, weekly tonnage, stalls
+    whatif.py              GET /whatif — NF-29: scenario simulator (sessions/volume/race date/
+                           absence), 0 LLM, 0 Garmin, writes nothing
     health.py               GET /health + GET /offline (public), GET /status (login, per-user)
     reports.py               GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py                 GET /history?days=N — trends from DB, login, per-user
@@ -382,7 +386,7 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /mood (NF-35), /forget (EP-18),
+  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /whatif (NF-29), /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /mood (NF-35), /forget (EP-18),
                       /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job/daytime_checkin_job (NF-35)
   opsalert.py               send_ops_alert(): infrastructure alerts go out over the ADMIN bot token, never the coaching one (falls back to ctx.bot)
@@ -434,6 +438,10 @@ That is an attention budget, not a cost one — see DESIGN_NOTES.
   from the pure modules: **0 Claude calls, 0 Garmin requests** (guarded by tests). Login.
 - `GET /strength` — UI-06: e1RM per lift, weekly tonnage, stalls (NF-27). Same zero-cost
   rule. Login.
+- `GET /whatif` — NF-29: «а що, якщо…» — ± sessions/week, ± volume, race date ± weeks, an
+  absence; a "зараз → сценарій" table (load, km, rolling ACWR) + the goal projection at the new
+  date. **0 Claude, 0 Garmin, writes nothing** (guarded by tests). «Застосувати» only pre-fills
+  `/chat?draft=…` — the paid, confirm-first plan edit takes it from there. Login.
 - `GET /offline` — the service worker's fallback page (public, no auth, no data).
 - `POST /me/activities/{id}/checkin`, `POST /me/lifestyle` — UI-04: RPE / niggle / the
   evening lifestyle tags, written through the same path the bot uses.

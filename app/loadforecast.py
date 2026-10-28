@@ -83,6 +83,13 @@ def session_load(session: dict, anchor_pace: Optional[float] = None) -> float:
     return round(minutes * weight, 1)
 
 
+def acwr_level(acwr: float, *, warn_acwr: float = ACWR_WARN,
+               high_acwr: float = ACWR_HIGH) -> str:
+    """``ok``/``warn``/``high`` for one ACWR — the single place a ratio becomes a colour, so
+    NF-29's what-if weeks and this week's forecast can never disagree about a number."""
+    return "high" if acwr >= high_acwr else "warn" if acwr >= warn_acwr else "ok"
+
+
 def forecast_week(
     *, remaining_sessions: Iterable[dict], done_load: float,
     chronic_weekly_loads: List[float], history_days: int,
@@ -118,7 +125,7 @@ def forecast_week(
 
     acwr = round(total / chronic, 2)
     delta_pct = round((total - chronic) / chronic * 100)
-    level = "high" if acwr >= high_acwr else "warn" if acwr >= warn_acwr else "ok"
+    level = acwr_level(acwr, warn_acwr=warn_acwr, high_acwr=high_acwr)
     return {
         "load": total, "typical": round(chronic, 1), "delta_pct": delta_pct,
         "acwr": acwr, "level": level, "calibrating": False,

@@ -1,0 +1,124 @@
+{% extends "_base.html" %}
+
+{% block title %}А що, якщо{% endblock %}
+
+{% block body %}
+  {% set active = 'whatif' %}
+  {% include "_nav.html" %}
+
+  {#
+    NF-29. Everything on this page comes out of app/whatif.simulate — the template only
+    lays it out. No threshold and no formula here: the colour of an ACWR is the level the
+    module returned, so it can't drift from this week's forecast on /plan.
+  #}
+  <div class="wrap">
+    <p class="eyebrow">Сценарії</p>
+    <h1 class="title" style="font-size:1.7rem">А що, якщо…</h1>
+    <p class="meta">Рахує, а не вгадує: та сама арифметика навантаження, що й прогноз тижня
+      на «Програмі». Без витрат на Claude і без запитів до Garmin — і нічого не змінює.</p>
+
+    <form class="form" method="get" action="/whatif">
+      <label for="wi_sessions">Тренувань на тиждень</label>
+      <select id="wi_sessions" name="sessions">
+        {% for v in opts.sessions %}
+        <option value="{{ v }}" {{ 'selected' if v == sc.sessions_delta else '' }}>
+          {{ 'як є' if v == 0 else '%+d'|format(v) }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="wi_volume">Обсяг кожного тренування</label>
+      <select id="wi_volume" name="volume">
+        {% for v in opts.volume %}
+        <option value="{{ v }}" {{ 'selected' if v == sc.volume_pct else '' }}>
+          {{ 'як є' if v == 0 else '%+d%%'|format(v) }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="wi_shift">Дата старту</label>
+      <select id="wi_shift" name="shift">
+        {% for v in opts.shift %}
+        <option value="{{ v }}" {{ 'selected' if v == sc.target_shift_weeks else '' }}>
+          {{ 'як є' if v == 0 else '%+d тиж'|format(v) }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="wi_skip">Мене не буде (з сьогодні)</label>
+      <select id="wi_skip" name="skip">
+        {% for v in opts.skip %}
+        <option value="{{ v }}" {{ 'selected' if v == sc.skip_days else '' }}>
+          {{ 'ні' if v == 0 else '%d дн'|format(v) }}</option>
+        {% endfor %}
+      </select>
+
+      <button class="btn" type="submit">Порахувати</button>
+    </form>
+
+    {% if not r.has_data %}
+      <div class="banner banner--info" role="status">
+        <span class="bicon" aria-hidden="true">🔮</span>
+        <div class="btext">Поки немає ні активного плану, ні історії тренувань — нема з чого
+          рахувати сценарій. Щойно Garmin синкне кілька тижнів, тут зʼявиться розклад.</div>
+      </div>
+    {% else %}
+
+    <h2 class="sec">Навантаження: зараз → {{ describe }}</h2>
+    {% if not r.has_plan %}
+      <p class="meta">Активного плану немає — за «зараз» узято твій типовий тиждень за
+        останній місяць.</p>
+    {% endif %}
+    <div class="wi-scroll">
+    <table class="dtable wi-table">
+      <thead><tr><th>Тиждень</th><th title="Навантаження">Навант.</th><th>Км</th><th>ACWR</th></tr></thead>
+      <tbody>
+      {% for row in r.weeks %}
+        {% set b, s = row.base, row.scen %}
+        <tr>
+          <td>{{ b.start.strftime('%d.%m') }}</td>
+          <td>{{ '%.0f'|format(b.load) }}→<b>{{ '%.0f'|format(s.load) }}</b></td>
+          <td>{{ '%.0f'|format(b.km) }}→<b>{{ '%.0f'|format(s.km) }}</b></td>
+          <td>
+            {% if b.acwr is not none %}
+              {{ '%.2f'|format(b.acwr) }}→<span class="pill {{ {'high': 'hot', 'warn': 'wait'}.get(s.level, 'ok') }}">{{ '%.2f'|format(s.acwr) }}</span>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% if r.calibrating %}
+      <p class="meta">ACWR ще калібрується — замало історії для чесного відношення.</p>
+    {% endif %}
+
+    {% for f in r.flags %}
+      <div class="banner banner--warn" role="status">
+        <span class="bicon" aria-hidden="true">⚠️</span><div class="btext">{{ f }}</div>
+      </div>
+    {% endfor %}
+
+    {% if r.goal and sc.target_shift_weeks %}
+      {% set g = r.goal %}
+      <h2 class="sec">Ціль</h2>
+      <p>{{ g.label|capitalize }}:
+        на {{ g.target_date }} — <b>{{ g.base_txt }}</b>,
+        на {{ g.new_target_date }} — <b>{{ g.scen_txt }}</b>.
+      </p>
+      {% if g.scen and g.scen.projected is none %}
+        <p class="meta">Нова дата задалеко для чесної проєкції — орієнтуйся на тренд.</p>
+      {% endif %}
+      <p class="meta">Це тренд прогнозу Garmin (проксі форми), не гарантований результат.</p>
+    {% elif sc.target_shift_weeks and not r.has_plan %}
+      <p class="meta">Без активного плану немає дати старту — сценарій цілі пропущено.</p>
+    {% endif %}
+
+    {% if apply_url %}
+      <p><a class="btn-ghost" href="{{ apply_url }}">Застосувати до плану →</a></p>
+      <p class="hint">Відкриє чат із готовим запитом. Тренер запропонує зміни (це платний
+        виклик) і застосує їх лише після твого підтвердження.</p>
+    {% endif %}
+
+    <p class="foot">Навантаження — оцінка (тривалість × інтенсивність), не точний TRIMP.
+      Додане тренування рахується як легке; прибирається спершу найлегше.</p>
+    {% endif %}
+  </div>
+{% endblock %}

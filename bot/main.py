@@ -105,6 +105,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("wrapped", handlers.wrapped))
     app.add_handler(CommandHandler("insights", handlers.insights))
     app.add_handler(CommandHandler("risk", handlers.risk))
+    app.add_handler(CommandHandler("whatif", handlers.whatif_cmd))
     app.add_handler(CommandHandler("health", handlers.health))
     app.add_handler(CommandHandler("plan", handlers.plan))
     app.add_handler(CommandHandler("sick", handlers.sick))
@@ -117,6 +118,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handlers.adapt_callback, pattern=r"^adapt_"))
     app.add_handler(CallbackQueryHandler(handlers.plan_extend_callback, pattern=r"^planext:"))
     app.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci:"))
+    app.add_handler(CallbackQueryHandler(handlers.whatif_callback, pattern=r"^wi:"))
     # NF-28: the evening lifestyle-tag toggles (zero Claude calls, a pure DB write).
     app.add_handler(CallbackQueryHandler(handlers.lifestyle_callback, pattern=r"^ls:"))
     # NF-35: the opt-in daytime energy/mood/irritability check-in (zero Claude calls).
