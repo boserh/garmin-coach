@@ -359,6 +359,13 @@ class Settings(BaseSettings):
     FORECAST_ACWR_WARN: float = 1.4    # forecast ACWR at/above this → yellow
     FORECAST_ACWR_HIGH: float = 1.6    # ...and at/above this → red
 
+    # --- Charts in Telegram (NF-32) ---
+    # The web's inline-SVG charts, rendered to PNG (app.charts.to_png, cairosvg — the
+    # optional `.[charts]` extra) and sent alongside the digest, the run recap, /compare and
+    # /insights. Never blocks a message: no cairosvg, a render failure or too little data →
+    # the text goes out exactly as before, just without the picture.
+    CHARTS_IN_TELEGRAM: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

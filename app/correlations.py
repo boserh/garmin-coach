@@ -106,6 +106,17 @@ def _paired(history: List[dict], x: str, y: str, lag: int):
     return xs, ys
 
 
+def paired(history: List[dict], x: str, y: str, lag: int):
+    """Public view of the pairing a finding was computed over (NF-32's scatter) — the same
+    days, so the picture can never disagree with the r it is captioned with."""
+    return _paired(history, x, y, lag)
+
+
+def name(metric: str) -> str:
+    """Human label of a correlated metric (falls back to the key)."""
+    return _NAMES.get(metric, metric)
+
+
 def _finding(x: str, lag: int, y: str, r: float, n: int) -> dict:
     """A structured, human-readable finding for one significant pair."""
     direction = "позитивна" if r > 0 else "негативна"

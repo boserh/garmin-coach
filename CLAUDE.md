@@ -232,6 +232,7 @@ Optional, with defaults:
 | `POLARIZATION_LOW_TARGET` | `0.8` | target share of weekly TIME in zones 1-2. |
 | `GRAY_ZONE_MAX` | `0.15` | zone-3 share above which several weeks in a row is flagged. |
 | `ANAEROBIC_WEEKLY_CAP` | `8.0` | weekly sum of anaerobic training effect before it's called over. |
+| `CHARTS_IN_TELEGRAM` | `True` | NF-32: send the digest / run recap / `/compare` / `/insights` with a PNG chart (needs the optional `.[charts]` extra + system `libcairo`; absent → text only, never an error). |
 | `LLM_BUDGET_MONTH_USD` | `25.0` | OPS-11 hard monthly Claude ceiling per user; `0` disables. |
 | `LLM_BUDGET_DAY_USD` | `5.0` | same, per calendar day (user's timezone, ST-14). |
 | `LLM_BUDGET_WARN_PCT` | `0.8` | DM once at this share of the monthly ceiling. |
@@ -294,7 +295,8 @@ app/
   weather.py              Open-Meteo geocode (settings) + forecast (today/week) +
                           pick_location/location_for_user (where the athlete actually is)
   charts.py                inline-SVG chart helpers (series/trend_series/run_series/
-                           run_charts/bar_series/shade_zones)
+                           run_charts/bar_series/shade_zones) + NF-32's chart_svg/to_png
+                           (standalone SVG → PNG via the optional cairosvg)
   mcp_server.py            NF-08: personal read-only MCP server over the /ask tools —
                            stdio (one --email user) or http (per-request OAuth identity)
   mcp_oauth.py             NF-08: the OAuth 2.1 authorization server + consent screen
@@ -352,6 +354,8 @@ app/
                                                         HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
   moodcycle.py                                            NF-35: pure weekly pattern + cycle-length hint over the
                                                           opt-in daytime energy/mood/irritability check-in
+  tgcharts.py                                              NF-32: what each Telegram picture draws (digest/run/
+                                                          compare/insights) + best-effort send — 0 LLM, 0 Garmin
   analysis/
     service.py           analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     budget.py             OPS-11: the spend breaker — period ceilings + a per-call ceiling

@@ -744,6 +744,10 @@ async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user,
     header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_start, cur_end)}) "
               f"проти себе рік тому ({compare_mod.fmt_range(past_start, past_end)}):\n\n")
     await update.message.reply_text(header + text)
+    # NF-32: the same weeks as a picture — after the text, best-effort.
+    from app import tgcharts
+    await tgcharts.send_chart(ctx.bot, update.effective_chat.id,
+                              tgcharts.compare_chart(session, user.id, weeks))
 
 
 async def _compare_routes(update: Update, session, user) -> None:
@@ -830,6 +834,9 @@ async def insights(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
         )
         return
     await update.message.reply_text("🔎 Що на тебе впливає:\n\n" + text)
+    from app import tgcharts
+    await tgcharts.send_chart(ctx.bot, update.effective_chat.id,
+                              tgcharts.insights_chart(session, user.id))
 
 
 @bot_command
