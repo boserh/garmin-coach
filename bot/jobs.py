@@ -22,7 +22,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from app import baselines, gear, race, records, sickness, sleepnudge, stepmatch, weather
+from app import baselines, gear, race, records, sickness, sleepnudge, stepmatch, tgcharts, weather
 from app import format as fmt
 from app.analysis import budget, delivery
 from app.analysis.plans import ADAPT_WINDOW_DAYS_DEFAULT, OPEN_ENDED_GOAL
@@ -482,6 +482,9 @@ async def _activity_watch_for_user(ctx, session, user: User, creds, new_activiti
                 reply_markup=checkin_keyboard(act.id),
             )
             logger.info(f"ACTIVITY_WATCH sent user={user.id} activity={act.id}")
+            # NF-32: the run's pace/HR curves under the recap (best-effort, text already out).
+            await tgcharts.send_chart(ctx.bot, user.telegram_chat_id,
+                                      tgcharts.activity_chart(act))
         except Exception:
             logger.exception(f"ACTIVITY_WATCH failed user={user.id} activity={act.id}")
             continue
@@ -1657,6 +1660,9 @@ async def _deliver_digest(ctx, session, user: User, creds, *, force: bool = Fals
         return False
     prefix = "🧪 [тест] " if force else ""
     await ctx.bot.send_message(user.telegram_chat_id, prefix + "🗓 Тижневий підсумок\n\n" + text)
+    # NF-32: the week as a picture, after the text — best-effort, never costs the digest.
+    await tgcharts.send_chart(ctx.bot, user.telegram_chat_id,
+                              tgcharts.digest_chart(session, user.id))
     return True
 
 

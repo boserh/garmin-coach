@@ -125,6 +125,7 @@ HELP_TEXT = (
     "/gear — спорядження (кросівки) з пробігом\n\n"
     "🩺 Здоров'я\n"
     "/risk — травматичний радар (сигнали перевантаження)\n"
+    "/whatif — а що, якщо: +1 сесія / старт +3 тижні / пропуск 7д (рахує, без витрат)\n"
     "/health — алерти відновлення (HRV, сон, стрес)\n"
     "/checkups — останні аналізи/чекапи + найближчі заплановані "
     "(додавати — у застосунку, вкладка «Аналізи»)\n\n"
@@ -556,6 +557,13 @@ async def goal_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
     if eff_block:
         blocks.append(eff_block)
 
+    # NF-26: the smoothed weight trend (+ where it lands on race day) — descriptive only.
+    from app import bodyweight
+    from app.analysis.reports import build_body_weight_trend
+    weight = await build_body_weight_trend(session, user_id=user.id, today=user_today(user))
+    if weight:
+        blocks.append(bodyweight.summary(weight))
+
     if not blocks:
         if plan is None:
             await update.message.reply_text(
@@ -744,6 +752,10 @@ async def compare(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user,
     header = (f"📅 Ти зараз ({compare_mod.fmt_range(cur_start, cur_end)}) "
               f"проти себе рік тому ({compare_mod.fmt_range(past_start, past_end)}):\n\n")
     await update.message.reply_text(header + text)
+    # NF-32: the same weeks as a picture — after the text, best-effort.
+    from app import tgcharts
+    await tgcharts.send_chart(ctx.bot, update.effective_chat.id,
+                              tgcharts.compare_chart(session, user.id, weeks))
 
 
 async def _compare_routes(update: Update, session, user) -> None:
@@ -830,6 +842,69 @@ async def insights(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user
         )
         return
     await update.message.reply_text("🔎 Що на тебе впливає:\n\n" + text)
+    from app import tgcharts
+    await tgcharts.send_chart(ctx.bot, update.effective_chat.id,
+                              tgcharts.insights_chart(session, user.id))
+
+
+@bot_command
+async def whatif_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE, session, user):
+    """/whatif <сценарій> — NF-29: "а що, якщо…" by arithmetic. Pure DB read + pure maths:
+    **no Claude call on any path**, including a request it can't parse (that gets the syntax
+    hint, never an LLM fallback). A moved race / an absence offers «Застосувати», which hands
+    the request to the ordinary paid, confirm-first plan edit."""
+    from app import whatif
+
+    text = " ".join(ctx.args or []).strip()
+    logger.info(f"CMD /whatif {text[:40]}")
+    if not text:
+        await update.message.reply_text(whatif.HELP)
+        return
+    scenario = whatif.parse(text)
+    if scenario is None:
+        await update.message.reply_text("Не впізнав сценарій.\n\n" + whatif.HELP)
+        return
+    result = await _whatif_result(session, user, scenario)
+    kb = None
+    if result["apply"]:
+        sc = result["scenario"]
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "Застосувати до плану",
+            callback_data=f"wi:{sc.target_shift_weeks}:{sc.skip_days}")]])
+    await update.message.reply_text(whatif.summary(result), reply_markup=kb)
+
+
+async def _whatif_result(session, user, scenario) -> dict:
+    from app import whatif
+
+    inputs = await repository.whatif_inputs(session, user.id, today=user_today(user))
+    return whatif.simulate(inputs, scenario, warn_acwr=settings.FORECAST_ACWR_WARN,
+                           high_acwr=settings.FORECAST_ACWR_HIGH)
+
+
+async def whatif_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«Застосувати» under a /whatif answer → the existing plan-edit path (``_plan_edit``:
+    one paid proposal, applied only on its own ✅). The request is rebuilt from the scenario
+    here rather than carried in callback_data, which Telegram caps at 64 bytes."""
+    from app import whatif
+
+    q = update.callback_query
+    await q.answer()
+    try:
+        _tag, shift, skip = q.data.split(":")
+        scenario = whatif.Scenario(target_shift_weeks=int(shift), skip_days=int(skip))
+    except ValueError:
+        return
+    async with async_session_maker() as session:
+        user = await _resolve_user(update, session)
+        if user is None:
+            return
+        result = await _whatif_result(session, user, scenario)
+    if not result["apply"]:
+        await q.message.reply_text("Немає активного плану, до якого це застосувати.")
+        return
+    await q.edit_message_reply_markup(reply_markup=None)
+    await _plan_edit(update, ctx, result["apply"])
 
 
 @bot_command
@@ -1601,13 +1676,16 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
     fresh, context-free edit. Every turn carries the dialogue so far, so "краще 8 км"
     after "перенеси довгу на суботу" means the Saturday long run, not a stray 8 km.
     """
+    # A command, or NF-29's «Застосувати» button (a callback — then the reply goes under
+    # the /whatif answer the button was on).
+    msg = update.message or update.callback_query.message
     async with async_session_maker() as session:
         user = await _resolve_user(update, session)
         if user is None:
             return
         pending = await repository.get_pending_plan_edit(session, user.id)
         logger.info(f"CMD /plan {'follow-up' if pending else 'edit'}: {instruction[:60]}")
-        await update.message.reply_text(
+        await msg.reply_text(
             "Думаю над уточненням..." if pending else "Думаю над змінами..."
         )
         async with user_runtime(session, user) as creds:
@@ -1618,7 +1696,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
                 )
             except AnalystError as e:
                 logger.error(f"ANALYST {e}")
-                await update.message.reply_text(str(e))
+                await msg.reply_text(str(e))
                 return
 
     # NF-34: an away period the model recognised in the request ("зсунь усе, я у відпустці
@@ -1633,7 +1711,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
     try:
         schedule = schedule_proposal(_plan, edit.schedule)
     except AnalystError as e:
-        await update.message.reply_text(str(e))
+        await msg.reply_text(str(e))
         return
     if schedule:
         ops, alt = [], []
@@ -1655,7 +1733,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         ops, alt = [], []
         summary, alt_summary, risky = edit.summary, None, False
     else:
-        await update.message.reply_text(edit.summary or "Не зрозумів, що змінити.")
+        await msg.reply_text(edit.summary or "Не зрозумів, що змінити.")
         return
 
     text, kb = _proposal_view(summary, alt_summary, risky, ops, alt, away, schedule)
@@ -1663,7 +1741,7 @@ async def _plan_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE, instruction
         text = edit.answer + "\n\n" + text
     # The new message carries the only live buttons; the previous one loses its keyboard.
     await _retire_proposal_message(ctx, pending)
-    sent = await update.message.reply_text(text, reply_markup=kb)
+    sent = await msg.reply_text(text, reply_markup=kb)
 
     async with async_session_maker() as session:
         await repository.set_pending_plan_edit(

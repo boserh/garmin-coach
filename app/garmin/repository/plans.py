@@ -420,6 +420,74 @@ async def load_forecast(
     return out
 
 
+async def whatif_inputs(
+    session: AsyncSession, user_id: int, *, today: Optional[dt.date] = None,
+):
+    """NF-29: everything ``app.whatif.simulate`` needs, read once from the DB — the same
+    sources ``load_forecast`` reads (so "зараз" in a scenario is this week's forecast), plus
+    the goal-trend inputs ``/goal`` uses. Reads only; the simulation itself never touches the
+    session."""
+    from app import goal as goal_mod
+    from app import loadforecast, whatif
+    from app.garmin.repository.core import (
+        count_daily_metrics,
+        read_fitness_history,
+        typical_run_pace,
+    )
+    from app.garmin.repository.stats import weekly_activity_load, weekly_run_volume
+
+    today = today or dt.date.today()
+    n_chronic = loadforecast.MIN_CHRONIC_WEEKS
+    weekly = await weekly_activity_load(session, user_id, weeks=n_chronic + 2)
+    by_week = {w["week"]: w for w in weekly}
+    this_week = today.strftime("%G-W%V")
+    past_weeks = [(today - dt.timedelta(weeks=n)).strftime("%G-W%V")
+                  for n in range(n_chronic, 0, -1)]
+    past = [by_week.get(w, {}).get("load", 0.0) for w in past_weeks]
+    runs = await weekly_run_volume(session, user_id, weeks=n_chronic + 1)
+    km_by_week = {w["week"]: w for w in runs}
+
+    inputs = whatif.Inputs(
+        today=today,
+        done_load=by_week.get(this_week, {}).get("load", 0.0),
+        done_km=km_by_week.get(this_week, {}).get("km", 0.0),
+        past_weekly_loads=past,
+        history_days=await count_daily_metrics(session, user_id),
+        anchor_pace=await typical_run_pace(session, user_id),
+    )
+
+    plan = await get_active_plan(session, user_id)
+    if plan is None:
+        # No plan: the next weeks look like the athlete's own recent weeks.
+        sessions = sum(by_week.get(w, {}).get("sessions", 0) for w in past_weeks)
+        load = sum(past)
+        run_km = sum(km_by_week.get(w, {}).get("km", 0.0) for w in past_weeks)
+        run_n = sum(km_by_week.get(w, {}).get("runs", 0) for w in past_weeks)
+        if sessions:
+            inputs.typical = {
+                "sessions": max(1, round(sessions / n_chronic)),
+                "session_load": round(load / sessions, 1),
+                "session_km": round(run_km / run_n, 1) if run_n else None,
+            }
+        return inputs
+
+    inputs.has_plan = True
+    today_s = today.isoformat()
+    inputs.planned = [
+        {"type": w.type, "dist_km": w.dist_km, "steps": w.steps, "date": w.date}
+        for w in await list_workouts(session, plan.id)
+        if w.status == "planned" and w.date >= today_s
+    ]
+    metric_key, label, higher_better = goal_mod.metric_for_goal(plan.goal)
+    inputs.goal = {
+        "history": await read_fitness_history(session, user_id),
+        "metric_key": metric_key, "label": label, "higher_better": higher_better,
+        "target_date": plan.target_date,
+        "target_s": (plan.intake or {}).get("target_time_s"),
+    }
+    return inputs
+
+
 async def weekly_compliance(
     session: AsyncSession, plan_id: int, today: Optional[dt.date] = None,
 ) -> dict:

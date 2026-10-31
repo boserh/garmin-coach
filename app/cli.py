@@ -263,6 +263,81 @@ async def _backfill_zones(email: str, days: int) -> int:
     return 0
 
 
+WEIGHT_RANGE_CHUNK_DAYS = 90   # one weight-service range request per this many days
+
+
+def merge_weigh_ins(rows_by_date: dict, summaries: list) -> tuple:
+    """NF-26 backfill core (pure, unit-tested): fold Garmin's ``dailyWeightSummaries`` into
+    the stored ``DailyMetric`` rows' ``extra``. Returns ``(updated, skipped_no_row)``.
+
+    Only EXISTING rows are touched. Creating a bare row for a weigh-in day would be worse
+    than missing the weight: ``build_payload_cached`` serves any past day it finds in the DB,
+    so that day's sleep/HRV would never be fetched afterwards."""
+    from app.garmin import service
+
+    updated = skipped = 0
+    for s in summaries or []:
+        if not isinstance(s, dict):
+            continue
+        latest = s.get("latestWeight")
+        if not isinstance(latest, dict):
+            entries = [e for e in (s.get("allWeightMetrics") or []) if isinstance(e, dict)]
+            latest = entries[-1] if entries else None
+        metrics = service.body_metrics(latest)
+        date = s.get("summaryDate") or (latest or {}).get("calendarDate")
+        if not metrics or not date:
+            continue
+        row = rows_by_date.get(date)
+        if row is None:
+            skipped += 1
+            continue
+        if any((row.extra or {}).get(k) != v for k, v in metrics.items()):
+            row.extra = {**(row.extra or {}), **metrics}
+            updated += 1
+    return updated, skipped
+
+
+async def _backfill_weight(email: str, days: int) -> int:
+    """NF-26: pull weigh-in history into ``DailyMetric.extra`` — one ranged request per
+    :data:`WEIGHT_RANGE_CHUNK_DAYS` (a year is 5 requests, not 365), idempotent, 0 LLM."""
+    import asyncio
+    import datetime as dt
+
+    from fastapi.concurrency import run_in_threadpool
+    from sqlalchemy import select
+
+    from app.db.models import DailyMetric
+    from app.garmin import client
+
+    async with cli_user(email) as (session, user):
+        end = dt.date.today()
+        start = end - dt.timedelta(days=days - 1)
+        rows = (await session.execute(
+            select(DailyMetric).where(DailyMetric.user_id == user.id,
+                                      DailyMetric.date >= start.isoformat())
+        )).scalars().all()
+        by_date = {r.date: r for r in rows}
+        updated = skipped = 0
+        async with garmin_login(session, user):
+            chunk_start = start
+            while chunk_start <= end:
+                chunk_end = min(end, chunk_start + dt.timedelta(days=WEIGHT_RANGE_CHUNK_DAYS - 1))
+                summaries = await run_in_threadpool(client.fetch_weight_range,
+                                                    chunk_start, chunk_end)
+                u, s = merge_weigh_ins(by_date, summaries)
+                updated += u
+                skipped += s
+                print(f"  {chunk_start} … {chunk_end}: {len(summaries)} weigh-in day(s), "
+                      f"{u} stored")
+                chunk_start = chunk_end + dt.timedelta(days=1)
+                await asyncio.sleep(0.3)  # be gentle on Garmin
+            await session.commit()
+        print(f"Done: {updated} day(s) updated"
+              + (f", {skipped} weigh-in day(s) with no stored daily row (left alone)"
+                 if skipped else "") + ".")
+    return 0
+
+
 async def _recompute_step_match(email: str, apply: bool, activity_id: "int | None") -> int:
     """Re-score NF-14 ``step_match`` for activities already matched against a structured
     workout, bypassing both the ingest-time "already scored" guard
@@ -1100,6 +1175,13 @@ def main(argv=None) -> int:
     bz.add_argument("--days", type=int, default=180,
                     help="How far back to backfill (default 180)")
 
+    bw = sub.add_parser(
+        "backfill-weight",
+        help="Pull Garmin weigh-in history into stored daily rows (NF-26; 0 LLM cost)")
+    bw.add_argument("--email", required=True)
+    bw.add_argument("--days", type=int, default=365,
+                    help="How far back to backfill (default 365)")
+
     rsm = sub.add_parser(
         "recompute-step-match",
         help="Re-score NF-14 step_match for already-scored activities (after a "
@@ -1159,6 +1241,8 @@ def main(argv=None) -> int:
         return _run(_backfill_routes(args.email, args.since))
     if args.cmd == "backfill-zones":
         return _run(_backfill_zones(args.email, args.days))
+    if args.cmd == "backfill-weight":
+        return _run(_backfill_weight(args.email, args.days))
     if args.cmd == "recompute-step-match":
         return _run(_recompute_step_match(args.email, args.apply, args.activity_id))
 

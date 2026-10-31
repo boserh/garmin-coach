@@ -91,6 +91,7 @@ def advise(
     heat_feels_c: float = 30.0,
     min_duration_min: int = MIN_DURATION_MIN,
     anchor_pace: Optional[float] = None,
+    acclimation_class: Optional[str] = None,
 ) -> Optional[dict]:
     """Fueling guidance for TODAY's session (already filtered by the caller — see the
     ST-03/weather proximity rule: only when the session is today, never a future day).
@@ -99,6 +100,10 @@ def advise(
     ``forecast`` — today's compact forecast (``app.weather.fetch_forecast``); reused as-is,
     no extra network call. Returns ``None`` when there's no session/forecast, the session
     isn't a key type, or it's too short to matter — the caller simply omits the context key.
+
+    ``acclimation_class`` (NF-31, ``app.acclimation.heat_class``): an athlete Garmin reads as
+    NOT heat-acclimated gets a higher fluid target on a hot day — unknown/absent changes
+    nothing.
     """
     if not session or not forecast:
         return None
@@ -114,14 +119,20 @@ def advise(
     notes = []
     fluid_ml_h = None
     carbs_g_h = None
+    unacclimated = hot and acclimation_class == "none"
     if minutes >= FLUID_DURATION_MIN:
         fluid_ml_h = FLUID_ML_H_HOT if hot else FLUID_ML_H_MILD
+        if unacclimated:
+            from app.acclimation import FLUID_ML_H_HOT_UNACCLIMATED
+            fluid_ml_h = FLUID_ML_H_HOT_UNACCLIMATED
         notes.append(f"вода ~{fluid_ml_h} мл/год")
     if minutes >= CARB_DURATION_MIN:
         carbs_g_h = CARB_G_H
         notes.append(f"вуглеводи ~{carbs_g_h} г/год (гелі/ізотонік)")
     if hot:
         notes.append("спека — додай електроліти")
+        if unacclimated:
+            notes.append("ти ще не адаптований до спеки — почни повільніше, ніж зазвичай")
         hourly = forecast.get("hourly") or []
         coolest = min(
             (h for h in hourly if isinstance(h.get("feels_c"), (int, float))),
@@ -132,7 +143,10 @@ def advise(
 
     if not notes:
         return None
-    return {
+    out = {
         "duration_min": minutes, "fluid_ml_h": fluid_ml_h, "carbs_g_h": carbs_g_h,
         "hot": hot, "notes": notes,
     }
+    if unacclimated:
+        out["unacclimated"] = True
+    return out

@@ -232,6 +232,8 @@ Optional, with defaults:
 | `POLARIZATION_LOW_TARGET` | `0.8` | target share of weekly TIME in zones 1-2. |
 | `GRAY_ZONE_MAX` | `0.15` | zone-3 share above which several weeks in a row is flagged. |
 | `ANAEROBIC_WEEKLY_CAP` | `8.0` | weekly sum of anaerobic training effect before it's called over. |
+| `BODY_METRICS` | `True` | NF-26 master switch: fetch Garmin weigh-ins into `DailyMetric.extra`, show the smoothed trend (dashboard, `/goal`), and a daily-report line only when weight falls fast / falls on a climbing load. Off → nothing fetched, every consumer silent. |
+| `CHARTS_IN_TELEGRAM` | `True` | NF-32: send the digest / run recap / `/compare` / `/insights` with a PNG chart (needs the optional `.[charts]` extra + system `libcairo`; absent → text only, never an error). |
 | `LLM_BUDGET_MONTH_USD` | `25.0` | OPS-11 hard monthly Claude ceiling per user; `0` disables. |
 | `LLM_BUDGET_DAY_USD` | `5.0` | same, per calendar day (user's timezone, ST-14). |
 | `LLM_BUDGET_WARN_PCT` | `0.8` | DM once at this share of the monthly ceiling. |
@@ -294,7 +296,8 @@ app/
   weather.py              Open-Meteo geocode (settings) + forecast (today/week) +
                           pick_location/location_for_user (where the athlete actually is)
   charts.py                inline-SVG chart helpers (series/trend_series/run_series/
-                           run_charts/bar_series/shade_zones)
+                           run_charts/bar_series/shade_zones) + NF-32's chart_svg/to_png
+                           (standalone SVG → PNG via the optional cairosvg)
   mcp_server.py            NF-08: personal read-only MCP server over the /ask tools —
                            stdio (one --email user) or http (per-request OAuth identity)
   mcp_oauth.py             NF-08: the OAuth 2.1 authorization server + consent screen
@@ -352,6 +355,14 @@ app/
                                                         HRV baseline corridor, sleep stages) + Garmin enum → Ukrainian
   moodcycle.py                                            NF-35: pure weekly pattern + cycle-length hint over the
                                                           opt-in daytime energy/mood/irritability check-in
+  acclimation.py                                           NF-31: pure heat/altitude acclimation classes, loss
+                                                          detection, fixed heat-pace table (race pack/fueling/report)
+  bodyweight.py                                            NF-26: pure weight trend — time-aware EMA, Theil–Sen
+                                                          kg/week, fast-loss / loss-on-rising-load flags, projection
+  whatif.py                                                NF-29: pure «а що, якщо» — baseline vs scenario weeks
+                                                          (load/km/rolling ACWR) + goal date shift + bot phrase parser
+  tgcharts.py                                              NF-32: what each Telegram picture draws (digest/run/
+                                                          compare/insights) + best-effort send — 0 LLM, 0 Garmin
   analysis/
     service.py           analyze/ask/run_analysis/run_ask; per-key Anthropic client; dedup cache
     budget.py             OPS-11: the spend breaker — period ceilings + a per-call ceiling
@@ -365,6 +376,8 @@ app/
     dashboard.py        GET /dashboard — mobile-first overview, login, per-user (EP-04)
     insights.py           GET /insights — UI-05: risk/load/correlations/mood-cycle/recap, 0 LLM, 0 Garmin
     strength.py            GET /strength — UI-06: e1RM per lift, weekly tonnage, stalls
+    whatif.py              GET /whatif — NF-29: scenario simulator (sessions/volume/race date/
+                           absence), 0 LLM, 0 Garmin, writes nothing
     health.py               GET /health + GET /offline (public), GET /status (login, per-user)
     reports.py               GET /report.json (Sonnet), GET /deep (Opus) — login, per-user
     history.py                 GET /history?days=N — trends from DB, login, per-user
@@ -378,7 +391,7 @@ app/
 bot/
   main.py           product bot: register_handlers() + jobs, run_polling (garmin-bot.service)
   admin_main.py       system/admin bot: hidden /deploy + /test_* only, owner-only gate (garmin-admin-bot.service)
-  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /mood (NF-35), /forget (EP-18),
+  handlers.py           /start (account linking — the one handler that runs for an unresolved chat), /report, /ask, /deep, /activities, /activity, /records, /costs, /gear, /compare, /wrapped, /insights, /risk, /whatif (NF-29), /health, /goal, /race, /plan (+edit), /sick, /pain (NF-30), /away (NF-34), /checkups, /log (NF-28), /mood (NF-35), /forget (EP-18),
                       /deploy (admin), /test_*
   jobs.py                 morning_job (per-user tz window, once-a-day guard) + weather_plan_job/plan_adapt_job/weekly_digest_job/sleep_nudge_job/plan_sync_job/daytime_checkin_job (NF-35)
   opsalert.py               send_ops_alert(): infrastructure alerts go out over the ADMIN bot token, never the coaching one (falls back to ctx.bot)
@@ -430,6 +443,10 @@ That is an attention budget, not a cost one — see DESIGN_NOTES.
   from the pure modules: **0 Claude calls, 0 Garmin requests** (guarded by tests). Login.
 - `GET /strength` — UI-06: e1RM per lift, weekly tonnage, stalls (NF-27). Same zero-cost
   rule. Login.
+- `GET /whatif` — NF-29: «а що, якщо…» — ± sessions/week, ± volume, race date ± weeks, an
+  absence; a "зараз → сценарій" table (load, km, rolling ACWR) + the goal projection at the new
+  date. **0 Claude, 0 Garmin, writes nothing** (guarded by tests). «Застосувати» only pre-fills
+  `/chat?draft=…` — the paid, confirm-first plan edit takes it from there. Login.
 - `GET /offline` — the service worker's fallback page (public, no auth, no data).
 - `POST /me/activities/{id}/checkin`, `POST /me/lifestyle` — UI-04: RPE / niggle / the
   evening lifestyle tags, written through the same path the bot uses.
@@ -616,7 +633,9 @@ gates user endpoints; `require_admin` gates `/ui` and `/admin/users`.
   Garmin calendar with the plan: half-pushed rows, stored ids Garmin no longer has, and
   workouts of ours nothing references — read-only by default, 0 LLM), `backfill-records` (running bests **and** NF-27's strength e1RM /
   tonnage — silent, dated in the past), `backfill-zones` (NF-24 HR time-in-zone for
-  stored activities; idempotent, paced, 0 LLM cost), `backfill-routes` (NF-33 route
+  stored activities; idempotent, paced, 0 LLM cost), `backfill-weight [--days 365]` (NF-26
+  weigh-in history into EXISTING daily rows' `extra` — one ranged request per 90 days, never
+  creates a bare day row; 0 LLM), `backfill-routes` (NF-33 route
   clustering from stored coordinates — 0 Garmin calls, 0 LLM cost, idempotent),
   `backfill-activity-analysis [--apply]` (re-attach activity analyses that were
   generated but never stored on the row — reads the text back out of `report_logs`,
@@ -822,3 +841,9 @@ uses ~30% more tokens for the same text than Sonnet 4.6.
   (create → schedule → delete a workout — the one branch recon never exercised) and one
   full cycle `/report` → morning job → `push-plan --dry-run` → a real MFA connect
   through `/settings`.
+- NF-26 / NF-31 live verification on the Pi: the weight-service (`dayview`, `range`) and
+  `trainingstatus/aggregated` DTO shapes were written desk-only from the `garminconnect`
+  library's endpoints — check one real day lands `weight_kg` / `heat_acclimation_pct` in
+  `extra`, then run `app.cli backfill-weight`.
+- NF-32 on the Pi: `apt install libcairo2` + `pip install -e ".[charts]"`, else the bot keeps
+  sending text only (by design, but then the feature is silently off).

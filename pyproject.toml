@@ -48,6 +48,11 @@ mcp = [
     # and the OAuth server the http transport is built on lives in 2.x's mcp.server.auth.
     "mcp>=2",
 ]
+charts = [
+    # NF-32: SVG → PNG for charts sent into Telegram. Optional because cairosvg needs the
+    # system libcairo (`apt install libcairo2` on the Pi); without it the bot sends text only.
+    "cairosvg",
+]
 garth = [
     # OPS-10 rollback only: reinstates the pre-migration engine. Pair it with
     # GARMIN_PROVIDER=garth — nothing selects garth without that env var.

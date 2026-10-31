@@ -572,6 +572,13 @@ body.auth{min-height:100vh;display:flex;align-items:center;justify-content:cente
 .abtn.toggle{background:var(--surface-2);color:var(--accent);margin-left:.3rem}
 .abtn.del{background:rgba(247,118,142,.12);color:var(--intervals);margin-left:.3rem}
 .dtable td form{display:inline}
+/* NF-29: "зараз → сценарій" cells stay on one line; the table scrolls inside its own box on a
+   narrow phone instead of stacking "37 / → / 16" vertically. */
+.wi-table{font-size:.8rem}
+.wi-table th,.wi-table td{white-space:nowrap;padding:.5rem .3rem}
+.wi-table .pill{padding:.1rem .4rem}
+.wi-scroll{overflow-x:auto}
+.pill.hot{color:var(--intervals);background:rgba(247,118,142,.12)}
 
 /* ---- footer / actions ---- */
 .foot{margin-top:2.6rem;color:var(--faint);font-size:.85rem;line-height:1.6}

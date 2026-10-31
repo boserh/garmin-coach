@@ -101,6 +101,40 @@
     </div>
     {% endif %}
 
+    {% if weight %}
+    {#
+      NF-26. Descriptive on purpose: the smoothed line, the rate, and a flag ONLY when weight
+      falls fast or falls on a climbing load. No target, no "ideal", no colour judging the
+      number itself — app.bodyweight decides every word below.
+    #}
+    <p class="eyebrow" style="margin-top:2rem">Вага (згладжений тренд)</p>
+    <div class="charts">
+      <div class="chart" data-fmt="f1"{% if weight_chart %} data-pts='{{ weight_chart.pts|tojson }}'{% endif %}>
+        <div class="chead"><span style="color:var(--accent)">●</span> {{ '%.1f'|format(weight.current_kg) }} кг
+          <span class="meta">—
+            {% if weight.rate_kg_week is none %}замало зважувань для темпу
+            {% elif weight.rate_kg_week|abs < 0.1 %}стабільно
+            {% else %}{{ '%+.1f'|format(weight.rate_kg_week) }} кг/тиж{% endif %}
+            · {{ weight.n_points }} зважувань</span></div>
+        {% if weight_chart %}
+        <div class="cwrap">
+          <svg viewBox="0 0 {{ weight_chart.W }} {{ weight_chart.H }}" preserveAspectRatio="none" role="img" aria-label="Вага, згладжений тренд">
+            <polyline fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" points="{{ weight_chart.points }}"/>
+          </svg>
+          <div class="guide" style="background:var(--accent)"></div>
+          <div class="tip" style="color:var(--accent)"></div>
+        </div>
+        {% endif %}
+        {% if weight.projected_kg is not none %}
+        <div class="meta">Якщо темп збережеться, на {{ weight.target_date }}: ≈{{ '%.1f'|format(weight.projected_kg) }} кг</div>
+        {% endif %}
+        {% for line in weight_flags %}
+        <div class="meta" style="color:var(--tempo)">⚠️ {{ line|capitalize }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
     <div class="bigstats">
       <div class="bigstat"><div class="v">${{ '%.2f'|format(month_cost) }}</div><div class="k">AI цього місяця</div></div>
     </div>

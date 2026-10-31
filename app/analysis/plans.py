@@ -1390,6 +1390,13 @@ async def run_weather_plan_check(
         # those days — and proposing it is a DM that costs attention for nothing.
         "away": await away_db.build_context(session, user_id, today),
     }
+    # NF-31: whether this athlete is heat/altitude-acclimated right now — the same forecast
+    # is a different problem for each. Absent without data (older watches).
+    from app import acclimation as acclim_mod
+    acclim = acclim_mod.weather_context(acclim_mod.status(
+        await repository.read_history(session, user_id, days=14), today=today))
+    if acclim:
+        context["acclimation"] = acclim
     try:
         edit, stats = await _run_claude(
             weather_plan_with_stats, context, api_key, session=session, user_id=user_id)

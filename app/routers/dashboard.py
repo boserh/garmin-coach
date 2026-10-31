@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import baselines, onboarding
+from app import baselines, bodyweight, onboarding
 from app.banners import banner
 from app.charts import trend_series as _trend_series
 from app.core.auth import current_user
@@ -352,6 +352,14 @@ async def dashboard(
     intensity_ctx = await build_intensity_context(session, user_id=user.id)
     intensity_week = (intensity_ctx.get("weeks") or [None])[-1] if intensity_ctx else None
 
+    # NF-26: smoothed weight trend tile — only with enough weigh-ins (None → no tile).
+    from app.analysis.reports import build_body_weight_trend
+    weight = await build_body_weight_trend(session, user_id=user.id, today=today_local)
+    weight_chart = None
+    if weight:
+        weight_chart = _trend_series([v for _d, v in weight["series"]],
+                                     [d for d, _v in weight["series"]])
+
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
@@ -375,6 +383,8 @@ async def dashboard(
             "backup_warn_days": settings.BACKUP_WARN_DAYS,
             "llm_budget": llm_budget,
             "intensity_week": intensity_week,
+            "weight": weight, "weight_chart": weight_chart,
+            "weight_flags": bodyweight.flag_lines(weight) if weight else [],
             "intensity_findings": (intensity_ctx or {}).get("findings") or [],
         },
     )

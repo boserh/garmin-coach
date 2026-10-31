@@ -34,6 +34,7 @@ _NAMES = {
     "stress_avg": "середній стрес",
     "bb_charged": "заряд Body Battery",
     "resting_hr": "пульс спокою",
+    "weight_kg": "вага",
 }
 
 # The candidate pairs: (x_metric, lag_days, y_metric). x on day d vs y on day d+lag. Chosen
@@ -47,6 +48,10 @@ _PAIRS = [
     ("sleep_h", 0, "stress_avg"),       # sleep length ↔ next day's stress load
     ("bb_charged", 0, "hrv_avg"),       # overnight recharge ↔ HRV
     ("hrv_avg", 1, "sleep_score"),      # HRV today ↔ sleep tomorrow
+    # NF-26: a weigh-in day vs that night's / next morning's recovery. Gated like every pair
+    # (MIN_SAMPLES paired days), so occasional weigh-ins simply never qualify.
+    ("weight_kg", 0, "sleep_score"),
+    ("weight_kg", 1, "hrv_avg"),
 ]
 
 
@@ -104,6 +109,17 @@ def _paired(history: List[dict], x: str, y: str, lag: int):
         xs.append(float(xv))
         ys.append(float(yv))
     return xs, ys
+
+
+def paired(history: List[dict], x: str, y: str, lag: int):
+    """Public view of the pairing a finding was computed over (NF-32's scatter) — the same
+    days, so the picture can never disagree with the r it is captioned with."""
+    return _paired(history, x, y, lag)
+
+
+def name(metric: str) -> str:
+    """Human label of a correlated metric (falls back to the key)."""
+    return _NAMES.get(metric, metric)
 
 
 def _finding(x: str, lag: int, y: str, r: float, n: int) -> dict:

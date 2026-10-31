@@ -56,6 +56,42 @@ async def weekly_run_volume(
     return out
 
 
+async def weekly_km_between(
+    session: AsyncSession, user_id: int, start: str, end: str
+) -> List[float]:
+    """Running km per consecutive 7-day bucket of the inclusive ISO range ``[start, end]``,
+    bucket 0 starting at ``start`` (NF-32's ``/compare`` picture). Buckets are counted from
+    the window's own start rather than by ISO week, so "now" and "a year ago" line up bucket
+    for bucket even though the same date falls on a different weekday each year."""
+    try:
+        s, e = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    except (TypeError, ValueError):
+        return []
+    if e < s:
+        return []
+    out = [0.0] * ((e - s).days // 7 + 1)
+    rows = (
+        await session.execute(
+            select(ActivityRecord.date, ActivityRecord.dist_km).where(
+                ActivityRecord.user_id == user_id,
+                ActivityRecord.type.like("%run%"),
+                ActivityRecord.date.is_not(None),
+                ActivityRecord.date >= start,
+                ActivityRecord.date <= end,
+                ActivityRecord.is_hidden.is_(False),   # ST-17
+            )
+        )
+    ).all()
+    for date_s, dist in rows:
+        try:
+            idx = (dt.date.fromisoformat(date_s) - s).days // 7
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(out):
+            out[idx] += dist or 0.0
+    return [round(v, 1) for v in out]
+
+
 async def strength_sessions(
     session: AsyncSession, user_id: int, weeks: int = 12
 ) -> List[dict]:

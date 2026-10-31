@@ -50,6 +50,7 @@ from app.routers import (
     plan,
     reports,
     strength,
+    whatif,
 )
 from app.routers import settings as settings_router
 
@@ -241,6 +242,7 @@ def create_app() -> FastAPI:
     app.include_router(me.router)
     app.include_router(insights.router)
     app.include_router(strength.router)
+    app.include_router(whatif.router)
     app.include_router(plan.router)
     app.include_router(checkups.router)
     app.include_router(chat.router)

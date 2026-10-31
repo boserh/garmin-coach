@@ -58,7 +58,7 @@
     <div id="chat-pending">{% include "_chat_pending.html" %}</div>
 
     <form method="post" action="/chat" class="composer" data-live-chat="1" data-no-busy="1">
-      <textarea name="message" placeholder="Напр.: як мій сон цього тижня? / перенеси довгу на суботу" required></textarea>
+      <textarea name="message" placeholder="Напр.: як мій сон цього тижня? / перенеси довгу на суботу" required>{{ draft or "" }}</textarea>
       <button class="btn" type="submit">Надіслати</button>
     </form>
   </div>

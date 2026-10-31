@@ -312,6 +312,84 @@ def _daily_extra_metrics(uds: dict, vo2: dict, race: dict, endurance: dict) -> d
     return {k: v for k, v in raw.items() if v is not None}
 
 
+def _mass_kg(v) -> Optional[float]:
+    """Garmin sends body masses in grams (72350 → 72.35 kg); a value that already looks like
+    kilograms is taken as-is, so a future unit change can't turn 72 kg into 0.072."""
+    if not isinstance(v, (int, float)) or v <= 0:
+        return None
+    return round(v / 1000.0, 2) if v > 1000 else round(float(v), 2)
+
+
+def body_metrics(entry: Optional[dict]) -> dict:
+    """NF-26: one weigh-in (or a day's ``totalAverage``) → the ``extra`` keys
+    ``app.bodyweight`` reads. Only what actually came — a plain scale sends weight alone."""
+    if not isinstance(entry, dict):
+        return {}
+    pct = lambda v: round(float(v), 1) if isinstance(v, (int, float)) and v > 0 else None  # noqa: E731
+    raw = {
+        "weight_kg": _mass_kg(entry.get("weight")),
+        "body_fat_pct": pct(entry.get("bodyFat")),
+        "body_water_pct": pct(entry.get("bodyWater")),
+        "muscle_kg": _mass_kg(entry.get("muscleMass")),
+        "bone_kg": _mass_kg(entry.get("boneMass")),
+        "bmi": pct(entry.get("bmi")),
+    }
+    if raw["weight_kg"] is None:
+        return {}
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+def _find_key(obj, key: str, depth: int = 0):
+    """First value stored under ``key`` anywhere in a nested DTO (depth-capped). The
+    training-status DTO nests its blocks under per-device maps whose keys are device ids, so
+    a fixed path would break on the next watch."""
+    if depth > 6:
+        return None
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            found = _find_key(v, key, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_key(v, key, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def training_status_metrics(ts: Optional[dict]) -> dict:
+    """NF-31: heat/altitude acclimation + training status/load balance → ``extra`` keys.
+    Only what the watch reported — an older model yields ``{}`` and every consumer stays
+    silent."""
+    if not isinstance(ts, dict) or not ts:
+        return {}
+    acc = _find_key(ts, "heatAltitudeAcclimation") or {}
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+    phrase = lambda v: v.lower() if isinstance(v, str) and v else None  # noqa: E731
+    raw = {
+        "heat_acclimation_pct": num(_g(acc, "heatAcclimationPercentage")),
+        "altitude_acclimation_m": num(_g(acc, "altitudeAcclimation")),
+        "heat_trend": phrase(_g(acc, "heatTrend")),
+        "altitude_trend": phrase(_g(acc, "altitudeTrend")),
+        "training_status": phrase(_find_key(ts, "trainingStatusFeedbackPhrase")),
+        "load_balance": phrase(_find_key(ts, "trainingBalanceFeedbackPhrase")),
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+def _daily_body(weight: dict) -> dict:
+    """The day's average when Garmin computed one, else the latest weigh-in of the day."""
+    out = body_metrics(_g(weight, "totalAverage"))
+    if out:
+        return out
+    entries = [e for e in (_g(weight, "dateWeightList") or []) if isinstance(e, dict)]
+    entries.sort(key=lambda e: e.get("date") or e.get("timestampGMT") or 0)
+    return body_metrics(entries[-1]) if entries else {}
+
+
 def daily_summary(date: dt.date) -> dict:
     sleep = client.fetch_sleep(date)
     hrv = client.fetch_hrv(date)
@@ -323,12 +401,16 @@ def daily_summary(date: dt.date) -> dict:
     race = client.fetch_race_predictions()
     endurance = client.fetch_endurance(date)
     events = client.fetch_daily_events(date)
+    weight = client.fetch_weight(date) if settings.BODY_METRICS else {}
+    training_status = client.fetch_training_status(date)
     dto = _g(sleep, "dailySleepDTO") or {}
     sec = lambda v: round(v / 3600, 2) if isinstance(v, (int, float)) else None
 
     extra = {
         **_daily_extra(sleep, hrv, dto, readiness),
         **_daily_extra_metrics(uds, vo2, race, endurance),
+        **_daily_body(weight),
+        **training_status_metrics(training_status),
     }
     auto = _auto_activities(events)
     if auto:
