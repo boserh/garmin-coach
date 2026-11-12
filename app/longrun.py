@@ -23,6 +23,14 @@ both:
 
 Anything else is stored as an ordinary easy run. When the week offers nothing to compare
 against — no easy run at all — the label stands: this demotes only what it can disprove.
+
+A "typical" easy run needs more than one sample. In a two-runs-a-week plan (one easy day,
+one long day) the long slot is structural, and a return from injury or a break shrinks it
+on purpose: Tue easy 5.7 km, Sun long 6.5 km is that plan's long run, deliberately cut —
+yet 6.5 / 5.7 = 1.14 failed the ratio and the coach was told the week had no long run at
+all. With a SINGLE easy run there is no typical to measure against, so the bar is only
+"strictly longer than it" (and still the week's longest run). A deload that cuts the long
+run to the easy day's length is still demoted.
 """
 
 from __future__ import annotations
@@ -96,5 +104,7 @@ def unearned_long_dates(runs: Iterable) -> Set[str]:
         return set()          # no baseline in this week — leave the label alone
 
     longest = max(distances)
-    floor = median(easy) * MIN_RATIO
-    return {d for d, km in longs if km < longest - _EPS or km < floor - _EPS}
+    if len(easy) >= 2:
+        return {d for d, km in longs if km < longest - _EPS or km < median(easy) * MIN_RATIO - _EPS}
+    only_easy = easy[0]
+    return {d for d, km in longs if km < longest - _EPS or km <= only_easy + _EPS}
