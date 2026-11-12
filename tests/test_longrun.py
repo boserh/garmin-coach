@@ -43,8 +43,29 @@ def test_being_the_longest_is_not_enough():
 
 
 def test_exactly_the_ratio_earns_the_label():
-    week = [_run("2026-09-01", "easy", 4.0), _run("2026-09-06", "long", 5.0)]   # 1.25
+    week = [_run("2026-09-01", "easy", 4.0), _run("2026-09-03", "easy", 4.0),
+            _run("2026-09-06", "long", 5.0)]   # 1.25
     assert longrun.unearned_long_dates(week) == set()
+
+
+def test_a_deliberately_short_long_run_in_a_two_run_week_keeps_the_label():
+    """The reported week (2026-W48): back from injury + vacation, the athlete asked for a
+    gentler start and the long run came down to 6.5 km against Tuesday's 5.7 km easy. One
+    easy run is no "typical" easy run — 6.5 / 5.7 = 1.14 must not erase the week's only
+    long run."""
+    week = [_run("2026-11-24", "easy", 5.7), _run("2026-11-29", "long", 6.5)]
+    assert longrun.unearned_long_dates(week) == set()
+
+
+def test_with_one_easy_run_the_long_must_still_be_longer_than_it():
+    week = [_run("2026-09-01", "easy", 4.0), _run("2026-09-06", "long", 4.0)]
+    assert longrun.unearned_long_dates(week) == {"2026-09-06"}
+
+
+def test_with_one_easy_run_the_long_must_still_be_the_weeks_longest():
+    week = [_run("2026-09-01", "easy", 4.0), _run("2026-09-03", "tempo", 7.0),
+            _run("2026-09-06", "long", 6.5)]
+    assert longrun.unearned_long_dates(week) == {"2026-09-06"}
 
 
 def test_a_long_shorter_than_a_tempo_is_not_the_weeks_longest_run():
@@ -120,6 +141,13 @@ async def test_easing_the_long_run_below_the_bar_relabels_it(session):
     await repository.apply_plan_ops(session, plan, [PlanOp(
         action="modify", date="2026-09-06", dist_km=4.0)])
     assert (await _types(session, plan))["2026-09-06"] == "easy"
+
+
+async def test_a_gentle_cut_in_a_two_run_week_stays_long(session):
+    plan = await _seed(session)
+    await repository.apply_plan_ops(session, plan, [PlanOp(
+        action="modify", date="2026-09-06", dist_km=4.5)])
+    assert (await _types(session, plan))["2026-09-06"] == "long"
 
 
 async def test_a_real_long_run_survives_every_write(session):
